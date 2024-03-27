@@ -4,13 +4,13 @@ import {
   selectAllNftContracts,
   selectAllNfts,
 } from '../../selectors/nftController';
-import { selectSelectedAddress } from '../../selectors/preferencesController';
+import { selectSelectedInternalAccountChecksummedAddress } from '../../selectors/accountsController';
 import { compareTokenIds } from '../../util/tokens';
 
 const favoritesSelector = (state) => state.collectibles.favorites;
 
 export const collectibleContractsSelector = createSelector(
-  selectSelectedAddress,
+  selectSelectedInternalAccountChecksummedAddress,
   selectChainId,
   selectAllNftContracts,
   (address, chainId, allNftContracts) =>
@@ -18,14 +18,14 @@ export const collectibleContractsSelector = createSelector(
 );
 
 export const collectiblesSelector = createSelector(
-  selectSelectedAddress,
+  selectSelectedInternalAccountChecksummedAddress,
   selectChainId,
   selectAllNfts,
   (address, chainId, allNfts) => allNfts[address]?.[chainId] || [],
 );
 
 export const favoritesCollectiblesSelector = createSelector(
-  selectSelectedAddress,
+  selectSelectedInternalAccountChecksummedAddress,
   selectChainId,
   favoritesSelector,
   (address, chainId, favorites) => favorites[address]?.[chainId] || [],
