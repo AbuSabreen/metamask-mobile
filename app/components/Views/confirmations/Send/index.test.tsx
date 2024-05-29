@@ -52,13 +52,6 @@ const initialState = {
       },
       PreferencesController: {
         featureFlags: {},
-        identities: {
-          [MOCK_ADDRESS_1]: {
-            address: MOCK_ADDRESS_1,
-            name: 'Account 1',
-            importTime: 1684232000456,
-          },
-        },
         ipfsGateway: 'https://cloudflare-ipfs.com/ipfs/',
         lostIdentities: {},
         selectedAddress: MOCK_ADDRESS_1,
@@ -76,13 +69,6 @@ const initialState = {
         _W: {
           featureFlags: {},
           frequentRpcList: [],
-          identities: {
-            [MOCK_ADDRESS_1]: {
-              address: MOCK_ADDRESS_1,
-              name: 'Account 1',
-              importTime: 1684232000456,
-            },
-          },
           ipfsGateway: 'https://cloudflare-ipfs.com/ipfs/',
           lostIdentities: {},
           selectedAddress: MOCK_ADDRESS_1,

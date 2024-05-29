@@ -92,7 +92,7 @@ describe('approveTransaction', () => {
   });
 
   it('should call generateApproveData with the correct parameters', async () => {
-    spyGetAddress.mockReturnValue('0xMockAddress');
+    spyGetAddress.mockResolvedValue('0xMockAddress');
 
     await approveTransaction({
       deeplinkManager: mockDeeplinkManager as any,
@@ -141,7 +141,7 @@ describe('approveTransaction', () => {
   });
 
   it('should call showSimpleNotification with the correct parameters if the spender address is invalid', async () => {
-    spyGetAddress.mockReturnValue('');
+    spyGetAddress.mockResolvedValue('');
 
     await approveTransaction({
       deeplinkManager: mockDeeplinkManager as any,
@@ -158,7 +158,7 @@ describe('approveTransaction', () => {
   });
 
   it('should call navigate with the correct parameters if the spender address is invalid', async () => {
-    spyGetAddress.mockReturnValue('');
+    spyGetAddress.mockResolvedValue('');
 
     await approveTransaction({
       deeplinkManager: mockDeeplinkManager as any,
@@ -172,7 +172,7 @@ describe('approveTransaction', () => {
   });
 
   it('should not call showSimpleNotification if the spender address is valid', async () => {
-    spyGetAddress.mockReturnValue('0xMockAddress');
+    spyGetAddress.mockResolvedValue('0xMockAddress');
 
     await approveTransaction({
       deeplinkManager: mockDeeplinkManager as any,
@@ -184,7 +184,7 @@ describe('approveTransaction', () => {
   });
 
   it('should not call navigate if the spender address is valid', async () => {
-    spyGetAddress.mockReturnValue('0xMockAddress');
+    spyGetAddress.mockResolvedValue('0xMockAddress');
 
     await approveTransaction({
       deeplinkManager: mockDeeplinkManager as any,

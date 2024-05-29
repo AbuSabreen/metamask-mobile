@@ -1,5 +1,15 @@
 import trackDappViewedEvent from './index';
 import { MetaMetrics, MetaMetricsEvents } from '../../../core/Analytics';
+import { createMockAccountsControllerState } from '../../test/accountsControllerTestUtils';
+
+const MOCK_ADDRESS_1 = '0xe64dD0AB5ad7e8C5F2bf6Ce75C34e187af8b920A';
+const MOCK_ADDRESS_2 = '0x519d2CE57898513F676a5C3b66496c3C394c9CC7';
+
+const MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE =
+  createMockAccountsControllerState([MOCK_ADDRESS_1, MOCK_ADDRESS_2]);
+
+const MOCK_ACCOUNTS_CONTROLLER_STATE_WITH_ONE_ACCOUNT =
+  createMockAccountsControllerState([MOCK_ADDRESS_1]);
 
 jest.mock('../../../core/Analytics/MetaMetrics');
 // Need to mock this module since it uses store.getState, which interferes with the mocks from this test file.
@@ -24,9 +34,7 @@ jest.mock('../../../store', () => {
     },
     engine: {
       backgroundState: {
-        PreferencesController: {
-          identities: { '0x1': true, '0x2': true },
-        },
+        AccountsController: MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE,
       },
     },
   }));
@@ -51,9 +59,7 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true, '0x2': true },
-          },
+          AccountsController: MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE,
         },
       },
     }));
@@ -84,9 +90,7 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true, '0x2': true },
-          },
+          AccountsController: MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE,
         },
       },
     }));
@@ -117,9 +121,7 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true, '0x2': true },
-          },
+          AccountsController: MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE,
         },
       },
     }));
@@ -150,9 +152,7 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true },
-          },
+          AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE_WITH_ONE_ACCOUNT,
         },
       },
     }));
@@ -183,9 +183,7 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true },
-          },
+          AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE_WITH_ONE_ACCOUNT,
         },
       },
     }));

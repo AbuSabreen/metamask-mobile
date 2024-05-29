@@ -44,12 +44,6 @@ const mockInitialState = {
       AccountsController: {
         ...MOCK_ACCOUNTS_CONTROLLER_STATE,
       },
-      PreferencesController: {
-        selectedAddress: MOCK_ADDRESS,
-        identities: {
-          [MOCK_ADDRESS]: { name: 'Account 1', address: MOCK_ADDRESS },
-        },
-      },
     },
   },
 };
