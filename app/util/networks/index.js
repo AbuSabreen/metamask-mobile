@@ -82,15 +82,6 @@ export const NetworkList = {
     networkType: 'sepolia',
     imageSource: sepoliaLogo,
   },
-  [LINEA_GOERLI]: {
-    name: 'Linea Goerli Test Network',
-    shortName: 'Linea Goerli',
-    networkId: 59140,
-    chainId: toHex('59140'),
-    color: '#61dfff',
-    networkType: 'linea-goerli',
-    imageSource: lineaTestnetLogo,
-  },
   [LINEA_SEPOLIA]: {
     name: 'Linea Sepolia',
     shortName: 'Linea Sepolia',
