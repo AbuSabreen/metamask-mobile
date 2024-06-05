@@ -3,6 +3,7 @@ import { selectChainId } from '../../selectors/networkController';
 import {
   selectAllNftContracts,
   selectAllNfts,
+  selectIsNftFetchingInProgress,
 } from '../../selectors/nftController';
 import { selectSelectedAddress } from '../../selectors/preferencesController';
 import { compareTokenIds } from '../../util/tokens';
@@ -22,6 +23,14 @@ export const collectiblesSelector = createSelector(
   selectChainId,
   selectAllNfts,
   (address, chainId, allNfts) => allNfts[address]?.[chainId] || [],
+);
+
+export const isNftFetchingInProgressSelector = createSelector(
+  selectSelectedAddress,
+  selectChainId,
+  selectIsNftFetchingInProgress,
+  (address, chainId, isNftFetchingInProgress) =>
+    isNftFetchingInProgress[address]?.[chainId],
 );
 
 export const favoritesCollectiblesSelector = createSelector(

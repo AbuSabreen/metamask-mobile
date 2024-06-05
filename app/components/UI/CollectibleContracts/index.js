@@ -8,6 +8,7 @@ import {
   Platform,
   FlatList,
   RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { connect } from 'react-redux';
 import { fontStyles } from '../../../styles/common';
@@ -19,6 +20,7 @@ import {
   collectibleContractsSelector,
   collectiblesSelector,
   favoritesCollectiblesSelector,
+  isNftFetchingInProgressSelector,
 } from '../../../reducers/collectibles';
 import { removeFavoriteCollectible } from '../../../actions/collectibles';
 import Text from '../../Base/Text';
@@ -86,6 +88,9 @@ const createStyles = (colors) =>
       marginBottom: 8,
       fontSize: 14,
     },
+    spinner: {
+      marginBottom: 8,
+    },
   });
 
 /**
@@ -99,6 +104,7 @@ const CollectibleContracts = ({
   navigation,
   collectibleContracts,
   collectibles: allCollectibles,
+  isNftFetchingInProgress,
   favoriteCollectibles,
   removeFavoriteCollectible,
   useNftDetection,
@@ -244,6 +250,10 @@ const CollectibleContracts = ({
   const renderFooter = useCallback(
     () => (
       <View style={styles.footer} key={'collectible-contracts-footer'}>
+        {isNftFetchingInProgress.isFetchingInProgress ? (
+          <ActivityIndicator size="large" style={styles.spinner} />
+        ) : null}
+
         <Text style={styles.emptyText}>
           {strings('wallet.no_collectibles')}
         </Text>
@@ -258,7 +268,7 @@ const CollectibleContracts = ({
         </TouchableOpacity>
       </View>
     ),
-    [goToAddCollectible, isAddNFTEnabled, styles],
+    [goToAddCollectible, isAddNFTEnabled, styles, isNftFetchingInProgress],
   );
 
   const renderCollectibleContract = useCallback(
@@ -422,6 +432,11 @@ CollectibleContracts.propTypes = {
    */
   navigation: PropTypes.object,
   /**
+   * NftFetching object to indicate if
+   * we are still fetching nfts in the background.
+   */
+  isNftFetchingInProgress: PropTypes.object,
+  /**
    * Object of collectibles
    */
   favoriteCollectibles: PropTypes.array,
@@ -450,6 +465,7 @@ const mapStateToProps = (state) => ({
   useNftDetection: selectUseNftDetection(state),
   collectibleContracts: collectibleContractsSelector(state),
   collectibles: collectiblesSelector(state),
+  isNftFetchingInProgress: isNftFetchingInProgressSelector(state),
   favoriteCollectibles: favoritesCollectiblesSelector(state),
   isIpfsGatewayEnabled: selectIsIpfsGatewayEnabled(state),
   displayNftMedia: selectDisplayNftMedia(state),

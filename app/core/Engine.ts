@@ -445,7 +445,7 @@ class Engine {
         ipfsGateway: AppConstants.IPFS_DEFAULT_GATEWAY_URL,
         useTokenDetection:
           initialState?.PreferencesController?.useTokenDetection ?? true,
-        useNftDetection: false,
+        useNftDetection: true, // set this to true to enable nft detection by default to new users
         displayNftMedia: true,
         securityAlertsEnabled: true,
         ...initialState.PreferencesController,
@@ -1187,6 +1187,8 @@ class Engine {
         chainId: networkController.state.providerConfig.chainId,
         getOpenSeaApiKey: () => nftController.openSeaApiKey,
         addNft: nftController.addNft.bind(nftController),
+        updateNftFetchingProgressStatus:
+          nftController.updateNftFetchingProgressStatus.bind(nftController),
         getNftApi: nftController.getNftApi.bind(nftController),
         getNftState: () => nftController.state,
         //@ts-expect-error - Network Controller mismatch version
@@ -1454,7 +1456,6 @@ class Engine {
       AccountTrackerController,
       AssetsContractController,
       TokenDetectionController,
-      NftDetectionController,
       NetworkController,
       TransactionController,
       SwapsController,
@@ -1479,7 +1480,6 @@ class Engine {
     });
     TransactionController.hub.emit('networkChange');
     TokenDetectionController.detectTokens();
-    NftDetectionController.detectNfts();
     AccountTrackerController.refresh();
   }
 
