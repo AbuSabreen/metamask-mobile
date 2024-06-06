@@ -1,4 +1,4 @@
-import { waitFor } from 'detox';
+import { waitFor, log } from 'detox';
 
 /**
  * Class for handling user actions (Gestures)
@@ -60,6 +60,7 @@ class Gestures {
    */
   static async tapWebElement(elementID) {
     const element = await elementID;
+    log.info('element', element);
     await element.tap();
   }
 
