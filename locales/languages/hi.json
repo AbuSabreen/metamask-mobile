@@ -365,17 +365,17 @@
     "title": "प्राप्त करें"
   },
   "experience_enhancer_modal": {
-    "title": "Help us enhance your experience",
-    "paragraph1a": "In addition to ",
-    "paragraph1b": ", we'd like to use data (like information from cookies) to learn how you interact with our marketing communications.",
+    "title": "आपके अनुभव को बेहतर करने में हमारी सहायता करें",
+    "paragraph1a": "के अलावा ",
+    "paragraph1b": ", हम यह जानने के लिए डेटा (जैसे कुकीज़ से जानकारी) का उपयोग करना चाहेंगे कि आप हमारे मार्केटिंग कम्यूनिकेशन्स के साथ कैसे इंटरैक्ट करते हैं।",
     "link": "MetaMetrics",
-    "paragraph2": "This helps us personalize what we share with you, like:",
-    "bullet1": "Latest developments",
-    "bullet2": "Product features",
-    "bullet3": "Other relevant promotional materials",
-    "footer": "Remember, we never sell the data you provide and you can opt out any time.",
-    "accept": "I agree",
-    "cancel": "No thanks"
+    "paragraph2": "इससे हमें आपके साथ साझा की जाने वाली चीज़ों को निजीकृत करने में मदद मिलती है, जैसे:",
+    "bullet1": "लेटेस्ट डेवलप्मेंट्स",
+    "bullet2": "प्रॉडक्ट फीचर्स",
+    "bullet3": "अन्य प्रासंगिक प्रमोशनल सामग्री",
+    "footer": "याद रखें, हम आपके द्वारा प्रदान किया गया डेटा कभी नहीं बेचते हैं और आप किसी भी समय इससे बाहर निकल सकते हैं।",
+    "accept": "मैं सहमत हूं",
+    "cancel": "जी नहीं, धन्यवाद"
   },
   "wallet": {
     "title": "वॉलेट",
@@ -520,7 +520,7 @@
     "description_title": "MetaMask को बेहतर बनाने में हमारी मदद करें",
     "description_content_1": "हम MetaMask को बेहतर बनाने के लिए बुनियादी यूसेज डेटा एकत्र करना चाहेंगे। जान लें कि हम आपके द्वारा यहां उपलब्ध कराया गया डेटा कभी नहीं बेचते हैं।",
     "description_content_2": "जब हम मेट्रिक्स इकट्ठा करते हैं, तो यह हमेशा... रहेगा",
-    "checkbox": "We'll use this data to learn how you interact with our marketing communications. We may share relavent news (like product features).",
+    "checkbox": "हम इस डेटा का उपयोग यह जानने के लिए करेंगे कि आप हमारे मार्केटिंग कम्यूनिकेशन्स के साथ कैसे इंटरैक्ट करते हैं। हम प्रासंगिक समाचार (जैसे प्रॉडक्ट फीचर्स) साझा कर सकते हैं।",
     "action_description_1_prefix": "निजी:",
     "action_description_2_prefix": "सामान्य:",
     "action_description_3_prefix": "वैकल्पिक:",
@@ -671,8 +671,8 @@
     "please_wait": "कृपया प्रतीक्षा करें"
   },
   "data_collection_modal": {
-    "accept": "Okay",
-    "content": "You turned off data collection for our marketing purposes. This only applies to this device. If you use MetaMask on other devices, make sure to opt out there as well."
+    "accept": "ठीक है",
+    "content": "आपने हमारे मार्केटिंग उद्देश्यों के लिए डेटा संग्रहण बंद कर दिया है।  यह केवल इस डिवाइस पर लागू होता है। यदि आप अन्य डिवाइसों पर MetaMask का उपयोग करते हैं, तो वहां भी ऑप्ट आउट करना सुनिश्चित करें।"
   },
   "account_selector": {
     "prev": "पिछला",
@@ -845,9 +845,9 @@
     "clear_history_desc": "ब्राउज किए गए अपने पूरे इतिहास को साफ करने के लिए इस विकल्प को चुनें।",
     "clear_cookies_desc": "अपने ब्राउजर की कुकीज को साफ करने के लिए इस विकल्प को चुनें।",
     "metametrics_title": "MetaMetrics में हिस्सा लें",
-    "metametrics_description": "Allow MetaMetrics to collect basic usage and diagnostics data to improve our product. You can disable MetaMetrics for this device.",
-    "data_collection_title": "Data collection for marketing",
-    "data_collection_description": "We’ll use MetaMetrics to learn how you interact with our marketing communications. We may share relevant news (like product features and other materials).",
+    "metametrics_description": "MetaMetrics को हमारे उत्पाद को बेहतर बनाने के लिए बुनियादी यूसेज और डाएगोनोस्टिक्स डेटा एकत्र करने की अनुमति दें। आप इस डिवाइस के लिए MetaMetrics को बंद कर सकते हैं।",
+    "data_collection_title": "मार्केटिंग के लिए डेटा संग्रह",
+    "data_collection_description": "आप हमारे मार्केटिंग कम्यूनिकेशन्स के साथ कैसे इंटरैक्ट करते हैं, यह जानने के लिए हम MetaMetrics का उपयोग करेंगे। हम प्रासंगिक समाचार (जैसे प्रॉडक्ट फीचर्स और अन्य सामग्री) साझा कर सकते हैं।",
     "batch_balance_requests_title": "बैच खाता बैलेन्स रिक्वेस्ट",
     "batch_balance_requests_description": "हम खातों को बैच करते हैं और तुरंत शेष राशि देखने के लिए Infura से पूछताछ करते हैं। यदि आप इसे बंद कर देते हैं, तो केवल सक्रिय खातों के बारे में पूछताछ की जाएगी। कुछ डीऐप्स वॉलेट कनेक्शन के बिना काम नहीं करेंगे।",
     "third_party_title": "आवक लेन-देन पाएं",
@@ -888,6 +888,13 @@
     "delete": "हटाएँ",
     "network_exists": "यह नेटवर्क पहले से ही जोड़ा जा चुका है।",
     "delete_metrics_title": "मेटामेट्रिक्स डेटा हटाएं",
+    "delete_metrics_description_part_one": "यह आपके वॉलेट से जुड़ा ऐतिहासिक",
+    "delete_metrics_description_part_two": "MetaMetrics",
+    "delete_metrics_description_part_three": "डेटा हटा देगा",
+    "delete_metrics_description_before_delete": "इस डेटा को हटा दिए जाने के बाद आपके वॉलेट और अकाउंट ठीक वैसे ही रहेंगे जैसे वे अभी हैं। इस प्रक्रिया में 30 दिन तक लग सकते हैं। हमारी  देखें",
+    "delete_metrics_description_after_delete_part_one": "आपने यह कार्रवाई इस तिथि को शुरू की",
+    "delete_metrics_description_after_delete_part_two": "। इस प्रक्रिया में 30 दिन तक लग सकते हैं। हमारी",
+    "delete_metrics_description_privacy_policy": "गोपनीयता नीति देखें।",
     "delete_metrics_button": "मेटामेट्रिक्स डेटा हटाएं",
     "check_status_button": "स्थिति जांचें",
     "delete_metrics_confirm_modal_title": "मेटामेट्रिक्स डेटा हटाएं?",
@@ -990,8 +997,11 @@
     "security_alerts": "सुरक्षा एलर्ट",
     "security_alerts_desc": "यह सुविधा स्थानीय रूप से आपके ट्रांसेक्शन और हस्ताक्षर अनुरोधों की समीक्षा करके आपको बुरी नीयत वाली गतिविधि के प्रति एलर्ट करती है। किसी भी अनुरोध को मंजूरी देने से पहले हमेशा पूरी जांच-पड़ताल ज़रूर करें। इस बात की कोई गारंटी नहीं है कि यह सुविधा सभी बुरी नीयत वाली गतिविधि का पता लगा लेगी। इस सुविधा को सक्षम करके आप प्रदाता की उपयोग की शर्तों से सहमत होते हैं।",
     "smart_transactions_opt_in_heading": "स्मार्ट ट्रांसेक्शन",
-    "smart_transactions_opt_in_desc": "अधिक विश्वसनीय और सुरक्षित ट्रांसेक्शन के लिए स्मार्ट ट्रांसेक्शन और ETH मेननेट (mainnet) पर एडजस्टेबल फ़ीस चालू करें।",
-    "smart_transactions_learn_more": "अधिक जानें।"
+    "smart_transactions_opt_in_desc": "Turn on Smart Transactions for more reliable and secure transactions on Ethereum Mainnet.",
+    "smart_transactions_learn_more": "अधिक जानें।",
+    "simulation_details": "Estimate balance changes",
+    "simulation_details_description": "Turn this on to estimate balance changes of transactions before you confirm them. This doesn't guarantee the final outcome of your transactions. ",
+    "simulation_details_learn_more": "Learn more."
   },
   "sdk": {
     "disconnect_title": "सभी साइटों को डिसकनेक्ट करें?",
@@ -1906,11 +1916,11 @@
     "swap_completed": "{{from}} को {{to}} के लिए स्वैप किया गया",
     "sent": "{{address}} पर भेजा गया",
     "received": "{{address}} से प्राप्त हुआ",
-    "nft_sent": "Sent NFT to {{address}}",
-    "erc721_sent": "Sent NFT to {{address}}",
-    "erc1155_sent": "Sent NFT to {{address}}",
-    "erc721_received": "Received NFT from {{address}}",
-    "erc1155_received": "Received NFT from {{address}}",
+    "nft_sent": "NFT को {{address}} पर भेजा गया",
+    "erc721_sent": "NFT को {{address}} पर भेजा गया",
+    "erc1155_sent": "NFT को {{address}} पर भेजा गया",
+    "erc721_received": "NFT को {{address}} से प्राप्त किया गया",
+    "erc1155_received": "NFT को {{address}} से प्राप्त किया गया",
     "received_nft": "NFT को {{address}} से प्राप्त किया गया",
     "pending_title": "लेन-देन सबमिट किया गया",
     "pending_deposit_title": "प्रगति में जमा करें!",
@@ -2585,7 +2595,7 @@
       "header": "उन्नत ट्रांसेक्शन सुरक्षा",
       "description_1": "स्मार्ट ट्रांसेक्शन के साथ उच्च सफलता दर, फ्रंटरनिंग सुरक्षा और बेहतर दृश्यता अनलॉक करें।",
       "description_2": "केवल Ethereum पर उपलब्ध है। सेटिंग्स में किसी भी समय चालू करें या बंद करें।",
-      "secondary_button": "उन्नत सुरक्षा चालू न करें",
+      "secondary_button": "Manage in settings",
       "primary_button": "चालू करें",
       "learn_more": "अधिक जानें।",
       "benefit_1_1": "99.5% सफलता",
@@ -3025,7 +3035,8 @@
     "manage_networks": "नेटवर्क मैनेज करें",
     "manage_networks_body": "हम अपने रिमोट प्रोसीजर कॉल (RPC) प्रोवाइडर के रूप में Infura का इस्तेमाल करते हैं ताकि हम Ethereum डेटा तक सबसे विश्वसनीय और निजी ऐक्सेस प्रदान कर सकें। आप अपना स्वयं का RPC चुन सकते हैं, लेकिन याद रखें कि ट्रांसेक्शन करने के लिए कोई भी RPC आपका IP एड्रेस और Ethereum वॉलेट प्राप्त करेगा। ",
     "manage_networks_body2": " Infura डेटा को कैसे मैनेज करता है, इस बारे में अधिक जानने के लिए हमारी पढ़ें।",
-    "functionality_body": "इसमें टोकन डेटा और मूल्य, ऑप्टीमल गैस सेटिंग्स, सिक्योरिटी अपडेट और बहुत कुछ शामिल है। इन सेवाओं का उपयोग करने से आपका आईपी ​​एड्रेस MetaMask के साथ शेयर हो जाता है, ठीक उसी तरह जब आप किसी वेबसाइट पर जाते हैं।",
+    "functionality_body": "MetaMask offers basic features like token details and gas settings through internet services. When you use internet services, your IP address is shared, in this case with MetaMask. This is just like when you visit any website. MetaMask uses this data temporarily and never sells your data. You can use a VPN or turn off these services, but it may affect your MetaMask experience. Read our ",
+    "functionality_body2": " to learn more.",
     "sheet": {
       "title_off": "बेसिक फंक्शनलिटी को बंद करें",
       "description_off": "इसका मतलब यह है कि आप MetaMask पर अपना समय सबसे अच्छे तरीके से इस्तेमाल नहीं कर पाएंगे। बेसिक फीचर्स (जैसे, टोकन विवरण, ऑप्टीमल गैस सेटिंग्स और अन्य) आपके लिए उपलब्ध नहीं होंगे।",
@@ -3038,5 +3049,16 @@
         "turn_off": "बंद करें"
       }
     }
+  },
+  "simulation_details": {
+    "failed": "There was an error loading your estimation.",
+    "fiat_not_available": "Not Available",
+    "incoming_heading": "You receive",
+    "no_balance_changes": "No changes predicted for your wallet",
+    "outgoing_heading": "You send",
+    "reverted": "This transaction is likely to fail",
+    "title": "Estimated changes",
+    "tooltip_description": "Estimated changes are what might happen if you go through with this transaction. This is just a prediction, not a guarantee.",
+    "total_fiat": "Total = {{currency}}"
   }
 }

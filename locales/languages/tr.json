@@ -365,17 +365,17 @@
     "title": "Al"
   },
   "experience_enhancer_modal": {
-    "title": "Help us enhance your experience",
-    "paragraph1a": "In addition to ",
-    "paragraph1b": ", we'd like to use data (like information from cookies) to learn how you interact with our marketing communications.",
+    "title": "Deneyiminizi iyileştirmemize yardımcı olun",
+    "paragraph1a": "Biz ",
+    "paragraph1b": "dışında verileri (çerezlerden alınan bilgiler gibi) pazarlama iletişimlerimizle nasıl etkileşimde bulunduğunuzu öğrenmek amacıyla kullanırız.",
     "link": "MetaMetrics",
-    "paragraph2": "This helps us personalize what we share with you, like:",
-    "bullet1": "Latest developments",
-    "bullet2": "Product features",
-    "bullet3": "Other relevant promotional materials",
-    "footer": "Remember, we never sell the data you provide and you can opt out any time.",
-    "accept": "I agree",
-    "cancel": "No thanks"
+    "paragraph2": "Sizinle örneğin şunlar gibi neleri paylaşacağımızı kişiselleştirebilmemize yardımcı olur:",
+    "bullet1": "En yeni gelişmeler",
+    "bullet2": "Ürün özellikleri",
+    "bullet3": "İlgili diğer promosyon materyalleri",
+    "footer": "Unutmayın, sunduğunuz verileri hiçbir zaman satmayız ve dilediğiniz zaman tercihinizi değiştirebilirsiniz.",
+    "accept": "Kabul ediyorum",
+    "cancel": "Hayır, istemiyorum"
   },
   "wallet": {
     "title": "Cüzdan",
@@ -520,7 +520,7 @@
     "description_title": "MetaMask'ı iyileştirmemize yardımcı olun",
     "description_content_1": "MetaMask'i iyileştirmek için temel kullanım verilerini toplamak istiyoruz. Burada sunduğunuz verileri asla satmadığımızı bilmenizi isteriz.",
     "description_content_2": "Topladığımız ölçümler her zaman şu şekilde olacaktır...",
-    "checkbox": "We'll use this data to learn how you interact with our marketing communications. We may share relavent news (like product features).",
+    "checkbox": "Bu verileri, pazarlama iletişimlerimizle nasıl etkileşimde bulunduğunuzu öğrenmek için kullanacağız. İlgili haberleri (ürün özellikleri gibi) paylaşabiliriz.",
     "action_description_1_prefix": "Özel:",
     "action_description_2_prefix": "Genel:",
     "action_description_3_prefix": "İsteğe bağlı:",
@@ -671,8 +671,8 @@
     "please_wait": "Lütfen bekleyin"
   },
   "data_collection_modal": {
-    "accept": "Okay",
-    "content": "You turned off data collection for our marketing purposes. This only applies to this device. If you use MetaMask on other devices, make sure to opt out there as well."
+    "accept": "Tamam",
+    "content": "Pazarlama amacıyla veri toplama seçeneğini kapattınız. Bu, sadece bu cihaz için geçerlidir. MetaMask'i başka cihazlarda kullanırsanız orada da vazgeçtiğinizden emin olun."
   },
   "account_selector": {
     "prev": "ÖNCEKİ",
@@ -845,9 +845,9 @@
     "clear_history_desc": "Tüm tarayıcı geçmişini temizlemek için bu seçeneği seçin.",
     "clear_cookies_desc": "Tarayıcının çerezlerini temizlemek için bu seçeneği seçin.",
     "metametrics_title": "MetaMetrics'e katıl",
-    "metametrics_description": "Allow MetaMetrics to collect basic usage and diagnostics data to improve our product. You can disable MetaMetrics for this device.",
-    "data_collection_title": "Data collection for marketing",
-    "data_collection_description": "We’ll use MetaMetrics to learn how you interact with our marketing communications. We may share relevant news (like product features and other materials).",
+    "metametrics_description": "MetaMetrics'in ürünümüzü iyileştirmek için temel kullanım ve tanılama verilerini toplamasına izin verin. Bu cihaz için MetaMetrics'i devre dışı bırakabilirsiniz.",
+    "data_collection_title": "Pazarlama amacıyla veri toplama",
+    "data_collection_description": "MetaMetrics'i, pazarlama iletişimlerimizle nasıl etkileşimde bulunduğunuzu öğrenmek için kullanacağız. İlgili haberleri (ürün özellikleri ve diğer materyaller gibi) paylaşabiliriz.",
     "batch_balance_requests_title": "Toplu hesap bakiyesi talepleri",
     "batch_balance_requests_description": "Hesapları toplarız ve bakiyelerinizi göstermek için Infura'yı sorgularız. Bunu kapattığınız takdirde sadece aktif hesaplar sorgulanır. Bazı merkeziyetsiz uygulamalar siz cüzdanınızı bağlamadığınız sürece çalışmaz.",
     "third_party_title": "Gelen işlemleri al",
@@ -888,6 +888,13 @@
     "delete": "Sil",
     "network_exists": "Bu ağ zaten eklenmiş.",
     "delete_metrics_title": "MetaMetrics verilerini sil",
+    "delete_metrics_description_part_one": "Bu işlem cüzdanınızla ilişkili geçmiş",
+    "delete_metrics_description_part_two": "MetaMetrics",
+    "delete_metrics_description_part_three": "verilerini silecektir.",
+    "delete_metrics_description_before_delete": "Bu veriler silindikten sonra cüzdanınız ve hesaplarınız tam olarak şimdi olduğu gibi kalacaktır. Bu işlem 30 güne kadar sürebilir. Şunu görüntüleyin:",
+    "delete_metrics_description_after_delete_part_one": "Bu eylemi şurada başlattınız:",
+    "delete_metrics_description_after_delete_part_two": ". Bu işlem 30 gün kadar sürebilir. Şunu görüntüleyin:",
+    "delete_metrics_description_privacy_policy": "Gizlilik Politikası.",
     "delete_metrics_button": "MetaMetrics verilerini sil",
     "check_status_button": "Durumu Kontrol Et",
     "delete_metrics_confirm_modal_title": "MetaMetrics verilerini sil?",
@@ -990,8 +997,11 @@
     "security_alerts": "Güvenlik uyarıları",
     "security_alerts_desc": "Bu özellik, işlem ve imza taleplerinizi yerel olarak incelerken gizliliğinizi koruyarak Ethereum Ana Ağındaki kötü amaçlı aktivitelere karşı sizi uyarır. Talepleri onaylamadan önce her zaman gereken özeni kendiniz gösterin. Bu özelliğin tüm kötü amaçlı faaliyetleri algılayacağına dair herhangi bir garanti bulunmamaktadır. Bu özelliği etkinleştirerek sağlayıcının kullanım koşullarını kabul etmiş olursunuz.",
     "smart_transactions_opt_in_heading": "Akıllı İşlemler",
-    "smart_transactions_opt_in_desc": "Daha güvenilir ve güvenli işlemler ile ETH Ana Ağı üzerinde ayarlanabilir ücretler için Akıllı İşlemleri açın.",
-    "smart_transactions_learn_more": "Daha fazla bilgi edinin."
+    "smart_transactions_opt_in_desc": "Turn on Smart Transactions for more reliable and secure transactions on Ethereum Mainnet.",
+    "smart_transactions_learn_more": "Daha fazla bilgi edinin.",
+    "simulation_details": "Estimate balance changes",
+    "simulation_details_description": "Turn this on to estimate balance changes of transactions before you confirm them. This doesn't guarantee the final outcome of your transactions. ",
+    "simulation_details_learn_more": "Learn more."
   },
   "sdk": {
     "disconnect_title": "Tüm sitelerin bağlantısı kesilsin mi?",
@@ -1906,11 +1916,11 @@
     "swap_completed": "{{from}} - {{to}} swap işlemi gerçekleştirildi",
     "sent": "Alıcı: {{address}}",
     "received": "Gönderen: {{address}}",
-    "nft_sent": "Sent NFT to {{address}}",
-    "erc721_sent": "Sent NFT to {{address}}",
-    "erc1155_sent": "Sent NFT to {{address}}",
-    "erc721_received": "Received NFT from {{address}}",
-    "erc1155_received": "Received NFT from {{address}}",
+    "nft_sent": "NFT alıcısı: {{address}}",
+    "erc721_sent": "NFT alıcısı: {{address}}",
+    "erc1155_sent": "NFT alıcısı: {{address}}",
+    "erc721_received": "NFT gönderen: {{address}}",
+    "erc1155_received": "NFT gönderen: {{address}}",
     "received_nft": "NFT gönderen: {{address}}",
     "pending_title": "İşlem gönderildi",
     "pending_deposit_title": "Para yatırma işlemi sürüyor!",
@@ -2585,7 +2595,7 @@
       "header": "İyileştirilmiş İşlem Koruması",
       "description_1": "Akıllı İşlemler ile daha yüksek başarı oranlarının, arkadan çalıştırma korumasının ve daha iyi görünürlüğün kilidini açın.",
       "description_2": "Sadece Ethereum'da mevcuttur. Dilediğiniz zaman ayarlar kısmında etkinleştirin veya devre dışı bırakın.",
-      "secondary_button": "İyileştirilmiş korumayı etkinleştirme",
+      "secondary_button": "Manage in settings",
       "primary_button": "Etkinleştir",
       "learn_more": "Daha fazla bilgi edinin.",
       "benefit_1_1": "%99,5 başarı oranı",
@@ -3025,7 +3035,8 @@
     "manage_networks": "Ağları yönet",
     "manage_networks_body": "Ethereum verilerine mümkün olan en güvenilir ve gizli erişimi sunmak amacıyla uzak yordam çağrısı (RPC) sağlayıcısı olarak Infura kullanırız. Kendi RPC'nizi seçebilirsiniz ancak tüm RPC'lerin işlemleri gerçekleştirmek için IP adresinizi ve Ethereum cüzdanınızı alacağını unutmayın. Infura'nın verileri nasıl kullandığı hakkında daha fazla bilgi edinmek için ",
     "manage_networks_body2": " $1 bölümümüzü okuyun.",
-    "functionality_body": "Token verileri ve değeri, en iyi gaz ayarları, güvenlik güncellemeleri ve daha fazlasını içerir. Bu hizmetleri kullanırken tıpkı bir web sitesini ziyaret ederken olduğu gibi IP adresiniz MetaMask ile paylaşılır.",
+    "functionality_body": "MetaMask offers basic features like token details and gas settings through internet services. When you use internet services, your IP address is shared, in this case with MetaMask. This is just like when you visit any website. MetaMask uses this data temporarily and never sells your data. You can use a VPN or turn off these services, but it may affect your MetaMask experience. Read our ",
+    "functionality_body2": " to learn more.",
     "sheet": {
       "title_off": "Temel işlevselliği kapat",
       "description_off": "Bu, MetaMask'te zamanınızı tamamen optimize edemeyeceğiniz anlamına gelir. Temel özellikler (token bilgileri, en iyi gaz ayarları vb. gibi) sizin için sunulmayacaktır.",
@@ -3038,5 +3049,16 @@
         "turn_off": "Kapat"
       }
     }
+  },
+  "simulation_details": {
+    "failed": "There was an error loading your estimation.",
+    "fiat_not_available": "Not Available",
+    "incoming_heading": "You receive",
+    "no_balance_changes": "No changes predicted for your wallet",
+    "outgoing_heading": "You send",
+    "reverted": "This transaction is likely to fail",
+    "title": "Estimated changes",
+    "tooltip_description": "Estimated changes are what might happen if you go through with this transaction. This is just a prediction, not a guarantee.",
+    "total_fiat": "Total = {{currency}}"
   }
 }

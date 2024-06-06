@@ -365,17 +365,17 @@
     "title": "Tumanggap"
   },
   "experience_enhancer_modal": {
-    "title": "Help us enhance your experience",
-    "paragraph1a": "In addition to ",
-    "paragraph1b": ", we'd like to use data (like information from cookies) to learn how you interact with our marketing communications.",
+    "title": "Tulungan kami na paghusayin ang iyong karanasan",
+    "paragraph1a": "Dagdag pa sa ",
+    "paragraph1b": ", nais naming gamitin ang data (tulad ng impormasyon mula sa mga cookie) upang matutunan kung paano ka nakikipag-ugnayan sa aming mga komunikasyon sa marketing.",
     "link": "MetaMetrics",
-    "paragraph2": "This helps us personalize what we share with you, like:",
-    "bullet1": "Latest developments",
-    "bullet2": "Product features",
-    "bullet3": "Other relevant promotional materials",
-    "footer": "Remember, we never sell the data you provide and you can opt out any time.",
-    "accept": "I agree",
-    "cancel": "No thanks"
+    "paragraph2": "Nakakatulong itong iangkop ang aming ibinabahagi sa iyo, tulad ng:",
+    "bullet1": "Pinakabagong mga pagpapaunlad",
+    "bullet2": "Mga tampok ng produkto",
+    "bullet3": "Iba pang kaugnay na mga materyal sa promosyon",
+    "footer": "Tandaan, hindi namin ibebenta ang data na iyong ibibigay at maaari kang mag-opt out anumang oras.",
+    "accept": "Sumasang-ayon ako",
+    "cancel": "Huwag na lang"
   },
   "wallet": {
     "title": "Wallet",
@@ -520,7 +520,7 @@
     "description_title": "Tulungan kaming mapahusay ang MetaMask",
     "description_content_1": "Nais naming mangalap ng data para sa batayang paggamit upang mapahusay ang MetaMask. Dapat mong malaman na hindi namin ibebenta ang data na iyong ibibigay rito.",
     "description_content_2": "Kapag kami ay nangangalap ng metrics, ito ay palaging...",
-    "checkbox": "We'll use this data to learn how you interact with our marketing communications. We may share relavent news (like product features).",
+    "checkbox": "Gagamitin namin ang data na ito upang matutunan paano ka nakikipag-ugnayan sa aming mga komunikasyon sa marketing. Maaari kaming magbahagi ng kaugnay na balita (tulad ng mga tampok ng produkto).",
     "action_description_1_prefix": "Pribado:",
     "action_description_2_prefix": "Pangkalahatan:",
     "action_description_3_prefix": "Opsyonal:",
@@ -672,7 +672,7 @@
   },
   "data_collection_modal": {
     "accept": "Okay",
-    "content": "You turned off data collection for our marketing purposes. This only applies to this device. If you use MetaMask on other devices, make sure to opt out there as well."
+    "content": "In-off mo ang koleksyon ng data para sa layunin sa marketing. Ito ay inilalapat lamang sa device na ito. Kung gumagamit ka ng MetaMask sa ibang mga device, siguraduhing mag-opt out din doon."
   },
   "account_selector": {
     "prev": "NAKARAAN",
@@ -845,9 +845,9 @@
     "clear_history_desc": "Piliin ang opsyong ito para i-clear ang iyong buong history ng pag-browse.",
     "clear_cookies_desc": "Piliin ang opsyong ito para i-clear ang cookies ng iyong browser.",
     "metametrics_title": "Sumali sa MetaMetrics",
-    "metametrics_description": "Allow MetaMetrics to collect basic usage and diagnostics data to improve our product. You can disable MetaMetrics for this device.",
-    "data_collection_title": "Data collection for marketing",
-    "data_collection_description": "We’ll use MetaMetrics to learn how you interact with our marketing communications. We may share relevant news (like product features and other materials).",
+    "metametrics_description": "Payagan ang MetaMetrics upang kolektahin ang batayang paggamit at data sa diagnostics upang mapahusay ang aming produkto. Maaari mong i-disable ang MetaMetrics para sa device na ito.",
+    "data_collection_title": "Koleksyon ng data para sa marketing",
+    "data_collection_description": "Gagamitin namin ang MetaMetrics upang matutunan paano ka nakikipag-ugnayan sa aming mga komunikasyon sa marketing. Maaari kaming magbahagi ng kaugnay na balita (tulad ng mga tampok ng produkto).",
     "batch_balance_requests_title": "Maramihang kahilingan sa balanse ng account",
     "batch_balance_requests_description": "Bina-batch namin ang mga account at nagtatanong sa Infura para maipakita nang mabilis ang iyong mga balanse. Kung io-off mo ito, mga aktibong account lang ang itatanong. Hindi gagana ang ilang dApp maliban kung ikokonekta mo ang iyong wallet.",
     "third_party_title": "Makuha ang mga papasok na transaksyon",
@@ -888,6 +888,13 @@
     "delete": "Tanggalin",
     "network_exists": "Naidagdag na ang network na ito.",
     "delete_metrics_title": "Tanggalin ang data ng MetaMetrics",
+    "delete_metrics_description_part_one": "Buburahin nito ang historikal na",
+    "delete_metrics_description_part_two": "MetaMetrics",
+    "delete_metrics_description_part_three": "data na kaugnay sa iyong wallet.",
+    "delete_metrics_description_before_delete": "Ang iyong wallet at mga account ay mananatiling eksaktong katulad ng kung ano ang mga ito sa ngayon pagkatapos matanggal ang data na ito. Maaaring tumagal nang hanggang 30 araw ang prosesong ito. Tingnan ang aming",
+    "delete_metrics_description_after_delete_part_one": "Sinimulan mo ang aksyon na ito noong",
+    "delete_metrics_description_after_delete_part_two": ". Maaaring tumagal nang hanggang 30 araw ang prosesong ito. Tingnan ang aming",
+    "delete_metrics_description_privacy_policy": "Patakaran sa Pagkapribado.",
     "delete_metrics_button": "Tanggalin ang data ng MetaMetrics",
     "check_status_button": "Tingnan ang Katayuan",
     "delete_metrics_confirm_modal_title": "Tanggalin ang data ng MetaMetrics?",
@@ -990,8 +997,11 @@
     "security_alerts": "Mga alerto sa seguridad",
     "security_alerts_desc": "Inaalertuhan ka ng tampok na ito sa mga aktibidad na may masamang hangarin sa pamamagitan ng lokal na pagsusuri sa iyong mga transaksyon at kahilingan sa paglagda. Palaging gumawa ng sarili mong pag-iingat bago aprubahan ang anumang mga kahilingan. Walang garantiya na made-detect ng tampok na ito ang lahat ng aktibidad na may masamang hangarin. Sa pagpapagana sa tampok na ito, sumasang-ayon ka sa mga tuntunin ng paggamit ng provider.",
     "smart_transactions_opt_in_heading": "Mga Smart Transaction",
-    "smart_transactions_opt_in_desc": "I-on ang mga Smart Transaction para sa mas maaasahan at ligtas na mga transaksyon, at naaayong singil sa ETH Mainnet.",
-    "smart_transactions_learn_more": "Matuto pa."
+    "smart_transactions_opt_in_desc": "Turn on Smart Transactions for more reliable and secure transactions on Ethereum Mainnet.",
+    "smart_transactions_learn_more": "Matuto pa.",
+    "simulation_details": "Estimate balance changes",
+    "simulation_details_description": "Turn this on to estimate balance changes of transactions before you confirm them. This doesn't guarantee the final outcome of your transactions. ",
+    "simulation_details_learn_more": "Learn more."
   },
   "sdk": {
     "disconnect_title": "Idiskonekta ang lahat ng site?",
@@ -1906,11 +1916,11 @@
     "swap_completed": "I-swap ang {{from}} sa {{to}}",
     "sent": "Ipinadala sa {{address}}",
     "received": "Natanggap mula sa {{address}}",
-    "nft_sent": "Sent NFT to {{address}}",
-    "erc721_sent": "Sent NFT to {{address}}",
-    "erc1155_sent": "Sent NFT to {{address}}",
-    "erc721_received": "Received NFT from {{address}}",
-    "erc1155_received": "Received NFT from {{address}}",
+    "nft_sent": "Ipinadala ang NFT sa {{address}}",
+    "erc721_sent": "Ipinadala ang NFT sa {{address}}",
+    "erc1155_sent": "Ipinadala ang NFT sa {{address}}",
+    "erc721_received": "Natanggap ang NFT mula sa {{address}}",
+    "erc1155_received": "Natanggap ang NFT mula sa {{address}}",
     "received_nft": "Natanggap ang NFT mula sa {{address}}",
     "pending_title": "Naisumite ang transaksyon",
     "pending_deposit_title": "Kasalukuyang nagdedeposito!",
@@ -2585,7 +2595,7 @@
       "header": "Pinahusay na Proteksyon sa Transaksyon",
       "description_1": "I-unlock ang mas mataas na tiyansa ng tagumpay, proteksyon sa frontrunning, at mas mahusay na visibility sa mga Smart Transaction.",
       "description_2": "Available lamang sa Ethereum. I-enable o i-disable anumang oras sa mga setting.",
-      "secondary_button": "Huwag i-enable ang pinahusay na proteksyon",
+      "secondary_button": "Manage in settings",
       "primary_button": "I-enable",
       "learn_more": "Matuto pa.",
       "benefit_1_1": "99.5% tagumpay",
@@ -3025,7 +3035,8 @@
     "manage_networks": "Pamahalaan ang mga network",
     "manage_networks_body": "Gumagamit kami ng Infura bilang aming provider ng remote procedure call (RPC) para mag-alok ng pinakamaaasahan at pribadong access sa Ethereum data na aming makakaya. Maaari kang pumili ng iyong sariling RPC, ngunit tandaan na ang anumang RPC ay makakatanggap ng iyong IP address at Ethereum wallet upang gumawa ng mga transaksyon. Basahin ang aming ",
     "manage_networks_body2": " para matuto pa tungkol sa kung paano pinangangasiwaan ng Infura ang data.",
-    "functionality_body": "Kasama ang data at halaga ng token, optimal na settings sa gas, at marami pang iba. Ang paggamit ng mga serbisyong ito ay nagbabahagi ng iyong IP address sa MetaMask, tulad kapag bumisita ka sa isang website.",
+    "functionality_body": "MetaMask offers basic features like token details and gas settings through internet services. When you use internet services, your IP address is shared, in this case with MetaMask. This is just like when you visit any website. MetaMask uses this data temporarily and never sells your data. You can use a VPN or turn off these services, but it may affect your MetaMask experience. Read our ",
+    "functionality_body2": " to learn more.",
     "sheet": {
       "title_off": "I-off ang batayang kapakinabangan",
       "description_off": "Ibig sabihin nito hindi mo lubos na mao-optimize ang iyong oras sa MetaMask. Ang mga batayang tampok (tulad ng mga detalye ng token, optimal na settings ng gas, at iba pa) ay hindi magiging available para sa iyo.",
@@ -3038,5 +3049,16 @@
         "turn_off": "I-off"
       }
     }
+  },
+  "simulation_details": {
+    "failed": "There was an error loading your estimation.",
+    "fiat_not_available": "Not Available",
+    "incoming_heading": "You receive",
+    "no_balance_changes": "No changes predicted for your wallet",
+    "outgoing_heading": "You send",
+    "reverted": "This transaction is likely to fail",
+    "title": "Estimated changes",
+    "tooltip_description": "Estimated changes are what might happen if you go through with this transaction. This is just a prediction, not a guarantee.",
+    "total_fiat": "Total = {{currency}}"
   }
 }

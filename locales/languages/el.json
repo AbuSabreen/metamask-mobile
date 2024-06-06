@@ -365,17 +365,17 @@
     "title": "Λήψη"
   },
   "experience_enhancer_modal": {
-    "title": "Help us enhance your experience",
-    "paragraph1a": "In addition to ",
-    "paragraph1b": ", we'd like to use data (like information from cookies) to learn how you interact with our marketing communications.",
+    "title": "Βοηθήστε μας να βελτιώσουμε την εμπειρία σας",
+    "paragraph1a": "Εκτός από τo ",
+    "paragraph1b": ", θέλουμε να χρησιμοποιήσουμε δεδομένα (όπως πληροφορίες από τα cookies) για να μάθουμε πώς αλληλεπιδράτε με τις επικοινωνίες μάρκετινγκ.",
     "link": "MetaMetrics",
-    "paragraph2": "This helps us personalize what we share with you, like:",
-    "bullet1": "Latest developments",
-    "bullet2": "Product features",
-    "bullet3": "Other relevant promotional materials",
-    "footer": "Remember, we never sell the data you provide and you can opt out any time.",
-    "accept": "I agree",
-    "cancel": "No thanks"
+    "paragraph2": "Αυτό μας βοηθά να εξατομικεύσουμε αυτά που κοινοποιούμε σε εσάς, όπως:",
+    "bullet1": "Τελευταίες εξελίξεις",
+    "bullet2": "Χαρακτηριστικά προϊόντων",
+    "bullet3": "Άλλο σχετικό προωθητικό υλικό",
+    "footer": "Να θυμάστε, δεν πουλάμε ποτέ τα δεδομένα που μας παρέχετε και μπορείτε να εξαιρεθείτε ανά πάσα στιγμή.",
+    "accept": "Συμφωνώ",
+    "cancel": "Όχι, ευχαριστώ"
   },
   "wallet": {
     "title": "Πορτοφόλι",
@@ -520,7 +520,7 @@
     "description_title": "Βοηθήστε μας να βελτιώσουμε το MetaMask",
     "description_content_1": "Θέλουμε να συλλέξουμε βασικά δεδομένα χρήσης για να βελτιώσουμε το MetaMask. Λάβετε υπόψη ότι δεν πουλάμε ποτέ τα δεδομένα που μας παρέχετε εδώ.",
     "description_content_2": "Όταν συγκεντρώνουμε μετρήσεις, θα είναι πάντα...",
-    "checkbox": "We'll use this data to learn how you interact with our marketing communications. We may share relavent news (like product features).",
+    "checkbox": "Θα χρησιμοποιήσουμε αυτά τα δεδομένα για να μάθουμε πώς αλληλεπιδράτε με τις επικοινωνίες μάρκετινγκ. Ενδέχεται να κοινοποιήσουμε σχετικές ειδήσεις (όπως χαρακτηριστικά προϊόντων).",
     "action_description_1_prefix": "Ιδιωτικές:",
     "action_description_2_prefix": "Γενικές:",
     "action_description_3_prefix": "Προαιρετικές:",
@@ -671,8 +671,8 @@
     "please_wait": "Παρακαλούμε περιμένετε"
   },
   "data_collection_modal": {
-    "accept": "Okay",
-    "content": "You turned off data collection for our marketing purposes. This only applies to this device. If you use MetaMask on other devices, make sure to opt out there as well."
+    "accept": "Εντάξει",
+    "content": "Έχετε απενεργοποιήσει τη συλλογή δεδομένων για σκοπούς μάρκετινγκ. Αυτό ισχύει μόνο για αυτή τη συσκευή. Εάν χρησιμοποιείτε το MetaMask και σε άλλες συσκευές, βεβαιωθείτε ότι έχετε επιλέξει την απενεργοποίηση."
   },
   "account_selector": {
     "prev": "ΠΡΟΗΓΟΥΜΕΝΟ",
@@ -845,9 +845,9 @@
     "clear_history_desc": "Επιλέξτε αυτή την επιλογή για να διαγράψετε ολόκληρο το ιστορικό περιήγησής σας.",
     "clear_cookies_desc": "Επιλέξτε αυτή την επιλογή για να διαγράψετε τα cookies από το πρόγραμμα περιήγησής σας.",
     "metametrics_title": "Πάρτε μέρος στα MetaMetrics",
-    "metametrics_description": "Allow MetaMetrics to collect basic usage and diagnostics data to improve our product. You can disable MetaMetrics for this device.",
-    "data_collection_title": "Data collection for marketing",
-    "data_collection_description": "We’ll use MetaMetrics to learn how you interact with our marketing communications. We may share relevant news (like product features and other materials).",
+    "metametrics_description": "Επιτρέψτε στο MetaMetrics να συλλέγει βασικά δεδομένα χρήσης και διάγνωσης για τη βελτίωση των προϊόντων μας. Μπορείτε να απενεργοποιήσετε το MetaMetrics για αυτή τη συσκευή.",
+    "data_collection_title": "Συγκέντρωση δεδομένων για μάρκετινγκ",
+    "data_collection_description": "Θα χρησιμοποιήσουμε το MetaMetrics για να μάθουμε πώς αλληλεπιδράτε με τις επικοινωνίες μάρκετινγκ. Ενδέχεται να κοινοποιήσουμε σχετικές ειδήσεις (όπως χαρακτηριστικά προϊόντων και άλλο υλικό).",
     "batch_balance_requests_title": "Αιτήματα υπολοίπου μαζικών λογαριασμών",
     "batch_balance_requests_description": "Συγκεντρώνουμε τους λογαριασμούς και ζητάμε από την Infura να εμφανίσει τα υπόλοιπά σας. Αν το απενεργοποιήσετε αυτό, θα ερωτηθούν μόνο οι ενεργοί λογαριασμοί. Ορισμένες αποκεντρωμένες εφαρμογές δεν θα λειτουργούν, αν δεν συνδέσετε το πορτοφόλι σας.",
     "third_party_title": "Λήψη εισερχόμενων συναλλαγών",
@@ -888,6 +888,13 @@
     "delete": "Διαγραφή",
     "network_exists": "Αυτό το δίκτυο έχει ήδη προστεθεί.",
     "delete_metrics_title": "Διαγραφή δεδομένων MetaMetrics",
+    "delete_metrics_description_part_one": "Αυτό θα διαγράψει τα ιστορικά δεδομένα",
+    "delete_metrics_description_part_two": "από το MetaMetrics",
+    "delete_metrics_description_part_three": "που σχετίζονται με το πορτοφόλι σας.",
+    "delete_metrics_description_before_delete": "Το πορτοφόλι και οι λογαριασμοί σας θα παραμείνουν ακριβώς όπως είναι τώρα μετά τη διαγραφή αυτών των δεδομένων. Αυτή η διαδικασία μπορεί να διαρκέσει έως και 30 ημέρες. Δείτε την",
+    "delete_metrics_description_after_delete_part_one": "Ξεκινήσατε την ενέργεια αυτή στις",
+    "delete_metrics_description_after_delete_part_two": ". Η διαδικασία αυτή μπορεί να διαρκέσει έως και 30 ημέρες. Δείτε την",
+    "delete_metrics_description_privacy_policy": "Πολιτική Απορρήτου.",
     "delete_metrics_button": "Διαγραφή δεδομένων MetaMetrics",
     "check_status_button": "Έλεγχος Κατάστασης",
     "delete_metrics_confirm_modal_title": "Διαγραφή δεδομένων MetaMetrics;",
@@ -990,8 +997,11 @@
     "security_alerts": "Ειδοποιήσεις ασφαλείας",
     "security_alerts_desc": "Αυτή η λειτουργία σας προειδοποιεί για κακόβουλη δραστηριότητα, καθώς ελέγχει τοπικά τα αιτήματα συναλλαγών και υπογραφών σας. Πάντα να κάνετε τη δική σας επιμελή έρευνα προτού εγκρίνετε οποιαδήποτε αιτήματα. Δεν υπάρχει καμία εγγύηση ότι αυτή η λειτουργία θα εντοπίσει όλες τις κακόβουλες δραστηριότητες. Ενεργοποιώντας αυτή τη λειτουργία, συμφωνείτε με τους όρους χρήσης του παρόχου.",
     "smart_transactions_opt_in_heading": "Έξυπνες Συναλλαγές",
-    "smart_transactions_opt_in_desc": "Ενεργοποιήστε τις έξυπνες συναλλαγές για πιο αξιόπιστες και ασφαλείς συναλλαγές και ρυθμιζόμενες χρεώσεις στο ETH Mainnet.",
-    "smart_transactions_learn_more": "Μάθετε περισσότερα."
+    "smart_transactions_opt_in_desc": "Turn on Smart Transactions for more reliable and secure transactions on Ethereum Mainnet.",
+    "smart_transactions_learn_more": "Μάθετε περισσότερα.",
+    "simulation_details": "Estimate balance changes",
+    "simulation_details_description": "Turn this on to estimate balance changes of transactions before you confirm them. This doesn't guarantee the final outcome of your transactions. ",
+    "simulation_details_learn_more": "Learn more."
   },
   "sdk": {
     "disconnect_title": "Αποσύνδεση όλων των ιστότοπων;",
@@ -1906,11 +1916,11 @@
     "swap_completed": "Ανταλλαγή {{from}} για {{to}}",
     "sent": "Στάλθηκε σε {{address}}",
     "received": "Ελήφθη από {{address}}",
-    "nft_sent": "Sent NFT to {{address}}",
-    "erc721_sent": "Sent NFT to {{address}}",
-    "erc1155_sent": "Sent NFT to {{address}}",
-    "erc721_received": "Received NFT from {{address}}",
-    "erc1155_received": "Received NFT from {{address}}",
+    "nft_sent": "Αποστολή NFT σε {{address}}",
+    "erc721_sent": "Αποστολή NFT σε {{address}}",
+    "erc1155_sent": "Αποστολή NFT σε {{address}}",
+    "erc721_received": "Ελήφθησαν NFT από {{address}}",
+    "erc1155_received": "Ελήφθησαν NFT από {{address}}",
     "received_nft": "Ελήφθη NFT από {{address}}",
     "pending_title": "Η συναλλαγή υποβλήθηκε",
     "pending_deposit_title": "Κατάθεση σε εξέλιξη!",
@@ -2585,7 +2595,7 @@
       "header": "Ενισχυμένη Προστασία Συναλλαγών",
       "description_1": "Ξεκλειδώστε υψηλότερα ποσοστά επιτυχίας, προστασία εκ των προτέρων και καλύτερη ορατότητα με τις Έξυπνες Συναλλαγές.",
       "description_2": "Διατίθεται μόνο στο Ethereum. Ενεργοποίηση ή απενεργοποίηση ανά πάσα στιγμή στις ρυθμίσεις.",
-      "secondary_button": "Μην ενεργοποιήσετε την ενισχυμένη προστασία",
+      "secondary_button": "Manage in settings",
       "primary_button": "Ενεργοποίηση",
       "learn_more": "Μάθετε περισσότερα.",
       "benefit_1_1": "99,5% ποσοστό",
@@ -3025,7 +3035,8 @@
     "manage_networks": "Διαχείριση δικτύων",
     "manage_networks_body": "Χρησιμοποιούμε το Infura ως πάροχο κλήσεων απομακρυσμένης διαδικασίας (RPC) για να προσφέρουμε την πιο αξιόπιστη και ιδιωτική πρόσβαση στα δεδομένα του Ethereum που διαθέτουμε. Μπορείτε να επιλέξετε το δικό σας RPC, αλλά να θυμάστε ότι οποιοδήποτε RPC θα λαμβάνει τη διεύθυνση IP και το πορτοφόλι σας στο Ethereum για να πραγματοποιεί συναλλαγές. Διαβάστε το ",
     "manage_networks_body2": " για να μάθετε περισσότερα σχετικά με τον τρόπο με τον οποίο η Infura χειρίζεται τα δεδομένα.",
-    "functionality_body": "Περιλαμβάνει δεδομένα και αξίες των tokens, βέλτιστες ρυθμίσεις τελών συναλλαγών, ενημερώσεις ασφαλείας και πολλά άλλα. Χρησιμοποιώντας αυτές τις υπηρεσίες, κοινοποιείτε τη διεύθυνση IP σας στο MetaMask, όπως ακριβώς όταν επισκέπτεστε έναν ιστότοπο.",
+    "functionality_body": "MetaMask offers basic features like token details and gas settings through internet services. When you use internet services, your IP address is shared, in this case with MetaMask. This is just like when you visit any website. MetaMask uses this data temporarily and never sells your data. You can use a VPN or turn off these services, but it may affect your MetaMask experience. Read our ",
+    "functionality_body2": " to learn more.",
     "sheet": {
       "title_off": "Απενεργοποίηση βασικών λειτουργιών",
       "description_off": "Αυτό σημαίνει ότι δεν θα βελτιστοποιήσετε πλήρως το χρόνο σας στο MetaMask. Βασικές λειτουργίες (όπως λεπτομέρειες των tokens, βέλτιστες ρυθμίσεις τελών συναλλαγών και άλλα) δεν θα είναι διαθέσιμες σε εσάς.",
@@ -3038,5 +3049,16 @@
         "turn_off": "Απενεργοποίηση"
       }
     }
+  },
+  "simulation_details": {
+    "failed": "There was an error loading your estimation.",
+    "fiat_not_available": "Not Available",
+    "incoming_heading": "You receive",
+    "no_balance_changes": "No changes predicted for your wallet",
+    "outgoing_heading": "You send",
+    "reverted": "This transaction is likely to fail",
+    "title": "Estimated changes",
+    "tooltip_description": "Estimated changes are what might happen if you go through with this transaction. This is just a prediction, not a guarantee.",
+    "total_fiat": "Total = {{currency}}"
   }
 }

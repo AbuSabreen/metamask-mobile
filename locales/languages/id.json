@@ -365,17 +365,17 @@
     "title": "Terima"
   },
   "experience_enhancer_modal": {
-    "title": "Help us enhance your experience",
-    "paragraph1a": "In addition to ",
-    "paragraph1b": ", we'd like to use data (like information from cookies) to learn how you interact with our marketing communications.",
+    "title": "Bantu kami meningkatkan pengalaman Anda",
+    "paragraph1a": "Sebagai tambahan ",
+    "paragraph1b": ", kami ingin menggunakan data (seperti informasi dari cookie) untuk mempelajari cara Anda berinteraksi dengan komunikasi pemasaran kami.",
     "link": "MetaMetrics",
-    "paragraph2": "This helps us personalize what we share with you, like:",
-    "bullet1": "Latest developments",
-    "bullet2": "Product features",
-    "bullet3": "Other relevant promotional materials",
-    "footer": "Remember, we never sell the data you provide and you can opt out any time.",
-    "accept": "I agree",
-    "cancel": "No thanks"
+    "paragraph2": "Ini membantu kami mempersonalisasi hal yang kami bagikan kepada Anda, seperti:",
+    "bullet1": "Perkembangan terkini",
+    "bullet2": "Fitur produk",
+    "bullet3": "Materi promosi lain yang relevan",
+    "footer": "Ingat, kami tidak pernah menjual data yang Anda berikan dan Anda dapat memilih untuk keluar setiap saat.",
+    "accept": "Saya setuju",
+    "cancel": "Tidak, terima kasih"
   },
   "wallet": {
     "title": "Dompet",
@@ -520,7 +520,7 @@
     "description_title": "Bantu kami meningkatkan MetaMask",
     "description_content_1": "Kami ingin mengumpulkan data penggunaan dasar untuk meningkatkan MetaMask. Pahami bahwa kami tidak pernah menjual data yang Anda berikan di sini.",
     "description_content_2": "Saat kami mengumpulkan metrik, maka akan selalu...",
-    "checkbox": "We'll use this data to learn how you interact with our marketing communications. We may share relavent news (like product features).",
+    "checkbox": "Kami akan menggunakan data ini untuk mempelajari cara Anda berinteraksi dengan komunikasi pemasaran kami. Kami mungkin akan membagikan berita terkait (seperti fitur produk).",
     "action_description_1_prefix": "Pribadi:",
     "action_description_2_prefix": "Umum:",
     "action_description_3_prefix": "Opsional:",
@@ -671,8 +671,8 @@
     "please_wait": "Harap tunggu"
   },
   "data_collection_modal": {
-    "accept": "Okay",
-    "content": "You turned off data collection for our marketing purposes. This only applies to this device. If you use MetaMask on other devices, make sure to opt out there as well."
+    "accept": "Oke",
+    "content": "Anda menonaktifkan pengumpulan data untuk tujuan pemasaran kami. Ini hanya berlaku untuk perangkat ini. Jika Anda menggunakan MetaMask di perangkat lain, pastikan untuk keluar terlebih dahulu."
   },
   "account_selector": {
     "prev": "SEBELUMNYA",
@@ -845,9 +845,9 @@
     "clear_history_desc": "Pilih opsi ini untuk menghapus seluruh riwayat penelusuran Anda.",
     "clear_cookies_desc": "Pilih opsi ini untuk menghapus cookie browser Anda.",
     "metametrics_title": "Berpartisipasi dalam MetaMetrics",
-    "metametrics_description": "Allow MetaMetrics to collect basic usage and diagnostics data to improve our product. You can disable MetaMetrics for this device.",
-    "data_collection_title": "Data collection for marketing",
-    "data_collection_description": "We’ll use MetaMetrics to learn how you interact with our marketing communications. We may share relevant news (like product features and other materials).",
+    "metametrics_description": "Izinkan MetaMetrics mengumpulkan data penggunaan dasar dan diagnostik untuk meningkatkan produk kami. Anda dapat menonaktifkan MetaMetrics untuk perangkat ini.",
+    "data_collection_title": "Pengumpulan data untuk pemasaran",
+    "data_collection_description": "Kami akan menggunakan MetaMetrics untuk mempelajari cara Anda berinteraksi dengan komunikasi pemasaran kami. Kami mungkin akan membagikan berita yang relevan (seperti fitur produk dan materi lainnya).",
     "batch_balance_requests_title": "Kelompokkan permintaan saldo akun",
     "batch_balance_requests_description": "Kami mengelompokkan akun dan meminta Infura untuk menunjukkan saldo Anda secara responsif. Jika Anda menonaktifkannya, hanya akun aktif yang akan diminta. Beberapa aplikasi terdesentralisasi (dApp) tidak akan berfungsi kecuali dompet Anda terhubung.",
     "third_party_title": "Dapatkan transaksi masuk",
@@ -888,6 +888,13 @@
     "delete": "Hapus",
     "network_exists": "Jaringan ini telah ditambahkan.",
     "delete_metrics_title": "Hapus data MetaMetrics",
+    "delete_metrics_description_part_one": "Ini akan menghapus riwayat",
+    "delete_metrics_description_part_two": "MetaMetrics",
+    "delete_metrics_description_part_three": "data yang terhubung dengan dompet Anda.",
+    "delete_metrics_description_before_delete": "Dompet dan akun Anda akan tetap sama seperti sekarang setelah data ini dihapus. Proses ini dapat memerlukan waktu hingga 30 hari. Lihat",
+    "delete_metrics_description_after_delete_part_one": "Anda memulai tindakan ini pada",
+    "delete_metrics_description_after_delete_part_two": ". Proses ini bisa memerlukan waktu hingga 30 hari. Lihat",
+    "delete_metrics_description_privacy_policy": "Kebijakan Privasi.",
     "delete_metrics_button": "Hapus data MetaMetrics",
     "check_status_button": "Periksa Status",
     "delete_metrics_confirm_modal_title": "Hapus data MetaMetrics?",
@@ -990,8 +997,11 @@
     "security_alerts": "Peringatan keamanan",
     "security_alerts_desc": "Fitur ini memperingatkan Anda tentang aktivitas berbahaya dengan meninjau permintaan transaksi dan tanda tangan secara lokal. Selalu lakukan uji tuntas sendiri sebelum menyetujui permintaan. Tidak ada jaminan bahwa fitur ini akan mendeteksi semua aktivitas berbahaya. Dengan mengaktifkan fitur ini, Anda menyetujui persyaratan penggunaan penyedia.",
     "smart_transactions_opt_in_heading": "Transaksi Pintar",
-    "smart_transactions_opt_in_desc": "Aktifkan Transaksi Pintar untuk transaksi yang lebih andal dan aman, serta biaya yang dapat disesuaikan di ETH Mainnet.",
-    "smart_transactions_learn_more": "Selengkapnya."
+    "smart_transactions_opt_in_desc": "Turn on Smart Transactions for more reliable and secure transactions on Ethereum Mainnet.",
+    "smart_transactions_learn_more": "Selengkapnya.",
+    "simulation_details": "Estimate balance changes",
+    "simulation_details_description": "Turn this on to estimate balance changes of transactions before you confirm them. This doesn't guarantee the final outcome of your transactions. ",
+    "simulation_details_learn_more": "Learn more."
   },
   "sdk": {
     "disconnect_title": "Putuskan koneksi semua situs?",
@@ -1906,11 +1916,11 @@
     "swap_completed": "Swap {{from}} dengan {{to}}",
     "sent": "Dikirim ke {{address}}",
     "received": "Diterima dari {{address}}",
-    "nft_sent": "Sent NFT to {{address}}",
-    "erc721_sent": "Sent NFT to {{address}}",
-    "erc1155_sent": "Sent NFT to {{address}}",
-    "erc721_received": "Received NFT from {{address}}",
-    "erc1155_received": "Received NFT from {{address}}",
+    "nft_sent": "Mengirim NFT ke {{address}}",
+    "erc721_sent": "Mengirim NFT ke {{address}}",
+    "erc1155_sent": "Mengirim NFT ke {{address}}",
+    "erc721_received": "Menerima NFT dari {{address}}",
+    "erc1155_received": "Menerima NFT dari {{address}}",
     "received_nft": "Menerima NFT dari {{address}}",
     "pending_title": "Transaksi dikirim",
     "pending_deposit_title": "Deposit sedang diproses!",
@@ -2585,7 +2595,7 @@
       "header": "Peningkatan Perlindungan Transaksi",
       "description_1": "Raih tingkat keberhasilan yang lebih tinggi, perlindungan frontrunning, dan visibilitas yang lebih baik dengan Transaksi Pintar.",
       "description_2": "Hanya tersedia di Ethereum. Aktifkan atau nonaktifkan setiap saat di pengaturan.",
-      "secondary_button": "Jangan aktifkan peningkatan perlindungan",
+      "secondary_button": "Manage in settings",
       "primary_button": "Aktifkan",
       "learn_more": "Selengkapnya.",
       "benefit_1_1": "Keberhasilan 99,5%",
@@ -3025,7 +3035,8 @@
     "manage_networks": "Kelola jaringan",
     "manage_networks_body": "Kami menggunakan Infura sebagai penyedia panggilan prosedur jarak jauh (RPC) untuk menawarkan akses paling andal dan pribadi ke data Ethereum sebisa mungkin. Anda dapat memilih RPC sendiri, akan tetapi ingatlah bahwa RPC apa pun akan menerima alamat IP dan dompet Ethereum Anda untuk melakukan transaksi. Baca ",
     "manage_networks_body2": " untuk selengkapnya seputar cara Infura menangani data.",
-    "functionality_body": "Meliputi nilai dan data token, pengaturan gas optimal, pembaruan keamanan, dan lainnya. MetaMask akan mengetahui alamat IP Anda saat menggunakan layanan ini, seperti halnya saat mengunjungi situs web.",
+    "functionality_body": "MetaMask offers basic features like token details and gas settings through internet services. When you use internet services, your IP address is shared, in this case with MetaMask. This is just like when you visit any website. MetaMask uses this data temporarily and never sells your data. You can use a VPN or turn off these services, but it may affect your MetaMask experience. Read our ",
+    "functionality_body2": " to learn more.",
     "sheet": {
       "title_off": "Nonaktifkan fungsionalitas dasar",
       "description_off": "Artinya, Anda tidak akan benar-benar mengoptimalkan waktu di MetaMask. Fitur dasar (seperti detail token, pengaturan gas optimal, dan lainnya) tidak akan tersedia untuk Anda.",
@@ -3038,5 +3049,16 @@
         "turn_off": "Nonaktifkan"
       }
     }
+  },
+  "simulation_details": {
+    "failed": "There was an error loading your estimation.",
+    "fiat_not_available": "Not Available",
+    "incoming_heading": "You receive",
+    "no_balance_changes": "No changes predicted for your wallet",
+    "outgoing_heading": "You send",
+    "reverted": "This transaction is likely to fail",
+    "title": "Estimated changes",
+    "tooltip_description": "Estimated changes are what might happen if you go through with this transaction. This is just a prediction, not a guarantee.",
+    "total_fiat": "Total = {{currency}}"
   }
 }

@@ -365,17 +365,17 @@
     "title": "Empfangen"
   },
   "experience_enhancer_modal": {
-    "title": "Help us enhance your experience",
-    "paragraph1a": "In addition to ",
-    "paragraph1b": ", we'd like to use data (like information from cookies) to learn how you interact with our marketing communications.",
+    "title": "Helfen Sie uns, Ihr Erlebnis zu verbessern",
+    "paragraph1a": "Zusätzlich zu ",
+    "paragraph1b": "möchten wir Daten (z. B. Informationen aus Cookies) verwenden, um zu erfahren, wie Sie mit unserer Marketingkommunikation interagieren.",
     "link": "MetaMetrics",
-    "paragraph2": "This helps us personalize what we share with you, like:",
-    "bullet1": "Latest developments",
-    "bullet2": "Product features",
-    "bullet3": "Other relevant promotional materials",
-    "footer": "Remember, we never sell the data you provide and you can opt out any time.",
-    "accept": "I agree",
-    "cancel": "No thanks"
+    "paragraph2": "Dies hilft uns, das, was wir mit Ihnen teilen, zu personalisieren, wie z. B.:",
+    "bullet1": "Neueste Entwicklungen",
+    "bullet2": "Produktmerkmale",
+    "bullet3": "Andere relevante Werbematerialien",
+    "footer": "Denken Sie daran, dass wir die von Ihnen bereitgestellten Daten niemals verkaufen und Sie sich jederzeit abmelden können.",
+    "accept": "Ich stimme zu",
+    "cancel": "Nein, danke"
   },
   "wallet": {
     "title": "Wallet",
@@ -520,7 +520,7 @@
     "description_title": "Helfen Sie uns dabei, MetaMask zu verbessern.",
     "description_content_1": "Wir würden gerne grundlegende Nutzungsdaten sammeln, um MetaMask zu verbessern. Sie sollten wissen, dass wir die Daten, die Sie uns hier zur Verfügung stellen, niemals verkaufen.",
     "description_content_2": "Wenn wir Metriken sammeln, wird es immer wie folgt sein ...",
-    "checkbox": "We'll use this data to learn how you interact with our marketing communications. We may share relavent news (like product features).",
+    "checkbox": "Wir verwenden diese Daten, um zu erfahren, wie Sie mit unserer Marketingkommunikation umgehen. Wir können relevante Neuigkeiten (wie Produktmerkmale) teilen.",
     "action_description_1_prefix": "Privat:",
     "action_description_2_prefix": "Allgemein:",
     "action_description_3_prefix": "Optional:",
@@ -672,7 +672,7 @@
   },
   "data_collection_modal": {
     "accept": "Okay",
-    "content": "You turned off data collection for our marketing purposes. This only applies to this device. If you use MetaMask on other devices, make sure to opt out there as well."
+    "content": "Sie haben die Datenerhebung für unsere Marketingzwecke deaktiviert. Dies gilt nur für dieses Gerät. Wenn Sie MetaMask auf anderen Geräten verwenden, stellen Sie sicher, dass Sie sich auch dort abmelden."
   },
   "account_selector": {
     "prev": "ZURÜCK",
@@ -845,9 +845,9 @@
     "clear_history_desc": "Wählen Sie diese Option, um Ihren gesamten Browser-Verlauf zu löschen.",
     "clear_cookies_desc": "Wählen Sie diese Option, um die Cookies Ihres Browsers zu löschen.",
     "metametrics_title": "An MetaMetrics teilnehmen",
-    "metametrics_description": "Allow MetaMetrics to collect basic usage and diagnostics data to improve our product. You can disable MetaMetrics for this device.",
-    "data_collection_title": "Data collection for marketing",
-    "data_collection_description": "We’ll use MetaMetrics to learn how you interact with our marketing communications. We may share relevant news (like product features and other materials).",
+    "metametrics_description": "Erlauben Sie MetaMetrics, grundlegende Nutzungs- und Diagnosedaten zu sammeln, um unser Produkt zu verbessern. Sie können MetaMetrics für dieses Gerät deaktivieren.",
+    "data_collection_title": "Datenerhebung für das Marketing",
+    "data_collection_description": "Wir verwenden MetaMetrics, um zu erfahren, wie Sie mit unserer Marketingkommunikation umgehen. Wir können relevante Neuigkeiten (wie Produktmerkmale und andere Materialien) teilen.",
     "batch_balance_requests_title": "Kontoguthaben-Anfragen sammeln",
     "batch_balance_requests_description": "Wir sammeln Konten und fragen bei Infura an, um Ihr Guthaben anzuzeigen. Wenn Sie dies deaktivieren, werden nur aktive Konten abgefragt. Einige dApps funktionieren nicht, wenn Sie Ihre Wallet nicht verbinden.",
     "third_party_title": "Eingehende Transaktionen erhalten",
@@ -888,6 +888,13 @@
     "delete": "Löschen",
     "network_exists": "Dieses Netzwerk wurde bereits hinzugefügt.",
     "delete_metrics_title": "MetaMetrics-Daten löschen",
+    "delete_metrics_description_part_one": "Dies löscht historische",
+    "delete_metrics_description_part_two": "MetaMetrics",
+    "delete_metrics_description_part_three": "Daten im Zusammenhang mit Ihrer Wallet.",
+    "delete_metrics_description_before_delete": "Ihre Wallet und Ihre Konten bleiben nach der Löschung dieser Daten genau wie sie jetzt sind. Dieser Prozess kann bis zu 30 Tage in Anspruch nehmen. Lesen Sie unsere",
+    "delete_metrics_description_after_delete_part_one": "Sie haben diese Aktion eingeleitet am",
+    "delete_metrics_description_after_delete_part_two": ". Dieser Prozess kann bis zu 30 Tage in Anspruch nehmen. Lesen Sie unsere",
+    "delete_metrics_description_privacy_policy": "Datenschutzerklärung.",
     "delete_metrics_button": "MetaMetrics-Daten löschen",
     "check_status_button": "Status überprüfen",
     "delete_metrics_confirm_modal_title": "MetaMetrics-Daten löschen?",
@@ -990,8 +997,11 @@
     "security_alerts": "Sicherheitsbenachrichtigungen",
     "security_alerts_desc": "Diese Funktion warnt Sie vor bösartigen Aktivitäten, indem sie Ihre Transaktions- und Signaturanfragen lokal überprüft. Führen Sie immer Ihre eigene Prüfung durch, bevor Sie Anfragen genehmigen. Es gibt keine Garantie dafür, dass diese Funktion alle bösartigen Aktivitäten erkennt. Mit der Aktivierung dieser Funktion erklären Sie sich mit den Nutzungsbedingungen des Anbieters einverstanden.",
     "smart_transactions_opt_in_heading": "Smart Transactions",
-    "smart_transactions_opt_in_desc": "Schalten Sie Smart Transactions für zuverlässigere und sicherere Transaktionen und anpassbare Gebühren im ETH Mainnet ein.",
-    "smart_transactions_learn_more": "Erfahren Sie mehr."
+    "smart_transactions_opt_in_desc": "Turn on Smart Transactions for more reliable and secure transactions on Ethereum Mainnet.",
+    "smart_transactions_learn_more": "Erfahren Sie mehr.",
+    "simulation_details": "Estimate balance changes",
+    "simulation_details_description": "Turn this on to estimate balance changes of transactions before you confirm them. This doesn't guarantee the final outcome of your transactions. ",
+    "simulation_details_learn_more": "Learn more."
   },
   "sdk": {
     "disconnect_title": "Verbindung mit allen Seiten trennen?",
@@ -1906,11 +1916,11 @@
     "swap_completed": "Getauscht {{from}} für {{to}}",
     "sent": "An {{address}} gesendet",
     "received": "Erhalten von {{address}}",
-    "nft_sent": "Sent NFT to {{address}}",
-    "erc721_sent": "Sent NFT to {{address}}",
-    "erc1155_sent": "Sent NFT to {{address}}",
-    "erc721_received": "Received NFT from {{address}}",
-    "erc1155_received": "Received NFT from {{address}}",
+    "nft_sent": "NFT an {{address}} gesendet",
+    "erc721_sent": "NFT an {{address}} gesendet",
+    "erc1155_sent": "NFT an {{address}} gesendet",
+    "erc721_received": "NFT von {{address}} erhalten",
+    "erc1155_received": "NFT von {{address}} erhalten",
     "received_nft": "NFT von {{address}} erhalten",
     "pending_title": "Transaktion abgesendet",
     "pending_deposit_title": "Einzahlung im Gange!",
@@ -2585,7 +2595,7 @@
       "header": "Verbesserter Transaktionsschutz",
       "description_1": "Erzielen Sie mit Smart Transactions höhere Erfolgsraten, einen Frontrunning-Schutz und eine bessere Transparenz.",
       "description_2": "Nur auf Ethereum verfügbar. Sie können diese Funktion jederzeit in den Einstellungen aktivieren oder deaktivieren.",
-      "secondary_button": "Erhöhten Schutz nicht aktivieren",
+      "secondary_button": "Manage in settings",
       "primary_button": "Aktivieren",
       "learn_more": "Erfahren Sie mehr.",
       "benefit_1_1": "Erfolgsrate:",
@@ -3025,7 +3035,8 @@
     "manage_networks": "Netzwerke verwalten",
     "manage_networks_body": "Wir verwenden Infura als RPC-Anbieter (Remote Procedure Call), um einen möglichst zuverlässigen und privaten Zugriff auf Ethereum-Daten zu ermöglichen. Sie können Ihren eigenen RPC auswählen, bedenken Sie aber, dass RPC Ihre IP-Adresse und Ihre Ethereum-Wallet erhalten wird, um Transaktionen durchzuführen. Lesen Sie unsere ",
     "manage_networks_body2": " um mehr darüber zu erfahren, wie Infura mit Daten umgeht.",
-    "functionality_body": "Enthält Token-Daten und -Werte, optimale Gas-Einstellungen, Sicherheitsupdates und vieles mehr. Bei der Nutzung dieser Dienstleistungen wird Ihre IP-Adresse wie beim Besuch einer Website an MetaMask weitergegeben.",
+    "functionality_body": "MetaMask offers basic features like token details and gas settings through internet services. When you use internet services, your IP address is shared, in this case with MetaMask. This is just like when you visit any website. MetaMask uses this data temporarily and never sells your data. You can use a VPN or turn off these services, but it may affect your MetaMask experience. Read our ",
+    "functionality_body2": " to learn more.",
     "sheet": {
       "title_off": "Grundfunktionalität ausschalten",
       "description_off": "Dies bedeutet, dass Sie Ihre Zeit auf MetaMask nicht vollständig optimieren können. Grundlegende Funktionen (wie Token-Details, optimale Gas-Einstellungen und andere) stehen Ihnen nicht zur Verfügung.",
@@ -3038,5 +3049,16 @@
         "turn_off": "Ausschalten"
       }
     }
+  },
+  "simulation_details": {
+    "failed": "There was an error loading your estimation.",
+    "fiat_not_available": "Not Available",
+    "incoming_heading": "You receive",
+    "no_balance_changes": "No changes predicted for your wallet",
+    "outgoing_heading": "You send",
+    "reverted": "This transaction is likely to fail",
+    "title": "Estimated changes",
+    "tooltip_description": "Estimated changes are what might happen if you go through with this transaction. This is just a prediction, not a guarantee.",
+    "total_fiat": "Total = {{currency}}"
   }
 }
