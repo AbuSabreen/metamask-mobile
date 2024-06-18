@@ -1,4 +1,4 @@
-د![MetaMask logo](logo.png?raw=true)
+![MetaMask logo](logo.png?raw=true)
 
 # MetaMask
 
