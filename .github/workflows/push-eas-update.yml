@@ -1,0 +1,543 @@
+name: Push OTA Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to publish (uses PR branch HEAD commit)'
+        required: true
+        type: string
+      base_branch:
+        description: 'Base ref to compare fingerprints against (branch name like "main" or tag name like "v7.61.6")'
+        required: true
+        type: string
+      message:
+        description: 'EAS update message'
+        required: true
+        type: string
+      channel:
+        description: 'OTA channel to push update to (exp, rc, production)'
+        required: true
+        type: choice
+        options:
+          - exp
+          - rc
+          - production
+        default: exp
+      platform:
+        description: 'Platform to update (all, ios, android)'
+        required: true
+        type: choice
+        options:
+          - all
+          - ios
+          - android
+        default: all
+      build_attribution:
+        description: "Analytics build attribution. Use 'nightly' for nightly OTA. Official RC OTA is published via Runway OTA RC, not this form. Unofficial leaves rc OTAs as -rc-unofficial."
+        required: false
+        type: choice
+        options:
+          - unofficial
+          - nightly
+        default: unofficial
+
+  workflow_call:
+    inputs:
+      pr_number:
+        description: 'PR number to publish (uses PR branch HEAD commit)'
+        type: string
+        required: true
+      base_branch:
+        description: 'Base ref to compare fingerprints against (branch name like "main" or tag name like "v7.61.6")'
+        type: string
+        required: true
+      message:
+        description: 'EAS update message'
+        type: string
+        required: true
+      channel:
+        description: 'OTA channel to push update to (exp, rc, production)'
+        type: string
+        required: false
+        default: exp
+      platform:
+        description: 'Platform to update (all, ios, android)'
+        type: string
+        required: false
+        default: all
+      build_attribution:
+        description: >-
+          Optional analytics build attribution forwarded to eas-update-platform.yml as
+          METAMASK_BUILD_ATTRIBUTION. Nightly OTA passes 'nightly'. Official RC OTA
+          passes 'official'. Empty or other values report `-rc-unofficial` for rc.
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  TARGET_PR_NUMBER: ${{ inputs.pr_number }}
+  BASE_BRANCH_REF: ${{ inputs.base_branch }}
+  UPDATE_MESSAGE: ${{ inputs.message }}
+  TARGET_CHANNEL: ${{ inputs.channel }}
+  OTA_PUSH_PLATFORM: ${{ inputs.platform }}
+
+jobs:
+  validate-pr:
+    name: Resolve PR HEAD commit
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.resolve-pr.outputs.pr_number }}
+      commit_sha: ${{ steps.resolve-pr.outputs.commit_sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Resolve PR HEAD commit
+        id: resolve-pr
+        env:
+          PR_NUMBER: ${{ env.TARGET_PR_NUMBER }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          .github/scripts/validate-pr-commit.sh
+
+  verify-release-branch:
+    name: Verify release branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce release branch
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo "🔒 Verifying PR head branch is a release branch..."
+
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+
+          pr_details=$(curl -sS \
+            -H "Authorization: token ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}")
+
+          if ! echo "$pr_details" | jq -e '.id' > /dev/null 2>&1; then
+            echo "::error title=PR not found::Could not resolve PR #${PR_NUMBER}"
+            exit 1
+          fi
+
+          head_ref=$(echo "$pr_details" | jq -r '.head.ref')
+          # head.ref is only the branch name, so a fork branch named release/* would match.
+          head_repo=$(echo "$pr_details" | jq -r '.head.repo.full_name // empty')
+
+          if [[ "$head_repo" != "$GITHUB_REPOSITORY" ]]; then
+            {
+              echo "### ❌ OTA push rejected"
+              echo ""
+              echo "OTA pushes are only allowed from a branch in \`${GITHUB_REPOSITORY}\`."
+              echo ""
+              echo "| Field | Value |"
+              echo "| --- | --- |"
+              echo "| PR | #${PR_NUMBER} |"
+              echo "| Head repository | \`${head_repo:-<deleted>}\` |"
+              echo "| Required repository | \`${GITHUB_REPOSITORY}\` |"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Invalid repository for OTA::PR #${PR_NUMBER} head repository is '${head_repo:-<deleted>}' but must be '${GITHUB_REPOSITORY}'"
+            exit 1
+          fi
+
+          # Only these names are covered by the release branch rulesets (restricted creation and push).
+          RELEASE_BRANCH_PATTERN='^release/[0-9]+\.[0-9]+\.[0-9]+(-ota)?$'
+
+          if [[ ! "$head_ref" =~ $RELEASE_BRANCH_PATTERN ]]; then
+            {
+              echo "### ❌ OTA push rejected"
+              echo ""
+              echo "OTA pushes are only allowed from a release branch PR."
+              echo ""
+              echo "| Field | Value |"
+              echo "| --- | --- |"
+              echo "| PR | #${PR_NUMBER} |"
+              echo "| Head branch | \`${head_ref}\` |"
+              echo "| Required pattern | \`release/X.Y.Z\` or \`release/X.Y.Z-ota\` |"
+              echo ""
+              echo "Re-run this workflow against a PR whose head branch is a release branch (for example \`release/7.78.0\` or \`release/7.78.1-ota\`)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Invalid branch for OTA::PR #${PR_NUMBER} head branch is '${head_ref}' but must be 'release/X.Y.Z' or 'release/X.Y.Z-ota'"
+            exit 1
+          fi
+
+          {
+            echo "### ✅ Release branch verified"
+            echo ""
+            echo "PR #${PR_NUMBER} head branch \`${head_ref}\` is a release branch."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "✅ PR #${PR_NUMBER} head branch '${head_ref}' is a release branch"
+
+  ota-summary:
+    name: OTA Update Summary
+    needs: validate-pr
+    runs-on: ubuntu-latest
+    steps:
+      - name: Display OTA Summary
+        run: |
+          {
+            echo "### OTA Update Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| **Update version** | ${UPDATE_MESSAGE} |"
+            echo "| **Target version** | ${BASE_BRANCH_REF} |"
+            echo "| **Environment** | ${TARGET_CHANNEL} |"
+            echo "| **Platform** | ${OTA_PUSH_PLATFORM} |"
+            echo "| **Target commit** | ${{ needs.validate-pr.outputs.commit_sha }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  setup-dependencies:
+    name: Setup Dependencies (PR)
+    needs:
+      - validate-pr
+      - verify-release-branch
+    permissions:
+      contents: read
+      id-token: write # requested by setup-node-modules.yml
+    uses: ./.github/workflows/setup-node-modules.yml
+    with:
+      ref: ${{ needs.validate-pr.outputs.commit_sha }}
+      fetch-depth: 1
+      upload-artifact: true
+      artifact-name: node-modules-eas-update-pr
+      artifact-retention-days: 1
+
+  setup-dependencies-base:
+    name: Setup Dependencies (Base)
+    needs:
+      - validate-pr
+      - verify-release-branch
+    permissions:
+      contents: read
+      id-token: write # requested by setup-node-modules.yml
+    uses: ./.github/workflows/setup-node-modules.yml
+    with:
+      ref: ${{ inputs.base_branch }}
+      fetch-depth: 1
+      upload-artifact: true
+      artifact-name: node-modules-eas-update-base
+      artifact-retention-days: 1
+
+  prepare:
+    name: Load OTA build config
+    needs: [validate-pr, verify-release-branch]
+    runs-on: ubuntu-latest
+    outputs:
+      github_environment: ${{ steps.config.outputs.github_environment }}
+      secrets_json: ${{ steps.config.outputs.secrets_json }}
+      build_name: ${{ steps.config.outputs.build_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-pr.outputs.commit_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'yarn'
+
+      - run: yarn install --immutable
+
+      - name: Map channel to build name and load config
+        id: config
+        env:
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          # Environment is pinned per channel. builds.yml still supplies the secret mapping.
+          case "${CHANNEL}" in
+            exp)
+              BUILD_NAME="main-exp"
+              ENVIRONMENT_NAME="build-exp"
+              ;;
+            rc)
+              BUILD_NAME="main-rc"
+              ENVIRONMENT_NAME="build-rc"
+              ;;
+            production)
+              BUILD_NAME="main-prod"
+              ENVIRONMENT_NAME="build-production"
+              ;;
+            *)
+              echo "::error::Unknown channel: ${CHANNEL}"
+              exit 1
+              ;;
+          esac
+          echo "build_name=$BUILD_NAME" >> "$GITHUB_OUTPUT"
+          echo "github_environment=$ENVIRONMENT_NAME" >> "$GITHUB_OUTPUT"
+
+          node -e "
+          const yaml = require('js-yaml');
+          const fs = require('fs');
+          const config = yaml.load(fs.readFileSync('builds.yml', 'utf8'));
+          const build = config.builds['${BUILD_NAME}'];
+          if (!build) { console.error('Build not found: ${BUILD_NAME}'); process.exit(1); }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'secrets_json=' + JSON.stringify(build.secrets || {}) + '\n');
+          "
+
+          echo "✅ Loaded config for $BUILD_NAME"
+
+  fingerprint-comparison:
+    name: Compare Expo Fingerprints
+    needs:
+      - validate-pr
+      - setup-dependencies
+      - setup-dependencies-base
+    runs-on: ubuntu-latest
+    outputs:
+      branch_fingerprint: ${{ steps.branch_fingerprint.outputs.fingerprint }}
+      main_fingerprint: ${{ steps.main_fingerprint.outputs.fingerprint }}
+      fingerprints_equal: ${{ steps.compare.outputs.equal }}
+    env:
+      PR_ARTIFACT_NAME: ${{ needs.setup-dependencies.outputs.artifact-name }}
+      BASE_ARTIFACT_NAME: ${{ needs.setup-dependencies-base.outputs.artifact-name }}
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-pr.outputs.commit_sha }}
+          fetch-depth: 1
+
+      - name: Checkout base branch snapshot
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.BASE_BRANCH_REF }}
+          path: main
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Validate artifact compatibility (PR commit)
+        uses: ./.github/actions/validate-artifact-compatibility
+        with:
+          artifact-name: ${{ env.PR_ARTIFACT_NAME }}
+          artifact-prefix: node-modules-eas-update-pr
+          validation-context: PR commit
+
+      - name: Download node_modules artifact (PR commit)
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.PR_ARTIFACT_NAME }}
+
+      - name: Restore executable permissions
+        uses: ./.github/actions/restore-node-modules-permissions
+
+      - name: Verify downloaded artifacts
+        run: |
+          echo "✅ Verifying downloaded artifacts..."
+          if [ ! -d "node_modules" ]; then
+            echo "❌ node_modules directory not found"
+            exit 1
+          fi
+          if [ ! -f "app/core/InpageBridgeWeb3.js" ]; then
+            echo "❌ InpageBridgeWeb3.js not found in artifact"
+            exit 1
+          fi
+          echo "✅ Artifacts verified"
+
+      - name: Generate fingerprint (target commit)
+        id: branch_fingerprint
+        run: |
+          echo "🧬 Generating fingerprint for current branch..."
+          FINGERPRINT=$(yarn fingerprint:generate)
+          echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "Target PR fingerprint: $FINGERPRINT"
+
+      - name: Validate artifact compatibility (base branch)
+        uses: ./.github/actions/validate-artifact-compatibility
+        with:
+          artifact-name: ${{ env.BASE_ARTIFACT_NAME }}
+          artifact-prefix: node-modules-eas-update-base
+          validation-context: base branch
+
+      - name: Download node_modules artifact (base branch)
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ env.BASE_ARTIFACT_NAME }}
+          path: main
+
+      - name: Restore executable permissions (base branch)
+        uses: ./.github/actions/restore-node-modules-permissions
+        with:
+          working-directory: main
+
+      - name: Generate fingerprint (base branch)
+        id: main_fingerprint
+        working-directory: main
+        run: |
+          echo "🧬 Generating fingerprint for base branch (${BASE_BRANCH_REF})..."
+          FINGERPRINT=$(yarn fingerprint:generate)
+          echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "Base branch fingerprint: $FINGERPRINT"
+
+      - name: Compare fingerprints
+        id: compare
+        env:
+          BRANCH_FP: ${{ steps.branch_fingerprint.outputs.fingerprint }}
+          MAIN_FP: ${{ steps.main_fingerprint.outputs.fingerprint }}
+        run: |
+          if [ -z "$BRANCH_FP" ] || [ -z "$MAIN_FP" ]; then
+            echo "❌ Fingerprint generation failed." >&2
+            exit 1
+          fi
+
+          if [ "$BRANCH_FP" = "$MAIN_FP" ]; then
+            echo "✅ Fingerprints match. No native changes detected."
+            echo "equal=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "⚠️ Fingerprints differ. Native changes detected."
+            echo "equal=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Target PR fingerprint: $BRANCH_FP"
+          echo "Base branch fingerprint: $MAIN_FP"
+
+      - name: Record fingerprint summary
+        env:
+          BRANCH_FP: ${{ steps.branch_fingerprint.outputs.fingerprint }}
+          MAIN_FP: ${{ steps.main_fingerprint.outputs.fingerprint }}
+          MATCHES: ${{ steps.compare.outputs.equal }}
+          TARGET_COMMIT_HASH: ${{ needs.validate-pr.outputs.commit_sha }}
+          BASE_BRANCH_REF: ${{ env.BASE_BRANCH_REF }}
+        run: |
+          {
+            echo "### Expo Fingerprint Comparison"
+            echo ""
+            echo "- Target commit (\`$TARGET_COMMIT_HASH\`) fingerprint: \`$BRANCH_FP\`"
+            echo "- Base branch (\`$BASE_BRANCH_REF\`) fingerprint: \`$MAIN_FP\`"
+            echo "- Match: \`$MATCHES\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  approval:
+    name: Require OTA Update Approval
+    needs:
+      - fingerprint-comparison
+      - validate-pr
+    if: >
+      needs.fingerprint-comparison.outputs.fingerprints_equal == 'true' &&
+      inputs.channel == 'production'
+    permissions:
+      contents: read
+      id-token: write # token exchange for the team approval check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get token
+        id: get-token
+        uses: MetaMask/github-tools/.github/actions/get-token@v1
+        with:
+          token-exchange-url: ${{ vars.TOKEN_EXCHANGE_URL }}
+          permissions: |
+            members: read
+
+      - name: Await approval from mobile release team
+        uses: op5dev/require-team-approval@dfd7b8b9a88bf82a955c103f7e19642b0411aecd
+        with:
+          team: release-team
+          pr-number: ${{ needs.validate-pr.outputs.pr_number }}
+          token: ${{ steps.get-token.outputs.token }}
+
+  push-update-ios:
+    name: Push EAS Update (iOS)
+    needs:
+      - fingerprint-comparison
+      - approval
+      - validate-pr
+      - verify-release-branch
+      - setup-dependencies
+      - prepare
+    # approval is intentionally skipped for non-production channels, so the default implicit
+    # success() (which treats a skipped dependency as failing) must be overridden here.
+    if: >
+      always() && !cancelled() &&
+      needs.fingerprint-comparison.result == 'success' &&
+      needs.validate-pr.result == 'success' &&
+      needs.verify-release-branch.result == 'success' &&
+      needs.setup-dependencies.result == 'success' &&
+      needs.prepare.result == 'success' &&
+      needs.fingerprint-comparison.outputs.fingerprints_equal == 'true' &&
+      (needs.approval.result == 'success' || (needs.approval.result == 'skipped' && inputs.channel != 'production')) &&
+      (inputs.platform == 'all' || inputs.platform == 'ios')
+    permissions:
+      contents: read
+      id-token: write # AWS OIDC role assumption in eas-update-platform.yml
+    uses: ./.github/workflows/eas-update-platform.yml
+    with:
+      platform: ios
+      commit_sha: ${{ needs.validate-pr.outputs.commit_sha }}
+      artifact_name: ${{ needs.setup-dependencies.outputs.artifact-name }}
+      channel: ${{ inputs.channel }}
+      message: ${{ inputs.message }}
+      build_name: ${{ needs.prepare.outputs.build_name }}
+      build_attribution: ${{ inputs.build_attribution }}
+      github_environment: ${{ needs.prepare.outputs.github_environment }}
+      secrets_json: ${{ needs.prepare.outputs.secrets_json }}
+    secrets: inherit
+
+  push-update-android:
+    name: Push EAS Update (Android)
+    needs:
+      - fingerprint-comparison
+      - approval
+      - validate-pr
+      - verify-release-branch
+      - setup-dependencies
+      - prepare
+    # approval is intentionally skipped for non-production channels, so the default implicit
+    # success() (which treats a skipped dependency as failing) must be overridden here.
+    if: >
+      always() && !cancelled() &&
+      needs.fingerprint-comparison.result == 'success' &&
+      needs.validate-pr.result == 'success' &&
+      needs.verify-release-branch.result == 'success' &&
+      needs.setup-dependencies.result == 'success' &&
+      needs.prepare.result == 'success' &&
+      needs.fingerprint-comparison.outputs.fingerprints_equal == 'true' &&
+      (needs.approval.result == 'success' || (needs.approval.result == 'skipped' && inputs.channel != 'production')) &&
+      (inputs.platform == 'all' || inputs.platform == 'android')
+    permissions:
+      contents: read
+      id-token: write # AWS OIDC role assumption in eas-update-platform.yml
+    uses: ./.github/workflows/eas-update-platform.yml
+    with:
+      platform: android
+      commit_sha: ${{ needs.validate-pr.outputs.commit_sha }}
+      artifact_name: ${{ needs.setup-dependencies.outputs.artifact-name }}
+      channel: ${{ inputs.channel }}
+      message: ${{ inputs.message }}
+      build_name: ${{ needs.prepare.outputs.build_name }}
+      build_attribution: ${{ inputs.build_attribution }}
+      github_environment: ${{ needs.prepare.outputs.github_environment }}
+      secrets_json: ${{ needs.prepare.outputs.secrets_json }}
+    secrets: inherit
+
+  fingerprint-mismatch:
+    name: Fingerprint Mismatch Guard
+    needs: fingerprint-comparison
+    if: ${{ needs.fingerprint-comparison.outputs.fingerprints_equal != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail on native changes
+        run: |
+          echo "::error title=Fingerprint mismatch::Current branch fingerprint differs from main. Native changes detected; aborting workflow."
+          echo "Current fingerprint: ${{ needs.fingerprint-comparison.outputs.branch_fingerprint }}"
+          echo "Main fingerprint:    ${{ needs.fingerprint-comparison.outputs.main_fingerprint }}"
+          exit 1

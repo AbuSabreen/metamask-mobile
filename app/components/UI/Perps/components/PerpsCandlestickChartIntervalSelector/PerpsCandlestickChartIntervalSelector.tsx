@@ -1,0 +1,63 @@
+import React from 'react';
+import { TouchableOpacity, ScrollView } from 'react-native';
+import { useStyles } from '../../../../../component-library/hooks';
+import { CANDLE_PERIODS, CandlePeriod } from '@metamask/perps-controller';
+import { PERPS_CHART_CONFIG } from '../../constants/chartConfig';
+import { selectorStyleSheet } from './PerpsCandlestickChartIntervalSelector.styles.ts';
+import {
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+
+interface PerpsCandlestickChartIntervalSelectorProps {
+  selectedInterval: CandlePeriod | string;
+  onIntervalChange?: (interval: CandlePeriod) => void;
+  testID?: string;
+  style?: object; // Allow custom styles to override defaults
+}
+
+const PerpsCandlestickChartIntervalSelector: React.FC<
+  PerpsCandlestickChartIntervalSelectorProps
+> = ({ selectedInterval, onIntervalChange, testID, style }) => {
+  const { styles } = useStyles(selectorStyleSheet);
+
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={[styles.intervalSelector, style]}
+      contentContainerStyle={styles.intervalSelectorContent}
+      testID={testID}
+    >
+      {CANDLE_PERIODS.map((interval) => (
+        <TouchableOpacity
+          key={interval.value}
+          style={[
+            styles.intervalTab,
+            selectedInterval === interval.value
+              ? styles.intervalTabActive
+              : styles.intervalTabInactive,
+          ]}
+          onPress={() => onIntervalChange?.(interval.value)}
+          activeOpacity={PERPS_CHART_CONFIG.INTERVAL_SELECTOR_OPACITY}
+          testID={`${testID}-${interval.value}`}
+        >
+          <Text
+            variant={TextVariant.BodySm}
+            color={
+              selectedInterval === interval.value
+                ? TextColor.TextDefault
+                : TextColor.TextMuted
+            }
+            style={styles.intervalTabText}
+          >
+            {interval.label}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </ScrollView>
+  );
+};
+
+export default PerpsCandlestickChartIntervalSelector;

@@ -1,0 +1,632 @@
+import { CryptoCurrency, Order, Provider } from '@consensys/on-ramp-sdk';
+import { fireEvent, act } from '@testing-library/react-native';
+import { Linking } from 'react-native';
+import {
+  DeepPartial,
+  renderScreen,
+} from '../../../../../../util/test/renderWithProvider';
+import { RampSDK, SDK } from '../../sdk';
+import Checkout from '.';
+import Routes from '../../../../../../constants/navigation/Routes';
+import { aggregatorOrderToFiatOrder } from '../../orderProcessor/aggregator';
+import Logger from '../../../../../../util/Logger';
+
+const mockDispatch = jest.fn();
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useDispatch: () => mockDispatch,
+}));
+
+const mockTrackEvent = jest.fn();
+jest.mock('../../../hooks/useAnalytics', () => () => mockTrackEvent);
+
+const mockHandleSuccessfulOrder = jest.fn();
+jest.mock(
+  '../../hooks/useHandleSuccessfulOrder',
+  () => () => mockHandleSuccessfulOrder,
+);
+
+const mockSetOptions = jest.fn();
+const mockPop = jest.fn();
+const mockNavigation = {
+  goBack: jest.fn(),
+  setOptions: mockSetOptions,
+  getParent: () => ({ pop: mockPop }),
+  isFocused: jest.fn(() => true),
+};
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => mockNavigation,
+}));
+
+const mockedSelectedAsset = {
+  id: '1',
+  idv2: '2',
+  legacyId: 'legacy-1',
+  network: {
+    active: true,
+    chainId: '137',
+    chainName: 'Polygon',
+    shortName: 'Polygon',
+  },
+  symbol: 'USDC',
+  logo: 'logo',
+  decimals: 6,
+  address: '0x123',
+  name: 'USD Coin',
+  limits: ['1', '1000'],
+  sellEnabled: true,
+  assetId: 'asset-1',
+} as CryptoCurrency;
+
+const mockUseRampSDKInitialValues: DeepPartial<RampSDK> = {
+  selectedAddress: '0x123',
+  selectedAsset: mockedSelectedAsset,
+  sdkError: undefined,
+  callbackBaseUrl: 'https://callback.test',
+  isBuy: true,
+};
+
+let mockUseRampSDKValues: DeepPartial<RampSDK> = {
+  ...mockUseRampSDKInitialValues,
+};
+
+jest.mock('../../sdk', () => ({
+  ...jest.requireActual('../../sdk'),
+  useRampSDK: () => mockUseRampSDKValues,
+  SDK: {
+    orders: jest.fn().mockResolvedValue({
+      getOrderFromCallback: jest.fn(),
+    }),
+  },
+}));
+
+const mockUseParams = jest.fn(() => ({
+  url: 'https://test.url',
+  customOrderId: 'test-order-id',
+  provider: { id: 'test-provider', name: 'Test Provider' } as Provider,
+}));
+
+jest.mock('../../../../../../util/navigation/navUtils', () => ({
+  ...jest.requireActual('../../../../../../util/navigation/navUtils'),
+  useParams: () => mockUseParams(),
+}));
+
+jest.mock('react-native', () => ({
+  ...jest.requireActual('react-native'),
+  Linking: {
+    canOpenURL: jest.fn(),
+    openURL: jest.fn(),
+  },
+}));
+
+function render() {
+  return renderScreen(Checkout, {
+    name: Routes.RAMP.CHECKOUT,
+  });
+}
+
+describe('Checkout', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseRampSDKValues = {
+      ...mockUseRampSDKInitialValues,
+    };
+  });
+
+  it('displays WebView when url is present and no errors', () => {
+    const { getByTestId } = render();
+    expect(getByTestId('checkout-webview')).toBeOnTheScreen();
+  });
+
+  it('allows http, https, about:blank, and about:srcdoc for Cloudflare Turnstile', () => {
+    const { getByTestId } = render();
+    expect(getByTestId('checkout-webview').props.originWhitelist).toEqual([
+      'https://*',
+      'http://*',
+      'about:blank',
+      'about:srcdoc',
+    ]);
+  });
+
+  it('displays sell WebView when url is present and no errors', () => {
+    mockUseRampSDKValues.isBuy = false;
+    const { getByTestId } = render();
+    expect(getByTestId('checkout-webview')).toBeOnTheScreen();
+  });
+
+  it('displays sdkError when present', () => {
+    mockUseRampSDKValues.sdkError = new Error('SDK Error');
+    const { getByText } = render();
+    expect(getByText('SDK Error')).toBeOnTheScreen();
+  });
+
+  it('displays and tracks error if no url or errors', () => {
+    mockUseRampSDKValues.selectedAsset = undefined;
+    mockUseParams.mockReturnValueOnce({
+      url: '',
+      customOrderId: 'test-order-id',
+      provider: { id: 'test-provider', name: 'Test Provider' } as Provider,
+    });
+    const { getByTestId } = render();
+    expect(getByTestId('checkout-close-button')).toBeOnTheScreen();
+    expect(mockTrackEvent).toHaveBeenCalledWith(
+      'ONRAMP_ERROR',
+      expect.any(Object),
+    );
+  });
+
+  it('closes and tracks buy cancel event on bottom sheet close', () => {
+    const { getByTestId } = render();
+    const closeButton = getByTestId('checkout-close-button');
+    act(() => {
+      fireEvent.press(closeButton);
+    });
+    expect(mockTrackEvent).toHaveBeenCalledWith('ONRAMP_CANCELED', {
+      chain_id_destination: '137',
+      location: 'Provider Webview',
+      provider_onramp: 'Test Provider',
+    });
+    expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+    expect(mockNavigation.goBack).toHaveBeenCalled();
+  });
+
+  it('closes and tracks sell cancel event on bottom sheet close', () => {
+    mockUseRampSDKValues.isBuy = false;
+    const { getByTestId } = render();
+    const closeButton = getByTestId('checkout-close-button');
+    act(() => {
+      fireEvent.press(closeButton);
+    });
+    expect(mockTrackEvent).toHaveBeenCalledWith('OFFRAMP_CANCELED', {
+      chain_id_source: '137',
+      location: 'Provider Webview',
+      provider_offramp: 'Test Provider',
+    });
+    expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+    expect(mockNavigation.goBack).toHaveBeenCalled();
+  });
+
+  it('closes and tracks buy cancel event on error bottom sheet close', () => {
+    mockUseRampSDKValues.selectedAsset = undefined;
+    mockUseParams.mockReturnValueOnce({
+      url: '',
+      customOrderId: 'test-order-id',
+      provider: {
+        id: 'test-provider',
+        name: 'Test Provider',
+      } as Provider,
+    });
+    const { getByTestId } = render();
+    const closeButton = getByTestId('checkout-close-button');
+    act(() => {
+      fireEvent.press(closeButton);
+    });
+    expect(mockTrackEvent).toHaveBeenCalledWith('ONRAMP_CANCELED', {
+      chain_id_destination: '',
+      location: 'Provider Webview',
+      provider_onramp: 'Test Provider',
+    });
+    expect(mockNavigation.goBack).toHaveBeenCalled();
+  });
+
+  it('sets and displays error on http error in WebView', async () => {
+    const { getByTestId, getByText } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onHttpError({
+        nativeEvent: {
+          statusCode: 500,
+          description: 'Server Error',
+          url: 'https://test.url',
+        },
+      });
+    });
+    const tryAgainButton = getByText('Try again');
+    expect(tryAgainButton).toBeOnTheScreen();
+    act(() => {
+      fireEvent.press(tryAgainButton);
+    });
+  });
+
+  it('sets and displays error on http error in WebView for callback url', async () => {
+    const { getByTestId, getByText } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onHttpError({
+        nativeEvent: {
+          statusCode: 500,
+          description: 'Server Error',
+          url: 'https://callback.test',
+        },
+      });
+    });
+    expect(getByText('Try again')).toBeOnTheScreen();
+  });
+
+  it('ignores irrelevant error on http error in WebView for callback url', async () => {
+    const { getByTestId, queryByText } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onHttpError({
+        nativeEvent: {
+          statusCode: 500,
+          description: 'Server Error',
+          url: 'https://irrelevant.url',
+        },
+      });
+    });
+    expect(queryByText('Try again')).not.toBeOnTheScreen();
+  });
+
+  it('ignores irrelevant url navigation state changes', async () => {
+    const { getByTestId } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onNavigationStateChange({
+        url: 'https://irrelevant.url',
+        loading: false,
+      });
+    });
+    expect(mockHandleSuccessfulOrder).not.toHaveBeenCalled();
+  });
+
+  it('ignores url navigation state changes when is loading', async () => {
+    const { getByTestId } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onNavigationStateChange({
+        url: 'https://callback.test?success=true',
+        loading: true,
+      });
+    });
+    expect(mockHandleSuccessfulOrder).not.toHaveBeenCalled();
+  });
+
+  it('closes webview when url has no query params', async () => {
+    const { getByTestId } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onNavigationStateChange({
+        url: 'https://callback.test',
+        loading: false,
+      });
+    });
+
+    expect(mockHandleSuccessfulOrder).not.toHaveBeenCalled();
+    expect(mockPop).toHaveBeenCalled();
+  });
+
+  it('sets error when handling url navigation state change and selectedAddress is undefined', async () => {
+    mockUseRampSDKValues.selectedAddress = undefined;
+    const { getByTestId, getByText } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onNavigationStateChange({
+        url: 'https://callback.test?success=true',
+        loading: false,
+      });
+    });
+
+    expect(
+      getByText('No wallet address was provided to continue'),
+    ).toBeOnTheScreen();
+  });
+
+  it('handles successful buy order on url navigation state change', async () => {
+    const mockOrder = {
+      id: 'order-1',
+      status: 'COMPLETED',
+    };
+    const mockGetOrderFromCallback = jest.fn().mockResolvedValue(mockOrder);
+    (SDK.orders as jest.Mock).mockResolvedValueOnce({
+      getOrderFromCallback: mockGetOrderFromCallback,
+    });
+    const { getByTestId } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onNavigationStateChange({
+        url: 'https://callback.test?success=true',
+        loading: false,
+      });
+    });
+
+    expect(mockGetOrderFromCallback).toHaveBeenCalledWith(
+      'test-provider',
+      'https://callback.test?success=true',
+      '0x123',
+    );
+    expect(mockHandleSuccessfulOrder).toHaveBeenCalledWith({
+      ...aggregatorOrderToFiatOrder(mockOrder as Order),
+      account: '0x123',
+    });
+  });
+
+  it('handles successful sell order on url navigation state change', async () => {
+    mockUseRampSDKValues.isBuy = false;
+    mockUseParams.mockReturnValueOnce({
+      url: 'https://test.url',
+      customOrderId: '',
+      provider: { id: 'test-provider', name: 'Test Provider' } as Provider,
+    });
+
+    const mockSellOrder = {
+      id: 'order-1',
+      status: 'COMPLETED',
+    };
+    const mockGetSellOrderFromCallback = jest
+      .fn()
+      .mockResolvedValue(mockSellOrder);
+    (SDK.orders as jest.Mock).mockResolvedValueOnce({
+      getSellOrderFromCallback: mockGetSellOrderFromCallback,
+    });
+    const { getByTestId } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onNavigationStateChange({
+        url: 'https://callback.test?success=true',
+        loading: false,
+      });
+    });
+
+    expect(mockGetSellOrderFromCallback).toHaveBeenCalledWith(
+      'test-provider',
+      'https://callback.test?success=true',
+      '0x123',
+    );
+    expect(mockHandleSuccessfulOrder).toHaveBeenCalledWith({
+      ...aggregatorOrderToFiatOrder(mockSellOrder as Order),
+      account: '0x123',
+    });
+  });
+
+  it('handles get order error gracefully', async () => {
+    const mockGetOrderFromCallback = jest
+      .fn()
+      .mockRejectedValue(new Error('Get order error'));
+    (SDK.orders as jest.Mock).mockResolvedValueOnce({
+      getOrderFromCallback: mockGetOrderFromCallback,
+    });
+    const { getByTestId } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onNavigationStateChange({
+        url: 'https://callback.test?success=true',
+        loading: false,
+      });
+    });
+
+    expect(getByTestId('checkout-close-button')).toBeOnTheScreen();
+  });
+
+  it('handles undefined order gracefully', async () => {
+    const mockGetOrderFromCallback = jest.fn().mockResolvedValue(undefined);
+    (SDK.orders as jest.Mock).mockResolvedValueOnce({
+      getOrderFromCallback: mockGetOrderFromCallback,
+    });
+    const { getByTestId } = render();
+    const webView = getByTestId('checkout-webview');
+    await act(async () => {
+      await webView.props.onNavigationStateChange({
+        url: 'https://callback.test?success=true',
+        loading: false,
+      });
+    });
+
+    expect(getByTestId('checkout-close-button')).toBeOnTheScreen();
+  });
+
+  describe('onShouldStartLoadWithRequest', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      (Linking.canOpenURL as jest.Mock).mockResolvedValue(true);
+      (Linking.openURL as jest.Mock).mockResolvedValue(true);
+    });
+
+    it('opens UPI payment URL via Linking and blocks webview navigation', async () => {
+      const { getByTestId } = render();
+      const webView = getByTestId('checkout-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      const result = onShouldStartLoadWithRequest({
+        url: 'upi://pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      });
+
+      expect(result).toBe(false);
+
+      await act(async () => {
+        await new Promise(process.nextTick);
+      });
+
+      expect(Linking.canOpenURL).toHaveBeenCalledWith(
+        'upi://pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      );
+      expect(Linking.openURL).toHaveBeenCalledWith(
+        'upi://pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      );
+    });
+
+    it('opens Paytm payment URL via Linking and blocks webview navigation', async () => {
+      const { getByTestId } = render();
+      const webView = getByTestId('checkout-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      const result = onShouldStartLoadWithRequest({
+        url: 'paytmmp://pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      });
+
+      expect(result).toBe(false);
+
+      await act(async () => {
+        await new Promise(process.nextTick);
+      });
+
+      expect(Linking.canOpenURL).toHaveBeenCalledWith(
+        'paytmmp://pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      );
+      expect(Linking.openURL).toHaveBeenCalledWith(
+        'paytmmp://pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      );
+    });
+
+    it('opens PhonePe payment URL via Linking and blocks webview navigation', async () => {
+      const { getByTestId } = render();
+      const webView = getByTestId('checkout-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      const result = onShouldStartLoadWithRequest({
+        url: 'phonepe://pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      });
+
+      expect(result).toBe(false);
+
+      await act(async () => {
+        await new Promise(process.nextTick);
+      });
+
+      expect(Linking.canOpenURL).toHaveBeenCalledWith(
+        'phonepe://pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      );
+      expect(Linking.openURL).toHaveBeenCalledWith(
+        'phonepe://pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      );
+    });
+
+    it('opens Google Pay payment URL via Linking and blocks webview navigation', async () => {
+      const { getByTestId } = render();
+      const webView = getByTestId('checkout-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      const result = onShouldStartLoadWithRequest({
+        url: 'gpay://upi/pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      });
+
+      expect(result).toBe(false);
+
+      await act(async () => {
+        await new Promise(process.nextTick);
+      });
+
+      expect(Linking.canOpenURL).toHaveBeenCalledWith(
+        'gpay://upi/pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      );
+      expect(Linking.openURL).toHaveBeenCalledWith(
+        'gpay://upi/pay?pa=company@ypbiz&cu=INR&am=1100.00',
+      );
+    });
+
+    it('allows HTTPS URLs to load in webview', () => {
+      const { getByTestId } = render();
+      const webView = getByTestId('checkout-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      const result = onShouldStartLoadWithRequest({
+        url: 'https://example.com/payment',
+      });
+
+      expect(Linking.canOpenURL).not.toHaveBeenCalled();
+      expect(Linking.openURL).not.toHaveBeenCalled();
+      expect(result).toBe(true);
+    });
+
+    it('allows HTTP URLs to load in webview', () => {
+      const { getByTestId } = render();
+      const webView = getByTestId('checkout-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      const result = onShouldStartLoadWithRequest({
+        url: 'http://example.com/payment',
+      });
+
+      expect(Linking.canOpenURL).not.toHaveBeenCalled();
+      expect(Linking.openURL).not.toHaveBeenCalled();
+      expect(result).toBe(true);
+    });
+
+    it('logs message when payment app is not installed', async () => {
+      (Linking.canOpenURL as jest.Mock).mockResolvedValueOnce(false);
+      const mockLoggerLog = jest.spyOn(Logger, 'log');
+
+      const { getByTestId } = render();
+      const webView = getByTestId('checkout-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      const result = onShouldStartLoadWithRequest({
+        url: 'upi://pay?pa=company@ypbiz',
+      });
+
+      expect(result).toBe(false);
+
+      await act(async () => {
+        await new Promise(process.nextTick);
+      });
+
+      expect(Linking.canOpenURL).toHaveBeenCalledWith(
+        'upi://pay?pa=company@ypbiz',
+      );
+      expect(Linking.openURL).not.toHaveBeenCalled();
+      expect(mockLoggerLog).toHaveBeenCalledWith(
+        'Cannot open URL: upi://pay?pa=company@ypbiz - payment app not installed',
+      );
+    });
+
+    it('logs error when Linking.canOpenURL fails', async () => {
+      const mockError = new Error('Failed to check URL');
+      (Linking.canOpenURL as jest.Mock).mockRejectedValueOnce(mockError);
+      const mockLoggerError = jest.spyOn(Logger, 'error');
+
+      const { getByTestId } = render();
+      const webView = getByTestId('checkout-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      const result = onShouldStartLoadWithRequest({
+        url: 'upi://pay?pa=company@ypbiz',
+      });
+
+      expect(result).toBe(false);
+
+      await act(async () => {
+        await new Promise(process.nextTick);
+      });
+
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        mockError,
+        'Failed to open payment URL: upi://pay?pa=company@ypbiz',
+      );
+    });
+
+    it('logs error when Linking.openURL fails', async () => {
+      const mockError = new Error('Failed to open URL');
+      (Linking.openURL as jest.Mock).mockRejectedValueOnce(mockError);
+      const mockLoggerError = jest.spyOn(Logger, 'error');
+
+      const { getByTestId } = render();
+      const webView = getByTestId('checkout-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      const result = onShouldStartLoadWithRequest({
+        url: 'upi://pay?pa=company@ypbiz',
+      });
+
+      expect(result).toBe(false);
+
+      await act(async () => {
+        await new Promise(process.nextTick);
+      });
+
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        mockError,
+        'Failed to open payment URL: upi://pay?pa=company@ypbiz',
+      );
+    });
+  });
+});

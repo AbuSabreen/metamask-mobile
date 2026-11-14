@@ -1,4 +1,5 @@
-import { ViewProps } from 'react-native';
+import { ReactNode } from 'react';
+import { ViewProps, ViewStyle } from 'react-native';
 
 /**
  * The name types supported by the NameController.
@@ -11,6 +12,12 @@ export enum NameType {
 }
 
 export interface NameProperties extends ViewProps {
+  preferContractSymbol?: boolean;
   type: NameType;
   value: string;
+  variation: string;
+  style?: ViewStyle;
+  maxCharLength?: number;
+  /** When provided, renders this element in place of the default icon (identicon/trust icon). */
+  iconOverride?: ReactNode;
 }

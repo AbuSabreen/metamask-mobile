@@ -1,8 +1,15 @@
 import { Order } from '@consensys/on-ramp-sdk';
 import { createSelector } from 'reselect';
-import { Region } from '../../components/UI/Ramp/types';
+import { Region } from '../../components/UI/Ramp/Aggregator/types';
+import type {
+  DepositRegion,
+  DepositCryptoCurrency,
+  DepositPaymentMethod,
+} from '../../components/UI/Ramp/types/legacyDeposit';
+import type { RampsOrder } from '@metamask/ramps-controller';
+import { selectSelectedAccountGroupWithInternalAccountsAddresses } from '../../selectors/multichainAccounts/accountTreeController';
 import { selectChainId } from '../../selectors/networkController';
-import { selectSelectedAddress } from '../../selectors/preferencesController';
+import { selectSelectedInternalAccountFormattedAddress } from '../../selectors/accountsController';
 import {
   FIAT_ORDER_PROVIDERS,
   FIAT_ORDER_STATES,
@@ -15,8 +22,7 @@ import {
   FiatOrdersState,
 } from './types';
 import type { RootState } from '../';
-import { getDecimalChainId, isTestNet } from '../../util/networks';
-import { toHex } from '@metamask/controller-utils';
+import { getDecimalChainId } from '../../util/networks';
 
 export type { FiatOrder } from './types';
 
@@ -41,6 +47,22 @@ export const setFiatOrdersRegionAGG = (region: Region | null) => ({
   type: ACTIONS.FIAT_SET_REGION_AGG,
   payload: region,
 });
+export const setFiatOrdersRegionDeposit = (region: DepositRegion | null) => ({
+  type: ACTIONS.FIAT_SET_REGION_DEPOSIT,
+  payload: region,
+});
+export const setFiatOrdersCryptoCurrencyDeposit = (
+  cryptoCurrency: DepositCryptoCurrency | null,
+) => ({
+  type: ACTIONS.FIAT_SET_CRYPTO_CURRENCY_DEPOSIT,
+  payload: cryptoCurrency,
+});
+export const setFiatOrdersPaymentMethodDeposit = (
+  paymentMethod: DepositPaymentMethod | null,
+) => ({
+  type: ACTIONS.FIAT_SET_PAYMENT_METHOD_DEPOSIT,
+  payload: paymentMethod,
+});
 export const setFiatOrdersPaymentMethodAGG = (
   paymentMethodId: string | null,
 ) => ({
@@ -53,6 +75,10 @@ export const setFiatOrdersGetStartedAGG = (getStartedFlag: boolean) => ({
 });
 export const setFiatOrdersGetStartedSell = (getStartedFlag: boolean) => ({
   type: ACTIONS.FIAT_SET_GETSTARTED_SELL,
+  payload: getStartedFlag,
+});
+export const setFiatOrdersGetStartedDeposit = (getStartedFlag: boolean) => ({
+  type: ACTIONS.FIAT_SET_GETSTARTED_DEPOSIT,
   payload: getStartedFlag,
 });
 export const addFiatCustomIdData = (customIdData: CustomIdData) => ({
@@ -109,6 +135,11 @@ export const removeFiatSellTxHash = (orderId: string) => ({
   payload: orderId,
 });
 
+export const setHasAgreedTransakNativePolicy = (hasAgreed: boolean) => ({
+  type: ACTIONS.FIAT_SET_HAS_AGREED_TRANSAK_NATIVE_POLICY,
+  payload: hasAgreed,
+});
+
 /**
  * Selectors
  */
@@ -126,11 +157,16 @@ export const getProviderName = (
     case FIAT_ORDER_PROVIDERS.WYRE_APPLE_PAY: {
       return 'Wyre';
     }
-    case FIAT_ORDER_PROVIDERS.TRANSAK: {
+    case FIAT_ORDER_PROVIDERS.TRANSAK:
+    case FIAT_ORDER_PROVIDERS.DEPOSIT: {
       return 'Transak';
     }
     case FIAT_ORDER_PROVIDERS.MOONPAY: {
       return 'MoonPay';
+    }
+    case FIAT_ORDER_PROVIDERS.RAMPS_V2: {
+      const providerName = (data as RampsOrder).provider?.name;
+      return providerName ? `${providerName}` : '...';
     }
     case FIAT_ORDER_PROVIDERS.AGGREGATOR: {
       const providerName = (data as Order).provider?.name;
@@ -147,13 +183,26 @@ const ordersSelector = (state: RootState) =>
 export const chainIdSelector: (state: RootState) => string = (
   state: RootState,
 ) => getDecimalChainId(selectChainId(state));
-export const selectedAddressSelector: (state: RootState) => string = (
+export const selectedAddressSelector: (
   state: RootState,
-) => selectSelectedAddress(state);
+) => string | undefined = (state: RootState) =>
+  selectSelectedInternalAccountFormattedAddress(state);
 export const fiatOrdersRegionSelectorAgg: (
   state: RootState,
 ) => FiatOrdersState['selectedRegionAgg'] = (state: RootState) =>
   state.fiatOrders.selectedRegionAgg;
+export const fiatOrdersRegionSelectorDeposit: (
+  state: RootState,
+) => FiatOrdersState['selectedRegionDeposit'] = (state: RootState) =>
+  state.fiatOrders.selectedRegionDeposit;
+export const fiatOrdersCryptoCurrencySelectorDeposit: (
+  state: RootState,
+) => FiatOrdersState['selectedCryptoCurrencyDeposit'] = (state: RootState) =>
+  state.fiatOrders.selectedCryptoCurrencyDeposit;
+export const fiatOrdersPaymentMethodSelectorDeposit: (
+  state: RootState,
+) => FiatOrdersState['selectedPaymentMethodDeposit'] = (state: RootState) =>
+  state.fiatOrders.selectedPaymentMethodDeposit;
 export const fiatOrdersPaymentMethodSelectorAgg: (
   state: RootState,
 ) => FiatOrdersState['selectedPaymentMethodAgg'] = (state: RootState) =>
@@ -166,43 +215,51 @@ export const fiatOrdersGetStartedSell: (
   state: RootState,
 ) => FiatOrdersState['getStartedSell'] = (state: RootState) =>
   state.fiatOrders.getStartedSell;
+export const fiatOrdersGetStartedDeposit: (
+  state: RootState,
+) => FiatOrdersState['getStartedDeposit'] = (state: RootState) =>
+  state.fiatOrders.getStartedDeposit;
+
+export const selectHasAgreedTransakNativePolicy = (state: RootState): boolean =>
+  state.fiatOrders.hasAgreedTransakNativePolicy === true;
 
 export const getOrdersProviders = createSelector(ordersSelector, (orders) => {
   const providers = orders
     .filter(
       (order) =>
-        order.provider === FIAT_ORDER_PROVIDERS.AGGREGATOR &&
+        (order.provider === FIAT_ORDER_PROVIDERS.AGGREGATOR ||
+          order.provider === FIAT_ORDER_PROVIDERS.RAMPS_V2) &&
         order.state === FIAT_ORDER_STATES.COMPLETED &&
-        (order.data as Order)?.provider?.id,
+        ((order.data as Order)?.provider?.id ||
+          (order.data as RampsOrder)?.provider?.id),
     )
-    .map((order) => (order.data as Order).provider.id);
+    .map((order) =>
+      order.provider === FIAT_ORDER_PROVIDERS.RAMPS_V2
+        ? (order.data as RampsOrder).provider?.id
+        : (order.data as Order).provider?.id,
+    );
   return Array.from(new Set(providers));
 });
 
 export const getOrders = createSelector(
   ordersSelector,
-  selectedAddressSelector,
-  chainIdSelector,
-  (orders, selectedAddress, chainId) =>
-    orders.filter(
-      (order) =>
-        !order.excludeFromPurchases &&
-        order.account === selectedAddress &&
-        (order.network === chainId || isTestNet(toHex(chainId))),
+  selectSelectedAccountGroupWithInternalAccountsAddresses,
+  (orders, selectedAccountGroupWithInternalAccountsAddresses) =>
+    orders.filter((order) =>
+      selectedAccountGroupWithInternalAccountsAddresses.includes(order.account),
     ),
 );
 
-export const getPendingOrders = createSelector(
-  ordersSelector,
-  selectedAddressSelector,
-  chainIdSelector,
-  (orders, selectedAddress, chainId) =>
-    orders.filter(
-      (order) =>
-        order.account === selectedAddress &&
-        order.network === chainId &&
-        order.state === FIAT_ORDER_STATES.PENDING,
-    ),
+export const getAllDepositOrders = createSelector(ordersSelector, (orders) =>
+  orders.filter((order) => order.provider === FIAT_ORDER_PROVIDERS.DEPOSIT),
+);
+
+export const getPendingOrders = createSelector(getOrders, (orders) =>
+  orders.filter((order) => order.state === FIAT_ORDER_STATES.PENDING),
+);
+
+export const getForceUpdateOrders = createSelector(ordersSelector, (orders) =>
+  orders.filter((order) => order.forceUpdate),
 );
 
 const customOrdersSelector: (
@@ -212,13 +269,12 @@ const customOrdersSelector: (
 
 export const getCustomOrderIds = createSelector(
   customOrdersSelector,
-  selectedAddressSelector,
-  chainIdSelector,
-  (customOrderIds, selectedAddress, chainId) =>
-    customOrderIds.filter(
-      (customOrderId) =>
-        customOrderId.account === selectedAddress &&
-        customOrderId.chainId === chainId,
+  selectSelectedAccountGroupWithInternalAccountsAddresses,
+  (customOrderIds, selectedAccountGroupWithInternalAccountsAddresses) =>
+    customOrderIds.filter((customOrderId) =>
+      selectedAccountGroupWithInternalAccountsAddresses.includes(
+        customOrderId.account,
+      ),
     ),
 );
 
@@ -255,22 +311,34 @@ export const networkShortNameSelector = createSelector(
   getRampNetworks,
   (chainId, networks) => {
     const network = networks.find(
-      // TODO(ramp, chainId-string): remove once chainId is a string
-      (aggregatorNetwork) => `${aggregatorNetwork.chainId}` === chainId,
+      (aggregatorNetwork) => aggregatorNetwork.chainId === chainId,
     );
 
     return network?.shortName;
   },
 );
 
+export const getDetectedGeolocation: (
+  state: RootState,
+) => string | undefined = (state: RootState) => {
+  const location =
+    state.engine?.backgroundState?.GeolocationController?.location;
+  return location === 'UNKNOWN' || !location ? undefined : location;
+};
+
 export const initialState: FiatOrdersState = {
   orders: [],
   customOrderIds: [],
   networks: [],
   selectedRegionAgg: null,
+  selectedRegionDeposit: null,
+  selectedCryptoCurrencyDeposit: null,
+  selectedPaymentMethodDeposit: null,
   selectedPaymentMethodAgg: null,
   getStartedAgg: false,
   getStartedSell: false,
+  getStartedDeposit: false,
+  hasAgreedTransakNativePolicy: false,
   authenticationUrls: [],
   activationKeys: [],
 };
@@ -351,10 +419,34 @@ const fiatOrderReducer: (
         getStartedSell: action.payload,
       };
     }
+    case ACTIONS.FIAT_SET_GETSTARTED_DEPOSIT: {
+      return {
+        ...state,
+        getStartedDeposit: action.payload,
+      };
+    }
     case ACTIONS.FIAT_SET_REGION_AGG: {
       return {
         ...state,
         selectedRegionAgg: action.payload,
+      };
+    }
+    case ACTIONS.FIAT_SET_REGION_DEPOSIT: {
+      return {
+        ...state,
+        selectedRegionDeposit: action.payload,
+      };
+    }
+    case ACTIONS.FIAT_SET_CRYPTO_CURRENCY_DEPOSIT: {
+      return {
+        ...state,
+        selectedCryptoCurrencyDeposit: action.payload,
+      };
+    }
+    case ACTIONS.FIAT_SET_PAYMENT_METHOD_DEPOSIT: {
+      return {
+        ...state,
+        selectedPaymentMethodDeposit: action.payload,
       };
     }
     case ACTIONS.FIAT_SET_PAYMENT_METHOD_AGG: {
@@ -535,6 +627,12 @@ const fiatOrderReducer: (
           },
           ...orders.slice(index + 1),
         ],
+      };
+    }
+    case ACTIONS.FIAT_SET_HAS_AGREED_TRANSAK_NATIVE_POLICY: {
+      return {
+        ...state,
+        hasAgreedTransakNativePolicy: action.payload,
       };
     }
 

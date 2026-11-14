@@ -1,0 +1,200 @@
+import BigNumber from 'bignumber.js';
+import { toTokenMinimalUnit } from '../../../../util/number';
+import Routes from '../../../../constants/navigation/Routes';
+import { strings } from '../../../../../locales/i18n';
+import { EARN_EXPERIENCES } from '../constants/experiences';
+import type { EarnTokenDetails } from '../types/lending.types';
+import type { TronStakeResult, TronUnstakeResult } from './tron-staking-snap';
+import { TokenI } from '../../Tokens/types';
+import Engine from '../../../../core/Engine';
+import Logger from '../../../../util/Logger';
+import { safeParseBigNumber } from '../../../../util/number/bignumber';
+import { normalizeToDotDecimal } from '../../../../util/number/bigint';
+import { FUNGIBLE_ASSET_TYPES } from '../../../../core/Assets/accountGroupAssetLoader';
+import type { TronSpecialAssetsMap } from '../../../../selectors/assets/assets-list';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+
+/**
+ * Returns the total staked TRX (sTRX) amount from Tron special assets.
+ * This is pre-computed in the selector using BigNumber to avoid floating-point precision errors.
+ */
+export function getStakedTrxTotalFromSpecialAssets(
+  specialAssets?: TronSpecialAssetsMap | null,
+): number {
+  return specialAssets?.totalStakedTrx ?? 0;
+}
+
+/**
+ * True if the user holds any sTRX according to Tron special assets.
+ */
+export const hasStakedTrxPositions = (
+  specialAssets?: TronSpecialAssetsMap | null,
+): boolean => getStakedTrxTotalFromSpecialAssets(specialAssets) > 0;
+
+export const buildTronEarnTokenIfEligible = (
+  token: TokenI,
+  {
+    isTrxStakingEnabled,
+    isTronEligible,
+    stakedBalanceOverride,
+  }: {
+    isTrxStakingEnabled: boolean;
+    isTronEligible: boolean;
+    /**
+     * Optional override for the token balance, used for flows that operate on
+     * staked TRX (sTRX) rather than the liquid TRX balance.
+     */
+    stakedBalanceOverride?: number | string;
+  },
+): EarnTokenDetails | undefined => {
+  if (!isTrxStakingEnabled || !isTronEligible) {
+    return undefined;
+  }
+
+  const balanceSource =
+    stakedBalanceOverride !== undefined
+      ? normalizeToDotDecimal(stakedBalanceOverride)
+      : normalizeToDotDecimal(token.balance);
+
+  // Truncate to token decimals to prevent "too many decimal places" error
+  // from toTokenMinimalUnit when floating-point arithmetic produces extra decimals.
+  // safeParseBigNumber handles empty/invalid input by defaulting to BigNumber(0).
+  const decimals = token.decimals ?? 6;
+  const truncatedBalance = safeParseBigNumber(balanceSource)
+    .decimalPlaces(decimals, BigNumber.ROUND_DOWN)
+    .toFixed();
+
+  const balanceMinimalUnit = toTokenMinimalUnit(
+    truncatedBalance,
+    decimals,
+  ).toString();
+
+  const experiences = [
+    { type: EARN_EXPERIENCES.TRX_STAKING, apr: '0' as const },
+  ];
+
+  const parsedBalanceFiat = Number.parseFloat(
+    normalizeToDotDecimal(token.balanceFiat ?? ''),
+  );
+  const isBalanceFiatAvailable = Number.isFinite(parsedBalanceFiat);
+
+  return {
+    ...token,
+    isETH: false,
+    balanceFiatNumber: isBalanceFiatAvailable ? parsedBalanceFiat : 0,
+    isBalanceFiatAvailable,
+    balanceMinimalUnit,
+    balanceFormatted:
+      stakedBalanceOverride !== undefined
+        ? String(stakedBalanceOverride)
+        : (token.balance ?? '0'),
+    balanceFiat: token.balanceFiat ?? '0',
+    tokenUsdExchangeRate: 0,
+    experiences,
+    experience: experiences[0],
+  } as EarnTokenDetails;
+};
+
+type TronStakingNavigationResult =
+  | TronStakeResult
+  | TronUnstakeResult
+  | null
+  | undefined;
+
+type TronStakingAction = 'stake' | 'unstake';
+
+const TRON_STAKING_COPY: Record<
+  TronStakingAction,
+  {
+    successTitleKey: string;
+    successDescriptionKey: string;
+    errorTitleKey: string;
+  }
+> = {
+  stake: {
+    successTitleKey: 'stake.tron.stake_completed',
+    successDescriptionKey: 'stake.tron.stake_completed_description',
+    errorTitleKey: 'stake.tron.stake_failed',
+  },
+  unstake: {
+    successTitleKey: 'stake.tron.unstake_completed',
+    successDescriptionKey: 'stake.tron.unstake_completed_description',
+    errorTitleKey: 'stake.tron.unstake_failed',
+  },
+};
+
+/**
+ * Maps known TRON error codes to localization keys.
+ * Falls back to the raw error message for unrecognized errors.
+ */
+const TRON_ERROR_LOCALIZATION_KEYS: Record<string, string> = {
+  InsufficientBalance: 'stake.tron.errors.insufficient_balance',
+};
+
+export const getLocalizedErrorMessage = (errors?: string[]): string => {
+  if (!errors || errors.length === 0) {
+    return '';
+  }
+
+  const localizedMessages = errors.map((error) => {
+    const localizationKey = TRON_ERROR_LOCALIZATION_KEYS[error];
+    return localizationKey ? strings(localizationKey) : error;
+  });
+
+  return localizedMessages.join('\n');
+};
+
+export const handleTronStakingNavigationResult = (
+  navigation: AppNavigationProp,
+  result: TronStakingNavigationResult,
+  action: TronStakingAction,
+  accountId?: string,
+) => {
+  const copy = TRON_STAKING_COPY[action];
+
+  if (result?.valid && (!result.errors || result.errors.length === 0)) {
+    // Refreshes the multichain balance after successful stake/unstake
+    // to make sure that the asset overview displays the updated staked balance right away
+    if (accountId) {
+      const { AccountsController, AssetsController } = Engine.context;
+      const account = AccountsController.getAccount(accountId);
+
+      if (account) {
+        AssetsController.getAssets([account], {
+          forceUpdate: true,
+          assetTypes: FUNGIBLE_ASSET_TYPES,
+          // The stake/unstake just confirmed, so the Accounts API's cached
+          // snapshot is known stale — bypass it to show the new balance.
+          bypassServerCache: true,
+        }).catch((error: Error) => {
+          Logger.error(
+            error,
+            `[Tron ${action}] Failed to refresh multichain balance`,
+          );
+        });
+      }
+    }
+
+    navigation.goBack();
+    requestAnimationFrame(() => {
+      navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+        screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+        params: {
+          title: strings(copy.successTitleKey),
+          description: strings(copy.successDescriptionKey),
+          type: 'success',
+          closeOnPrimaryButtonPress: true,
+        },
+      });
+    });
+  } else {
+    navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+      params: {
+        title: strings(copy.errorTitleKey),
+        description: getLocalizedErrorMessage(result?.errors),
+        type: 'error',
+      },
+    });
+  }
+};

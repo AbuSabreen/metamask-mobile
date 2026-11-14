@@ -1,12 +1,12 @@
-import { strings } from '../../../locales/i18n';
+import I18n, { strings } from '../../../locales/i18n';
+import { MINUTE, HOUR, DAY } from '../../constants/time';
+import { getIntlDateTimeFormatter } from '../intl';
 
-export function toLocaleDateTime(timestamp) {
-  const dateObj = new Date(timestamp);
-  const date = dateObj.toLocaleDateString();
-  const time = dateObj.toLocaleTimeString();
-  return `${date} ${time}`;
-}
-
+/**
+ * Formats a given timestamp (number | Date)
+ * @param {number | Date} timestamp
+ * @returns string
+ */
 export function toDateFormat(timestamp) {
   const date = new Date(timestamp);
   const month = strings(`date.months.${date.getMonth()}`);
@@ -22,12 +22,26 @@ export function toDateFormat(timestamp) {
   )} ${hours}:${minutes} ${ampm}`;
 }
 
-export function toLocaleDate(timestamp) {
-  return new Date(timestamp).toLocaleDateString();
+export function formatTimestampToDateTime(timestamp, locale = I18n.locale) {
+  if (!timestamp) {
+    return undefined;
+  }
+
+  const date = new Date(timestamp);
+  const month = getIntlDateTimeFormatter(locale, {
+    month: 'short',
+  }).format(date);
+  const time = getIntlDateTimeFormatter(locale, {
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: true,
+  }).format(date);
+
+  return `${month} ${date.getDate()}, ${date.getFullYear()} at ${time}`;
 }
 
-export function toLocaleTime(timestamp) {
-  return new Date(timestamp).toLocaleTimeString();
+export function toLocaleDate(timestamp) {
+  return new Date(timestamp).toLocaleDateString();
 }
 
 /**
@@ -48,3 +62,40 @@ export function msBetweenDates(date) {
 export function msToHours(milliseconds) {
   return milliseconds / (60 * 60 * 1000);
 }
+
+/**
+ * this function will convert a timestamp to the 'yyyy-MM-dd' format
+ * @param {*} timestamp timestamp you wish to convert in milliseconds
+ * @returns formatted date yyyy-MM-dd
+ */
+export const formatTimestampToYYYYMMDD = (timestamp) => {
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0'); // Months are 0-indexed
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+/**
+ * Returns an object containing the difference in days, hours, and minutes between a now and a future timestamp.
+ *
+ * @param {number} timestamp - The timestamp in the future to compare to now.
+ *
+ * @returns object with difference in amount of days, hours, and minutes. If timestamp is in the past, a default value of { days: 0, hours: 0, minutes: 0 } is returned.
+ */
+export const getTimeDifferenceFromNow = (timestamp) => {
+  const currentTime = Date.now();
+
+  // Default when timestamp is in the past.
+  if (timestamp < currentTime) {
+    return { days: 0, hours: 0, minutes: 0 };
+  }
+
+  const differenceInMilliseconds = timestamp - currentTime;
+
+  const days = Math.floor(differenceInMilliseconds / DAY);
+  const hours = Math.floor((differenceInMilliseconds % DAY) / HOUR);
+  const minutes = Math.floor((differenceInMilliseconds % HOUR) / MINUTE);
+
+  return { days, hours, minutes };
+};

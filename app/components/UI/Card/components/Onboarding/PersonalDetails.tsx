@@ -1,0 +1,478 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { navigateWithDetails } from '../../../../../util/navigation/navUtils';
+import {
+  HelpText,
+  HelpTextSeverity,
+  TextField,
+} from '@metamask/design-system-react-native';
+import Routes from '../../../../../constants/navigation/Routes';
+import { strings } from '../../../../../../locales/i18n';
+import OnboardingStep from './OnboardingStep';
+import SelectField from './SelectField';
+import CardDateField from './CardDateField';
+import CardFormField from './CardFormField';
+import {
+  resetOnboardingState,
+  selectOnboardingId,
+} from '../../../../../core/redux/slices/card';
+import { useDispatch, useSelector } from 'react-redux';
+import useRegisterPersonalDetails from '../../hooks/useRegisterPersonalDetails';
+import useRegions from '../../hooks/useRegions';
+import {
+  formatDateOfBirth,
+  validateDateOfBirth,
+} from '../../util/validateDateOfBirth';
+import { CardError } from '../../types';
+import { useCardSDK } from '../../sdk';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import { CardActions, CardScreens, withCardProvider } from '../../util/metrics';
+import { CardProviderIds } from '../../../../../core/Engine/controllers/card-controller/provider-types';
+import {
+  clearOnValueChange,
+  createRegionSelectorModalNavigationDetails,
+  setOnValueChange,
+} from './RegionSelectorModal';
+
+const PersonalDetails = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const dispatch = useDispatch();
+  const { setUser, fetchUserData, user: userData } = useCardSDK();
+  const onboardingId = useSelector(selectOnboardingId);
+  const {
+    allRegions,
+    userCountry: selectedCountry,
+    getRegionByCode,
+  } = useRegions();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [dateOfBirth, setDateOfBirth] = useState('');
+  const [dateError, setDateError] = useState('');
+  const [veriffFullName, setVeriffFullName] = useState('');
+  const [nationalityKey, setNationalityKey] = useState(''); // ISO 3166-1 alpha-2 country code
+  const [SSN, setSSN] = useState('');
+  const [isSSNError, setIsSSNError] = useState(false);
+  const [isSSNTouched, setIsSSNTouched] = useState(false);
+
+  useEffect(() => {
+    fetchUserData();
+  }, [fetchUserData]);
+
+  // If user data is available, set the state values
+  useEffect(() => {
+    if (userData) {
+      setFirstName(userData.firstName || '');
+      setLastName(userData.lastName || '');
+
+      const fullName = [userData.firstName, userData.lastName]
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      setVeriffFullName(fullName);
+      // userData.dateOfBirth is in ISO 8601 format, parse it to local timezone
+      if (userData.dateOfBirth && typeof userData.dateOfBirth === 'string') {
+        // Parse the date components: YYYY-MM-DD
+        const dateMatch = userData.dateOfBirth.match(
+          /^(\d{4})-(\d{2})-(\d{2})/,
+        );
+        if (dateMatch) {
+          const [, year, month, day] = dateMatch;
+          // Create date in local timezone (month is 0-indexed)
+          const date = new Date(
+            parseInt(year, 10),
+            parseInt(month, 10) - 1,
+            parseInt(day, 10),
+          );
+          const timestamp = date.getTime();
+          setDateOfBirth(timestamp.toString());
+        } else {
+          setDateOfBirth('');
+        }
+      } else {
+        setDateOfBirth('');
+      }
+
+      setNationalityKey(userData.countryOfNationality || '');
+      setSSN(userData.ssn || '');
+    }
+  }, [userData]);
+
+  const nationalityName = getRegionByCode(nationalityKey)?.name;
+
+  const {
+    registerPersonalDetails,
+    isLoading: registerLoading,
+    isError: registerIsError,
+    error: registerError,
+    reset: resetRegisterPersonalDetails,
+  } = useRegisterPersonalDetails();
+
+  const handleFirstNameChange = useCallback(
+    (text: string) => {
+      resetRegisterPersonalDetails();
+      setFirstName(text);
+    },
+    [resetRegisterPersonalDetails],
+  );
+
+  const handleLastNameChange = useCallback(
+    (text: string) => {
+      resetRegisterPersonalDetails();
+      setLastName(text);
+    },
+    [resetRegisterPersonalDetails],
+  );
+
+  const handleNationalitySelect = useCallback(() => {
+    resetRegisterPersonalDetails();
+    setOnValueChange((region) => {
+      setNationalityKey(region.key);
+    });
+    navigateWithDetails(
+      navigation,
+      createRegionSelectorModalNavigationDetails({
+        regions: allRegions,
+        selectedRegionKey: nationalityKey || null,
+      }),
+    );
+  }, [navigation, allRegions, nationalityKey, resetRegisterPersonalDetails]);
+
+  const handleDateOfBirthChange = useCallback(
+    (timestamp: string) => {
+      resetRegisterPersonalDetails();
+      setDateOfBirth(timestamp);
+    },
+    [resetRegisterPersonalDetails],
+  );
+
+  const handleSSNChange = useCallback(
+    (text: string) => {
+      resetRegisterPersonalDetails();
+      const cleanedText = text.replace(/\D/g, '');
+      setSSN(cleanedText);
+      // Clear error when user starts typing again
+      if (isSSNError) {
+        setIsSSNError(false);
+      }
+    },
+    [resetRegisterPersonalDetails, isSSNError],
+  );
+
+  const handleSSNBlur = useCallback(() => {
+    setIsSSNTouched(true);
+    if (SSN) {
+      setIsSSNError(!/^\d{9}$/.test(SSN));
+    }
+  }, [SSN]);
+
+  // Age validation useEffect
+  useEffect(() => {
+    if (!dateOfBirth) {
+      setDateError('');
+      return;
+    }
+
+    const birthTimestamp = Number(dateOfBirth);
+    if (isNaN(birthTimestamp)) {
+      setDateError(
+        strings('card.card_onboarding.personal_details.invalid_date_of_birth'),
+      );
+      return;
+    }
+
+    if (!validateDateOfBirth(birthTimestamp)) {
+      setDateError(
+        strings('card.card_onboarding.personal_details.invalid_date_of_birth'),
+      );
+    } else setDateError('');
+  }, [dateOfBirth]);
+
+  const nameError = useMemo(() => {
+    if (!veriffFullName) return '';
+    if (!firstName.trim() && !lastName.trim()) return '';
+
+    const currentFullName = [firstName.trim(), lastName.trim()]
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .normalize('NFC')
+      .toLowerCase();
+    const expectedFullName = veriffFullName
+      .replace(/\s+/g, ' ')
+      .normalize('NFC')
+      .toLowerCase();
+
+    if (currentFullName !== expectedFullName) {
+      return strings(
+        'card.card_onboarding.personal_details.name_mismatch_error',
+      );
+    }
+    return '';
+  }, [firstName, lastName, veriffFullName]);
+
+  useEffect(() => () => clearOnValueChange(), []);
+
+  const handleContinue = async () => {
+    if (
+      !onboardingId ||
+      !firstName ||
+      !lastName ||
+      !dateOfBirth ||
+      !nationalityKey ||
+      nameError ||
+      (!SSN && selectedCountry?.key === 'US')
+    ) {
+      return;
+    }
+
+    // Validate SSN before submitting if it's a US user
+    if (selectedCountry?.key === 'US') {
+      const isSSNValid = /^\d{9}$/.test(SSN);
+      if (!isSSNValid) {
+        setIsSSNError(true);
+        return;
+      }
+    }
+
+    try {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.CARD_BUTTON_CLICKED)
+          .addProperties(
+            withCardProvider(CardProviderIds.Baanx, {
+              action: CardActions.PERSONAL_DETAILS_BUTTON,
+              country_of_residence: selectedCountry?.key,
+            }),
+          )
+          .build(),
+      );
+      const { user } = await registerPersonalDetails({
+        onboardingId,
+        firstName,
+        lastName,
+        dateOfBirth: formatDateOfBirth(dateOfBirth),
+        countryOfNationality: nationalityKey,
+        ssn: SSN,
+      });
+
+      if (user) {
+        setUser(user);
+        navigation.reset({
+          index: 0,
+          routes: [{ name: Routes.CARD.ONBOARDING.PHYSICAL_ADDRESS }],
+        });
+      }
+    } catch (error) {
+      if (
+        error instanceof CardError &&
+        error.message.includes('Onboarding ID not found')
+      ) {
+        // Onboarding ID not found, navigate back and restart the flow
+        dispatch(resetOnboardingState());
+        navigation.navigate(Routes.CARD.ONBOARDING.SIGN_UP);
+        return;
+      }
+      // Allow error message to display
+    }
+  };
+
+  useEffect(() => {
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.CARD_VIEWED)
+        .addProperties(
+          withCardProvider(CardProviderIds.Baanx, {
+            screen: CardScreens.PERSONAL_DETAILS,
+          }),
+        )
+        .build(),
+    );
+  }, [trackEvent, createEventBuilder]);
+
+  const isDisabled = useMemo(() => {
+    // Check the actual SSN value, not the debounced one
+    const isSSNValid =
+      SSN && selectedCountry?.key === 'US' ? /^\d{9}$/.test(SSN) : true;
+
+    return (
+      registerLoading ||
+      registerIsError ||
+      !firstName ||
+      !lastName ||
+      !dateOfBirth ||
+      !nationalityKey ||
+      (!SSN && selectedCountry?.key === 'US') ||
+      !isSSNValid ||
+      !!dateError ||
+      !!nameError ||
+      !onboardingId
+    );
+  }, [
+    registerLoading,
+    registerIsError,
+    firstName,
+    lastName,
+    dateOfBirth,
+    nationalityKey,
+    SSN,
+    selectedCountry,
+    dateError,
+    nameError,
+    onboardingId,
+  ]);
+
+  const renderFormFields = () => (
+    <>
+      {/* First Name */}
+      <CardFormField
+        label={strings(
+          'card.card_onboarding.personal_details.first_name_label',
+        )}
+      >
+        <TextField
+          onChangeText={handleFirstNameChange}
+          value={firstName}
+          isError={!!nameError}
+          inputProps={{
+            autoCapitalize: 'none',
+            numberOfLines: 1,
+            autoComplete: 'one-time-code',
+            keyboardType: 'default',
+            maxLength: 255,
+            accessibilityLabel: strings(
+              'card.card_onboarding.personal_details.first_name_label',
+            ),
+            testID: 'personal-details-first-name-input',
+          }}
+        />
+      </CardFormField>
+
+      {/* Last Name */}
+      <CardFormField
+        label={strings('card.card_onboarding.personal_details.last_name_label')}
+        errorText={nameError || null}
+        errorTestID="personal-details-name-error"
+      >
+        <TextField
+          onChangeText={handleLastNameChange}
+          value={lastName}
+          isError={!!nameError}
+          inputProps={{
+            autoCapitalize: 'none',
+            numberOfLines: 1,
+            autoComplete: 'one-time-code',
+            keyboardType: 'default',
+            maxLength: 255,
+            accessibilityLabel: strings(
+              'card.card_onboarding.personal_details.last_name_label',
+            ),
+            testID: 'personal-details-last-name-input',
+          }}
+        />
+      </CardFormField>
+
+      {/* Date of Birth */}
+      <CardDateField
+        label={strings(
+          'card.card_onboarding.personal_details.date_of_birth_label',
+        )}
+        value={dateOfBirth}
+        onChangeText={handleDateOfBirthChange}
+        error={dateError}
+        testID="personal-details-date-of-birth-input"
+        errorTestID="personal-details-date-of-birth-error"
+      />
+
+      {/* Nationality */}
+      <CardFormField
+        label={strings(
+          'card.card_onboarding.personal_details.nationality_label',
+        )}
+      >
+        <SelectField
+          value={nationalityName || nationalityKey}
+          placeholder={strings(
+            'card.card_onboarding.personal_details.nationality_placeholder',
+          )}
+          onPress={handleNationalitySelect}
+          testID="personal-details-nationality-select"
+          accessibilityLabel={`${strings(
+            'card.card_onboarding.personal_details.nationality_label',
+          )}, ${
+            nationalityName ||
+            nationalityKey ||
+            strings(
+              'card.card_onboarding.personal_details.nationality_placeholder',
+            )
+          }`}
+        />
+      </CardFormField>
+
+      {/* SSN */}
+      {selectedCountry?.key === 'US' && (
+        <CardFormField
+          label={strings('card.card_onboarding.personal_details.ssn_label')}
+          helpText={
+            isSSNTouched && isSSNError
+              ? undefined
+              : strings('card.card_onboarding.personal_details.ssn_description')
+          }
+          errorText={
+            isSSNTouched && isSSNError
+              ? strings('card.card_onboarding.personal_details.invalid_ssn')
+              : null
+          }
+          errorTestID="personal-details-ssn-error"
+        >
+          <TextField
+            onChangeText={handleSSNChange}
+            onBlur={handleSSNBlur}
+            value={SSN}
+            isError={isSSNTouched && isSSNError}
+            inputProps={{
+              autoCapitalize: 'none',
+              numberOfLines: 1,
+              keyboardType: 'number-pad',
+              autoComplete: 'one-time-code',
+              secureTextEntry: true,
+              maxLength: 9,
+              accessibilityLabel: strings(
+                'card.card_onboarding.personal_details.ssn_label',
+              ),
+              testID: 'personal-details-ssn-input',
+            }}
+          />
+        </CardFormField>
+      )}
+      {!!registerError && (
+        <HelpText
+          severity={HelpTextSeverity.Danger}
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          testID="personal-details-error"
+        >
+          {registerError}
+        </HelpText>
+      )}
+    </>
+  );
+
+  return (
+    <OnboardingStep
+      title={strings('card.card_onboarding.personal_details.title')}
+      description={strings('card.card_onboarding.personal_details.description')}
+      formFields={renderFormFields()}
+      primaryButtonProps={{
+        children: strings('card.card_onboarding.continue_button'),
+        onPress: handleContinue,
+        isDisabled,
+        isLoading: registerLoading,
+        testID: 'personal-details-continue-button',
+      }}
+      headerMode="close-with-confirmation"
+    />
+  );
+};
+
+export default PersonalDetails;

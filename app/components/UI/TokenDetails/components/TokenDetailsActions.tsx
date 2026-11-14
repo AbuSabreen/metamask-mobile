@@ -1,0 +1,355 @@
+import React, { useRef, useCallback, useEffect } from 'react';
+import { StyleSheet, View } from 'react-native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import { useStyles } from '../../../../component-library/hooks';
+import MainActionButton from '../../../../component-library/components-temp/MainActionButton';
+import { Skeleton } from '../../../../component-library/components-temp/Skeleton';
+import { strings } from '../../../../../locales/i18n';
+import { IconName } from '../../../../component-library/components/Icons/Icon';
+import { TokenOverviewSelectorsIDs } from '../../AssetOverview/TokenOverview.testIds';
+import { useSelector } from 'react-redux';
+import { selectCanSignTransactions } from '../../../../selectors/accountsController';
+import Routes from '../../../../constants/navigation/Routes';
+import { TokenI } from '../../Tokens/types';
+import { TokenDetailsAction } from '../constants/constants';
+
+// Height of MainActionButton: paddingVertical (16 * 2) + Icon (24px) + label marginTop (2) + label lineHeight (~16)
+const SKELETON_BUTTON_HEIGHT = 74;
+const SKELETON_BUTTON_KEYS = ['buy', 'send', 'receive', 'more'];
+
+const styleSheet = () =>
+  StyleSheet.create({
+    activitiesButton: {
+      width: '100%',
+      flexDirection: 'row',
+      paddingHorizontal: 16,
+      gap: 8,
+    },
+    buttonContainer: {
+      flex: 1,
+      overflow: 'hidden',
+    },
+    skeletonButton: {
+      borderRadius: 12,
+    },
+  });
+
+type TokenDetailButtonKey =
+  | 'long'
+  | 'short'
+  | 'buy'
+  | 'send'
+  | 'receive'
+  | 'more';
+
+interface TokenDetailButton {
+  key: TokenDetailButtonKey;
+  iconName: IconName;
+  label: string;
+  isDisabled: boolean;
+  testID: string;
+}
+
+interface BuildTokenDetailButtonsParams {
+  hasPerpsMarket: boolean;
+  hasBalance: boolean;
+  isBuyable: boolean;
+  canSignTransactions: boolean;
+  onLong?: () => void;
+  onShort?: () => void;
+}
+
+// Determine which buttons to display based on perps market and balance
+// IF no perps market:
+//   IF buyable:
+//     IF has balance: ["Cash Buy", "Send", "Receive", "More"]
+//     IF no balance: ["Cash Buy", "Receive", "More"]
+//   IF not buyable:
+//     IF has balance: ["Send", "Receive", "More"]
+//     IF no balance: ["Receive", "More"]
+// IF has perps market and geolocation is in a region that supports perps:
+//   IF has balance: ["Long", "Short", "Send", "More"]
+//   IF no balance: ["Long", "Short", "Receive", "More"]
+function buildTokenDetailButtons({
+  hasPerpsMarket,
+  hasBalance,
+  isBuyable,
+  canSignTransactions,
+  onLong,
+  onShort,
+}: BuildTokenDetailButtonsParams): TokenDetailButton[] {
+  const actionButtons: TokenDetailButton[] = [];
+
+  if (hasPerpsMarket) {
+    actionButtons.push(
+      {
+        key: 'long',
+        iconName: IconName.TrendUp,
+        label: strings('asset_overview.long_button'),
+        isDisabled: !onLong,
+        testID: TokenOverviewSelectorsIDs.LONG_BUTTON,
+      },
+      {
+        key: 'short',
+        iconName: IconName.TrendDown,
+        label: strings('asset_overview.short_button'),
+        isDisabled: !onShort,
+        testID: TokenOverviewSelectorsIDs.SHORT_BUTTON,
+      },
+    );
+
+    if (hasBalance) {
+      actionButtons.push({
+        key: 'send',
+        iconName: IconName.Arrow2UpRight,
+        label: strings('asset_overview.send_button'),
+        isDisabled: !canSignTransactions,
+        testID: TokenOverviewSelectorsIDs.SEND_BUTTON,
+      });
+    } else {
+      actionButtons.push({
+        key: 'receive',
+        iconName: IconName.QrCode,
+        label: strings('asset_overview.receive_button'),
+        isDisabled: false,
+        testID: TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+      });
+    }
+  } else {
+    if (isBuyable) {
+      actionButtons.push({
+        key: 'buy',
+        iconName: IconName.AttachMoney,
+        label: strings('asset_overview.cash_buy_button'),
+        isDisabled: false,
+        testID: TokenOverviewSelectorsIDs.BUY_BUTTON,
+      });
+    }
+
+    if (hasBalance) {
+      actionButtons.push({
+        key: 'send',
+        iconName: IconName.Arrow2UpRight,
+        label: strings('asset_overview.send_button'),
+        isDisabled: !canSignTransactions,
+        testID: TokenOverviewSelectorsIDs.SEND_BUTTON,
+      });
+    }
+
+    actionButtons.push({
+      key: 'receive',
+      iconName: IconName.QrCode,
+      label: strings('asset_overview.receive_button'),
+      isDisabled: false,
+      testID: TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+    });
+  }
+
+  actionButtons.push({
+    key: 'more',
+    iconName: IconName.MoreHorizontal,
+    label: strings('asset_overview.more_button'),
+    isDisabled: false,
+    testID: TokenOverviewSelectorsIDs.MORE_BUTTON,
+  });
+
+  return actionButtons;
+}
+
+export interface TokenDetailsActionsProps {
+  hasPerpsMarket: boolean;
+  hasBalance: boolean;
+  isBuyable: boolean;
+  isNativeCurrency: boolean;
+  token: TokenI;
+  onBuy: () => void;
+  onLong?: () => void;
+  onShort?: () => void;
+  onSend: () => void;
+  onReceive: () => void;
+  isLoading?: boolean;
+  /** Optional ref to receive a callback that resets the navigation lock. Used when Long/Short show a modal instead of navigating (e.g. geo block). */
+  resetNavigationLockRef?: React.MutableRefObject<(() => void) | null>;
+  onActionTapped?: (action: TokenDetailsAction) => void;
+  /** Draws the tiles on brand refresh glass. */
+  isGlass?: boolean;
+}
+
+/**
+ * Skeleton component for TokenDetailsActions.
+ * Displays 4 skeleton buttons (maximum button count) to prevent layout shift during loading.
+ */
+export const TokenDetailsActionsSkeleton: React.FC = () => {
+  const { styles } = useStyles(styleSheet, {});
+
+  return (
+    <View style={styles.activitiesButton}>
+      {SKELETON_BUTTON_KEYS.map((key) => (
+        <Skeleton
+          key={`skeleton-${key}`}
+          width="100%"
+          height={SKELETON_BUTTON_HEIGHT}
+          style={[styles.buttonContainer, styles.skeletonButton]}
+        />
+      ))}
+    </View>
+  );
+};
+
+export const TokenDetailsActions: React.FC<TokenDetailsActionsProps> = ({
+  hasPerpsMarket,
+  hasBalance,
+  isBuyable,
+  isNativeCurrency,
+  token,
+  onBuy,
+  onLong,
+  onShort,
+  onSend,
+  onReceive,
+  isLoading = false,
+  resetNavigationLockRef,
+  onActionTapped,
+  isGlass = false,
+}) => {
+  const { styles } = useStyles(styleSheet, {});
+  const canSignTransactions = useSelector(selectCanSignTransactions);
+  const navigation = useNavigation<AppNavigationProp>();
+  const { navigate } = navigation;
+
+  // Prevent rapid navigation clicks - locks all buttons during navigation
+  const navigationLockRef = useRef(false);
+
+  // Expose reset so parent can unlock when a non-navigating action ends (e.g. geo block modal dismissed)
+  const resetLock = useCallback(() => {
+    navigationLockRef.current = false;
+  }, []);
+  useEffect(() => {
+    if (resetNavigationLockRef) {
+      resetNavigationLockRef.current = resetLock;
+      return () => {
+        resetNavigationLockRef.current = null;
+      };
+    }
+  }, [resetNavigationLockRef, resetLock]);
+
+  // Reset lock when screen comes into focus (handles return from navigation)
+  useFocusEffect(
+    useCallback(() => {
+      navigationLockRef.current = false;
+    }, []),
+  );
+
+  // Listen to navigation state changes to unlock when navigation completes or fails
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('state', () => {
+      navigationLockRef.current = false;
+    });
+    return unsubscribe;
+  }, [navigation]);
+
+  // Wrapper to prevent rapid navigation clicks
+  const withNavigationLock = useCallback((callback: () => void) => {
+    if (navigationLockRef.current) return;
+    navigationLockRef.current = true;
+    callback();
+  }, []);
+
+  const handleBuyPress = useCallback(() => {
+    withNavigationLock(onBuy);
+  }, [withNavigationLock, onBuy]);
+
+  const handleLongPress = useCallback(() => {
+    withNavigationLock(() => {
+      onLong?.();
+    });
+  }, [withNavigationLock, onLong]);
+
+  const handleShortPress = useCallback(() => {
+    withNavigationLock(() => {
+      onShort?.();
+    });
+  }, [withNavigationLock, onShort]);
+
+  const handleSendPress = useCallback(() => {
+    withNavigationLock(onSend);
+    onActionTapped?.(TokenDetailsAction.Send);
+  }, [withNavigationLock, onSend, onActionTapped]);
+
+  const handleReceivePress = useCallback(() => {
+    withNavigationLock(onReceive);
+    onActionTapped?.(TokenDetailsAction.Receive);
+  }, [withNavigationLock, onReceive, onActionTapped]);
+
+  const handleMorePress = useCallback(() => {
+    withNavigationLock(() => {
+      navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+        screen: Routes.MODAL.MORE_TOKEN_ACTIONS_MENU,
+        params: {
+          hasPerpsMarket,
+          hasBalance,
+          isBuyable,
+          isNativeCurrency,
+          asset: token,
+          onBuy,
+          onReceive,
+          onActionTapped,
+        },
+      });
+    });
+    onActionTapped?.(TokenDetailsAction.MoreOpened);
+  }, [
+    withNavigationLock,
+    navigate,
+    hasPerpsMarket,
+    hasBalance,
+    isBuyable,
+    isNativeCurrency,
+    token,
+    onBuy,
+    onReceive,
+    onActionTapped,
+  ]);
+
+  if (isLoading) {
+    return <TokenDetailsActionsSkeleton />;
+  }
+
+  const buttons = buildTokenDetailButtons({
+    hasPerpsMarket,
+    hasBalance,
+    isBuyable,
+    canSignTransactions,
+    onLong,
+    onShort,
+  });
+
+  const pressHandlers: Record<TokenDetailButtonKey, () => void> = {
+    long: handleLongPress,
+    short: handleShortPress,
+    buy: handleBuyPress,
+    send: handleSendPress,
+    receive: handleReceivePress,
+    more: handleMorePress,
+  };
+
+  return (
+    <View style={styles.activitiesButton}>
+      {buttons.map((button) => (
+        <MainActionButton
+          key={button.key}
+          iconName={button.iconName}
+          label={button.label}
+          onPress={pressHandlers[button.key]}
+          isDisabled={button.isDisabled}
+          testID={button.testID}
+          containerStyle={styles.buttonContainer}
+          isGlass={isGlass}
+        />
+      ))}
+    </View>
+  );
+};
+
+export default TokenDetailsActions;

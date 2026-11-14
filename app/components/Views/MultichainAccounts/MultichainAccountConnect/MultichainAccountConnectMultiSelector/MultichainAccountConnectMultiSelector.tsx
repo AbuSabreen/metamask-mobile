@@ -1,0 +1,227 @@
+// Third party dependencies.
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { View } from 'react-native';
+import { useSelector } from 'react-redux';
+
+// External dependencies.
+import { strings } from '../../../../../../locales/i18n';
+import {
+  Button,
+  ButtonVariant,
+  ButtonBaseSize,
+  Text,
+  TextColor,
+} from '@metamask/design-system-react-native';
+import SheetHeader from '../../../../../component-library/components/Sheet/SheetHeader';
+import { useStyles } from '../../../../../component-library/hooks';
+import HelpText, {
+  HelpTextSeverity,
+} from '../../../../../component-library/components/Form/HelpText';
+
+// Internal dependencies.
+import { AccountGroupId } from '@metamask/account-api';
+import { AccountGroupObject } from '@metamask/account-tree-controller';
+import { ConnectAccountBottomSheetSelectorsIDs } from '../../../MultichainAccounts/shared/ConnectAccountBottomSheet.testIds';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { AccountListBottomSheetSelectorsIDs } from '../../../AccountSelector/AccountListBottomSheet.testIds';
+import styleSheet from './MultichainAccountConnectMultiSelector.styles';
+import { ConnectedAccountsSelectorsIDs } from '../../../MultichainAccounts/shared/ConnectedAccountModal.testIds';
+import { USER_INTENT } from '../../../../../constants/permissions';
+import { ConnectionProps } from '../../../../../core/SDKConnect/Connection';
+import MultichainAccountSelectorList from '../../../../../component-library/components-temp/MultichainAccounts/MultichainAccountSelectorList';
+import type { AccountSection } from '../../../../../component-library/components-temp/MultichainAccounts/MultichainAccountSelectorList/MultichainAccountSelectorList.types';
+import { AccountGroupWithInternalAccounts } from '../../../../../selectors/multichainAccounts/accounts.type';
+import {
+  selectAccountGroups,
+  selectAccountGroupsByWallet,
+} from '../../../../../selectors/multichainAccounts/accountTreeController';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Routes from '../../../../../constants/navigation/Routes';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+
+export interface MultichainAccountConnectMultiSelectorProps {
+  accountGroups: AccountGroupWithInternalAccounts[];
+  defaultSelectedAccountGroupIds: AccountGroupId[];
+  isLoading: boolean;
+  onUserAction: (intent: USER_INTENT) => void;
+  onSubmit: (accountGroupIds: AccountGroupId[]) => void;
+  isRenderedAsBottomSheet: boolean;
+  showDisconnectAllButton: boolean;
+  hostname: string;
+  connection?: ConnectionProps;
+  screenTitle: string;
+  onBack: () => void;
+}
+
+const MultichainAccountConnectMultiSelector = ({
+  accountGroups: accountGroupsProp,
+  defaultSelectedAccountGroupIds,
+  isLoading,
+  screenTitle,
+  onBack,
+  onSubmit,
+  isRenderedAsBottomSheet,
+  showDisconnectAllButton,
+  hostname,
+  connection,
+}: MultichainAccountConnectMultiSelectorProps) => {
+  const insets = useSafeAreaInsets();
+  const { styles } = useStyles(styleSheet, { isRenderedAsBottomSheet });
+  const safeAreaContainerStyle = useMemo(
+    () => [
+      styles.safeArea,
+      { paddingTop: insets.top, paddingBottom: insets.bottom },
+    ],
+    [styles.safeArea, insets.top, insets.bottom],
+  );
+  const navigation = useNavigation<AppNavigationProp>();
+  const [selectedAccountGroupIdsSet, setSelectedAccountGroupIdsSet] = useState<
+    Set<AccountGroupId>
+  >(() => new Set());
+
+  useEffect(() => {
+    setSelectedAccountGroupIdsSet(new Set(defaultSelectedAccountGroupIds));
+  }, [defaultSelectedAccountGroupIds]);
+
+  const accountGroups = useSelector(selectAccountGroups);
+  const treeSections = useSelector(selectAccountGroupsByWallet);
+
+  /**
+   * List sections: the account tree filtered down to the `accountGroups`
+   * prop, so connected hidden groups stay visible while other hidden groups
+   * do not.
+   */
+  const accountSections = useMemo<AccountSection[]>(() => {
+    const selectableIds = new Set(accountGroupsProp.map((group) => group.id));
+    return treeSections
+      .map((section) => ({
+        ...section,
+        data: section.data.filter((group) => selectableIds.has(group.id)),
+      }))
+      .filter((section) => section.data.length > 0);
+  }, [accountGroupsProp, treeSections]);
+
+  const onSelectAccountGroupId = useCallback(
+    (accountGroup: AccountGroupObject) => {
+      setSelectedAccountGroupIdsSet((prev) => {
+        const next = new Set(prev);
+        if (next.has(accountGroup.id)) {
+          next.delete(accountGroup.id);
+        } else {
+          next.add(accountGroup.id);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const areAnyAccountsSelected = selectedAccountGroupIdsSet.size !== 0;
+  const areNoAccountsSelected = selectedAccountGroupIdsSet.size === 0;
+
+  const selectedAccountGroups = useMemo(
+    () => accountGroups.filter((g) => selectedAccountGroupIdsSet.has(g.id)),
+    [accountGroups, selectedAccountGroupIdsSet],
+  );
+
+  const handleSubmit = useCallback(() => {
+    onSubmit(Array.from(selectedAccountGroupIdsSet));
+  }, [onSubmit, selectedAccountGroupIdsSet]);
+
+  const handleDisconnect = useCallback(() => {
+    onSubmit([]);
+    navigation.navigate(Routes.BROWSER.HOME);
+  }, [onSubmit, navigation]);
+
+  const renderCtaButtons = useCallback(
+    () => (
+      <View style={styles.ctaButtonsContainer}>
+        <View style={styles.connectOrUpdateButtonContainer}>
+          {areAnyAccountsSelected && (
+            <Button
+              variant={ButtonVariant.Primary}
+              onPress={handleSubmit}
+              size={ButtonBaseSize.Lg}
+              style={{
+                ...styles.button,
+                ...(isLoading && styles.disabled),
+              }}
+              isDisabled={isLoading}
+              testID={ConnectAccountBottomSheetSelectorsIDs.SELECT_MULTI_BUTTON}
+            >
+              {strings('networks.update')}
+            </Button>
+          )}
+        </View>
+        {areNoAccountsSelected && showDisconnectAllButton && (
+          <View style={styles.disconnectAllContainer}>
+            <View style={styles.helpTextContainer}>
+              <HelpText severity={HelpTextSeverity.Error}>
+                {strings('common.disconnect_you_from', {
+                  dappUrl: hostname,
+                })}
+              </HelpText>
+            </View>
+            <View style={styles.disconnectAllButtonContainer}>
+              <Button
+                variant={ButtonVariant.Primary}
+                testID={ConnectedAccountsSelectorsIDs.DISCONNECT}
+                onPress={handleDisconnect}
+                isDanger
+                size={ButtonBaseSize.Lg}
+                style={{
+                  ...styles.button,
+                }}
+              >
+                {strings('accounts.disconnect')}
+              </Button>
+            </View>
+          </View>
+        )}
+      </View>
+    ),
+    [
+      areAnyAccountsSelected,
+      isLoading,
+      styles,
+      areNoAccountsSelected,
+      hostname,
+      showDisconnectAllButton,
+      handleDisconnect,
+      handleSubmit,
+    ],
+  );
+
+  return (
+    <View style={safeAreaContainerStyle}>
+      <View style={styles.container}>
+        <SheetHeader
+          title={screenTitle || strings('accounts.connect_accounts_title')}
+          onBack={onBack}
+        />
+        <MultichainAccountSelectorList
+          onSelectAccount={onSelectAccountGroupId}
+          selectedAccountGroups={selectedAccountGroups}
+          accountSections={accountSections}
+          testID={AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ID}
+          showCheckbox
+        />
+        {connection?.originatorInfo?.apiVersion && (
+          <View style={styles.sdkInfoContainer}>
+            <View style={styles.sdkInfoDivier} />
+            <Text color={TextColor.TextMuted}>
+              {strings('permissions.sdk_connection', {
+                originator_platform: connection?.originatorInfo?.platform,
+                api_version: connection?.originatorInfo?.apiVersion,
+              })}
+            </Text>
+          </View>
+        )}
+        <View style={styles.body}>{renderCtaButtons()}</View>
+      </View>
+    </View>
+  );
+};
+
+export default MultichainAccountConnectMultiSelector;

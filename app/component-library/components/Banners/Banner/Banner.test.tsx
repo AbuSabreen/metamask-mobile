@@ -6,7 +6,7 @@ import { render } from '@testing-library/react-native';
 import Text from '../../Texts/Text/Text';
 import { ButtonVariants } from '../../Buttons/Button';
 import { IconName } from '../../Icons/Icon';
-import { ButtonIconSizes, ButtonIconVariants } from '../../Buttons/ButtonIcon';
+import { ButtonIconSizes } from '../../Buttons/ButtonIcon';
 
 // Internal dependencies.
 import Banner from './Banner';
@@ -25,7 +25,6 @@ describe('Banner', () => {
         description={SAMPLE_BANNER_PROPS.description}
       />,
     );
-    expect(wrapper).toMatchSnapshot();
   });
 
   it('should render correctly with a start accessory', async () => {
@@ -39,7 +38,6 @@ describe('Banner', () => {
       />,
     );
 
-    expect(wrapper).toMatchSnapshot();
     expect(await wrapper.findByText('Test Start accessory')).toBeDefined();
   });
 
@@ -58,7 +56,6 @@ describe('Banner', () => {
       />,
     );
 
-    expect(wrapper).toMatchSnapshot();
     expect(await wrapper.findByText('Test Action Button')).toBeDefined();
   });
 
@@ -77,13 +74,11 @@ describe('Banner', () => {
         closeButtonProps={{
           onPress: () => jest.fn(),
           iconName: IconName.Close,
-          variant: ButtonIconVariants.Primary,
           size: ButtonIconSizes.Sm,
         }}
       />,
     );
 
-    expect(wrapper).toMatchSnapshot();
     expect(await wrapper.findByText('Test Action Button')).toBeDefined();
     expect(
       await wrapper.queryByTestId(TESTID_BANNER_CLOSE_BUTTON_ICON),

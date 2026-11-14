@@ -1,19 +1,24 @@
 import React from 'react';
 import { View, Switch, Linking } from 'react-native';
-import Text, {
-  TextVariant,
+import {
+  FontWeight,
+  Text,
   TextColor,
-} from '../../../component-library/components/Texts/Text';
+  TextVariant,
+} from '@metamask/design-system-react-native';
 import { useTheme } from '../../../../app/util/theme';
 import { strings } from '../../../../locales/i18n';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../../../app/reducers';
 import styles from './BasicFunctionality.styles';
 import { BasicFunctionalityComponentProps } from './BasicFunctionality.types';
+import { BASIC_FUNCTIONALITY_SWITCH_TEST_ID } from './BasicFunctionality.constants';
 import AppConstants from '../../../core/AppConstants';
 
 export default function BasicFunctionalityComponent({
   handleSwitchToggle,
+  flushTop,
+  disabled = false,
 }: Readonly<BasicFunctionalityComponentProps>) {
   const theme = useTheme();
   const { colors } = theme;
@@ -26,25 +31,36 @@ export default function BasicFunctionalityComponent({
   };
 
   return (
-    <View style={styles.setting}>
+    <View style={[styles.setting, flushTop && styles.settingFlushTop]}>
       <View style={styles.heading}>
-        <Text variant={TextVariant.HeadingSM}>
+        <Text variant={TextVariant.HeadingSm}>
           {strings('default_settings.basic_functionality')}
         </Text>
         <Switch
+          testID={BASIC_FUNCTIONALITY_SWITCH_TEST_ID}
+          disabled={disabled}
           value={isEnabled}
           onChange={handleSwitchToggle}
           trackColor={{
             true: colors.primary.default,
             false: colors.border.muted,
           }}
-          thumbColor={theme.brandColors.white000}
+          thumbColor={theme.brandColors.white}
           ios_backgroundColor={colors.border.muted}
         />
       </View>
-      <Text variant={TextVariant.BodyMD} color={TextColor.Alternative}>
+      <Text
+        variant={TextVariant.BodySm}
+        fontWeight={FontWeight.Medium}
+        color={TextColor.TextAlternative}
+      >
         {strings('default_settings.functionality_body')}
-        <Text color={TextColor.Info} onPress={handleLink}>
+        <Text
+          variant={TextVariant.BodySm}
+          fontWeight={FontWeight.Medium}
+          color={TextColor.InfoDefault}
+          onPress={handleLink}
+        >
           {strings('default_settings.privacy_policy')}
         </Text>
         {strings('default_settings.functionality_body2')}

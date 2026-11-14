@@ -1,8 +1,8 @@
 /* eslint-disable no-console */
 /* eslint-disable @typescript-eslint/no-require-imports */
-/* eslint-disable import/no-commonjs */
+/* eslint-disable import-x/no-commonjs */
 /* eslint-disable @typescript-eslint/no-var-requires */
-/* eslint-disable import/prefer-default-export */
+/* eslint-disable import-x/prefer-default-export */
 // External dependencies.
 import { ButtonVariants } from '../../../../Buttons/Button';
 
@@ -29,9 +29,9 @@ export const IMAGESOURCE_BY_BANNERTIPLOGOTYPE: ImageSourceByBannerTipLogoType =
   };
 
 // Sample consts
-export const SAMPLE_BANNERTIP_TITLE = 'Sample Banner Tip Title';
-export const SAMPLE_BANNERTIP_DESCRIPTION = 'Sample Banner Tip Description';
-export const SAMPLE_BANNERTIP_ACTIONBUTTONLABEL = 'Sample Action Button Label';
+export const SAMPLE_BANNERTIP_TITLE = 'Sample banner tip title';
+export const SAMPLE_BANNERTIP_DESCRIPTION = 'Sample banner tip description';
+export const SAMPLE_BANNERTIP_ACTIONBUTTONLABEL = 'Sample action button label';
 export const SAMPLE_BANNERTIP_PROPS: BannerTipProps = {
   logoType: DEFAULT_BANNERTIP_LOGOTYPE,
   title: SAMPLE_BANNERTIP_TITLE,

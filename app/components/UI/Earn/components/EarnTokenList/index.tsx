@@ -1,0 +1,431 @@
+import React, {
+  useRef,
+  useCallback,
+  useEffect,
+  useReducer,
+  useMemo,
+} from 'react';
+import { TextColor } from '@metamask/design-system-react-native';
+import BottomSheet, {
+  BottomSheetRef,
+} from '../../../../../component-library/components/BottomSheets/BottomSheet';
+import { View } from 'react-native';
+import { useStyles } from '../../../../hooks/useStyles';
+import styleSheet from './EarnTokenList.styles';
+import { getDecimalChainId } from '../../../../../util/networks';
+import { TokenI } from '../../../Tokens/types';
+import { FlatList } from 'react-native-gesture-handler';
+import { Hex } from '@metamask/utils';
+import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import Routes from '../../../../../constants/navigation/Routes';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { EVENT_NAME } from '../../../../../core/Analytics/MetaMetrics.events';
+import {
+  EVENT_LOCATIONS,
+  EVENT_PROVIDERS,
+} from '../../../Stake/constants/events';
+import { strings } from '../../../../../../locales/i18n';
+import UpsellBanner from '../../../Stake/components/UpsellBanner';
+import { UPSELL_BANNER_VARIANTS } from '../../../Stake/components/UpsellBanner/UpsellBanner.types';
+import Engine from '../../../../../core/Engine';
+import SkeletonPlaceholder from 'react-native-skeleton-placeholder';
+import useEarnTokens from '../../hooks/useEarnTokens';
+import { useSelector } from 'react-redux';
+import {
+  selectPooledStakingEnabledFlag,
+  selectStablecoinLendingEnabledFlag,
+} from '../../selectors/featureFlags';
+import { selectTrxStakingEnabled } from '../../../../../selectors/featureFlagController/trxStakingEnabled';
+import {
+  isTronChainId,
+  isNonEvmChainId,
+} from '../../../../../core/Multichain/utils';
+import useEarnNetworkPolling from '../../hooks/useEarnNetworkPolling';
+import { EARN_INPUT_VIEW_ACTIONS } from '../../Views/EarnInputView/EarnInputView.types';
+import EarnDepositTokenListItem from '../EarnDepositTokenListItem';
+import EarnWithdrawalTokenListItem from '../EarnWithdrawalTokenListItem';
+import { EarnTokenDetails } from '../../types/lending.types';
+import BN4 from 'bnjs4';
+import {
+  sortByHighestBalance,
+  sortByHighestRewards,
+  formatEarnRatePercentage,
+} from '../../utils';
+import { trace, TraceName, endTrace } from '../../../../../util/trace';
+import useTronStakeApy from '../../hooks/useTronStakeApy';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+const isEmptyBalance = (token: { balanceFormatted: string }) =>
+  parseFloat(token?.balanceFormatted) === 0;
+
+const EarnTokenListSkeletonPlaceholder = () => (
+  <View testID="earn-token-list-skeleton">
+    <SkeletonPlaceholder>
+      <SkeletonPlaceholder.Item
+        width={'auto'}
+        height={150}
+        borderRadius={8}
+        marginBottom={12}
+      />
+      <>
+        {[1, 2, 3, 4, 5].map((value) => (
+          <SkeletonPlaceholder.Item
+            key={value}
+            width={'auto'}
+            height={42}
+            borderRadius={8}
+            margin={16}
+          />
+        ))}
+      </>
+    </SkeletonPlaceholder>
+  </View>
+);
+
+export interface EarnTokenListViewRouteParams {
+  tokenFilter: {
+    includeReceiptTokens: boolean;
+  };
+  onItemPressScreen: string;
+}
+
+export interface EarnTokenListProps {
+  route: RouteProp<{ params: EarnTokenListViewRouteParams }, 'params'>;
+}
+
+const EarnTokenList = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  // Start polling lending networks when this component mounts and stops when it unmounts
+  // This is currently the main component that needs data cross chain on boot
+  useEarnNetworkPolling();
+
+  // Temp: Used as workaround for BadgeNetwork not properly anchoring to its parent BadgeWrapper.
+  const [, forceUpdate] = useReducer((x) => x + 1, 0);
+  const { createEventBuilder, trackEvent } = useAnalytics();
+  const { styles } = useStyles(styleSheet, {});
+  const { navigate } = useNavigation<AppNavigationProp>();
+  const { params } = useRoute<EarnTokenListProps['route']>();
+  const bottomSheetRef = useRef<BottomSheetRef>(null);
+  const traceEndedRef = useRef(false);
+
+  const isPooledStakingEnabled = useSelector(selectPooledStakingEnabledFlag);
+  const isTrxStakingEnabled = useSelector(selectTrxStakingEnabled);
+  const { includeReceiptTokens } = params?.tokenFilter ?? {};
+
+  const { apyDecimal: tronApyDecimal } = useTronStakeApy();
+
+  const { earnTokens, earnOutputTokens, earnableTotalFiatFormatted } =
+    useEarnTokens();
+
+  const tokens = includeReceiptTokens ? earnOutputTokens : earnTokens;
+
+  // End trace when earn tokens data becomes available (only once)
+  useEffect(() => {
+    if (earnTokens?.length && !traceEndedRef.current) {
+      endTrace({ name: TraceName.EarnTokenList });
+      traceEndedRef.current = true;
+    }
+  }, [earnTokens?.length]);
+
+  // Temp workaround for BadgeNetwork component not anchoring correctly on initial render.
+  // We force a rerender to ensure the BadgeNetwork component properly anchors to its BadgeWrapper.
+  useEffect(() => {
+    // Force a re-render after initial mount
+    const timer = setTimeout(() => {
+      forceUpdate();
+    }, 100); // Adjust timing as needed
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  const closeBottomSheetAndNavigate = useCallback(
+    (navigateFunc: () => void) => {
+      bottomSheetRef.current?.onCloseBottomSheet(navigateFunc);
+    },
+    [],
+  );
+
+  const redirectToDepositScreen = async (token: TokenI) => {
+    trace({ name: TraceName.EarnDepositScreen });
+    closeBottomSheetAndNavigate(() => {
+      navigate('StakeScreens', {
+        screen: Routes.STAKING.STAKE,
+        params: { token },
+      });
+    });
+  };
+
+  const redirectToWithdrawalScreen = (token: TokenI) => {
+    trace({ name: TraceName.EarnWithdrawScreen });
+    closeBottomSheetAndNavigate(() => {
+      navigate('StakeScreens', {
+        screen: Routes.STAKING.UNSTAKE,
+        params: { token },
+      });
+    });
+  };
+
+  /**
+   * Prepares the network for the token if needed.
+   * EVM tokens require switching to the correct network.
+   * Non-EVM tokens (TRX, SOL, BTC) don't require network switching.
+   *
+   * @returns true if ready to proceed, false if network setup failed
+   */
+  const prepareNetworkForToken = async (token: TokenI): Promise<boolean> => {
+    // Non-EVM tokens don't need network switching - ready to proceed
+    if (isNonEvmChainId(String(token.chainId))) {
+      return true;
+    }
+
+    // EVM tokens need network switching
+    const { NetworkController } = Engine.context;
+    const networkClientId = NetworkController.findNetworkClientIdByChainId(
+      token.chainId as Hex,
+    );
+
+    if (!networkClientId) {
+      console.error(
+        `EarnTokenList redirect failed: could not retrieve networkClientId for chainId: ${token.chainId}`,
+      );
+      return false;
+    }
+
+    await NetworkController.setActiveNetwork(networkClientId);
+    return true;
+  };
+
+  const handleRedirectToInputScreen = async (token: TokenI) => {
+    const isReady = await prepareNetworkForToken(token);
+    if (!isReady) return;
+
+    const onItemPressScreen = params?.onItemPressScreen ?? '';
+
+    if (onItemPressScreen === EARN_INPUT_VIEW_ACTIONS.DEPOSIT) {
+      redirectToDepositScreen(token);
+    } else if (onItemPressScreen === EARN_INPUT_VIEW_ACTIONS.WITHDRAW) {
+      redirectToWithdrawalScreen(token);
+    }
+
+    trackEvent(
+      createEventBuilder(EVENT_NAME.EARN_TOKEN_LIST_ITEM_CLICKED)
+        .addProperties({
+          provider: EVENT_PROVIDERS.CONSENSYS,
+          location: EVENT_LOCATIONS.WALLET_ACTIONS_BOTTOM_SHEET,
+          token_name: token.name,
+          token_symbol: token.symbol,
+          token_chain_id: getDecimalChainId(token.chainId),
+        })
+        .build(),
+    );
+  };
+
+  const isNoEarnableTokensWithBalance = useMemo(
+    () =>
+      earnTokens?.every((token) =>
+        new BN4(token.balanceMinimalUnit).eq(new BN4(0)),
+      ),
+    [earnTokens],
+  );
+
+  // Helper to get the APR for a token, using real Tron APY when available
+  const getTokenApr = useCallback(
+    (token: EarnTokenDetails): number => {
+      const isTronNative =
+        Boolean(token.isNative) && isTronChainId(String(token.chainId));
+
+      if (isTronNative && tronApyDecimal) {
+        return parseFloat(tronApyDecimal);
+      }
+
+      return parseFloat(token?.experience?.apr || '0');
+    },
+    [tronApyDecimal],
+  );
+
+  const highestAvailableApr = useMemo(
+    () =>
+      earnTokens?.reduce((highestApr, token) => {
+        const parsedApr = getTokenApr(token);
+
+        return parsedApr > highestApr ? parsedApr : highestApr;
+      }, 0),
+    [earnTokens, getTokenApr],
+  );
+
+  /**
+   * We want to sort the tokens by estimated fiat rewards in descending order.
+   * Tokens where a user has a non-zero balance will be listed first by highest fiat rewards.
+   * Tokens where a user doesn't have a balance will not be listed for now to avoid dead end on deposit screen.
+   */
+  const tokensSortedByHighestYield = useMemo(() => {
+    if (!tokens?.length) return [];
+
+    const tokensWithBalance: EarnTokenDetails[] = [];
+
+    tokens?.forEach((token) => {
+      const hasTokenBalance = new BN4(token.balanceMinimalUnit).gt(new BN4(0));
+      // Show ETH always (existing behavior). Also show TRX native when TRX staking is enabled.
+      const isTrxNative =
+        Boolean(token.isNative) && isTronChainId(String(token.chainId));
+      if (
+        hasTokenBalance ||
+        token.isETH ||
+        (isTrxNative && isTrxStakingEnabled)
+      ) {
+        tokensWithBalance.push(token);
+      }
+    });
+
+    return [...sortByHighestRewards(tokensWithBalance)];
+  }, [tokens, isTrxStakingEnabled]);
+
+  const tokensSortedByHighestBalance = useMemo(() => {
+    if (!tokens?.length) return [];
+
+    return [...sortByHighestBalance(tokens)];
+  }, [tokens]);
+
+  const filteredTokens = useMemo(() => {
+    const onItemPressScreen = params?.onItemPressScreen;
+
+    let tokensToFilter;
+    if (onItemPressScreen === EARN_INPUT_VIEW_ACTIONS.DEPOSIT) {
+      tokensToFilter = tokensSortedByHighestYield;
+    } else {
+      tokensToFilter = tokensSortedByHighestBalance;
+    }
+
+    return tokensToFilter.filter((token) => {
+      if (token.isETH && !token.isStaked && !isPooledStakingEnabled) {
+        return false;
+      }
+      return token?.chainId;
+    });
+  }, [
+    params?.onItemPressScreen,
+    tokensSortedByHighestYield,
+    tokensSortedByHighestBalance,
+    isPooledStakingEnabled,
+  ]);
+
+  const renderTokenItem = ({ item }: { item: EarnTokenDetails }) => {
+    const onItemPressScreen = params?.onItemPressScreen;
+    const tokenApr = getTokenApr(item);
+    const formattedApr =
+      tokenApr > 0 ? formatEarnRatePercentage(tokenApr) : tokenApr;
+
+    return (
+      <View style={styles.listItemContainer}>
+        {onItemPressScreen === EARN_INPUT_VIEW_ACTIONS.WITHDRAW ? (
+          <EarnWithdrawalTokenListItem
+            earnToken={item}
+            onPress={handleRedirectToInputScreen}
+          />
+        ) : (
+          <EarnDepositTokenListItem
+            token={item}
+            onPress={handleRedirectToInputScreen}
+            primaryText={{
+              value: `${formattedApr}% APR`,
+              color: TextColor.SuccessDefault,
+            }}
+            {...(!isEmptyBalance(item) && {
+              secondaryText: {
+                value: item.balanceFormatted,
+              },
+            })}
+          />
+        )}
+      </View>
+    );
+  };
+
+  const renderHeader = useCallback(() => {
+    if (
+      !earnTokens?.length ||
+      params?.onItemPressScreen !== EARN_INPUT_VIEW_ACTIONS.DEPOSIT
+    ) {
+      return null;
+    }
+
+    return (
+      <UpsellBanner
+        primaryText={strings('stake.you_could_earn_up_to')}
+        secondaryText={
+          isNoEarnableTokensWithBalance
+            ? `${formatEarnRatePercentage(highestAvailableApr)}%`
+            : `${earnableTotalFiatFormatted}`
+        }
+        tertiaryText={strings('stake.per_year_on_your_tokens')}
+        variant={UPSELL_BANNER_VARIANTS.HEADER}
+      />
+    );
+  }, [
+    earnTokens?.length,
+    params?.onItemPressScreen,
+    isNoEarnableTokensWithBalance,
+    highestAvailableApr,
+    earnableTotalFiatFormatted,
+  ]);
+
+  const renderEmpty = useCallback(() => {
+    if (earnTokens?.length) {
+      return null;
+    }
+    return <EarnTokenListSkeletonPlaceholder />;
+  }, [earnTokens?.length]);
+
+  const handleClose = useCallback(() => {
+    bottomSheetRef.current?.onCloseBottomSheet();
+  }, []);
+
+  return (
+    <BottomSheet ref={bottomSheetRef}>
+      <HeaderStandardGlass
+        isFloating={false}
+        isGlass={isGlassHeader}
+        title={
+          params?.onItemPressScreen === EARN_INPUT_VIEW_ACTIONS.WITHDRAW
+            ? strings('stake.select_a_token_to_withdraw')
+            : strings('stake.select_a_token_to_deposit')
+        }
+        onClose={handleClose}
+        closeButtonProps={{ testID: 'earn-token-list-close-button' }}
+      />
+      <View style={styles.flatList}>
+        <FlatList
+          data={filteredTokens}
+          renderItem={renderTokenItem}
+          keyExtractor={(item) => `${item.name}-${item.symbol}-${item.chainId}`}
+          keyboardShouldPersistTaps="always"
+          ListHeaderComponent={renderHeader}
+          ListEmptyComponent={renderEmpty}
+          scrollEnabled
+          showsVerticalScrollIndicator
+          bounces
+        />
+      </View>
+    </BottomSheet>
+  );
+};
+
+/**
+ * Temporary wrapper to prevent rending if feature flags aren't enabled.
+ * We can delete this wrapped once these feature flags are removed.
+ */
+const EarnTokenListWrapper = () => {
+  const isStablecoinLendingEnabled = useSelector(
+    selectStablecoinLendingEnabledFlag,
+  );
+
+  if (isStablecoinLendingEnabled) {
+    return <EarnTokenList />;
+  }
+
+  return <></>;
+};
+
+export default EarnTokenListWrapper;

@@ -1,29 +1,12 @@
-import React, {
-  Fragment,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import React, { Fragment, useCallback, useEffect, useState } from 'react';
 import Engine from '../../../core/Engine';
-import {
-  StyleSheet,
-  Text,
-  View,
-  ScrollView,
-  // eslint-disable-next-line react-native/split-platform-components
-  PermissionsAndroid,
-  Linking,
-  AppState,
-  AppStateStatus,
-} from 'react-native';
+import { StyleSheet, Text, View, ScrollView } from 'react-native';
 import { strings } from '../../../../locales/i18n';
 import AnimatedQRCode from './AnimatedQRCode';
 import AnimatedQRScannerModal from './AnimatedQRScanner';
 import { fontStyles } from '../../../styles/common';
 import AccountInfoCard from '../AccountInfoCard';
 import ActionView from '../ActionView';
-import { IQRState } from './types';
 import { UR } from '@ngraveio/bc-ur';
 import { ETHSignature } from '@keystonehq/bc-ur-registry-eth';
 import { stringify as uuidStringify } from 'uuid';
@@ -31,12 +14,15 @@ import Alert, { AlertType } from '../../Base/Alert';
 import { MetaMetricsEvents } from '../../../core/Analytics';
 
 import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
 import { useTheme } from '../../../util/theme';
-import Device from '../../../util/device';
-import { useMetrics } from '../../../components/hooks/useMetrics';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
+import { QrScanRequest, QrScanRequestType } from '@metamask/eth-qr-keyring';
+import { useQrScanErrorForwarding } from '../../../core/HardwareWallet/hooks/useQrScanErrorForwarding';
+import { useHardwareWallet } from '../../../core/HardwareWallet/contexts';
 
 interface IQRSigningDetails {
-  QRState: IQRState;
+  pendingScanRequest: QrScanRequest;
   successCallback?: () => void;
   failureCallback?: (error: string) => void;
   cancelCallback?: () => void;
@@ -45,10 +31,11 @@ interface IQRSigningDetails {
   tighten?: boolean;
   showHint?: boolean;
   shouldStartAnimated?: boolean;
-  bypassAndroidCameraAccessCheck?: boolean;
   fromAddress: string;
 }
 
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const createStyles = (colors: any) =>
   StyleSheet.create({
     wrapper: {
@@ -62,7 +49,7 @@ const createStyles = (colors: any) =>
       backgroundColor: colors.background.default,
     },
     accountInfoCardWrapper: {
-      paddingHorizontal: 24,
+      paddingHorizontal: 16,
       paddingBottom: 12,
     },
     containerTighten: {
@@ -115,7 +102,7 @@ const createStyles = (colors: any) =>
   });
 
 const QRSigningDetails = ({
-  QRState,
+  pendingScanRequest,
   successCallback,
   failureCallback,
   cancelCallback,
@@ -124,127 +111,106 @@ const QRSigningDetails = ({
   tighten = false,
   showHint = true,
   shouldStartAnimated = true,
-  bypassAndroidCameraAccessCheck = true,
   fromAddress,
 }: IQRSigningDetails) => {
   const { colors } = useTheme();
-  const { trackEvent } = useMetrics();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const { setQrScanRetryHandler } = useHardwareWallet();
   const styles = createStyles(colors);
-  const navigation = useNavigation();
-  const KeyringController = useMemo(() => {
-    const { KeyringController: keyring } = Engine.context as any;
-    return keyring;
-  }, []);
+  const navigation = useNavigation<AppNavigationProp>();
   const [scannerVisible, setScannerVisible] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [shouldPause, setShouldPause] = useState(false);
-  const [cameraError, setCameraError] = useState('');
-
-  // ios handled camera perfectly in this situation, we just need to check permission with android.
-  const [hasCameraPermission, setCameraPermission] = useState(
-    Device.isIos() || bypassAndroidCameraAccessCheck,
-  );
-
-  const checkAndroidCamera = useCallback(() => {
-    if (Device.isAndroid() && !hasCameraPermission) {
-      PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA).then(
-        (_hasPermission) => {
-          setCameraPermission(_hasPermission);
-          if (!_hasPermission) {
-            setCameraError(strings('transaction.no_camera_permission_android'));
-          } else {
-            setCameraError('');
-          }
-        },
-      );
-    }
-  }, [hasCameraPermission]);
-
-  const handleAppState = useCallback(
-    (appState: AppStateStatus) => {
-      if (appState === 'active') {
-        checkAndroidCamera();
-      }
-    },
-    [checkAndroidCamera],
-  );
-
-  useEffect(() => {
-    checkAndroidCamera();
-  }, [checkAndroidCamera]);
-
-  useEffect(() => {
-    const appStateListener = AppState.addEventListener(
-      'change',
-      handleAppState,
-    );
-    return () => {
-      appStateListener.remove();
-    };
-  }, [handleAppState]);
 
   const [hasSentOrCanceled, setSentOrCanceled] = useState(false);
 
   useEffect(() => {
-    navigation.addListener('beforeRemove', (e) => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e) => {
       if (hasSentOrCanceled) {
         return;
       }
       e.preventDefault();
-      KeyringController.cancelQRSignRequest().then(() => {
-        navigation.dispatch(e.data.action);
-      });
+      if (pendingScanRequest) {
+        Engine.getQrKeyringScanner().rejectPendingScan(
+          new Error('Scan canceled'),
+        );
+      }
+      navigation.dispatch(e.data.action);
     });
-  }, [KeyringController, hasSentOrCanceled, navigation]);
+    return unsubscribe;
+  }, [pendingScanRequest, hasSentOrCanceled, navigation]);
 
-  const resetError = () => {
+  const resetError = useCallback(() => {
     setErrorMessage('');
-  };
+  }, []);
 
-  const showScanner = () => {
+  const showScanner = useCallback(() => {
     setScannerVisible(true);
     resetError();
-  };
+  }, [resetError]);
 
-  const hideScanner = () => {
+  const hideScanner = useCallback(() => {
     setScannerVisible(false);
-  };
+  }, []);
+  const { onQRHardwareScanError, handleScannerModalHide } =
+    useQrScanErrorForwarding({ hideScanner });
+
+  useEffect(() => {
+    setQrScanRetryHandler?.(() => {
+      showScanner();
+    });
+
+    return () => {
+      setQrScanRetryHandler?.(null);
+    };
+  }, [setQrScanRetryHandler, showScanner]);
 
   const onCancel = useCallback(async () => {
-    await KeyringController.cancelQRSignRequest();
+    if (pendingScanRequest) {
+      Engine.getQrKeyringScanner().rejectPendingScan(
+        new Error('Scan canceled'),
+      );
+    }
     setSentOrCanceled(true);
     hideScanner();
     cancelCallback?.();
-  }, [KeyringController, cancelCallback]);
+  }, [pendingScanRequest, hideScanner, cancelCallback]);
 
   const onScanSuccess = useCallback(
     (ur: UR) => {
       hideScanner();
       const signature = ETHSignature.fromCBOR(ur.cbor);
       const buffer = signature.getRequestId();
-      const requestId = uuidStringify(buffer);
-      if (QRState.sign.request?.requestId === requestId) {
-        KeyringController.submitQRSignature(
-          QRState.sign.request?.requestId as string,
-          ur.cbor.toString('hex'),
-        );
-        setSentOrCanceled(true);
-        successCallback?.();
-      } else {
-        trackEvent(MetaMetricsEvents.HARDWARE_WALLET_ERROR, {
-          error:
-            'received signature request id is not matched with origin request',
-        });
-        setErrorMessage(strings('transaction.mismatched_qr_request_id'));
-        failureCallback?.(strings('transaction.mismatched_qr_request_id'));
+      if (buffer) {
+        const requestId = uuidStringify(buffer);
+        if (pendingScanRequest?.request?.requestId === requestId) {
+          Engine.getQrKeyringScanner().resolvePendingScan({
+            type: ur.type,
+            cbor: ur.cbor.toString('hex'),
+          });
+          setSentOrCanceled(true);
+          successCallback?.();
+          return;
+        }
       }
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.HARDWARE_WALLET_ERROR)
+          .addProperties({
+            error:
+              'received signature request id is not matched with origin request',
+          })
+          .build(),
+      );
+      setErrorMessage(strings('transaction.mismatched_qr_request_id'));
+      failureCallback?.(strings('transaction.mismatched_qr_request_id'));
     },
     [
-      KeyringController,
-      QRState.sign.request?.requestId,
+      pendingScanRequest?.request?.requestId,
       failureCallback,
       successCallback,
       trackEvent,
+      createEventBuilder,
+      hideScanner,
     ],
   );
   const onScanError = useCallback(
@@ -253,7 +219,7 @@ const QRSigningDetails = ({
       setErrorMessage(_errorMessage);
       failureCallback?.(_errorMessage);
     },
-    [failureCallback],
+    [hideScanner, failureCallback],
   );
 
   const renderAlert = () =>
@@ -263,23 +229,12 @@ const QRSigningDetails = ({
       </Alert>
     );
 
-  const renderCameraAlert = () =>
-    cameraError !== '' && (
-      <Alert
-        type={AlertType.Error}
-        style={styles.alert}
-        onPress={Linking.openSettings}
-      >
-        <Text style={styles.errorText}>{cameraError}</Text>
-      </Alert>
-    );
-
   return (
     <Fragment>
-      {QRState?.sign?.request && (
+      {pendingScanRequest?.request && (
         <ScrollView contentContainerStyle={styles.wrapper}>
           <ActionView
-            confirmDisabled={!hasCameraPermission}
+            confirmDisabled={false}
             showCancelButton={showCancelButton}
             confirmButtonMode={confirmButtonMode}
             cancelText={strings('transaction.reject')}
@@ -300,7 +255,6 @@ const QRSigningDetails = ({
                 />
               </View>
               {renderAlert()}
-              {renderCameraAlert()}
               <View
                 style={[
                   styles.title,
@@ -315,8 +269,8 @@ const QRSigningDetails = ({
                 </Text>
               </View>
               <AnimatedQRCode
-                cbor={QRState.sign.request.payload.cbor}
-                type={QRState.sign.request.payload.type}
+                cbor={pendingScanRequest.request.payload.cbor}
+                type={pendingScanRequest.request.payload.type}
                 shouldPause={
                   scannerVisible || !shouldStartAnimated || shouldPause
                 }
@@ -355,9 +309,11 @@ const QRSigningDetails = ({
       <AnimatedQRScannerModal
         pauseQRCode={setShouldPause}
         visible={scannerVisible}
-        purpose={'sign'}
+        purpose={QrScanRequestType.SIGN}
         onScanSuccess={onScanSuccess}
         onScanError={onScanError}
+        onQRHardwareScanError={onQRHardwareScanError}
+        onModalHideComplete={handleScannerModalHide}
         hideModal={hideScanner}
       />
     </Fragment>

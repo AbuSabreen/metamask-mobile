@@ -6,10 +6,10 @@ import { TextProps as RNTextProps } from 'react-native';
  * Text component variants.
  */
 export enum TextVariant {
+  DisplayLG = 'sDisplayLG',
   DisplayMD = 'sDisplayMD',
   HeadingLG = 'sHeadingLG',
   HeadingMD = 'sHeadingMD',
-  HeadingSMRegular = 'sHeadingSMRegular',
   HeadingSM = 'sHeadingSM',
   BodyLGMedium = 'sBodyLGMedium',
   BodyMD = 'sBodyMD',
@@ -31,13 +31,27 @@ export enum TextColor {
   Alternative = 'Alternative',
   Muted = 'Muted',
   Primary = 'Primary',
-  PrimaryAlternative = 'Primary',
+  PrimaryAlternative = 'PrimaryAlternative',
   Success = 'Success',
   Error = 'Error',
   ErrorAlternative = 'ErrorAlternative',
   Warning = 'Warning',
   Info = 'Info',
 }
+
+export type FontWeight =
+  | '100'
+  | '200'
+  | '300'
+  | '400'
+  | '500'
+  | '600'
+  | '700'
+  | '800'
+  | '900'
+  | 'normal'
+  | 'bold';
+export type FontStyle = 'normal' | 'italic';
 
 /**
  * Text component props.
@@ -55,5 +69,5 @@ export interface TextProps extends RNTextProps {
   /**
    * Optional prop to add color to text.
    */
-  color?: TextColor;
+  color?: TextColor | string;
 }

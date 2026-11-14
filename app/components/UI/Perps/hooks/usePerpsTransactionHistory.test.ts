@@ -1,0 +1,1693 @@
+import { renderHook, act } from '@testing-library/react-native';
+import { useSelector } from 'react-redux';
+import Engine from '../../../../core/Engine';
+import DevLogger from '../../../../core/SDKConnect/utils/DevLogger';
+import { usePerpsTransactionHistory } from './usePerpsTransactionHistory';
+import { useUserHistory } from './useUserHistory';
+import { usePerpsLiveFills } from './stream/usePerpsLiveFills';
+import { resetPerpsRestCacheForTests } from '@metamask/perps-controller/utils/coalescePerpsRestRequest';
+import {
+  transformFillsToTransactions,
+  transformOrdersToTransactions,
+  transformFundingToTransactions,
+  transformUserHistoryToTransactions,
+  transformWalletPerpsDepositsToTransactions,
+  transformWithdrawalRequestsToTransactions,
+  walletPerpsWithdrawalsToRequests,
+  mergeOrderFills,
+} from '../utils/transactionTransforms';
+import { FillType } from '../types/transactionHistory';
+import type { CaipAccountId } from '@metamask/utils';
+
+// Mock dependencies
+jest.mock('../../../../core/Engine');
+jest.mock('../../../../core/SDKConnect/utils/DevLogger');
+jest.mock('./useUserHistory');
+jest.mock('../utils/transactionTransforms');
+jest.mock('./stream/usePerpsLiveFills');
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(),
+}));
+
+const mockEngine = Engine as jest.Mocked<typeof Engine>;
+const mockDevLogger = DevLogger as jest.Mocked<typeof DevLogger>;
+const mockUseUserHistory = useUserHistory as jest.MockedFunction<
+  typeof useUserHistory
+>;
+const mockUsePerpsLiveFills = usePerpsLiveFills as jest.MockedFunction<
+  typeof usePerpsLiveFills
+>;
+const mockTransformFillsToTransactions =
+  transformFillsToTransactions as jest.MockedFunction<
+    typeof transformFillsToTransactions
+  >;
+const mockTransformOrdersToTransactions =
+  transformOrdersToTransactions as jest.MockedFunction<
+    typeof transformOrdersToTransactions
+  >;
+const mockTransformFundingToTransactions =
+  transformFundingToTransactions as jest.MockedFunction<
+    typeof transformFundingToTransactions
+  >;
+const mockTransformUserHistoryToTransactions =
+  transformUserHistoryToTransactions as jest.MockedFunction<
+    typeof transformUserHistoryToTransactions
+  >;
+const mockTransformWalletPerpsDepositsToTransactions =
+  transformWalletPerpsDepositsToTransactions as jest.MockedFunction<
+    typeof transformWalletPerpsDepositsToTransactions
+  >;
+const mockTransformWithdrawalRequestsToTransactions =
+  transformWithdrawalRequestsToTransactions as jest.MockedFunction<
+    typeof transformWithdrawalRequestsToTransactions
+  >;
+const mockWalletPerpsWithdrawalsToRequests =
+  walletPerpsWithdrawalsToRequests as jest.MockedFunction<
+    typeof walletPerpsWithdrawalsToRequests
+  >;
+const mockMergeOrderFills = mergeOrderFills as jest.MockedFunction<
+  typeof mergeOrderFills
+>;
+const mockUseSelector = useSelector as jest.MockedFunction<typeof useSelector>;
+
+describe('usePerpsTransactionHistory', () => {
+  let mockController: {
+    getActiveProvider: jest.MockedFunction<() => unknown>;
+    getActiveProviderOrNull: jest.MockedFunction<() => unknown>;
+    getOrderFills: jest.MockedFunction<
+      (...args: unknown[]) => Promise<unknown>
+    >;
+    getOrders: jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+    getFunding: jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+  };
+  let mockProvider: {
+    getOrderFills: jest.MockedFunction<
+      (...args: unknown[]) => Promise<unknown>
+    >;
+    getOrders: jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+    getFunding: jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+  };
+
+  const mockFills = [
+    {
+      direction: 'Open Long',
+      orderId: 'order1',
+      symbol: 'ETH',
+      size: '1',
+      price: '2000',
+      fee: '10',
+      timestamp: 1640995200000,
+      feeToken: 'USDC',
+      pnl: '0',
+      liquidation: false,
+      detailedOrderType: 'Market',
+    },
+  ];
+
+  const mockOrders = [
+    {
+      orderId: 'order1',
+      symbol: 'BTC',
+      side: 'buy',
+      orderType: 'Limit',
+      detailedOrderType: 'Market',
+      size: '0.5',
+      originalSize: '1',
+      price: '50000',
+      status: 'filled',
+      timestamp: 1640995201000,
+    },
+  ];
+
+  const mockFunding = [
+    {
+      symbol: 'ETH',
+      amountUsd: '5.25',
+      rate: '0.0001',
+      timestamp: 1640995202000,
+    },
+  ];
+
+  const mockUserHistory = [
+    {
+      id: 'deposit1',
+      timestamp: 1640995203000,
+      type: 'deposit' as const,
+      amount: '1000',
+      asset: 'USDC',
+      status: 'completed' as const,
+      txHash: '0x123',
+      details: {
+        source: 'ethereum',
+        bridgeContract: '0x1234567890123456789012345678901234567890',
+        recipient: '0x9876543210987654321098765432109876543210',
+        blockNumber: '12345',
+        chainId: '1',
+        synthetic: false,
+      },
+    },
+  ];
+
+  const mockTransformedTransactions = [
+    {
+      id: 'fill-1',
+      type: 'trade' as const,
+      category: 'position_open' as const,
+      title: 'Opened long',
+      subtitle: '1 ETH',
+      timestamp: 1640995200000,
+      asset: 'ETH',
+      fill: {
+        shortTitle: 'Opened long',
+        amount: '-$10.00',
+        amountNumber: -10,
+        isPositive: false,
+        size: '1',
+        entryPrice: '2000',
+        pnl: '0',
+        fee: '10',
+        points: '0',
+        feeToken: 'USDC',
+        action: 'Opened',
+        liquidation: undefined,
+        isLiquidation: false,
+        isTakeProfit: false,
+        isStopLoss: false,
+        fillType: FillType.Standard,
+      },
+    },
+  ];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    resetPerpsRestCacheForTests();
+
+    // Mock Redux selectors: first call = wallet transactions, second = selected address
+    mockUseSelector.mockImplementation(() => {
+      const len = mockUseSelector.mock.calls.length;
+      return len % 2 === 1
+        ? []
+        : { address: '0x1234567890123456789012345678901234567890' };
+    });
+
+    // Mock provider
+    mockProvider = {
+      getOrderFills: jest.fn().mockResolvedValue(mockFills),
+      getOrders: jest.fn().mockResolvedValue(mockOrders),
+      getFunding: jest.fn().mockResolvedValue(mockFunding),
+    };
+
+    // Mock controller — delegates read-only data-fetching methods to the
+    // provider mock so existing tests that assert on `mockProvider.*` keep
+    // passing. Real controller routes through MarketDataService (coalesce
+    // layer) → provider; this mock collapses that hop but preserves the
+    // provider-facing contract the tests exercise.
+    mockController = {
+      getActiveProvider: jest.fn().mockReturnValue(mockProvider),
+      getActiveProviderOrNull: jest.fn().mockReturnValue(mockProvider),
+      getOrderFills: jest.fn((params, options) =>
+        mockProvider.getOrderFills(params, options),
+      ),
+      getOrders: jest.fn((params, options) =>
+        mockProvider.getOrders(params, options),
+      ),
+      getFunding: jest.fn((params, options) =>
+        mockProvider.getFunding(params, options),
+      ),
+    } as typeof mockController & {
+      getOrderFills: jest.MockedFunction<
+        (...args: unknown[]) => Promise<unknown>
+      >;
+      getOrders: jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+      getFunding: jest.MockedFunction<(...args: unknown[]) => Promise<unknown>>;
+    };
+
+    // Mock Engine context
+    (
+      mockEngine as unknown as { context: { PerpsController: unknown } }
+    ).context = {
+      PerpsController: mockController,
+    };
+
+    // Mock hooks
+    mockUseUserHistory.mockReturnValue({
+      userHistory: mockUserHistory,
+      isLoading: false,
+      error: null,
+      refetch: jest.fn().mockResolvedValue(mockUserHistory),
+    });
+
+    // Mock live fills hook (returns empty by default, tests can override)
+    mockUsePerpsLiveFills.mockReturnValue({
+      retry: jest.fn(),
+      fills: [],
+      isInitialLoading: false,
+    });
+
+    // Mock transform functions
+    mockTransformFillsToTransactions.mockReturnValue(
+      mockTransformedTransactions,
+    );
+    mockTransformOrdersToTransactions.mockReturnValue([]);
+    mockTransformFundingToTransactions.mockReturnValue([]);
+    mockTransformUserHistoryToTransactions.mockReturnValue([]);
+    mockTransformWalletPerpsDepositsToTransactions.mockReturnValue([]);
+    mockWalletPerpsWithdrawalsToRequests.mockReturnValue([]);
+    mockTransformWithdrawalRequestsToTransactions.mockReturnValue([]);
+    // Use real mergeOrderFills so dedup, sort, and detailedOrderType preservation
+    // are exercised correctly in hook-level tests. Unit tests for the function
+    // itself live in transactionTransforms.test.ts.
+    const actualTransforms = jest.requireActual(
+      '../utils/transactionTransforms',
+    ) as typeof import('../utils/transactionTransforms');
+    mockMergeOrderFills.mockImplementation(actualTransforms.mergeOrderFills);
+  });
+
+  describe('initial state', () => {
+    it('returns initial state correctly', async () => {
+      // Override transform mock to return empty for initial state test
+      mockTransformFillsToTransactions.mockReturnValue([]);
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      // Initial state: no WebSocket fills, no REST data yet
+      expect(result.current.transactions).toEqual([]);
+      // Initial loading state is false, becomes true when fetch starts
+      expect(result.current.isLoading).toBe(false);
+      expect(result.current.error).toBeNull();
+      expect(typeof result.current.refetch).toBe('function');
+
+      // Wait for initial fetch to complete
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    });
+
+    it('skips initial fetch when skipInitialFetch is true', () => {
+      // Override transform mock to return empty for initial state test
+      mockTransformFillsToTransactions.mockReturnValue([]);
+
+      const { result } = renderHook(() =>
+        usePerpsTransactionHistory({ skipInitialFetch: true }),
+      );
+
+      expect(result.current.transactions).toEqual([]);
+      expect(mockProvider.getOrderFills).not.toHaveBeenCalled();
+    });
+
+    it('includes wallet perps deposits in merged transactions', async () => {
+      mockTransformFillsToTransactions.mockReturnValue([]);
+      mockTransformUserHistoryToTransactions.mockReturnValue([]);
+      const walletDepositTx = {
+        id: 'wallet-deposit-tx-1',
+        type: 'deposit' as const,
+        category: 'deposit' as const,
+        title: 'Deposited 100.00 USDC',
+        subtitle: 'Completed',
+        timestamp: 1640995204000,
+        asset: 'USDC',
+        depositWithdrawal: {
+          amount: '+$100.00',
+          amountNumber: 100,
+          isPositive: true,
+          asset: 'USDC',
+          txHash: '0xabc',
+          status: 'completed' as const,
+          type: 'deposit' as const,
+        },
+      };
+      mockTransformWalletPerpsDepositsToTransactions.mockReturnValue([
+        walletDepositTx,
+      ]);
+      const selectedAddr = '0x1234567890123456789012345678901234567890';
+      mockUseSelector.mockImplementation(() => {
+        const len = mockUseSelector.mock.calls.length;
+        return len % 2 === 1
+          ? [
+              {
+                id: 'w1',
+                type: 'perpsDeposit',
+                txParams: { from: selectedAddr },
+              },
+            ]
+          : { address: selectedAddr };
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsTransactionHistory({ skipInitialFetch: true }),
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.transactions).toContainEqual(walletDepositTx);
+      expect(mockTransformWalletPerpsDepositsToTransactions).toHaveBeenCalled();
+    });
+
+    it('deduplicates wallet deposits against REST deposits by txHash', async () => {
+      const sameTxHash = '0xabc123';
+      const restDeposit = {
+        id: 'deposit-rest-1',
+        type: 'deposit' as const,
+        category: 'deposit' as const,
+        title: 'Deposited 50.00 USDC',
+        subtitle: 'Completed',
+        timestamp: 1640995200000,
+        asset: 'USDC',
+        depositWithdrawal: {
+          amount: '+$50.00',
+          amountNumber: 50,
+          isPositive: true,
+          asset: 'USDC',
+          txHash: sameTxHash,
+          status: 'completed' as const,
+          type: 'deposit' as const,
+        },
+      };
+      const walletDepositSameTx = {
+        id: 'wallet-deposit-tx-1',
+        type: 'deposit' as const,
+        category: 'deposit' as const,
+        title: 'Deposited 50.00 USDC',
+        subtitle: 'Pending',
+        timestamp: 1640995201000,
+        asset: 'USDC',
+        depositWithdrawal: {
+          amount: '+$50.00',
+          amountNumber: 50,
+          isPositive: true,
+          asset: 'USDC',
+          txHash: sameTxHash,
+          status: 'pending' as const,
+          type: 'deposit' as const,
+        },
+      };
+      mockTransformFillsToTransactions.mockReturnValue([]);
+      mockTransformUserHistoryToTransactions.mockReturnValue([restDeposit]);
+      mockTransformWalletPerpsDepositsToTransactions.mockReturnValue([
+        walletDepositSameTx,
+      ]);
+      const selectedAddr = '0x1234567890123456789012345678901234567890';
+      mockUseSelector.mockImplementation(() => {
+        const len = mockUseSelector.mock.calls.length;
+        return len % 2 === 1
+          ? [
+              {
+                id: 'w1',
+                type: 'perpsDeposit',
+                txParams: { from: selectedAddr },
+              },
+            ]
+          : { address: selectedAddr };
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsTransactionHistory({ skipInitialFetch: false }),
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await act(async () => {
+        await result.current.refetch();
+      });
+
+      const depositsWithSameTxHash = result.current.transactions.filter(
+        (tx) =>
+          tx.type === 'deposit' &&
+          tx.depositWithdrawal?.txHash?.toLowerCase() ===
+            sameTxHash.toLowerCase(),
+      );
+      expect(depositsWithSameTxHash).toHaveLength(1);
+      expect(depositsWithSameTxHash[0].id).toBe('deposit-rest-1');
+    });
+
+    it('includes wallet perps withdrawals in merged transactions', async () => {
+      mockTransformFillsToTransactions.mockReturnValue([]);
+      mockTransformUserHistoryToTransactions.mockReturnValue([]);
+      const walletWithdrawalTx = {
+        id: 'wallet-withdrawal-tx-1',
+        type: 'withdrawal' as const,
+        category: 'withdrawal' as const,
+        title: 'Withdrew 0.26 USDC',
+        subtitle: 'Completed',
+        timestamp: 1640995204000,
+        asset: 'USDC',
+        depositWithdrawal: {
+          amount: '-$0.26',
+          amountNumber: -0.26,
+          isPositive: false,
+          asset: 'USDC',
+          txHash: '0xwithdraw1',
+          status: 'completed' as const,
+          type: 'withdrawal' as const,
+        },
+      };
+      mockWalletPerpsWithdrawalsToRequests.mockReturnValue([
+        {
+          id: 'wallet-w1',
+          timestamp: 1640995204000,
+          amount: '0.26',
+          asset: 'USDC',
+          txHash: '0xwithdraw1',
+          status: 'completed',
+        },
+      ]);
+      mockTransformWithdrawalRequestsToTransactions.mockReturnValue([
+        walletWithdrawalTx,
+      ]);
+      const selectedAddr = '0x1234567890123456789012345678901234567890';
+      mockUseSelector.mockImplementation(() => {
+        const len = mockUseSelector.mock.calls.length;
+        return len % 2 === 1
+          ? [
+              {
+                id: 'w1',
+                type: 'perpsWithdraw',
+                txParams: { from: selectedAddr },
+                nestedTransactions: [{ type: 'perpsWithdraw' }],
+              },
+            ]
+          : { address: selectedAddr };
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsTransactionHistory({ skipInitialFetch: true }),
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.transactions).toContainEqual(walletWithdrawalTx);
+      expect(mockWalletPerpsWithdrawalsToRequests).toHaveBeenCalled();
+      expect(mockTransformWithdrawalRequestsToTransactions).toHaveBeenCalled();
+    });
+
+    it('deduplicates wallet withdrawals against REST withdrawals by txHash', async () => {
+      const sameTxHash = '0xwithdraw123';
+      const restWithdrawal = {
+        id: 'withdrawal-rest-1',
+        type: 'withdrawal' as const,
+        category: 'withdrawal' as const,
+        title: 'Withdrew 0.50 USDC',
+        subtitle: 'Completed',
+        timestamp: 1640995200000,
+        asset: 'USDC',
+        depositWithdrawal: {
+          amount: '-$0.50',
+          amountNumber: -0.5,
+          isPositive: false,
+          asset: 'USDC',
+          txHash: sameTxHash,
+          status: 'completed' as const,
+          type: 'withdrawal' as const,
+        },
+      };
+      const walletWithdrawalSameTx = {
+        id: 'wallet-withdrawal-tx-1',
+        type: 'withdrawal' as const,
+        category: 'withdrawal' as const,
+        title: 'Withdrew 0.50 USDC',
+        subtitle: 'Pending',
+        timestamp: 1640995201000,
+        asset: 'USDC',
+        depositWithdrawal: {
+          amount: '-$0.50',
+          amountNumber: -0.5,
+          isPositive: false,
+          asset: 'USDC',
+          txHash: sameTxHash,
+          status: 'pending' as const,
+          type: 'withdrawal' as const,
+        },
+      };
+      mockTransformFillsToTransactions.mockReturnValue([]);
+      mockTransformUserHistoryToTransactions.mockReturnValue([restWithdrawal]);
+      mockWalletPerpsWithdrawalsToRequests.mockReturnValue([
+        {
+          id: 'wallet-w1',
+          timestamp: 1640995201000,
+          amount: '0.50',
+          asset: 'USDC',
+          txHash: sameTxHash,
+          status: 'pending',
+        },
+      ]);
+      mockTransformWithdrawalRequestsToTransactions.mockReturnValue([
+        walletWithdrawalSameTx,
+      ]);
+      const selectedAddr = '0x1234567890123456789012345678901234567890';
+      mockUseSelector.mockImplementation(() => {
+        const len = mockUseSelector.mock.calls.length;
+        return len % 2 === 1
+          ? [
+              {
+                id: 'w1',
+                type: 'perpsWithdraw',
+                txParams: { from: selectedAddr },
+                nestedTransactions: [{ type: 'perpsWithdraw' }],
+              },
+            ]
+          : { address: selectedAddr };
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsTransactionHistory({ skipInitialFetch: false }),
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await act(async () => {
+        await result.current.refetch();
+      });
+
+      const withdrawalsWithSameTxHash = result.current.transactions.filter(
+        (tx) =>
+          tx.type === 'withdrawal' &&
+          tx.depositWithdrawal?.txHash?.toLowerCase() ===
+            sameTxHash.toLowerCase(),
+      );
+      expect(withdrawalsWithSameTxHash).toHaveLength(1);
+      expect(withdrawalsWithSameTxHash[0].id).toBe('withdrawal-rest-1');
+    });
+  });
+
+  describe('fetchAllTransactions', () => {
+    it('fetches and combines all transaction data', async () => {
+      renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        // Wait for the effect to complete
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(mockProvider.getOrderFills).toHaveBeenCalledWith(
+        {
+          accountId: undefined,
+          aggregateByTime: false,
+        },
+        { forceRefresh: true },
+      );
+      expect(mockProvider.getOrders).toHaveBeenCalledWith(
+        {
+          accountId: undefined,
+        },
+        { forceRefresh: true },
+      );
+      // startTime default is handled in HyperLiquidProvider, not here
+      expect(mockProvider.getFunding).toHaveBeenCalledWith(
+        {
+          accountId: undefined,
+        },
+        { forceRefresh: true },
+      );
+
+      // Fills are enriched with detailedOrderType from matching orders
+      expect(mockTransformFillsToTransactions).toHaveBeenCalledWith(
+        [{ ...mockFills[0], detailedOrderType: 'Market' }],
+        { aggregate: true },
+      );
+      // Orders are passed with a fillSizeByOrderId Map for accurate filled percentage calculation
+      expect(mockTransformOrdersToTransactions).toHaveBeenCalledWith(
+        mockOrders,
+        expect.any(Map),
+      );
+      expect(mockTransformFundingToTransactions).toHaveBeenCalledWith(
+        mockFunding,
+      );
+      expect(mockTransformUserHistoryToTransactions).toHaveBeenCalledWith(
+        mockUserHistory,
+      );
+    });
+
+    it('uses provided parameters', async () => {
+      const params = {
+        accountId:
+          'eip155:1:0x1234567890123456789012345678901234567890' as CaipAccountId,
+      };
+
+      renderHook(() => usePerpsTransactionHistory(params));
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // Verify accountId is passed to all provider methods
+      expect(mockProvider.getOrderFills).toHaveBeenCalledWith(
+        {
+          accountId: 'eip155:1:0x1234567890123456789012345678901234567890',
+          aggregateByTime: false,
+        },
+        { forceRefresh: true },
+      );
+      expect(mockProvider.getOrders).toHaveBeenCalledWith(
+        {
+          accountId: 'eip155:1:0x1234567890123456789012345678901234567890',
+        },
+        { forceRefresh: true },
+      );
+      // startTime/endTime defaults are handled in HyperLiquidProvider via 30-day window
+      expect(mockProvider.getFunding).toHaveBeenCalledWith(
+        {
+          accountId: 'eip155:1:0x1234567890123456789012345678901234567890',
+        },
+        { forceRefresh: true },
+      );
+    });
+
+    it('passes accountId to useUserHistory hook', async () => {
+      const accountId =
+        'eip155:42161:0x1234567890123456789012345678901234567890' as CaipAccountId;
+
+      renderHook(() =>
+        usePerpsTransactionHistory({
+          accountId,
+        }),
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // Verify useUserHistory was called with accountId
+      expect(mockUseUserHistory).toHaveBeenCalledWith({
+        startTime: undefined,
+        endTime: undefined,
+        accountId,
+      });
+    });
+
+    it('handles undefined accountId correctly', async () => {
+      renderHook(() => usePerpsTransactionHistory({ accountId: undefined }));
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // Verify all methods are called with undefined accountId
+      expect(mockProvider.getOrderFills).toHaveBeenCalledWith(
+        {
+          accountId: undefined,
+          aggregateByTime: false,
+        },
+        { forceRefresh: true },
+      );
+      expect(mockProvider.getOrders).toHaveBeenCalledWith(
+        {
+          accountId: undefined,
+        },
+        { forceRefresh: true },
+      );
+      // startTime default is handled in HyperLiquidProvider, not here
+      expect(mockProvider.getFunding).toHaveBeenCalledWith(
+        {
+          accountId: undefined,
+        },
+        { forceRefresh: true },
+      );
+      expect(mockUseUserHistory).toHaveBeenCalledWith({
+        startTime: undefined,
+        endTime: undefined,
+        accountId: undefined,
+      });
+    });
+
+    it('sorts transactions by timestamp descending', async () => {
+      const tradeTx = {
+        id: 'tx2',
+        timestamp: 2000,
+        type: 'trade' as const,
+        category: 'position_open' as const,
+        title: 'Trade',
+        subtitle: '1 ETH',
+        asset: 'ETH',
+      };
+      const depositTx = {
+        id: 'tx1',
+        timestamp: 1000,
+        type: 'deposit' as const,
+        category: 'deposit' as const,
+        title: 'Deposit',
+        subtitle: '100 USDC',
+        asset: 'USDC',
+      };
+      const withdrawalTx = {
+        id: 'tx3',
+        timestamp: 1500,
+        type: 'withdrawal' as const,
+        category: 'withdrawal' as const,
+        title: 'Withdrawal',
+        subtitle: '50 USDC',
+        asset: 'USDC',
+      };
+
+      // fills transform returns only trade transactions (realistic)
+      mockTransformFillsToTransactions.mockImplementation((fills) =>
+        fills.length > 0 ? [tradeTx] : [],
+      );
+      // Non-trade transactions come from user history
+      mockTransformUserHistoryToTransactions.mockReturnValue([
+        depositTx,
+        withdrawalTx,
+      ]);
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.transactions[0].timestamp).toBe(2000);
+      expect(result.current.transactions[1].timestamp).toBe(1500);
+      expect(result.current.transactions[2].timestamp).toBe(1000);
+    });
+
+    it('removes duplicate transactions', async () => {
+      // Two deposits with same ID (duplicate) + one unique deposit
+      const duplicateDeposit1 = {
+        id: 'tx1',
+        timestamp: 1000,
+        type: 'deposit' as const,
+        category: 'deposit' as const,
+        title: 'Deposit',
+        subtitle: '100 USDC',
+        asset: 'USDC',
+      };
+      const duplicateDeposit2 = {
+        id: 'tx1',
+        timestamp: 1000,
+        type: 'deposit' as const,
+        category: 'deposit' as const,
+        title: 'Deposit',
+        subtitle: '100 USDC',
+        asset: 'USDC',
+      };
+      const uniqueDeposit = {
+        id: 'tx2',
+        timestamp: 2000,
+        type: 'deposit' as const,
+        category: 'deposit' as const,
+        title: 'Deposit 2',
+        subtitle: '50 USDC',
+        asset: 'USDC',
+      };
+
+      // fills return empty (no trade transactions)
+      mockTransformFillsToTransactions.mockReturnValue([]);
+      mockTransformOrdersToTransactions.mockReturnValue([]);
+      mockTransformFundingToTransactions.mockReturnValue([]);
+      // user history has duplicates — fetchAllTransactions dedupes by ID
+      mockTransformUserHistoryToTransactions.mockReturnValue([
+        duplicateDeposit1,
+        duplicateDeposit2,
+        uniqueDeposit,
+      ]);
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.transactions).toHaveLength(2);
+    });
+
+    it('combines transactions from different sources without duplicates', async () => {
+      const userHistoryTx = {
+        id: 'deposit-tx1',
+        timestamp: 1000,
+        type: 'deposit' as const,
+        category: 'deposit' as const,
+        title: 'Deposit',
+        subtitle: '100 USDC',
+        asset: 'USDC',
+      };
+      const fillTx = {
+        id: 'fill-tx2',
+        timestamp: 2000,
+        type: 'trade' as const,
+        category: 'position_open' as const,
+        title: 'Trade',
+        subtitle: '1 ETH',
+        asset: 'ETH',
+      };
+
+      mockTransformUserHistoryToTransactions.mockReturnValue([userHistoryTx]);
+      mockTransformFillsToTransactions.mockReturnValue([fillTx]);
+      mockTransformOrdersToTransactions.mockReturnValue([]);
+      mockTransformFundingToTransactions.mockReturnValue([]);
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // Should contain both transactions (no duplicates since IDs are different)
+      expect(result.current.transactions).toHaveLength(2);
+      expect(result.current.transactions[0]).toEqual(fillTx); // Newest first (timestamp 2000)
+      expect(result.current.transactions[1]).toEqual(userHistoryTx); // Older (timestamp 1000)
+    });
+  });
+
+  describe('error handling', () => {
+    it('handles PerpsController not available', async () => {
+      (
+        mockEngine as unknown as { context: { PerpsController: unknown } }
+      ).context.PerpsController = undefined;
+      // WebSocket fills are empty for this test
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      // No live fills means transform returns empty
+      mockTransformFillsToTransactions.mockReturnValue([]);
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.error).toBe('PerpsController not available');
+      expect(result.current.transactions).toEqual([]);
+    });
+
+    it('handles no active provider', async () => {
+      mockController.getActiveProviderOrNull.mockReturnValue(null);
+      // WebSocket fills are empty for this test
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      // No live fills means transform returns empty
+      mockTransformFillsToTransactions.mockReturnValue([]);
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // With getActiveProviderOrNull returning null, hook bails early without error
+      expect(result.current.error).toBeNull();
+      // With no REST data and no WebSocket data, transactions should be empty
+      expect(result.current.transactions).toEqual([]);
+    });
+
+    it('handles provider fetch errors', async () => {
+      mockProvider.getOrderFills.mockRejectedValue(new Error('Fetch error'));
+      // WebSocket fills are empty for this test
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      // No live fills means transform returns empty
+      mockTransformFillsToTransactions.mockReturnValue([]);
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.error).toBe('Fetch error');
+      // With no WebSocket data, transactions should be empty
+      expect(result.current.transactions).toEqual([]);
+      expect(mockDevLogger.log).toHaveBeenCalledWith(
+        'Error fetching transaction history:',
+        'Fetch error',
+      );
+    });
+
+    it('handles non-Error exceptions', async () => {
+      mockProvider.getOrderFills.mockRejectedValue('String error');
+      // WebSocket fills are empty for this test
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      // No live fills means transform returns empty
+      mockTransformFillsToTransactions.mockReturnValue([]);
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.error).toBe('Failed to fetch transaction history');
+    });
+  });
+
+  describe('loading states', () => {
+    it('combines loading states from all hooks', () => {
+      mockUseUserHistory.mockReturnValue({
+        userHistory: [],
+        isLoading: true,
+        error: null,
+        refetch: jest.fn(),
+      });
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      expect(result.current.isLoading).toBe(true);
+    });
+
+    it('returns false when all hooks are not loading', async () => {
+      mockUseUserHistory.mockReturnValue({
+        userHistory: [],
+        isLoading: false,
+        error: null,
+        refetch: jest.fn(),
+      });
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      // Wait for the initial fetch to complete
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.isLoading).toBe(false);
+    });
+  });
+
+  describe('error states', () => {
+    it('returns main error when present', () => {
+      mockUseUserHistory.mockReturnValue({
+        userHistory: [],
+        isLoading: false,
+        error: 'User history error',
+        refetch: jest.fn(),
+      });
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      expect(result.current.error).toBe('User history error');
+    });
+
+    it('returns user history error when main error is null', () => {
+      mockUseUserHistory.mockReturnValue({
+        userHistory: [],
+        isLoading: false,
+        error: 'User history error',
+        refetch: jest.fn(),
+      });
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      expect(result.current.error).toBe('User history error');
+    });
+
+    it('returns null when no errors', () => {
+      mockUseUserHistory.mockReturnValue({
+        userHistory: [],
+        isLoading: false,
+        error: null,
+        refetch: jest.fn(),
+      });
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe('refetch functionality', () => {
+    it('refetches all data sources', async () => {
+      const mockRefetchUserHistory = jest.fn().mockResolvedValue(undefined);
+
+      mockUseUserHistory.mockReturnValue({
+        userHistory: [],
+        isLoading: false,
+        error: null,
+        refetch: mockRefetchUserHistory,
+      });
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await result.current.refetch();
+      });
+
+      expect(mockRefetchUserHistory).toHaveBeenCalled();
+      expect(mockProvider.getOrderFills).toHaveBeenCalled();
+    });
+
+    it('initial mount load force-refreshes past the coalesce cache', async () => {
+      // Activity-screen orders/funding have no WS backfill, so mount
+      // must fetch fresh — the coalesce cache would otherwise hide
+      // state changes that happened while the screen was closed.
+      renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(mockController.getOrderFills).toHaveBeenCalled();
+      const [, options] = mockController.getOrderFills.mock.calls[0];
+      expect(options).toEqual({ forceRefresh: true });
+    });
+
+    it('user-initiated refetch forces a fresh fetch past the coalesce cache', async () => {
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      mockController.getOrderFills.mockClear();
+
+      await act(async () => {
+        await result.current.refetch();
+      });
+
+      expect(mockController.getOrderFills).toHaveBeenCalled();
+      const [, options] = mockController.getOrderFills.mock.calls[0];
+      expect(options).toEqual({ forceRefresh: true });
+    });
+  });
+
+  describe('fill enrichment with detailedOrderType', () => {
+    it('enriches fills with detailedOrderType when matching order exists', async () => {
+      const fillsWithoutDetailedType = [
+        {
+          direction: 'Open Long',
+          orderId: 'order-123',
+          symbol: 'ETH',
+          size: '1',
+          price: '2000',
+          fee: '10',
+          timestamp: 1640995200000,
+          feeToken: 'USDC',
+          pnl: '0',
+          liquidation: false,
+        },
+      ];
+
+      const ordersWithDetailedType = [
+        {
+          orderId: 'order-123',
+          symbol: 'ETH',
+          side: 'buy',
+          orderType: 'Limit',
+          detailedOrderType: 'Take Profit',
+          size: '1',
+          originalSize: '1',
+          price: '2000',
+          status: 'filled',
+          timestamp: 1640995200000,
+        },
+      ];
+
+      mockProvider.getOrderFills.mockResolvedValue(fillsWithoutDetailedType);
+      mockProvider.getOrders.mockResolvedValue(ordersWithDetailedType);
+
+      renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(mockTransformFillsToTransactions).toHaveBeenCalledWith(
+        [
+          {
+            ...fillsWithoutDetailedType[0],
+            detailedOrderType: 'Take Profit',
+          },
+        ],
+        { aggregate: true },
+      );
+    });
+
+    it('leaves detailedOrderType as undefined when no matching order exists', async () => {
+      const fillsWithoutMatch = [
+        {
+          direction: 'Open Long',
+          orderId: 'fill-order-456',
+          symbol: 'ETH',
+          size: '1',
+          price: '2000',
+          fee: '10',
+          timestamp: 1640995200000,
+          feeToken: 'USDC',
+          pnl: '0',
+          liquidation: false,
+        },
+      ];
+
+      const unrelatedOrders = [
+        {
+          orderId: 'different-order-789',
+          symbol: 'BTC',
+          side: 'sell',
+          orderType: 'Market',
+          detailedOrderType: 'Stop Loss',
+          size: '0.5',
+          originalSize: '0.5',
+          price: '50000',
+          status: 'filled',
+          timestamp: 1640995201000,
+        },
+      ];
+
+      mockProvider.getOrderFills.mockResolvedValue(fillsWithoutMatch);
+      mockProvider.getOrders.mockResolvedValue(unrelatedOrders);
+
+      renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(mockTransformFillsToTransactions).toHaveBeenCalledWith(
+        [
+          {
+            ...fillsWithoutMatch[0],
+            detailedOrderType: undefined,
+          },
+        ],
+        { aggregate: true },
+      );
+    });
+
+    it('leaves detailedOrderType as undefined when matching order has no detailedOrderType', async () => {
+      const fills = [
+        {
+          direction: 'Open Short',
+          orderId: 'order-999',
+          symbol: 'BTC',
+          size: '0.5',
+          price: '45000',
+          fee: '5',
+          timestamp: 1640995300000,
+          feeToken: 'USDC',
+          pnl: '0',
+          liquidation: false,
+        },
+      ];
+
+      const ordersWithoutDetailedType = [
+        {
+          orderId: 'order-999',
+          symbol: 'BTC',
+          side: 'sell',
+          orderType: 'Market',
+          size: '0.5',
+          originalSize: '0.5',
+          price: '45000',
+          status: 'filled',
+          timestamp: 1640995300000,
+        },
+      ];
+
+      mockProvider.getOrderFills.mockResolvedValue(fills);
+      mockProvider.getOrders.mockResolvedValue(ordersWithoutDetailedType);
+
+      renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(mockTransformFillsToTransactions).toHaveBeenCalledWith(
+        [
+          {
+            ...fills[0],
+            detailedOrderType: undefined,
+          },
+        ],
+        { aggregate: true },
+      );
+    });
+
+    it('enriches all fills from same order with matching detailedOrderType when order has multiple partial fills', async () => {
+      const partialFills = [
+        {
+          direction: 'Open Long',
+          orderId: 'partial-order-123',
+          symbol: 'ETH',
+          size: '0.5',
+          price: '2000',
+          fee: '5',
+          timestamp: 1640995200000,
+          feeToken: 'USDC',
+          pnl: '0',
+          liquidation: false,
+        },
+        {
+          direction: 'Open Long',
+          orderId: 'partial-order-123',
+          symbol: 'ETH',
+          size: '0.3',
+          price: '2001',
+          fee: '3',
+          timestamp: 1640995201000,
+          feeToken: 'USDC',
+          pnl: '0',
+          liquidation: false,
+        },
+        {
+          direction: 'Open Long',
+          orderId: 'partial-order-123',
+          symbol: 'ETH',
+          size: '0.2',
+          price: '2002',
+          fee: '2',
+          timestamp: 1640995202000,
+          feeToken: 'USDC',
+          pnl: '0',
+          liquidation: false,
+        },
+      ];
+
+      const singleOrder = [
+        {
+          orderId: 'partial-order-123',
+          symbol: 'ETH',
+          side: 'buy',
+          orderType: 'Limit',
+          detailedOrderType: 'Stop Loss',
+          size: '1',
+          originalSize: '1',
+          price: '2000',
+          status: 'filled',
+          timestamp: 1640995200000,
+        },
+      ];
+
+      mockProvider.getOrderFills.mockResolvedValue(partialFills);
+      mockProvider.getOrders.mockResolvedValue(singleOrder);
+
+      renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // mergedTransactions sorts fills descending by timestamp before transforming
+      expect(mockTransformFillsToTransactions).toHaveBeenCalledWith(
+        [
+          { ...partialFills[2], detailedOrderType: 'Stop Loss' },
+          { ...partialFills[1], detailedOrderType: 'Stop Loss' },
+          { ...partialFills[0], detailedOrderType: 'Stop Loss' },
+        ],
+        { aggregate: true },
+      );
+    });
+
+    it('handles empty fills array', async () => {
+      mockProvider.getOrderFills.mockResolvedValue([]);
+      mockProvider.getOrders.mockResolvedValue(mockOrders);
+
+      renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(mockTransformFillsToTransactions).toHaveBeenCalledWith([], {
+        aggregate: true,
+      });
+    });
+
+    it('handles empty orders array', async () => {
+      mockProvider.getOrderFills.mockResolvedValue(mockFills);
+      mockProvider.getOrders.mockResolvedValue([]);
+
+      renderHook(() => usePerpsTransactionHistory());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(mockTransformFillsToTransactions).toHaveBeenCalledWith(
+        [{ ...mockFills[0], detailedOrderType: undefined }],
+        { aggregate: true },
+      );
+    });
+  });
+
+  describe('WS fill merge preserves detailedOrderType from REST', () => {
+    it('preserves detailedOrderType from REST fill when WS fill lacks it', async () => {
+      // REST fill has detailedOrderType set (enriched from orders API)
+      const restRawFill = {
+        orderId: 'sl-order-123',
+        timestamp: 1641000000000,
+        symbol: 'BTC',
+        side: 'sell',
+        size: '0.1',
+        price: '50000',
+        pnl: '100',
+        fee: '5',
+        feeToken: 'USDC',
+        direction: 'Close Long',
+        detailedOrderType: 'Stop Loss',
+        startPosition: '0.1',
+        success: true,
+      };
+      // WS fill with same orderId-timestamp-size-price but no detailedOrderType
+      const wsRawFill = {
+        orderId: 'sl-order-123',
+        timestamp: 1641000000000,
+        symbol: 'BTC',
+        side: 'sell',
+        size: '0.1',
+        price: '50000',
+        pnl: '100',
+        fee: '5',
+        feeToken: 'USDC',
+        direction: 'Close Long',
+        startPosition: '0.1',
+        success: true,
+      };
+
+      mockProvider.getOrderFills.mockResolvedValue([restRawFill]);
+      // Provide order so fetchAllTransactions enriches the fill with detailedOrderType
+      mockProvider.getOrders.mockResolvedValue([
+        {
+          orderId: 'sl-order-123',
+          symbol: 'BTC',
+          side: 'sell',
+          orderType: 'Stop',
+          detailedOrderType: 'Stop Loss',
+          size: '0',
+          originalSize: '0.1',
+          price: '50000',
+          status: 'filled',
+          timestamp: 1641000000000,
+        },
+      ]);
+
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [wsRawFill],
+        isInitialLoading: false,
+      });
+
+      // Pass-through mock: returns a trade with fillType based on detailedOrderType
+      mockTransformFillsToTransactions.mockImplementation((fills) =>
+        fills.map((f) => ({
+          id: `fill-${f.orderId}-${f.timestamp}`,
+          type: 'trade' as const,
+          category: 'position_close' as const,
+          title: f.detailedOrderType ?? 'Trade',
+          subtitle: '',
+          timestamp: f.timestamp,
+          asset: f.symbol,
+          fill: {
+            shortTitle: f.detailedOrderType ?? 'Trade',
+            amount: '+$100',
+            amountNumber: 100,
+            isPositive: true,
+            size: f.size,
+            entryPrice: f.price,
+            pnl: f.pnl,
+            fee: f.fee,
+            points: '0',
+            feeToken: f.feeToken,
+            action: 'Closed',
+            liquidation: undefined,
+            isLiquidation: false,
+            isTakeProfit: f.detailedOrderType === 'Take Profit',
+            isStopLoss: f.detailedOrderType === 'Stop Loss',
+            fillType:
+              f.detailedOrderType === 'Stop Loss'
+                ? FillType.StopLoss
+                : FillType.Standard,
+          },
+        })),
+      );
+
+      const { result } = renderHook(() => usePerpsTransactionHistory());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // The mergedTransactions call receives the fill with detailedOrderType preserved
+      const mergedFillsCallArg =
+        mockTransformFillsToTransactions.mock.calls[
+          mockTransformFillsToTransactions.mock.calls.length - 1
+        ][0];
+      expect(mergedFillsCallArg[0]).toMatchObject({
+        detailedOrderType: 'Stop Loss',
+      });
+
+      // The resulting trade should reflect the Stop Loss fillType
+      const trades = result.current.transactions.filter(
+        (tx) => tx.type === 'trade',
+      );
+      expect(trades).toHaveLength(1);
+      expect(trades[0].fill?.fillType).toBe(FillType.StopLoss);
+    });
+  });
+
+  describe('loadMoreFunding', () => {
+    const olderFundingRaw = [
+      {
+        symbol: 'ETH',
+        amountUsd: '-1.00',
+        rate: '0.0001',
+        timestamp: 1638403200000,
+      },
+    ];
+    const olderFundingTx = {
+      id: 'funding-1638403200000-ETH',
+      type: 'funding' as const,
+      category: 'funding_fee' as const,
+      title: 'Paid funding fee',
+      subtitle: 'ETH',
+      timestamp: 1638403200000,
+      asset: 'ETH',
+      fundingAmount: {
+        isPositive: false,
+        fee: '-$1.00',
+        feeNumber: -1,
+        rate: '0.01%',
+      },
+    };
+
+    async function renderAndWaitForInitialFetch() {
+      const hook = renderHook(() =>
+        usePerpsTransactionHistory({ skipInitialFetch: false }),
+      );
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      return hook;
+    }
+
+    it('fetches older funding and appends to transactions', async () => {
+      // Arrange
+      const { result } = await renderAndWaitForInitialFetch();
+      mockProvider.getFunding.mockResolvedValueOnce(olderFundingRaw);
+      mockTransformFundingToTransactions.mockReturnValueOnce([olderFundingTx]);
+
+      // Act
+      await act(async () => {
+        await result.current.loadMoreFunding();
+      });
+
+      // Assert
+      expect(mockProvider.getFunding).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          startTime: expect.any(Number),
+          endTime: expect.any(Number),
+        }),
+      );
+      expect(result.current.hasFundingMore).toBe(true);
+      expect(result.current.isFetchingMoreFunding).toBe(false);
+    });
+
+    it('skips empty windows and keeps hasFundingMore true', async () => {
+      // Arrange
+      const { result } = await renderAndWaitForInitialFetch();
+      mockProvider.getFunding.mockResolvedValueOnce([]);
+
+      // Act
+      await act(async () => {
+        await result.current.loadMoreFunding();
+      });
+
+      // Assert — cursor advances but pagination continues
+      expect(result.current.hasFundingMore).toBe(true);
+    });
+
+    it('sets hasFundingMore to false on fetch error', async () => {
+      // Arrange
+      const { result } = await renderAndWaitForInitialFetch();
+      mockProvider.getFunding.mockRejectedValueOnce(new Error('API error'));
+
+      // Act
+      await act(async () => {
+        await result.current.loadMoreFunding();
+      });
+
+      // Assert
+      expect(result.current.hasFundingMore).toBe(false);
+      expect(result.current.isFetchingMoreFunding).toBe(false);
+    });
+
+    it('does not fetch when hasFundingMore is false', async () => {
+      // Arrange
+      const { result } = await renderAndWaitForInitialFetch();
+      // Force hasFundingMore to false via error (errors still stop pagination)
+      mockProvider.getFunding.mockRejectedValueOnce(new Error('API error'));
+      await act(async () => {
+        await result.current.loadMoreFunding();
+      });
+      expect(result.current.hasFundingMore).toBe(false);
+      mockProvider.getFunding.mockClear();
+
+      // Act
+      await act(async () => {
+        await result.current.loadMoreFunding();
+      });
+
+      // Assert — no new call
+      expect(mockProvider.getFunding).not.toHaveBeenCalled();
+    });
+
+    it('deduplicates transactions when loadMore returns overlapping ids', async () => {
+      // Arrange
+      const { result } = await renderAndWaitForInitialFetch();
+      const dupFundingTx = {
+        ...olderFundingTx,
+        id: 'funding-1638403200000-ETH',
+      };
+      mockProvider.getFunding.mockResolvedValueOnce(olderFundingRaw);
+      mockTransformFundingToTransactions.mockReturnValueOnce([
+        dupFundingTx,
+        dupFundingTx,
+      ]);
+
+      // Act
+      await act(async () => {
+        await result.current.loadMoreFunding();
+      });
+
+      // Assert — no duplicates in result
+      const ids = result.current.transactions.map((tx) => tx.id);
+      const uniqueIds = new Set(ids);
+      expect(ids.length).toBe(uniqueIds.size);
+    });
+  });
+
+  describe('connection state transitions', () => {
+    it('triggers fetch when skipInitialFetch transitions from true to false', async () => {
+      // Reset mocks to track calls clearly
+      mockProvider.getOrderFills.mockClear();
+      mockProvider.getOrders.mockClear();
+      mockProvider.getFunding.mockClear();
+
+      // Start with skipInitialFetch: true (simulating not connected state)
+      const { rerender } = renderHook(
+        ({ skipInitialFetch }) =>
+          usePerpsTransactionHistory({ skipInitialFetch }),
+        { initialProps: { skipInitialFetch: true } },
+      );
+
+      // Verify no fetch was made while skipInitialFetch is true
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(mockProvider.getOrderFills).not.toHaveBeenCalled();
+
+      // Clear mocks to track only the new calls
+      mockProvider.getOrderFills.mockClear();
+      mockProvider.getOrders.mockClear();
+      mockProvider.getFunding.mockClear();
+
+      // Transition to skipInitialFetch: false (simulating connection established)
+      rerender({ skipInitialFetch: false });
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // Verify fetch was triggered after the transition
+      expect(mockProvider.getOrderFills).toHaveBeenCalledTimes(1);
+      expect(mockProvider.getOrders).toHaveBeenCalledTimes(1);
+      expect(mockProvider.getFunding).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not duplicate fetch when skipInitialFetch starts as false', async () => {
+      // Reset mocks to track calls clearly
+      mockProvider.getOrderFills.mockClear();
+      mockProvider.getOrders.mockClear();
+      mockProvider.getFunding.mockClear();
+
+      // Start with skipInitialFetch: false (already connected)
+      renderHook(() => usePerpsTransactionHistory({ skipInitialFetch: false }));
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // Verify fetch was made exactly once (no duplicate)
+      expect(mockProvider.getOrderFills).toHaveBeenCalledTimes(1);
+      expect(mockProvider.getOrders).toHaveBeenCalledTimes(1);
+      expect(mockProvider.getFunding).toHaveBeenCalledTimes(1);
+    });
+
+    it('fetches once per true-to-false transition during rapid state changes', async () => {
+      // Reset mocks to track calls clearly
+      mockProvider.getOrderFills.mockClear();
+      mockProvider.getOrders.mockClear();
+      mockProvider.getFunding.mockClear();
+
+      // Start with skipInitialFetch: true
+      const { rerender } = renderHook(
+        ({ skipInitialFetch }) =>
+          usePerpsTransactionHistory({ skipInitialFetch }),
+        { initialProps: { skipInitialFetch: true } },
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // No fetch yet
+      expect(mockProvider.getOrderFills).not.toHaveBeenCalled();
+
+      // Transition to connected
+      rerender({ skipInitialFetch: false });
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // First fetch
+      expect(mockProvider.getOrderFills).toHaveBeenCalledTimes(1);
+
+      // Clear and transition back to disconnected
+      mockProvider.getOrderFills.mockClear();
+      rerender({ skipInitialFetch: true });
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // No additional fetch while disconnected
+      expect(mockProvider.getOrderFills).not.toHaveBeenCalled();
+
+      // Reconnect - should fetch again
+      rerender({ skipInitialFetch: false });
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // Should fetch on reconnection
+      expect(mockProvider.getOrderFills).toHaveBeenCalledTimes(1);
+    });
+  });
+});

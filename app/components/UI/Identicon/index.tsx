@@ -1,13 +1,18 @@
 /* eslint-disable react/prop-types */
 import React, { memo } from 'react';
-import { Image, ImageStyle, View } from 'react-native';
-import { toDataUrl } from '../../../util/blockies';
+import { Image, ImageStyle, StyleProp } from 'react-native';
 import FadeIn from 'react-native-fade-in-image';
-import Jazzicon from 'react-native-jazzicon';
-import { connect } from 'react-redux';
 import { useTheme } from '../../../util/theme';
+import { useSelector } from 'react-redux';
+import AvatarAccount from '../../../component-library/components/Avatars/Avatar/variants/AvatarAccount';
+import { AvatarSize } from '../../../component-library/components/Avatars/Avatar';
+import { selectAvatarAccountType } from '../../../selectors/settings';
 
 interface IdenticonProps {
+  /**
+   * Optional size of the avatar
+   */
+  avatarSize?: AvatarSize;
   /**
    * Diameter that represents the size of the identicon
    */
@@ -19,15 +24,16 @@ interface IdenticonProps {
   /**
    * Custom style to apply to image
    */
-  customStyle?: ImageStyle;
+  customStyle?: StyleProp<ImageStyle>;
   /**
    * True if render is happening without fade in
    */
   noFadeIn?: boolean;
   /**
-   * Show a BlockieIcon instead of JazzIcon
+   * URI of the image to render
+   * Overrides the address if also provided
    */
-  useBlockieIcon?: boolean;
+  imageUri?: string;
 }
 
 /**
@@ -36,51 +42,58 @@ interface IdenticonProps {
  * but we could add more types in the future
  */
 const Identicon: React.FC<IdenticonProps> = ({
+  avatarSize = AvatarSize.Md,
   diameter = 46,
   address,
   customStyle,
   noFadeIn,
-  useBlockieIcon = true,
+  imageUri,
 }) => {
   const { colors } = useTheme();
+  const avatarAccountType = useSelector(selectAvatarAccountType);
+
+  if (!address && !imageUri) return null;
+
+  const styleForBlockieAndTokenIcon = [
+    {
+      height: diameter,
+      width: diameter,
+      borderRadius: diameter / 2,
+    },
+    customStyle,
+  ];
+
+  if (imageUri) {
+    return noFadeIn ? (
+      <Image source={{ uri: imageUri }} style={styleForBlockieAndTokenIcon} />
+    ) : (
+      <FadeIn
+        placeholderStyle={{ backgroundColor: colors.background.alternative }}
+      >
+        <Image source={{ uri: imageUri }} style={styleForBlockieAndTokenIcon} />
+      </FadeIn>
+    );
+  }
 
   if (!address) return null;
 
-  const uri = useBlockieIcon && toDataUrl(address);
-
-  const image = useBlockieIcon ? (
-    <Image
-      source={{ uri }}
-      style={[
-        {
-          height: diameter,
-          width: diameter,
-          borderRadius: diameter / 2,
-        },
-        customStyle,
-      ]}
+  const avatar = (
+    <AvatarAccount
+      type={avatarAccountType}
+      accountAddress={address}
+      size={avatarSize}
     />
-  ) : (
-    <View style={customStyle}>
-      <Jazzicon size={diameter} address={address} />
-    </View>
   );
 
-  if (noFadeIn) {
-    return image;
-  }
+  if (noFadeIn) return avatar;
 
   return (
     <FadeIn
       placeholderStyle={{ backgroundColor: colors.background.alternative }}
     >
-      {image}
+      {avatar}
     </FadeIn>
   );
 };
 
-const mapStateToProps = (state: any) => ({
-  useBlockieIcon: state.settings.useBlockieIcon,
-});
-
-export default connect(mapStateToProps)(memo(Identicon));
+export default memo(Identicon);

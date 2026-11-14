@@ -1,0 +1,214 @@
+import '../../_mocks_/initialState';
+import { renderHook, waitFor } from '@testing-library/react-native';
+import { useSelector } from 'react-redux';
+import { AssetType, useAssetMetadata } from './index';
+
+// Mock dependencies
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(),
+}));
+
+const mockFetchAssetMetadata = jest.fn();
+const mockGetAssetImageUrl = jest.fn();
+
+jest.mock('./utils', () => ({
+  fetchAssetMetadata: (...args: unknown[]) => mockFetchAssetMetadata(...args),
+  getAssetImageUrl: (...args: unknown[]) => mockGetAssetImageUrl(...args),
+}));
+
+const mockChainIdEvm = '0x1';
+const mockSearchQueryEvm = '0xdac17f958d2ee523a2206206994597c13d831ec7';
+const mockAssetIdEvm = 'eip155:1/erc20:0x123';
+
+const mockChainIdSol = 'solana:101';
+const mockSearchQuerySol = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
+const mockAssetIdSol =
+  'solana:101/token:EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
+
+describe('useAssetMetadata', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (useSelector as jest.Mock).mockReturnValue(true); // allowExternalServices = true
+    mockGetAssetImageUrl.mockReturnValue('mock-image-url');
+  });
+
+  it('should return undefined when external services are disabled', async () => {
+    (useSelector as jest.Mock).mockReturnValue(false); // allowExternalServices = false
+
+    const { result } = renderHook(() =>
+      useAssetMetadata(mockSearchQuerySol, true, mockChainIdSol),
+    );
+
+    await waitFor(() => {
+      expect(result.current.assetMetadata).toBeUndefined();
+    });
+    expect(mockFetchAssetMetadata).not.toHaveBeenCalled();
+  });
+
+  it('should return undefined when chainId is not provided', async () => {
+    const { result } = renderHook(() =>
+      useAssetMetadata(mockSearchQuerySol, true),
+    );
+
+    await waitFor(() => {
+      expect(result.current.assetMetadata).toBeUndefined();
+    });
+    expect(mockFetchAssetMetadata).not.toHaveBeenCalled();
+  });
+
+  it('should return undefined when search query is empty', async () => {
+    const { result } = renderHook(() =>
+      useAssetMetadata('', true, mockChainIdEvm),
+    );
+
+    await waitFor(() => {
+      expect(result.current.assetMetadata).toBeUndefined();
+    });
+    expect(mockFetchAssetMetadata).not.toHaveBeenCalled();
+  });
+
+  it('should return undefined when search query is not an address', async () => {
+    const { result } = renderHook(() =>
+      useAssetMetadata('not-an-address', true, mockChainIdEvm),
+    );
+
+    await waitFor(() => {
+      expect(result.current.assetMetadata).toBeUndefined();
+    });
+    expect(mockFetchAssetMetadata).not.toHaveBeenCalled();
+  });
+
+  describe('EVM', () => {
+    it('should fetch and return asset metadata when conditions are met', async () => {
+      const mockMetadata = {
+        address: mockSearchQueryEvm,
+        symbol: 'TEST',
+        decimals: 18,
+        assetId: mockAssetIdEvm,
+        chainId: mockChainIdEvm,
+      };
+
+      mockFetchAssetMetadata.mockResolvedValueOnce(mockMetadata);
+
+      const { result } = renderHook(() =>
+        useAssetMetadata(mockSearchQueryEvm, true, mockChainIdEvm),
+      );
+
+      await waitFor(() => {
+        expect(result.current.assetMetadata).toEqual({
+          ...mockMetadata,
+          chainId: mockChainIdEvm,
+          isNative: false,
+          type: AssetType.token,
+          image: 'mock-image-url',
+          balance: '',
+          string: '',
+        });
+      });
+
+      expect(mockFetchAssetMetadata).toHaveBeenCalledWith(
+        mockSearchQueryEvm.trim(),
+        mockChainIdEvm,
+      );
+      expect(mockGetAssetImageUrl).toHaveBeenCalledWith(
+        mockAssetIdEvm,
+        mockChainIdEvm,
+      );
+    });
+  });
+  describe('Solana', () => {
+    it('should fetch and return asset metadata when conditions are met', async () => {
+      const mockMetadata = {
+        address: mockSearchQuerySol,
+        symbol: 'TEST',
+        decimals: 18,
+        assetId: mockAssetIdSol,
+        chainId: mockChainIdSol,
+      };
+
+      mockFetchAssetMetadata.mockResolvedValueOnce(mockMetadata);
+
+      const { result } = renderHook(() =>
+        useAssetMetadata(mockSearchQuerySol, true, mockChainIdSol),
+      );
+
+      await waitFor(() => {
+        expect(result.current.assetMetadata).toEqual({
+          ...mockMetadata,
+          chainId: mockChainIdSol,
+          isNative: false,
+          type: AssetType.token,
+          image: 'mock-image-url',
+          balance: '',
+          string: '',
+        });
+      });
+
+      expect(mockFetchAssetMetadata).toHaveBeenCalledWith(
+        mockSearchQuerySol.trim(),
+        mockChainIdSol,
+      );
+      expect(mockGetAssetImageUrl).toHaveBeenCalledWith(
+        mockAssetIdSol,
+        mockChainIdSol,
+      );
+    });
+  });
+
+  it('fetches metadata when the search query is a CAIP-19 asset ID', async () => {
+    const stellarChainId = 'stellar:pubnet';
+    const stellarAssetId =
+      'stellar:pubnet/asset:USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+    mockFetchAssetMetadata.mockResolvedValueOnce({
+      address: 'USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      assetId: stellarAssetId,
+      symbol: 'USDC',
+      decimals: 7,
+      chainId: stellarChainId,
+    });
+
+    const { result } = renderHook(() =>
+      useAssetMetadata(stellarAssetId, true, stellarChainId),
+    );
+
+    await waitFor(() => {
+      expect(result.current.assetMetadata?.assetId).toBe(stellarAssetId);
+    });
+    expect(mockFetchAssetMetadata).toHaveBeenCalledWith(
+      stellarAssetId,
+      stellarChainId,
+    );
+  });
+
+  it('should return undefined when fetchAssetMetadata returns undefined', async () => {
+    mockFetchAssetMetadata.mockResolvedValueOnce(undefined);
+
+    const { result } = renderHook(() =>
+      useAssetMetadata(mockSearchQuerySol, true, mockChainIdSol),
+    );
+
+    await waitFor(() => {
+      expect(mockFetchAssetMetadata).toHaveBeenCalledWith(
+        mockSearchQuerySol.trim(),
+        mockChainIdSol,
+      );
+    });
+    expect(result.current.assetMetadata).toBeUndefined();
+  });
+
+  it('should handle errors gracefully', async () => {
+    mockFetchAssetMetadata.mockRejectedValueOnce(new Error('API Error'));
+
+    const { result } = renderHook(() =>
+      useAssetMetadata(mockSearchQuerySol, true, mockChainIdSol),
+    );
+
+    await waitFor(() => {
+      expect(mockFetchAssetMetadata).toHaveBeenCalledWith(
+        mockSearchQuerySol.trim(),
+        mockChainIdSol,
+      );
+    });
+    expect(result.current.assetMetadata).toBeUndefined();
+  });
+});

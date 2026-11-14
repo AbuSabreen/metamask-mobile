@@ -1,0 +1,632 @@
+import {
+  TransactionType,
+  type TransactionMeta,
+} from '@metamask/transaction-controller';
+
+// ESM-only package. This suite needs the origin constant and Jest does not
+// transform the package.
+jest.mock('@metamask/approval-controller', () => ({
+  ORIGIN_METAMASK: 'metamask',
+}));
+import { merge } from 'lodash';
+
+import { TRANSACTION_EVENTS } from '../../../../Analytics/events/confirmations';
+import { AnalyticsEventBuilder } from '../../../../../util/analytics/AnalyticsEventBuilder';
+import { selectShouldUseSmartTransaction } from '../../../../../selectors/smartTransactionsController';
+import { getSmartTransactionMetricsProperties } from '../../../../../util/smart-transactions';
+import { getStxMetricsProperties } from '../metrics_properties/stx';
+import {
+  handleTransactionAddedEventForMetrics,
+  handleTransactionApprovedEventForMetrics,
+  handleTransactionFinalizedEventForMetrics,
+  handleTransactionRejectedEventForMetrics,
+  handleTransactionSubmittedEventForMetrics,
+} from './metrics';
+import { TransactionEventHandlerRequest } from '../types';
+import { selectIsPna25Acknowledged } from '../../../../../selectors/legalNotices';
+import { registerPendingTransactionActiveAbTestsForTransactionIds } from '../../../../../util/transactions/transaction-active-ab-test-attribution-registry';
+import {
+  beginUnclaimedPrewarmTransaction,
+  endUnclaimedPrewarmTransaction,
+  isUnclaimedPrewarmTransaction,
+  resetUnclaimedPrewarmTransactionMetricsForTesting,
+  trackStashedPrewarmTransactionAdded,
+} from '../../../../../components/UI/Perps/utils/unclaimedPrewarmTransactionMetrics';
+
+const enabledSmartTransactionsState = {
+  engine: {
+    backgroundState: {
+      SmartTransactionsController: {
+        enabled: true,
+        smartTransactionsState: {
+          liveness: true,
+        },
+      },
+      AccountsController: {
+        internalAccounts: {
+          selectedAccount: 'account1',
+          accounts: {
+            account1: {
+              address: '0x123',
+            },
+          },
+        },
+      },
+      NetworkController: {
+        selectedNetworkClientId: 'mainnet',
+        networkConfigurationsByChainId: {
+          '0x1': {
+            chainId: '0x1',
+            rpcEndpoints: [
+              {
+                networkClientId: 'mainnet',
+                type: 'infura',
+                url: 'https://mainnet.infura.io/v3/{infuraProjectId}',
+              },
+            ],
+            defaultRpcEndpointIndex: 0,
+            nativeCurrency: 'ETH',
+          },
+        },
+      },
+      PreferencesController: {
+        smartTransactionsOptInStatus: true,
+      },
+    },
+  },
+  swaps: {
+    featureFlags: {
+      smart_transactions: {
+        mobile_active: true,
+      },
+      smartTransactions: {
+        mobileActive: true,
+      },
+    },
+  },
+  selectedAccount: {
+    address: '0x1234567890123456789012345678901234567890',
+  },
+};
+
+jest.mock('../../../../../util/smart-transactions', () => {
+  const actual = jest.requireActual('../../../../../util/smart-transactions');
+  return {
+    ...actual,
+    getSmartTransactionMetricsProperties: jest.fn().mockResolvedValue({}),
+  };
+});
+
+jest.mock('../../../../../selectors/smartTransactionsController', () => ({
+  selectShouldUseSmartTransaction: jest.fn().mockReturnValue(false),
+}));
+
+jest.mock('../../../../../selectors/legalNotices', () => ({
+  selectIsPna25Acknowledged: jest.fn().mockReturnValue(false),
+}));
+
+jest.mock('../../../../../util/analytics/AnalyticsEventBuilder');
+
+jest.mock(
+  '../../../../../util/transactions/transaction-active-ab-test-attribution-registry',
+  () => ({
+    ...jest.requireActual<
+      typeof import('../../../../../util/transactions/transaction-active-ab-test-attribution-registry')
+    >(
+      '../../../../../util/transactions/transaction-active-ab-test-attribution-registry',
+    ),
+    registerPendingTransactionActiveAbTestsForTransactionIds: jest.fn(),
+  }),
+);
+
+jest.mock('../../../Engine', () => ({
+  context: {},
+}));
+
+jest.mock('../metrics_properties/stx', () => ({
+  getStxMetricsProperties: jest.fn().mockResolvedValue({
+    properties: {},
+    sensitiveProperties: {},
+  }),
+}));
+
+jest.mock('../metrics_properties/metamask-pay', () => ({
+  getMetaMaskPayProperties: jest.fn().mockReturnValue({
+    properties: {
+      builder_test: true,
+    },
+    sensitiveProperties: {
+      builder_sensitive_test: true,
+    },
+  }),
+}));
+
+const mockSmartTransactionMetricsProperties = {
+  is_smart_transactions_user_opt_in: true,
+  is_smart_transactions_available: true,
+  is_smart_transaction: true,
+};
+
+describe('Transaction Metric Event Handlers', () => {
+  const mockGetState = jest.fn();
+  const mockInitMessengerCall = jest.fn();
+  const mockSmartTransactionsController = jest.fn();
+
+  // Mock variables for selectors
+  const mockSelectShouldUseSmartTransaction = jest.mocked(
+    selectShouldUseSmartTransaction,
+  );
+  const mockGetSmartTransactionMetricsProperties = jest.mocked(
+    getSmartTransactionMetricsProperties,
+  );
+  const mockGetStxMetricsProperties = jest.mocked(getStxMetricsProperties);
+  const mockSelectIsPna25Acknowledged = jest.mocked(selectIsPna25Acknowledged);
+
+  const mockTransactionMeta = {
+    id: 'test-id',
+    chainId: '0x1',
+    hash: '0x1234567890',
+    type: 'standard',
+    networkClientId: 'test-network',
+    time: 1234567890,
+    txParams: {},
+  } as unknown as TransactionMeta;
+
+  const mockTransactionMetricRequest = {
+    getState: mockGetState,
+    initMessenger: { call: mockInitMessengerCall },
+    smartTransactionsController: mockSmartTransactionsController,
+  } as unknown as TransactionEventHandlerRequest;
+
+  // Mock for AnalyticsEventBuilder (used by both generateEvent in utils.ts and metrics.ts)
+  const mockEventBuilder = {
+    addProperties: jest.fn().mockReturnThis(),
+    addSensitiveProperties: jest.fn().mockReturnThis(),
+    removeProperties: jest.fn().mockReturnThis(),
+    removeSensitiveProperties: jest.fn().mockReturnThis(),
+    build: jest.fn().mockReturnValue({
+      name: 'Transaction Added',
+      properties: {},
+      sensitiveProperties: {},
+    }),
+  } as unknown as ReturnType<typeof AnalyticsEventBuilder.createEventBuilder>;
+
+  beforeEach(() => {
+    resetUnclaimedPrewarmTransactionMetricsForTesting();
+    jest.clearAllMocks();
+
+    jest
+      .mocked(AnalyticsEventBuilder.createEventBuilder)
+      .mockReturnValue(mockEventBuilder);
+
+    mockGetState.mockReturnValue(
+      merge({}, enabledSmartTransactionsState, {
+        confirmationMetrics: {
+          metricsById: {
+            [mockTransactionMeta.id]: {
+              properties: { test_property: 'test_value' },
+              sensitiveProperties: { sensitive_property: 'sensitive_value' },
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  const handlerTestCases = [
+    {
+      handlerName: 'handleTransactionAddedEventForMetrics',
+      handler: handleTransactionAddedEventForMetrics,
+      event: TRANSACTION_EVENTS.TRANSACTION_ADDED,
+    },
+    {
+      handlerName: 'handleTransactionApprovedEventForMetrics',
+      handler: handleTransactionApprovedEventForMetrics,
+      event: TRANSACTION_EVENTS.TRANSACTION_APPROVED,
+    },
+    {
+      handlerName: 'handleTransactionFinalizedEventForMetrics',
+      handler: handleTransactionFinalizedEventForMetrics,
+      event: TRANSACTION_EVENTS.TRANSACTION_FINALIZED,
+    },
+    {
+      handlerName: 'handleTransactionRejectedEventForMetrics',
+      handler: handleTransactionRejectedEventForMetrics,
+      event: TRANSACTION_EVENTS.TRANSACTION_REJECTED,
+    },
+    {
+      handlerName: 'handleTransactionSubmittedEventForMetrics',
+      handler: handleTransactionSubmittedEventForMetrics,
+      event: TRANSACTION_EVENTS.TRANSACTION_SUBMITTED,
+    },
+  ];
+
+  it.each(handlerTestCases)(
+    '$handlerName generates and tracks event with correct properties',
+    async ({ handler, event }) => {
+      await handler(mockTransactionMeta, mockTransactionMetricRequest);
+
+      expect(AnalyticsEventBuilder.createEventBuilder).toHaveBeenCalledWith(
+        event,
+      );
+
+      expect(mockEventBuilder.build).toHaveBeenCalled();
+      expect(mockInitMessengerCall).toHaveBeenCalledWith(
+        'AnalyticsController:trackEvent',
+        expect.any(Object),
+      );
+    },
+  );
+
+  it('registers pending transaction A/B tests before TRANSACTION_ADDED metric builders run', async () => {
+    const mockRegisterPending = jest.mocked(
+      registerPendingTransactionActiveAbTestsForTransactionIds,
+    );
+    await handleTransactionAddedEventForMetrics(
+      mockTransactionMeta,
+      mockTransactionMetricRequest,
+    );
+    expect(mockRegisterPending).toHaveBeenCalledWith([mockTransactionMeta.id]);
+  });
+
+  it('does not register pending transaction A/B tests for TRANSACTION_APPROVED', async () => {
+    const mockRegisterPending = jest.mocked(
+      registerPendingTransactionActiveAbTestsForTransactionIds,
+    );
+    mockRegisterPending.mockClear();
+    await handleTransactionApprovedEventForMetrics(
+      mockTransactionMeta,
+      mockTransactionMetricRequest,
+    );
+    expect(mockRegisterPending).not.toHaveBeenCalled();
+  });
+
+  it('handles missing transaction metrics properties', async () => {
+    mockGetState.mockReturnValueOnce({
+      confirmationMetrics: {
+        metricsById: {},
+      },
+    });
+
+    await handleTransactionApprovedEventForMetrics(
+      mockTransactionMeta,
+      mockTransactionMetricRequest,
+    );
+
+    expect(mockEventBuilder.addProperties).toHaveBeenCalled();
+    expect(mockEventBuilder.addSensitiveProperties).toHaveBeenCalled();
+  });
+
+  it('does not throw for undefined transaction metrics', () => {
+    mockGetState.mockReturnValueOnce({
+      confirmationMetrics: {
+        metricsById: {},
+      },
+    });
+
+    expect(() => {
+      handleTransactionApprovedEventForMetrics(
+        mockTransactionMeta,
+        mockTransactionMetricRequest,
+      );
+    }).not.toThrow();
+  });
+
+  it('includes builder metrics in tracked event', async () => {
+    await handleTransactionSubmittedEventForMetrics(
+      mockTransactionMeta,
+      mockTransactionMetricRequest,
+    );
+
+    expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+      expect.objectContaining({
+        builder_test: true,
+      }),
+    );
+
+    expect(mockEventBuilder.addSensitiveProperties).toHaveBeenCalledWith(
+      expect.objectContaining({
+        builder_sensitive_test: true,
+      }),
+    );
+  });
+
+  it('includes simulation receiving total value when assetsFiatValues is set', async () => {
+    const transactionMetaWithFiatValues = {
+      ...mockTransactionMeta,
+      assetsFiatValues: {
+        receiving: '123.45',
+      },
+    } as unknown as TransactionMeta;
+
+    await handleTransactionApprovedEventForMetrics(
+      transactionMetaWithFiatValues,
+      mockTransactionMetricRequest,
+    );
+
+    expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+      expect.objectContaining({
+        simulation_receiving_assets_total_value: 123.45,
+      }),
+    );
+  });
+
+  describe('securityAlertResponse properties', () => {
+    it('includes security_alert_reason and security_alert_response when securityAlertResponse is present', async () => {
+      const transactionMetaWithAlert = {
+        ...mockTransactionMeta,
+        securityAlertResponse: {
+          result_type: 'Benign',
+          reason: 'raw_native_token_transfer',
+        },
+      } as unknown as TransactionMeta;
+
+      await handleTransactionApprovedEventForMetrics(
+        transactionMetaWithAlert,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          security_alert_response: 'Benign',
+          security_alert_reason: 'raw_native_token_transfer',
+        }),
+      );
+    });
+
+    it('includes ui_customizations as flagged_as_malicious when result_type is Malicious', async () => {
+      const transactionMetaWithMalicious = {
+        ...mockTransactionMeta,
+        securityAlertResponse: {
+          result_type: 'Malicious',
+          reason: 'malicious_domain',
+        },
+      } as unknown as TransactionMeta;
+
+      await handleTransactionAddedEventForMetrics(
+        transactionMetaWithMalicious,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          security_alert_response: 'Malicious',
+          security_alert_reason: 'malicious_domain',
+          ui_customizations: ['flagged_as_malicious'],
+        }),
+      );
+    });
+
+    it('sets security_alert_response to loading when result_type is RequestInProgress', async () => {
+      const transactionMetaWithLoading = {
+        ...mockTransactionMeta,
+        securityAlertResponse: {
+          result_type: 'RequestInProgress',
+          reason: 'other',
+        },
+      } as unknown as TransactionMeta;
+
+      await handleTransactionSubmittedEventForMetrics(
+        transactionMetaWithLoading,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          security_alert_response: 'loading',
+          security_alert_reason: 'other',
+          ui_customizations: ['security_alert_loading'],
+        }),
+      );
+    });
+
+    it('includes ppom provider request counts', async () => {
+      const transactionMetaWithCounts = {
+        ...mockTransactionMeta,
+        securityAlertResponse: {
+          result_type: 'Benign',
+          reason: 'other',
+          providerRequestsCount: {
+            eth_call: 5,
+            eth_getCode: 3,
+          },
+        },
+      } as unknown as TransactionMeta;
+
+      await handleTransactionRejectedEventForMetrics(
+        transactionMetaWithCounts,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          security_alert_response: 'Benign',
+          security_alert_reason: 'other',
+          ppom_eth_call_count: 5,
+          ppom_eth_getCode_count: 3,
+        }),
+      );
+    });
+
+    it('does not include security alert properties when securityAlertResponse is undefined', async () => {
+      await handleTransactionApprovedEventForMetrics(
+        mockTransactionMeta,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockEventBuilder.addProperties).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          security_alert_response: expect.anything(),
+        }),
+      );
+    });
+  });
+
+  describe('handleTransactionFinalized', () => {
+    it('adds STX metrics properties if smart transactions are enabled', async () => {
+      mockGetStxMetricsProperties.mockResolvedValue({
+        properties: {
+          is_smart_transactions_user_opt_in: true,
+          is_smart_transactions_available: true,
+          is_smart_transaction: true,
+        },
+        sensitiveProperties: {},
+      });
+
+      await handleTransactionFinalizedEventForMetrics(
+        mockTransactionMeta,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockGetStxMetricsProperties).toHaveBeenCalled();
+
+      expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          is_smart_transactions_user_opt_in: true,
+          is_smart_transactions_available: true,
+          is_smart_transaction: true,
+        }),
+      );
+    });
+
+    it('does not add STX metrics properties if smart transactions are not enabled', async () => {
+      mockGetStxMetricsProperties.mockResolvedValue({
+        properties: {
+          is_smart_transactions_user_opt_in: false,
+          is_smart_transactions_available: false,
+          is_smart_transaction: false,
+        },
+        sensitiveProperties: {},
+      });
+
+      await handleTransactionFinalizedEventForMetrics(
+        mockTransactionMeta,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockEventBuilder.addProperties).toHaveBeenCalled();
+      expect(mockEventBuilder.addProperties).not.toHaveBeenCalledWith(
+        expect.objectContaining(mockSmartTransactionMetricsProperties),
+      );
+    });
+
+    it('includes builder metrics', async () => {
+      await handleTransactionFinalizedEventForMetrics(
+        mockTransactionMeta,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          builder_test: true,
+        }),
+      );
+
+      expect(mockEventBuilder.addSensitiveProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          builder_sensitive_test: true,
+        }),
+      );
+    });
+
+    describe('hash property', () => {
+      it('included when pna25 is acknowledged', async () => {
+        mockSelectIsPna25Acknowledged.mockReturnValue(true);
+
+        await handleTransactionFinalizedEventForMetrics(
+          mockTransactionMeta,
+          mockTransactionMetricRequest,
+        );
+
+        expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+          expect.objectContaining({
+            transaction_hash: mockTransactionMeta.hash,
+          }),
+        );
+      });
+
+      it('not included when pna25 is not acknowledged', async () => {
+        mockSelectIsPna25Acknowledged.mockReturnValue(false);
+
+        await handleTransactionFinalizedEventForMetrics(
+          mockTransactionMeta,
+          mockTransactionMetricRequest,
+        );
+
+        expect(mockEventBuilder.addProperties).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            transaction_hash: mockTransactionMeta.hash,
+          }),
+        );
+      });
+    });
+  });
+
+  describe('unclaimed deposit prewarm', () => {
+    const prewarmTransaction = {
+      id: 'prewarm-tx',
+      chainId: '0x1',
+      type: TransactionType.perpsDepositAndOrder,
+      networkClientId: 'test-network',
+      time: 1234567890,
+      txParams: {},
+    } as unknown as TransactionMeta;
+
+    it('does not track Transaction Added until the prewarm is claimed', async () => {
+      const generation = beginUnclaimedPrewarmTransaction();
+
+      await handleTransactionAddedEventForMetrics(
+        prewarmTransaction,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockInitMessengerCall).not.toHaveBeenCalled();
+
+      endUnclaimedPrewarmTransaction(generation);
+      await trackStashedPrewarmTransactionAdded('prewarm-tx');
+
+      expect(mockInitMessengerCall).toHaveBeenCalledWith(
+        'AnalyticsController:trackEvent',
+        expect.any(Object),
+      );
+    });
+
+    it('does not track Transaction Rejected for an unclaimed prewarm', async () => {
+      beginUnclaimedPrewarmTransaction();
+      await handleTransactionAddedEventForMetrics(
+        prewarmTransaction,
+        mockTransactionMetricRequest,
+      );
+      mockInitMessengerCall.mockClear();
+
+      await handleTransactionRejectedEventForMetrics(
+        prewarmTransaction,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockInitMessengerCall).not.toHaveBeenCalled();
+      expect(isUnclaimedPrewarmTransaction('prewarm-tx')).toBe(false);
+    });
+
+    it('tracks Transaction Rejected after the prewarm was claimed', async () => {
+      const generation = beginUnclaimedPrewarmTransaction();
+      await handleTransactionAddedEventForMetrics(
+        prewarmTransaction,
+        mockTransactionMetricRequest,
+      );
+      endUnclaimedPrewarmTransaction(generation);
+      await trackStashedPrewarmTransactionAdded('prewarm-tx');
+      mockInitMessengerCall.mockClear();
+
+      await handleTransactionRejectedEventForMetrics(
+        prewarmTransaction,
+        mockTransactionMetricRequest,
+      );
+
+      expect(mockInitMessengerCall).toHaveBeenCalledWith(
+        'AnalyticsController:trackEvent',
+        expect.any(Object),
+      );
+    });
+  });
+});

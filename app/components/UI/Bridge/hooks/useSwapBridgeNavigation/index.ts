@@ -1,0 +1,457 @@
+import { useCallback } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import Routes from '../../../../../constants/navigation/Routes';
+import { Hex, CaipChainId } from '@metamask/utils';
+import { useSelector, useDispatch } from 'react-redux';
+import { BridgeToken, BridgeViewMode } from '../../types';
+import {
+  FeatureId,
+  formatChainIdToHex,
+  getNativeAssetForChainId,
+  isNonEvmChainId,
+  MetaMetricsSwapsEventSource,
+} from '@metamask/bridge-controller';
+import { EthScope } from '@metamask/keyring-api';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { getDecimalChainId } from '../../../../../util/networks';
+import {
+  trackActionButtonClick,
+  ActionButtonType,
+  ActionLocation,
+  ActionPosition,
+} from '../../../../../util/analytics/actionButtonTracking';
+import { useAddNetwork } from '../../../../hooks/useAddNetwork';
+import {
+  selectAllowedChainRanking,
+  selectIsBridgeEnabledSourceFactory,
+  setSourceToken,
+  setDestToken,
+  setIsDestTokenManuallySet,
+  setAbTestContext,
+  resetBridgeState,
+} from '../../../../../core/redux/slices/bridge';
+import type { TransactionActiveAbTestEntry } from '../../../../../util/transactions/transaction-active-ab-test-attribution-registry';
+import Engine from '../../../../../core/Engine';
+import { useCurrentNetworkInfo } from '../../../../hooks/useCurrentNetworkInfo';
+import { strings } from '../../../../../../locales/i18n';
+import {
+  getNativeSourceToken,
+  getDefaultDestToken,
+  isSameBridgeToken,
+} from '../../utils/tokenUtils';
+import { selectBasicFunctionalityEnabled } from '../../../../../selectors/settings';
+import TrendingFeedSessionManager from '../../../Trending/services/TrendingFeedSessionManager';
+import { useFetchPopularTokens } from '../useFetchPopularTokens';
+import { startSwapBridgePageLoadTrace } from '../../utils/swapBridgePageLoadTrace';
+import type { BridgeTabKey } from '../../Views/BridgeView/BridgeView.constants';
+import type { SwapsLimitOrderExpirationMinutes } from '../../constants/limitOrders';
+import type { RecurringState } from '../../utils/recurringSchedule';
+
+/**
+ * When navigating to the Asset view from trending tokens list, we add a property
+ * to indicate the user's intent is to BUY the token (not sell).
+ *
+ * This is used to determine whether the token should be pre-filled as the
+ * destination token (buy) rather than source token (sell) in the swap flow.
+ */
+export const isAssetFromTrending = (asset: unknown) =>
+  typeof asset === 'object' &&
+  asset !== null &&
+  'isFromTrending' in asset &&
+  asset.isFromTrending === true;
+
+export interface BridgeRouteParams {
+  sourcePage: string;
+  bridgeViewMode: BridgeViewMode;
+  sourceToken?: BridgeToken;
+  destToken?: BridgeToken;
+  sourceAmount?: string;
+  location: MetaMetricsSwapsEventSource;
+  initialTab?: BridgeTabKey;
+  initialLimitOrderExpirationMinutes?: SwapsLimitOrderExpirationMinutes;
+  initialLimitOrderPriceTolerance?: string;
+  initialRecurringSchedule?: Pick<
+    RecurringState,
+    'everyValue' | 'everyUnit' | 'repeatCount'
+  >;
+  scrollToTopOnNav?: boolean;
+  autoFocusSourceAmountInput?: boolean;
+  /**
+   * Homepage / explicit flow `active_ab_tests` carried on the route and bound
+   * to transactions when the user submits (not stored in Redux).
+   */
+  transactionActiveAbTests?: TransactionActiveAbTestEntry[];
+  /** Correlates a fresh page-load trace started before navigation. */
+  swapViewTraceId?: string;
+}
+
+/**
+ * @deprecated Use MetaMetricsSwapsEventSource instead.
+ */
+export enum SwapBridgeNavigationLocation {
+  MainView = MetaMetricsSwapsEventSource.MainView,
+  TokenView = MetaMetricsSwapsEventSource.TokenView,
+  Rewards = 'Rewards',
+  TrendingExplore = MetaMetricsSwapsEventSource.TrendingExplore,
+  FollowTradingTokenScreen = MetaMetricsSwapsEventSource.FollowTradingTokenScreen,
+  FollowTradingFeedScreen = MetaMetricsSwapsEventSource.FollowTradingFeedScreen,
+  TransactionDetails = MetaMetricsSwapsEventSource.TransactionDetails,
+}
+
+/**
+ * Maps the mobile-specific SwapBridgeNavigationLocation to the core
+ * MetaMetricsSwapsEventSource enum used by the bridge-controller/bridge-status-controller.
+ *
+ * @param location - The mobile navigation location
+ * @param isFromTrending - Whether the user navigated from the trending flow
+ * @returns The corresponding MetaMetricsSwapsEventSource value
+ */
+export const toMetaMetricsSwapsEventSource = (
+  location: SwapBridgeNavigationLocation,
+  isFromTrending = false,
+): MetaMetricsSwapsEventSource => {
+  if (isFromTrending) {
+    return MetaMetricsSwapsEventSource.TrendingExplore;
+  }
+  switch (location) {
+    case SwapBridgeNavigationLocation.MainView:
+      return MetaMetricsSwapsEventSource.MainView;
+    case SwapBridgeNavigationLocation.TokenView:
+      return MetaMetricsSwapsEventSource.TokenView;
+    case SwapBridgeNavigationLocation.TrendingExplore:
+      return MetaMetricsSwapsEventSource.TrendingExplore;
+    case SwapBridgeNavigationLocation.FollowTradingTokenScreen:
+      return MetaMetricsSwapsEventSource.FollowTradingTokenScreen;
+    case SwapBridgeNavigationLocation.FollowTradingFeedScreen:
+      return MetaMetricsSwapsEventSource.FollowTradingFeedScreen;
+    case SwapBridgeNavigationLocation.TransactionDetails:
+      return MetaMetricsSwapsEventSource.TransactionDetails;
+    default:
+      return MetaMetricsSwapsEventSource.MainView;
+  }
+};
+
+/**
+ * Returns functions that are used to navigate to the MetaMask Bridge and MetaMask Swaps routes.
+ * @param location location of navigation call – used for analytics.
+ * @param sourceToken token object containing address and chainId we want to set as source.
+ * @param destToken optional token object to set as destination. If not provided, or matches source, defaults to computed destination token.
+ * @returns An object containing functions that can be used to navigate to the existing Bridges page in the browser and the MetaMask Swaps page. If there isn't an existing bridge page, one is created based on the current chain ID and passed token address (if provided).
+ */
+export const useSwapBridgeNavigation = ({
+  location,
+  sourcePage,
+  sourceToken: sourceTokenBase,
+  destToken: destTokenBase,
+  abTestContext,
+  transactionActiveAbTests,
+  skipLocationUpdate = false,
+  swapButtonEventLocationOverride,
+  skipActionButtonClickTracking = false,
+}: {
+  location: SwapBridgeNavigationLocation;
+  sourcePage: string;
+  sourceToken?: BridgeToken;
+  destToken?: BridgeToken;
+  abTestContext?: Record<string, string>;
+  /**
+   * A/B test assignments for Transaction Added — passed through to the Bridge
+   * route and stashed only when the user submits a transaction.
+   */
+  transactionActiveAbTests?: TransactionActiveAbTestEntry[];
+  /**
+   * When true, skip calling setLocation on the bridge controller.
+   * Use this when re-entering the bridge flow from a page that was opened
+   * within an existing bridge session (e.g. Token Details opened from the
+   * bridge asset picker) to preserve the original entry-point location.
+   */
+  skipLocationUpdate?: boolean;
+  /**
+   * Override only the tracked location on the unified swap click event.
+   * This keeps bridge session source attribution intact while letting callers
+   * report the button tap from a more specific UI surface like the navbar.
+   */
+  swapButtonEventLocationOverride?:
+    | ActionLocation
+    | SwapBridgeNavigationLocation;
+  /**
+   * When true, skip consolidated ACTION_BUTTON_CLICKED from this hook so the
+   * caller can emit it with the correct location / position (e.g. homepage grid).
+   */
+  skipActionButtonClickTracking?: boolean;
+}) => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const dispatch = useDispatch();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const getIsBridgeEnabledSource = useSelector(
+    selectIsBridgeEnabledSourceFactory,
+  );
+  const currentNetworkInfo = useCurrentNetworkInfo();
+
+  const isBasicFunctionalityEnabled = useSelector(
+    selectBasicFunctionalityEnabled,
+  );
+
+  const enabledChainRanking = useSelector(selectAllowedChainRanking);
+
+  const fetchPopularTokens = useFetchPopularTokens();
+  const prefetchPopularTokens = useCallback(() => {
+    if (!enabledChainRanking?.length) {
+      return;
+    }
+    fetchPopularTokens({
+      chainIds: enabledChainRanking.map(
+        (chain: { chainId: CaipChainId }) => chain.chainId,
+      ),
+      featureId: FeatureId.UNIFIED_SWAP_BRIDGE,
+    }).catch(() => undefined);
+  }, [enabledChainRanking, fetchPopularTokens]);
+
+  // Unified swaps/bridge UI
+  const goToNativeBridge = useCallback(
+    (
+      sourceTokenOverride?: BridgeToken,
+      destTokenOverride?: BridgeToken,
+      buttonLabel?: string,
+      scrollToTopOnNav?: boolean,
+      /** Per-call override for {@link MetaMetricsEvents.SWAP_BUTTON_CLICKED} `location`. */
+      swapButtonClickLocationOverride?:
+        | ActionLocation
+        | SwapBridgeNavigationLocation,
+      initialTab?: BridgeTabKey,
+    ) => {
+      // Use tokenOverride if provided, otherwise fall back to tokenBase
+      const effectiveSourceTokenBase = sourceTokenOverride ?? sourceTokenBase;
+      // Use destTokenOverride if provided, otherwise fall back to destTokenBase
+      const effectiveDestTokenBase = destTokenOverride ?? destTokenBase;
+
+      // Determine effective chain ID - use home page filter network when no sourceToken provided
+      const getEffectiveSourceChainId = (): CaipChainId | Hex => {
+        if (effectiveSourceTokenBase) {
+          // If specific token provided, use its chainId
+          return effectiveSourceTokenBase.chainId;
+        }
+
+        // No token provided - check home page filter network
+        const homePageFilterNetwork = currentNetworkInfo.getNetworkInfo(0);
+        if (
+          !homePageFilterNetwork?.caipChainId ||
+          currentNetworkInfo.enabledNetworks.length > 1
+        ) {
+          // Fall back to mainnet if no filter or multiple networks
+          return EthScope.Mainnet;
+        }
+
+        return homePageFilterNetwork.caipChainId as CaipChainId;
+      };
+
+      const effectiveSourceChainId = getEffectiveSourceChainId();
+
+      let bridgeSourceNativeAsset;
+      try {
+        if (!effectiveSourceTokenBase) {
+          bridgeSourceNativeAsset = getNativeAssetForChainId(
+            effectiveSourceChainId,
+          );
+        }
+      } catch (error) {
+        // Suppress error as it's expected when the chain is not supported
+      }
+
+      const bridgeNativeSourceTokenFormatted: BridgeToken | undefined =
+        bridgeSourceNativeAsset
+          ? {
+              address: isNonEvmChainId(effectiveSourceChainId)
+                ? bridgeSourceNativeAsset.assetId
+                : bridgeSourceNativeAsset.address,
+              name: bridgeSourceNativeAsset.name ?? '',
+              symbol: bridgeSourceNativeAsset.symbol,
+              image: bridgeSourceNativeAsset.iconUrl ?? '',
+              decimals: bridgeSourceNativeAsset.decimals,
+              chainId: isNonEvmChainId(effectiveSourceChainId)
+                ? effectiveSourceChainId
+                : formatChainIdToHex(effectiveSourceChainId), // Use hex format for balance fetching compatibility, unless it's a Solana chain
+            }
+          : undefined;
+
+      const candidateSourceToken =
+        effectiveSourceTokenBase ?? bridgeNativeSourceTokenFormatted;
+      const isBridgeEnabledSource = getIsBridgeEnabledSource(
+        effectiveSourceChainId,
+      );
+      let sourceToken = isBridgeEnabledSource
+        ? candidateSourceToken
+        : undefined;
+
+      if (!sourceToken) {
+        // fallback to ETH on mainnet
+        sourceToken = getNativeSourceToken(EthScope.Mainnet);
+      }
+
+      // Only use the configured dest token if its chain is bridge-enabled.
+      // When the dest is on an unsupported chain (e.g. token viewed from an
+      // unsupported network in the trending "buy" flow), fall through to the
+      // default dest logic so the UI opens with a valid pair.
+      const isDestChainSupported = effectiveDestTokenBase
+        ? getIsBridgeEnabledSource(effectiveDestTokenBase.chainId)
+        : true;
+      const validDestTokenBase = isDestChainSupported
+        ? effectiveDestTokenBase
+        : undefined;
+
+      let destTokenToSet: BridgeToken | undefined;
+      let isExplicitDestTokenSelection = false;
+      if (
+        validDestTokenBase &&
+        !isSameBridgeToken(sourceToken, validDestTokenBase)
+      ) {
+        destTokenToSet = validDestTokenBase;
+        isExplicitDestTokenSelection = true;
+      } else {
+        const defaultDestToken = getDefaultDestToken(sourceToken.chainId);
+        if (
+          defaultDestToken &&
+          !isSameBridgeToken(sourceToken, defaultDestToken)
+        ) {
+          destTokenToSet = defaultDestToken;
+        } else {
+          const nativeDestToken = getNativeSourceToken(sourceToken.chainId);
+          if (!isSameBridgeToken(sourceToken, nativeDestToken)) {
+            destTokenToSet = nativeDestToken;
+          }
+        }
+      }
+
+      // Check if user is in an active trending session for analytics
+      const isFromTrendingSession =
+        TrendingFeedSessionManager.getInstance().isFromTrending;
+      const isFromTrendingAsset =
+        isAssetFromTrending(effectiveSourceTokenBase) ||
+        isAssetFromTrending(effectiveDestTokenBase);
+      const isFromTrending = isFromTrendingSession || isFromTrendingAsset;
+
+      // Set the location on the bridge controller once so all internally-fired
+      // events (InputChanged, QuotesRequested, QuotesReceived, etc.) carry it.
+      // Skip when re-entering from a page within an existing bridge session
+      // (e.g. Token Details opened from the bridge asset picker) to preserve
+      // the original entry-point location.
+      const mappedLocation = toMetaMetricsSwapsEventSource(
+        location,
+        isFromTrending,
+      );
+      if (!skipLocationUpdate) {
+        Engine.context.BridgeController.setLocation(mappedLocation);
+      }
+
+      const shouldAutoFocusSourceAmountInput = Boolean(
+        effectiveSourceTokenBase || effectiveDestTokenBase,
+      );
+
+      const params = startSwapBridgePageLoadTrace({
+        sourceToken,
+        sourcePage,
+        bridgeViewMode: BridgeViewMode.Unified,
+        location: mappedLocation,
+        ...(scrollToTopOnNav && { scrollToTopOnNav: true }),
+        ...(shouldAutoFocusSourceAmountInput && {
+          autoFocusSourceAmountInput: true,
+        }),
+        ...(transactionActiveAbTests?.length && { transactionActiveAbTests }),
+        ...(initialTab && { initialTab }),
+      });
+
+      // Prefetch popular tokens
+      if (isBasicFunctionalityEnabled) {
+        prefetchPopularTokens();
+      }
+
+      dispatch(resetBridgeState());
+
+      // Navigate before Redux bridge updates so the Wallet tab does not repaint from slice
+      // dispatches while still visible (e.g. checklist trade primary → swaps).
+      navigation.navigate(
+        Routes.BRIDGE.ROOT,
+        {
+          screen: Routes.BRIDGE.BRIDGE_VIEW,
+          params,
+        },
+        { pop: true },
+      );
+
+      dispatch(setIsDestTokenManuallySet(isExplicitDestTokenSelection));
+      dispatch(setAbTestContext(abTestContext));
+      dispatch(setSourceToken(sourceToken));
+      if (destTokenToSet) {
+        dispatch(setDestToken(destTokenToSet));
+      }
+
+      // Track Swap button click with new consolidated event
+      if (!skipActionButtonClickTracking) {
+        const isFromNavbar = location === SwapBridgeNavigationLocation.MainView;
+        const actionButtonProps = {
+          action_name: ActionButtonType.SWAP,
+          // Omit action_position for navbar to avoid confusion with main action buttons
+          ...(isFromNavbar
+            ? {}
+            : { action_position: ActionPosition.SECOND_POSITION }),
+          button_label: buttonLabel ?? strings('asset_overview.swap'),
+          location: isFromNavbar
+            ? ActionLocation.NAVBAR
+            : ActionLocation.ASSET_DETAILS,
+        };
+
+        trackActionButtonClick(
+          trackEvent,
+          createEventBuilder,
+          actionButtonProps,
+        );
+      }
+
+      const swapEventProperties = {
+        location:
+          swapButtonClickLocationOverride ??
+          swapButtonEventLocationOverride ??
+          location,
+        chain_id_source: getDecimalChainId(sourceToken.chainId),
+        token_symbol_source: sourceToken?.symbol,
+        token_address_source: sourceToken?.address,
+        from_trending: isFromTrending,
+      };
+
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.SWAP_BUTTON_CLICKED)
+          .addProperties(swapEventProperties)
+          .build(),
+      );
+    },
+    [
+      navigation,
+      dispatch,
+      sourceTokenBase,
+      destTokenBase,
+      sourcePage,
+      abTestContext,
+      trackEvent,
+      createEventBuilder,
+      location,
+      currentNetworkInfo,
+      getIsBridgeEnabledSource,
+      skipLocationUpdate,
+      swapButtonEventLocationOverride,
+      skipActionButtonClickTracking,
+      transactionActiveAbTests,
+      isBasicFunctionalityEnabled,
+      prefetchPopularTokens,
+    ],
+  );
+  const { networkModal } = useAddNetwork();
+
+  const goToSwaps = useCallback(goToNativeBridge, [goToNativeBridge]);
+
+  return {
+    goToSwaps,
+    networkModal,
+  };
+};

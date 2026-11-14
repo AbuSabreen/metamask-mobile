@@ -1,0 +1,19 @@
+import enContent from '../../../../../locales/languages/en.json';
+
+export const AdvancedViewSelectorsIDs = {
+  BACK_BUTTON: 'advanced-settings-back-button',
+  CONTAINER: 'advanced-settings',
+  ETH_SIGN_SWITCH: 'eth-sign-switch',
+  TOKEN_DETECTION_TOGGLE: 'token-detection-toggle',
+  SHOW_FIAT_ON_TESTNETS: 'show-fiat-on-testnets',
+  ADVANCED_SETTINGS_SCROLLVIEW: 'advanced-settings-scrollview',
+  STX_OPT_IN_SWITCH: 'smart_transactions_opt_in_switch',
+  DISMISS_SMART_ACCOUNT_UPDATE: 'dismiss_smart_account_update',
+  RESET_ACCOUNT_CONFIRM_BUTTON: 'reset-account-confirm-button',
+  MONEY_ACCOUNT_STATUS_BUTTON: 'money-account-status-button',
+};
+
+export const AdvancedViewSelectorsText = {
+  RESET_ACCOUNT: enContent.app_settings.reset_account_button,
+  RESET_CONFIRMED: enContent.app_settings.reset_account_confirm_button,
+};

@@ -12,15 +12,23 @@ import { AvatarBaseProps } from './AvatarBase.types';
 import styleSheet from './AvatarBase.styles';
 import { DEFAULT_AVATARBASE_SIZE } from './AvatarBase.constants';
 
+/**
+ * @deprecated Please update your code to use `AvatarBase` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/AvatarBase/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#avatarbase-component Migration docs}
+ */
 const AvatarBase: React.FC<AvatarBaseProps> = ({
   size = DEFAULT_AVATARBASE_SIZE,
   style,
   children,
+  includesBorder = false,
   ...props
 }) => {
   const { styles } = useStyles(styleSheet, {
     size,
     style,
+    includesBorder,
   });
 
   return (

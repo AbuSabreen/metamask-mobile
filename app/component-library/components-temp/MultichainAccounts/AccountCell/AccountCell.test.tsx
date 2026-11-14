@@ -1,0 +1,360 @@
+import React from 'react';
+import { AccountGroupObject } from '@metamask/account-tree-controller';
+import AccountCell from './AccountCell';
+import renderWithProvider from '../../../../util/test/renderWithProvider';
+import { fireEvent } from '@testing-library/react-native';
+import {
+  createMockAccountGroup,
+  createMockInternalAccountsFromGroups,
+  createMockState,
+  createMockWallet,
+} from '../test-utils';
+import {
+  Blockies,
+  Jazzicon,
+  Maskicon,
+} from '@metamask/design-system-react-native';
+import { AccountCellIds } from './AccountCell.testIds';
+import { backgroundState } from '../../../../util/test/initial-root-state';
+import { AvatarAccountType } from '../avatarAccountVariant';
+import { AccountListBalanceContext } from '../../../../components/hooks/AccountListBalanceContext';
+
+// Configurable mock balance for selector
+const mockBalance: { value: number; currency: string } = {
+  value: 0,
+  currency: 'usd',
+};
+
+// Mock balance selector to avoid deep store dependencies
+jest.mock('../../../../selectors/assets/balances', () => {
+  const actual = jest.requireActual('../../../../selectors/assets/balances');
+  return {
+    ...actual,
+    selectBalanceByAccountGroup: (groupId: string) => () => ({
+      walletId: groupId.split('/')[0],
+      groupId,
+      totalBalanceInUserCurrency: mockBalance.value,
+      userCurrency: mockBalance.currency,
+    }),
+  };
+});
+
+// Mock account selector to avoid deep store dependencies
+jest.mock('../../../../selectors/multichainAccounts/accounts', () => {
+  const actual = jest.requireActual(
+    '../../../../selectors/multichainAccounts/accounts',
+  );
+  return {
+    ...actual,
+    selectIconSeedAddressByAccountGroupId: () => () =>
+      '0x1234567890abcdef1234567890abcdef12345678',
+  };
+});
+
+// Mock navigation
+const mockNavigate = jest.fn();
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({ navigate: mockNavigate }),
+}));
+
+const mockAccountGroup = createMockAccountGroup(
+  'keyring:test-group/ethereum',
+  'Test Account Group',
+  ['account-1'],
+);
+
+const renderAccountCell = (
+  props: {
+    accountGroup?: AccountGroupObject;
+    isSelected?: boolean;
+    hideMenu?: boolean;
+    avatarAccountType?: AvatarAccountType;
+    onSelectAccount?: () => void;
+    privacyMode?: boolean;
+    accountListBalance?: number | null;
+  } = {},
+) => {
+  const { privacyMode = false, accountListBalance, ...componentProps } = props;
+  const defaultProps = {
+    accountGroup: mockAccountGroup,
+    avatarAccountType: AvatarAccountType.Maskicon,
+    isSelected: false,
+    hideMenu: false,
+    onSelectAccount: jest.fn(),
+    ...componentProps,
+  };
+
+  const groups = [defaultProps.accountGroup];
+  const wallet = createMockWallet('test-group', 'Test Wallet', groups);
+  const internalAccounts = createMockInternalAccountsFromGroups(groups);
+  const baseState = createMockState([wallet], internalAccounts);
+  const accountCell = <AccountCell {...defaultProps} />;
+  const component =
+    accountListBalance === undefined ? (
+      accountCell
+    ) : (
+      <AccountListBalanceContext.Provider value={() => accountListBalance}>
+        {accountCell}
+      </AccountListBalanceContext.Provider>
+    );
+
+  return renderWithProvider(component, {
+    state: {
+      ...baseState,
+      engine: {
+        ...baseState.engine,
+        backgroundState: {
+          ...baseState.engine.backgroundState,
+          PreferencesController: {
+            ...backgroundState.PreferencesController,
+            privacyMode,
+          },
+        },
+      },
+      settings: {
+        avatarAccountType: AvatarAccountType.Maskicon,
+      },
+    },
+  });
+};
+
+describe('AccountCell', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockBalance.value = 0;
+    mockBalance.currency = 'usd';
+  });
+
+  it('displays account name', () => {
+    const { getByText } = renderAccountCell();
+    expect(getByText('Test Account Group')).toBeTruthy();
+  });
+
+  it('displays account name when selected', () => {
+    const { getByText } = renderAccountCell({ isSelected: true });
+    expect(getByText('Test Account Group')).toBeTruthy();
+  });
+
+  it.each([
+    { currency: 'usd', value: 1234.56, expected: '$1,234.56' },
+    { currency: 'eur', value: 987.65, expected: '€987.65' },
+  ])('displays correct formatted balances', ({ currency, value, expected }) => {
+    mockBalance.value = value;
+    mockBalance.currency = currency;
+    const { getByText } = renderAccountCell();
+    expect(getByText(expected)).toBeTruthy();
+  });
+
+  it('renders the cached complete homepage aggregate', () => {
+    mockBalance.value = 100;
+
+    const { getByText } = renderAccountCell({
+      accountListBalance: 900,
+    });
+
+    expect(getByText('$900.00')).toBeTruthy();
+  });
+
+  it('uses the homepage aggregate for the selected account group', () => {
+    mockBalance.value = 100;
+
+    const { getByText, queryByText } = renderAccountCell({
+      accountListBalance: 900,
+    });
+
+    expect(getByText('$900.00')).toBeTruthy();
+    expect(queryByText('$1,000.00')).toBeNull();
+  });
+
+  it('keeps the aggregate balance blank while non-token balances are loading', () => {
+    mockBalance.value = 100;
+
+    const { queryByText } = renderAccountCell({ accountListBalance: null });
+
+    expect(queryByText('$100.00')).toBeNull();
+  });
+
+  it('keeps the balance blank when the account has never been fully loaded', () => {
+    mockBalance.value = 100;
+
+    const { queryByText } = renderAccountCell({
+      accountListBalance: null,
+    });
+
+    expect(queryByText('$100.00')).toBeNull();
+  });
+
+  it.each([
+    { currency: 'usd', formattedZero: '$0.00' },
+    { currency: 'eur', formattedZero: '€0.00' },
+  ])(
+    'hides a zero balance so an unloaded account is not shown as empty',
+    ({ currency, formattedZero }) => {
+      mockBalance.value = 0;
+      mockBalance.currency = currency;
+
+      const { queryByText } = renderAccountCell();
+
+      expect(queryByText(formattedZero)).toBeNull();
+    },
+  );
+
+  it('renders menu button by default', () => {
+    const { getByTestId } = renderAccountCell();
+    expect(getByTestId(AccountCellIds.MENU)).toBeTruthy();
+  });
+
+  it('hides menu button when hideMenu is true', () => {
+    const { queryByTestId } = renderAccountCell({ hideMenu: true });
+    expect(queryByTestId(AccountCellIds.MENU)).toBeNull();
+  });
+
+  it('navigates to account group details when menu button is pressed', () => {
+    const { getByTestId } = renderAccountCell();
+    const menuButton = getByTestId(AccountCellIds.MENU);
+    fireEvent.press(menuButton);
+    expect(mockNavigate).toHaveBeenCalledWith('MultichainAccountGroupDetails', {
+      accountGroup: mockAccountGroup,
+    });
+  });
+
+  it('renders Maskicon AvatarAccount when avatarAccountType is Maskicon', () => {
+    const { UNSAFE_getByType } = renderAccountCell({
+      avatarAccountType: AvatarAccountType.Maskicon,
+    });
+    expect(UNSAFE_getByType(Maskicon)).toBeTruthy();
+  });
+
+  it('renders Jazzicon AvatarAccount when avatarAccountType is JazzIcon', () => {
+    const { UNSAFE_getByType } = renderAccountCell({
+      avatarAccountType: AvatarAccountType.JazzIcon,
+    });
+    expect(UNSAFE_getByType(Jazzicon)).toBeTruthy();
+  });
+
+  it('renders Blockies AvatarAccount when avatarAccountType is Blockies', () => {
+    const { UNSAFE_getByType } = renderAccountCell({
+      avatarAccountType: AvatarAccountType.Blockies,
+    });
+    expect(UNSAFE_getByType(Blockies)).toBeTruthy();
+  });
+
+  it('calls onSelectAccount when account name is pressed', () => {
+    const mockOnSelectAccount = jest.fn();
+    const { getByText } = renderAccountCell({
+      onSelectAccount: mockOnSelectAccount,
+    });
+
+    // Given a rendered account cell
+    // When the user presses the account name
+    fireEvent.press(getByText('Test Account Group'));
+
+    // Then onSelectAccount should be called
+    expect(mockOnSelectAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onSelectAccount when balance is pressed', () => {
+    const mockOnSelectAccount = jest.fn();
+    mockBalance.value = 100;
+    mockBalance.currency = 'usd';
+    const { getByText } = renderAccountCell({
+      onSelectAccount: mockOnSelectAccount,
+    });
+
+    // Given a rendered account cell with balance
+    // When the user presses the balance
+    fireEvent.press(getByText('$100.00'));
+
+    // Then onSelectAccount should be called
+    expect(mockOnSelectAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onSelectAccount when avatar is pressed', () => {
+    const mockOnSelectAccount = jest.fn();
+    const { getByTestId } = renderAccountCell({
+      onSelectAccount: mockOnSelectAccount,
+    });
+
+    fireEvent.press(getByTestId(AccountCellIds.AVATAR));
+
+    expect(mockOnSelectAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call onSelectAccount when menu button is pressed', () => {
+    const mockOnSelectAccount = jest.fn();
+    const { getByTestId } = renderAccountCell({
+      onSelectAccount: mockOnSelectAccount,
+    });
+
+    // Given a rendered account cell
+    // When the user presses the menu button
+    const menuButton = getByTestId(AccountCellIds.MENU);
+    fireEvent.press(menuButton);
+
+    // Then onSelectAccount should not be called, only navigate
+    expect(mockOnSelectAccount).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalled();
+  });
+
+  it('renders avatar inside wrapper with correct styling when selected', () => {
+    const { getByTestId } = renderAccountCell({ isSelected: true });
+
+    // Given an account cell that is selected
+    // When rendered
+    // Then the avatar should be visible with selection indicator
+    expect(getByTestId(AccountCellIds.AVATAR)).toBeTruthy();
+  });
+
+  it('renders avatar inside wrapper with correct styling when not selected', () => {
+    const { getByTestId } = renderAccountCell({ isSelected: false });
+
+    // Given an account cell that is not selected
+    // When rendered
+    // Then the avatar should be visible without selection indicator
+    expect(getByTestId(AccountCellIds.AVATAR)).toBeTruthy();
+  });
+
+  it('hides balance when privacyMode is true', () => {
+    mockBalance.value = 100;
+    mockBalance.currency = 'usd';
+    const { getByTestId, queryByText } = renderAccountCell({
+      privacyMode: true,
+    });
+
+    // The balance element should be present but showing masked characters
+    expect(getByTestId(AccountCellIds.BALANCE)).toBeOnTheScreen();
+    // The actual balance text should not be visible
+    expect(queryByText('$100.00')).toBeNull();
+  });
+
+  it('shows balance when privacyMode is false', () => {
+    mockBalance.value = 100;
+    mockBalance.currency = 'usd';
+    const { getByText } = renderAccountCell({ privacyMode: false });
+
+    expect(getByText('$100.00')).toBeOnTheScreen();
+  });
+
+  it('shows nothing when privacyMode is true and there is no balance', () => {
+    mockBalance.value = undefined as unknown as number;
+    mockBalance.currency = 'usd';
+    const { queryByText } = renderAccountCell({ privacyMode: true });
+
+    // No masked dots when there is no balance to hide
+    expect(queryByText('••••••••••••')).toBeNull();
+  });
+
+  it('displays correct test IDs for all elements', () => {
+    const { getByTestId } = renderAccountCell();
+
+    // Verify all expected test IDs are present
+    expect(getByTestId(AccountCellIds.CONTAINER)).toBeTruthy();
+    expect(getByTestId(AccountCellIds.SELECT)).toBeTruthy();
+    expect(getByTestId(AccountCellIds.AVATAR)).toBeTruthy();
+    expect(getByTestId(AccountCellIds.ADDRESS)).toBeTruthy();
+    expect(getByTestId(AccountCellIds.BALANCE)).toBeTruthy();
+    expect(getByTestId(AccountCellIds.MENU)).toBeTruthy();
+  });
+});

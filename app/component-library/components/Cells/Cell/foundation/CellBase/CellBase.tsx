@@ -19,12 +19,13 @@ import {
 } from './CellBase.constants';
 import styleSheet from './CellBase.styles';
 import { CellBaseProps } from './CellBase.types';
-import { CellModalSelectorsIDs } from '../../../../../../../e2e/selectors/Modals/CellModal.selectors';
+import { CellComponentSelectorsIDs } from '../../CellComponent.testIds';
 
 const CellBase = ({
   style,
   avatarProps,
   title,
+  titleProps,
   secondaryText,
   tertiaryText,
   tagLabel,
@@ -37,18 +38,23 @@ const CellBase = ({
       {/* DEV Note: Account Avatar should be replaced with Avatar with Badge whenever available */}
       <Avatar
         style={styles.avatar}
-        testID={CellModalSelectorsIDs.BASE_AVATAR}
-        {...avatarProps}
+        testID={CellComponentSelectorsIDs.BASE_AVATAR}
         size={DEFAULT_CELLBASE_AVATAR_SIZE}
+        {...avatarProps}
       />
       <View style={styles.cellBaseInfo}>
-        <Text
-          numberOfLines={1}
-          variant={DEFAULT_CELLBASE_AVATAR_TITLE_TEXTVARIANT}
-          testID={CellModalSelectorsIDs.BASE_TITLE}
-        >
-          {title}
-        </Text>
+        {title === undefined || typeof title === 'string' ? (
+          <Text
+            numberOfLines={1}
+            variant={DEFAULT_CELLBASE_AVATAR_TITLE_TEXTVARIANT}
+            testID={CellComponentSelectorsIDs.BASE_TITLE}
+            {...titleProps}
+          >
+            {title}
+          </Text>
+        ) : (
+          title
+        )}
         {!!secondaryText && (
           <Text
             numberOfLines={1}

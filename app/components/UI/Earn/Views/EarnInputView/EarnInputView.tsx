@@ -1,0 +1,1101 @@
+import { ORIGIN_METAMASK, toHex } from '@metamask/controller-utils';
+import { CHAIN_ID_TO_AAVE_POOL_CONTRACT } from '@metamask/stake-sdk';
+import { TransactionType } from '@metamask/transaction-controller';
+import { Hex } from '@metamask/utils';
+import {
+  useFocusEffect,
+  useNavigation,
+  useRoute,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import BigNumber from 'bignumber.js';
+import { formatEther } from 'ethers/lib/utils';
+import { debounce } from 'lodash';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { View } from 'react-native';
+import { useSelector } from 'react-redux';
+import { strings } from '../../../../../../locales/i18n';
+import Button, {
+  ButtonSize,
+  ButtonVariants,
+  ButtonWidthTypes,
+} from '../../../../../component-library/components/Buttons/Button';
+import { TextVariant } from '../../../../../component-library/components/Texts/Text';
+import ResourceToggle from '../../components/Tron/ResourceToggle';
+import Routes from '../../../../../constants/navigation/Routes';
+import Engine from '../../../../../core/Engine';
+import { RootState } from '../../../../../reducers';
+import { selectSelectedInternalAccountByScope } from '../../../../../selectors/multichainAccounts/accounts';
+import { selectConversionRate } from '../../../../../selectors/currencyRateController';
+import {
+  selectNetworkConfigurationByChainId,
+  selectDefaultEndpointByChainId,
+} from '../../../../../selectors/networkController';
+import { selectContractExchangeRatesByChainId } from '../../../../../selectors/tokenRatesController';
+import { getDecimalChainId } from '../../../../../util/networks';
+import { addTransactionBatch } from '../../../../../util/transaction-controller';
+import Keypad from '../../../../Base/Keypad';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import { useStyles } from '../../../../hooks/useStyles';
+import { IconName } from '@metamask/design-system-react-native';
+import ScreenLayout from '../../../Ramp/Aggregator/components/ScreenLayout';
+import QuickAmounts from '../../../Stake/components/QuickAmounts';
+import { EVENT_PROVIDERS } from '../../../Stake/constants/events';
+import { EVENT_LOCATIONS } from '../../constants/events/earnEvents';
+import usePoolStakedDeposit from '../../../Stake/hooks/usePoolStakedDeposit';
+import EarnTokenSelector from '../../components/EarnTokenSelector';
+import InputDisplay from '../../components/InputDisplay';
+import { EARN_EXPERIENCES } from '../../constants/experiences';
+import useEarnInputHandlers from '../../hooks/useEarnInput';
+import useEarnTokens from '../../hooks/useEarnTokens';
+import EarnMaintenanceBanner from '../../components/EarnMaintenanceBanner';
+import {
+  selectPooledStakingEnabledFlag,
+  selectPooledStakingServiceInterruptionBannerEnabledFlag,
+  selectStablecoinLendingEnabledFlag,
+  selectStablecoinLendingServiceInterruptionBannerEnabledFlag,
+} from '../../selectors/featureFlags';
+import {
+  EARN_LENDING_ACTIONS,
+  EarnTokenDetails,
+} from '../../types/lending.types';
+import {
+  generateLendingAllowanceIncreaseTransaction,
+  generateLendingDepositTransaction,
+} from '../../utils/tempLending';
+import styleSheet from './EarnInputView.styles';
+import {
+  EARN_INPUT_VIEW_ACTIONS,
+  EarnInputViewProps,
+} from './EarnInputView.types';
+import { InternalAccount } from '@metamask/keyring-internal-api';
+import { useEarnAnalyticsEventLogging } from '../../hooks/useEarnEventAnalyticsLogging';
+import {
+  doesTokenRequireAllowanceReset,
+  formatChainIdForAnalytics,
+  formatEarnRatePercentage,
+} from '../../utils';
+import { ScrollView } from 'react-native-gesture-handler';
+import { trace, TraceName } from '../../../../../util/trace';
+import { useEndTraceOnMount } from '../../../../hooks/useEndTraceOnMount';
+import { EVM_SCOPE } from '../../constants/networks';
+
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+import useTronStake from '../../hooks/useTronStake';
+import useTronStakeApy from '../../hooks/useTronStakeApy';
+import TronStakePreview from '../../components/Tron/StakePreview/TronStakePreview';
+import { ComputeFeeResult } from '../../utils/tron-staking-snap';
+import { handleTronStakingNavigationResult } from '../../utils/tron';
+
+const EarnInputView = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  // navigation hooks
+  const navigation = useNavigation<AppNavigationProp>();
+  const route = useRoute<EarnInputViewProps['route']>();
+  const { token } = route.params;
+
+  // We want to keep track of the last quick amount pressed before navigating to review.
+  const lastQuickAmountButtonPressed = useRef<string | null>(null);
+
+  // state
+  const [
+    isSubmittingStakeDepositTransaction,
+    setIsSubmittingStakeDepositTransaction,
+  ] = useState(false);
+
+  const selectedAccount = useSelector(selectSelectedInternalAccountByScope)(
+    EVM_SCOPE,
+  );
+  const conversionRate = useSelector(selectConversionRate) ?? 1;
+  const contractExchangeRates = useSelector((state: RootState) =>
+    selectContractExchangeRatesByChainId(state, token?.chainId as Hex),
+  );
+  const network = useSelector((state: RootState) =>
+    selectNetworkConfigurationByChainId(state, token?.chainId as Hex),
+  );
+
+  const isPooledStakingEnabled = useSelector(selectPooledStakingEnabledFlag);
+
+  const isStablecoinLendingEnabled = useSelector(
+    selectStablecoinLendingEnabledFlag,
+  );
+  const isPooledStakingServiceInterruptionBannerEnabled = useSelector(
+    selectPooledStakingServiceInterruptionBannerEnabledFlag,
+  );
+  const isStablecoinLendingServiceInterruptionBannerEnabled = useSelector(
+    selectStablecoinLendingServiceInterruptionBannerEnabledFlag,
+  );
+
+  // if token is ETH, use 1 as the exchange rate
+  // otherwise, use the contract exchange rate or 0 if undefined
+  const exchangeRate = token.isETH
+    ? 1
+    : (contractExchangeRates?.[token.address as Hex]?.price ?? 0);
+
+  // other hooks
+  const { styles } = useStyles(styleSheet, {});
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const { attemptDepositTransaction } = usePoolStakedDeposit();
+  const { getEarnToken } = useEarnTokens();
+
+  let tronApyPercent: string | null = null;
+  const {
+    isTronNative,
+    isTronEnabled,
+    resourceType,
+    setResourceType,
+    validating: isTronStakeValidating,
+    preview: tronPreview,
+    validateStakeAmount: tronValidateStakeAmount,
+    confirmStake: tronConfirmStake,
+    tronAccountId,
+  } = useTronStake({ token });
+  tronApyPercent = useTronStakeApy().apyPercent;
+
+  // Flag to conditionally show Tron-specific UI (false in non-Tron builds)
+  let showTronStakingUI = false;
+  showTronStakingUI = isTronEnabled;
+
+  const earnToken = getEarnToken(token);
+  const stakingExperienceType =
+    earnToken?.experience.type ?? EARN_EXPERIENCES.POOLED_STAKING;
+  const isPooledStakingExperience =
+    earnToken?.isETH &&
+    earnToken?.experience?.type === EARN_EXPERIENCES.POOLED_STAKING;
+  const isStablecoinLendingExperience =
+    earnToken?.experience?.type === EARN_EXPERIENCES.STABLECOIN_LENDING;
+
+  const endpoint = useSelector((state: RootState) =>
+    selectDefaultEndpointByChainId(state, earnToken?.chainId as Hex),
+  );
+
+  const networkClientId = endpoint?.networkClientId;
+
+  const {
+    isFiat,
+    currentCurrency,
+    isNonZeroAmount,
+    amountToken,
+    amountTokenMinimalUnit,
+    amountFiatNumber,
+    isOverMaximum,
+    handleCurrencySwitch,
+    currencyToggleValue,
+    percentageOptions,
+    handleQuickAmountPress,
+    handleKeypadChange,
+    calculateEstimatedAnnualRewards,
+    annualRewardsToken,
+    annualRewardsFiat,
+    annualRewardRate,
+    handleMax,
+    balanceValue,
+    isHighGasCostImpact,
+    getDepositTxGasPercentage,
+    estimatedGasFeeWei,
+    isLoadingEarnGasFee,
+  } = useEarnInputHandlers({
+    earnToken: earnToken as EarnTokenDetails,
+    conversionRate,
+    exchangeRate,
+  });
+
+  const { shouldLogStablecoinEvent, shouldLogStakingEvent } =
+    useEarnAnalyticsEventLogging({
+      earnToken,
+      isStablecoinLendingEnabled,
+      token,
+      actionType: 'deposit',
+    });
+
+  // Preview visibility: when true, hide keypad/quick amounts and show the Tron preview box
+  const [isPreviewVisible, setIsPreviewVisible] = useState(false);
+
+  useEffect(() => {
+    if (shouldLogStablecoinEvent()) {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.EARN_INPUT_OPENED)
+          .addProperties({
+            action_type: 'deposit',
+            token: earnToken?.symbol,
+            network: network?.name,
+            user_token_balance: balanceValue,
+            experience: EARN_EXPERIENCES.STABLECOIN_LENDING,
+          })
+          .build(),
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEndTraceOnMount(TraceName.EarnDepositScreen);
+
+  // Debounced fee computation that reacts to amount/resourceType changes from any input method.
+  // resourceType is captured implicitly via tronValidateStakeAmount's dependency on it.
+  useEffect(() => {
+    if (!isTronEnabled || !isNonZeroAmount) return undefined;
+
+    // Debounce the fee computation to avoid unnecessary re-renders and API calls.
+    const timer = setTimeout(() => {
+      tronValidateStakeAmount?.(amountToken);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [amountToken, isTronEnabled, isNonZeroAmount, tronValidateStakeAmount]);
+
+  const navigateToLearnMoreModal = useCallback(() => {
+    const tokenExperience = earnToken?.experience?.type;
+
+    if (
+      tokenExperience === EARN_EXPERIENCES.POOLED_STAKING ||
+      tokenExperience === EARN_EXPERIENCES.TRX_STAKING
+    ) {
+      trace({ name: TraceName.EarnFaq, data: { experience: tokenExperience } });
+
+      // Navigate to TRX staking learn more modal
+      if (isTronNative) {
+        navigation.navigate('StakeModals', {
+          screen: Routes.STAKING.MODALS.TRX_LEARN_MORE,
+        });
+        return;
+      }
+
+      navigation.navigate('StakeModals', {
+        screen: Routes.STAKING.MODALS.LEARN_MORE,
+        params: { chainId: earnToken?.chainId },
+      });
+    }
+
+    if (tokenExperience === EARN_EXPERIENCES.STABLECOIN_LENDING) {
+      trace({ name: TraceName.EarnFaq, data: { experience: tokenExperience } });
+      navigation.navigate(Routes.EARN.MODALS.ROOT, {
+        screen: Routes.EARN.MODALS.LENDING_LEARN_MORE,
+        params: { asset: earnToken },
+      });
+    }
+  }, [earnToken, navigation, isTronNative]);
+
+  const handleQuickAmountPressWithTracking = useCallback(
+    ({ value }: { value: number }) => {
+      lastQuickAmountButtonPressed.current = `${value * 100}%`;
+
+      // call the original handler first
+      handleQuickAmountPress({ value });
+
+      // track events based on flow type
+      if (shouldLogStablecoinEvent()) {
+        trackEvent(
+          createEventBuilder(MetaMetricsEvents.EARN_INPUT_VALUE_CHANGED)
+            .addProperties({
+              action_type: 'deposit',
+              input_value: `${value * 100}%`,
+              token: earnToken?.symbol,
+              network: network?.name,
+              user_token_balance: balanceValue,
+              experience: EARN_EXPERIENCES.STABLECOIN_LENDING,
+            })
+            .build(),
+        );
+      } else if (shouldLogStakingEvent()) {
+        trackEvent(
+          createEventBuilder(MetaMetricsEvents.STAKE_INPUT_QUICK_AMOUNT_CLICKED)
+            .addProperties({
+              location: EVENT_LOCATIONS.EARN_INPUT_VIEW,
+              amount: value,
+              is_max: false,
+              mode: !isFiat ? 'native' : 'fiat',
+              experience: stakingExperienceType,
+            })
+            .build(),
+        );
+      }
+    },
+    [
+      shouldLogStablecoinEvent,
+      shouldLogStakingEvent,
+      handleQuickAmountPress,
+      trackEvent,
+      createEventBuilder,
+      earnToken?.symbol,
+      network?.name,
+      balanceValue,
+      isFiat,
+      stakingExperienceType,
+    ],
+  );
+
+  // TODO: Remove dead code as we are not using the legacy confirmations anymore
+  const isStakingDepositRedesignedEnabled = true;
+
+  const handleLendingFlow = useCallback(async () => {
+    if (
+      !selectedAccount?.address ||
+      !earnToken?.experience?.market?.underlying?.address ||
+      !earnToken?.experience?.market?.protocol
+    )
+      return;
+
+    if (shouldLogStablecoinEvent()) {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.EARN_REVIEW_BUTTON_CLICKED)
+          .addProperties({
+            action_type: 'deposit',
+            token: earnToken?.symbol,
+            network: network?.name,
+            user_token_balance: balanceValue,
+            transaction_value: `${amountToken} ${earnToken?.symbol}`,
+            lastQuickAmountButtonPressed: lastQuickAmountButtonPressed.current,
+            location: EVENT_LOCATIONS.EARN_INPUT_VIEW,
+            is_max: Boolean(lastQuickAmountButtonPressed.current === 'MAX'),
+            mode: !isFiat ? 'native' : 'fiat',
+            experience: EARN_EXPERIENCES.STABLECOIN_LENDING,
+          })
+          .build(),
+      );
+    }
+
+    // TODO: Add GasCostImpact for lending deposit flow after launch.
+    const amountTokenMinimalUnitString = amountTokenMinimalUnit.toString();
+
+    const tokenContractAddress = earnToken?.address;
+
+    if (!tokenContractAddress || !earnToken?.chainId) return;
+
+    const allowanceMinimalTokenUnitBN =
+      await Engine.context.EarnController.getLendingTokenAllowance(
+        earnToken.experience.market.protocol,
+        earnToken.experience.market.underlying.address,
+      );
+
+    const allowanceMinimalTokenUnit = allowanceMinimalTokenUnitBN
+      ? allowanceMinimalTokenUnitBN.toString()
+      : '0';
+
+    const needsAllowanceIncrease = (() => {
+      const isExistingAllowanceLowerThanNeeded = new BigNumber(
+        allowanceMinimalTokenUnit ?? '',
+      ).isLessThan(amountTokenMinimalUnitString);
+
+      if (
+        doesTokenRequireAllowanceReset(earnToken.chainId, earnToken.symbol) &&
+        isExistingAllowanceLowerThanNeeded &&
+        allowanceMinimalTokenUnit !== '0'
+      )
+        return true;
+
+      return isExistingAllowanceLowerThanNeeded;
+    })();
+
+    if (needsAllowanceIncrease) {
+      trace({ name: TraceName.EarnDepositSpendingCapScreen });
+    } else {
+      trace({ name: TraceName.EarnDepositReviewScreen });
+    }
+
+    const lendingPoolContractAddress =
+      CHAIN_ID_TO_AAVE_POOL_CONTRACT[getDecimalChainId(earnToken.chainId)] ??
+      '';
+
+    const createRedesignedLendingDepositConfirmation = (
+      _earnToken: EarnTokenDetails,
+      _activeAccount: InternalAccount,
+    ) => {
+      if (!networkClientId) {
+        console.error(
+          'Cannot create lending deposit confirmation - networkClientId is undefined',
+        );
+        return;
+      }
+
+      const approveTxParams = generateLendingAllowanceIncreaseTransaction(
+        amountTokenMinimalUnit.toString(),
+        _activeAccount.address,
+        _earnToken?.address,
+        _earnToken.chainId as string,
+      );
+      if (!approveTxParams) return;
+
+      const approveTx = {
+        params: {
+          to: approveTxParams.txParams.to
+            ? toHex(approveTxParams.txParams.to)
+            : undefined,
+          from: approveTxParams.txParams.from,
+          data: (approveTxParams.txParams.data as Hex) || undefined,
+          value: approveTxParams.txParams.value
+            ? toHex(approveTxParams.txParams.value)
+            : undefined,
+        },
+        type: TransactionType.tokenMethodApprove,
+      };
+
+      const lendingDepositTxParams = generateLendingDepositTransaction(
+        amountTokenMinimalUnit.toString(),
+        _activeAccount.address,
+        _earnToken?.address,
+        _earnToken.chainId as string,
+      );
+
+      if (!lendingDepositTxParams) return;
+
+      const lendingDepositTx = {
+        params: {
+          to: lendingDepositTxParams.txParams.to
+            ? toHex(lendingDepositTxParams.txParams.to)
+            : undefined,
+          from: lendingDepositTxParams.txParams.from,
+          data: (lendingDepositTxParams.txParams.data as Hex) || undefined,
+          value: lendingDepositTxParams.txParams.value
+            ? toHex(lendingDepositTxParams.txParams.value)
+            : undefined,
+        },
+        type: TransactionType.lendingDeposit,
+      };
+
+      addTransactionBatch({
+        from: (selectedAccount?.address as Hex) || '0x',
+        networkClientId,
+        origin: ORIGIN_METAMASK,
+        isInternal: true,
+        transactions: [approveTx, lendingDepositTx],
+        requireApproval: true,
+      });
+
+      navigation.navigate('StakeScreens', {
+        screen: Routes.FULL_SCREEN_CONFIRMATIONS.REDESIGNED_CONFIRMATIONS,
+      });
+    };
+
+    const createLegacyLendingDepositConfirmation = (
+      _lendingPoolContractAddress: string,
+      _needsAllowanceIncrease: boolean,
+    ) => {
+      navigation.navigate(Routes.EARN.ROOT, {
+        screen: Routes.EARN.LENDING_DEPOSIT_CONFIRMATION,
+        params: {
+          token,
+          amountTokenMinimalUnit: amountTokenMinimalUnit.toString(),
+          amountFiat: amountFiatNumber,
+          annualRewardsToken,
+          annualRewardsFiat,
+          annualRewardRate,
+          lendingProtocol: earnToken?.experience?.market?.protocol,
+          lendingContractAddress: lendingPoolContractAddress,
+          action: needsAllowanceIncrease
+            ? EARN_LENDING_ACTIONS.ALLOWANCE_INCREASE
+            : EARN_LENDING_ACTIONS.DEPOSIT,
+          allowanceMinimalTokenUnit,
+        },
+      });
+    };
+
+    // Temp: Will be brought back in subsequent PR.
+    const isBatchDepositEnabled = false;
+
+    if (isBatchDepositEnabled) {
+      createRedesignedLendingDepositConfirmation(earnToken, selectedAccount);
+    } else {
+      createLegacyLendingDepositConfirmation(
+        lendingPoolContractAddress,
+        needsAllowanceIncrease,
+      );
+    }
+  }, [
+    selectedAccount,
+    earnToken,
+    shouldLogStablecoinEvent,
+    amountTokenMinimalUnit,
+    trackEvent,
+    createEventBuilder,
+    network?.name,
+    balanceValue,
+    amountToken,
+    isFiat,
+    networkClientId,
+    navigation,
+    token,
+    amountFiatNumber,
+    annualRewardsToken,
+    annualRewardsFiat,
+    annualRewardRate,
+  ]);
+
+  const handlePooledStakingFlow = useCallback(async () => {
+    if (isHighGasCostImpact() && earnToken?.isETH) {
+      trackEvent(
+        createEventBuilder(
+          MetaMetricsEvents.STAKE_GAS_COST_IMPACT_WARNING_TRIGGERED,
+        )
+          .addProperties({
+            selected_provider: EVENT_PROVIDERS.CONSENSYS,
+            location: EVENT_LOCATIONS.EARN_INPUT_VIEW,
+            tokens_to_stake_native_value: amountToken,
+            tokens_to_stake_usd_value: amountFiatNumber,
+            estimated_gas_fee: formatEther(estimatedGasFeeWei.toString()),
+            estimated_gas_percentage_of_deposit: `${getDepositTxGasPercentage()}%`,
+            experience: stakingExperienceType,
+          })
+          .build(),
+      );
+
+      navigation.navigate('StakeModals', {
+        screen: Routes.STAKING.MODALS.GAS_IMPACT,
+        params: {
+          amountWei: amountTokenMinimalUnit.toString(),
+          amountFiat: amountFiatNumber,
+          annualRewardsToken,
+          annualRewardsFiat,
+          annualRewardRate,
+          estimatedGasFee: formatEther(estimatedGasFeeWei.toString()),
+          estimatedGasFeePercentage: `${getDepositTxGasPercentage()}%`,
+          chainId: earnToken?.chainId,
+        },
+      });
+      return;
+    }
+
+    const amountWeiString = amountTokenMinimalUnit.toString();
+
+    const stakeButtonClickEventProperties = {
+      selected_provider: EVENT_PROVIDERS.CONSENSYS,
+      tokens_to_stake_native_value: amountToken,
+      tokens_to_stake_usd_value: amountFiatNumber,
+      experience: stakingExperienceType,
+    };
+
+    if (isStakingDepositRedesignedEnabled) {
+      // start trace between user initiating deposit and the redesigned confirmation screen loading
+      trace({
+        name: TraceName.EarnDepositConfirmationScreen,
+        data: {
+          experience: earnToken?.experience?.type ?? '',
+        },
+      });
+
+      // this prevents the user from adding the transaction deposit into the
+      // controller state multiple times
+      setIsSubmittingStakeDepositTransaction(true);
+
+      // Here we add the transaction to the transaction controller. The
+      // redesigned confirmations architecture relies on the transaction
+      // metadata object being defined by the time the confirmation is displayed
+      // to the user.
+      if (!attemptDepositTransaction) return;
+      await attemptDepositTransaction(
+        amountWeiString,
+        selectedAccount?.address as string,
+        undefined,
+        true,
+      );
+
+      navigation.navigate('StakeScreens', {
+        screen: Routes.FULL_SCREEN_CONFIRMATIONS.REDESIGNED_CONFIRMATIONS,
+      });
+
+      const withRedesignedPropEventProperties = {
+        ...stakeButtonClickEventProperties,
+        is_redesigned: true,
+      };
+
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.REVIEW_STAKE_BUTTON_CLICKED)
+          .addProperties(withRedesignedPropEventProperties)
+          .build(),
+      );
+      return;
+    }
+
+    navigation.navigate('StakeScreens', {
+      screen: Routes.STAKING.STAKE_CONFIRMATION,
+      params: {
+        amountWei: amountWeiString,
+        amountFiat: amountFiatNumber,
+        annualRewardsToken,
+        annualRewardsFiat,
+        annualRewardRate,
+        chainId: earnToken?.chainId,
+      },
+    });
+
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.REVIEW_STAKE_BUTTON_CLICKED)
+        .addProperties(stakeButtonClickEventProperties)
+        .build(),
+    );
+  }, [
+    selectedAccount?.address,
+    amountFiatNumber,
+    amountToken,
+    amountTokenMinimalUnit,
+    annualRewardRate,
+    annualRewardsFiat,
+    annualRewardsToken,
+    attemptDepositTransaction,
+    createEventBuilder,
+    earnToken?.chainId,
+    earnToken?.isETH,
+    earnToken?.experience?.type,
+    stakingExperienceType,
+    estimatedGasFeeWei,
+    getDepositTxGasPercentage,
+    isHighGasCostImpact,
+    isStakingDepositRedesignedEnabled,
+    navigation,
+    trackEvent,
+  ]);
+
+  const handleEarnPress = useCallback(async () => {
+    if (isTronEnabled) {
+      const result = await tronConfirmStake?.(amountToken);
+      handleTronStakingNavigationResult(
+        navigation,
+        result,
+        'stake',
+        tronAccountId,
+      );
+      return;
+    }
+
+    // Stablecoin Lending Flow
+    if (
+      earnToken?.experience?.type === EARN_EXPERIENCES.STABLECOIN_LENDING &&
+      isStablecoinLendingEnabled
+    ) {
+      await handleLendingFlow();
+      return;
+    }
+
+    // Pooled-Staking Flow
+    await handlePooledStakingFlow();
+  }, [
+    earnToken?.experience?.type,
+    isStablecoinLendingEnabled,
+    amountToken,
+    isTronEnabled,
+    navigation,
+    tronConfirmStake,
+    tronAccountId,
+    handlePooledStakingFlow,
+    handleLendingFlow,
+  ]);
+
+  const handleMaxButtonPress = useCallback(() => {
+    lastQuickAmountButtonPressed.current = 'MAX';
+
+    if (!isStablecoinLendingEnabled || token.isETH) {
+      navigation.navigate('StakeModals', {
+        screen: Routes.STAKING.MODALS.MAX_INPUT,
+        params: {
+          handleMaxPress: handleMax,
+        },
+      });
+    } else {
+      void handleMax();
+    }
+  }, [handleMax, isStablecoinLendingEnabled, navigation, token.isETH]);
+
+  const handleMaxPressWithTracking = useCallback(() => {
+    // call the original handler first
+    handleMaxButtonPress();
+
+    // track events based on flow type
+    if (shouldLogStablecoinEvent()) {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.EARN_INPUT_VALUE_CHANGED)
+          .addProperties({
+            action_type: 'deposit',
+            input_value: 'Max',
+            token: earnToken?.symbol,
+            network: network?.name,
+            user_token_balance: balanceValue,
+            experience: EARN_EXPERIENCES.STABLECOIN_LENDING,
+          })
+          .build(),
+      );
+    } else if (shouldLogStakingEvent()) {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.STAKE_INPUT_QUICK_AMOUNT_CLICKED)
+          .addProperties({
+            location: EVENT_LOCATIONS.EARN_INPUT_VIEW,
+            is_max: true,
+            mode: !isFiat ? 'native' : 'fiat',
+            experience: stakingExperienceType,
+          })
+          .build(),
+      );
+    }
+  }, [
+    shouldLogStablecoinEvent,
+    shouldLogStakingEvent,
+    handleMaxButtonPress,
+    trackEvent,
+    createEventBuilder,
+    earnToken?.symbol,
+    network?.name,
+    balanceValue,
+    isFiat,
+    stakingExperienceType,
+  ]);
+
+  // TRON uses Max directly because the EVM-specific MaxInputModal is not applicable.
+  const onRightActionPress = React.useCallback(() => {
+    if (isTronEnabled && isTronNative) {
+      lastQuickAmountButtonPressed.current = 'MAX';
+      void handleMax();
+      return;
+    }
+    handleMaxPressWithTracking();
+  }, [isTronEnabled, isTronNative, handleMaxPressWithTracking, handleMax]);
+
+  const handleCurrencySwitchWithTracking = useCallback(() => {
+    // Call the original handler first
+    handleCurrencySwitch();
+
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.EARN_INPUT_CURRENCY_SWITCH_CLICKED)
+        .addProperties({
+          selected_provider: EVENT_PROVIDERS.CONSENSYS,
+          text: 'Currency Switch Clicked',
+          location: EVENT_LOCATIONS.EARN_INPUT_VIEW,
+          currency_type: !isFiat ? 'fiat' : 'native',
+          experience: earnToken?.experience?.type,
+          token_symbol: earnToken?.symbol,
+          chain_id: formatChainIdForAnalytics(earnToken?.chainId),
+        })
+        .build(),
+    );
+  }, [
+    handleCurrencySwitch,
+    trackEvent,
+    createEventBuilder,
+    isFiat,
+    earnToken?.experience?.type,
+    earnToken?.symbol,
+    earnToken?.chainId,
+  ]);
+
+  const handleKeypadChangeWithValidation = useCallback(
+    (data: { value: string; valueAsNumber: number; pressedKey: string }) => {
+      handleKeypadChange(data);
+    },
+    [handleKeypadChange],
+  );
+
+  const getButtonLabel = () => {
+    if (!isNonZeroAmount) {
+      return strings('stake.enter_amount');
+    }
+    if (isOverMaximum.isOverMaximumToken) {
+      return strings('stake.not_enough_token', {
+        ticker: earnToken?.ticker ?? earnToken?.symbol,
+      });
+    }
+    if (isOverMaximum.isOverMaximumEth) {
+      return strings('stake.not_enough_eth');
+    }
+    if (isTronEnabled && isPreviewVisible) {
+      return strings('stake.stake');
+    }
+    return strings('stake.review');
+  };
+
+  const buttonLabel = getButtonLabel();
+
+  useFocusEffect(
+    useCallback(() => {
+      setIsSubmittingStakeDepositTransaction(false);
+    }, []),
+  );
+
+  const handleBackPress = useCallback(() => {
+    if (shouldLogStablecoinEvent()) {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.EARN_INPUT_BACK_BUTTON_CLICKED)
+          .addProperties({
+            selected_provider: EVENT_PROVIDERS.CONSENSYS,
+            location: EVENT_LOCATIONS.EARN_INPUT_VIEW,
+            experience: EARN_EXPERIENCES.STABLECOIN_LENDING,
+            token: token.symbol,
+          })
+          .build(),
+      );
+    } else if (shouldLogStakingEvent()) {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.STAKE_CANCEL_CLICKED)
+          .addProperties({
+            selected_provider: EVENT_PROVIDERS.CONSENSYS,
+            location: EVENT_LOCATIONS.EARN_INPUT_VIEW,
+            experience: stakingExperienceType,
+            token: token.symbol,
+          })
+          .build(),
+      );
+    }
+    navigation.goBack();
+  }, [
+    shouldLogStablecoinEvent,
+    shouldLogStakingEvent,
+    trackEvent,
+    createEventBuilder,
+    token.symbol,
+    navigation,
+    stakingExperienceType,
+  ]);
+
+  const handleInfoPress = useCallback(() => {
+    const apr =
+      stakingExperienceType === EARN_EXPERIENCES.TRX_STAKING
+        ? (tronApyPercent ?? undefined)
+        : earnToken?.experience?.apr !== undefined
+          ? `${formatEarnRatePercentage(earnToken.experience.apr)}%`
+          : undefined;
+    const tooltipName =
+      stakingExperienceType === EARN_EXPERIENCES.STABLECOIN_LENDING
+        ? 'Lending Historic Market APY Graph'
+        : 'Staking Historic Market APY Graph';
+
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.TOOLTIP_OPENED)
+        .addProperties({
+          selected_provider: EVENT_PROVIDERS.CONSENSYS,
+          text: 'Tooltip Opened',
+          location: EVENT_LOCATIONS.EARN_INPUT_VIEW,
+          tooltip_name: tooltipName,
+          experience: stakingExperienceType,
+          token: token.symbol,
+          apr,
+        })
+        .build(),
+    );
+    navigateToLearnMoreModal();
+  }, [
+    trackEvent,
+    createEventBuilder,
+    token.symbol,
+    earnToken?.experience?.apr,
+    navigateToLearnMoreModal,
+    stakingExperienceType,
+    tronApyPercent,
+  ]);
+
+  const headerTitle = useMemo(() => {
+    const isLending =
+      earnToken?.experience?.type === EARN_EXPERIENCES.STABLECOIN_LENDING;
+    const tokenLabel =
+      earnToken?.ticker ?? earnToken?.symbol ?? earnToken?.name ?? '';
+
+    return isLending
+      ? `${strings('earn.supply')} ${tokenLabel}`
+      : `${strings('stake.stake')} ${tokenLabel}`;
+  }, [
+    earnToken?.experience?.type,
+    earnToken?.ticker,
+    earnToken?.symbol,
+    earnToken?.name,
+  ]);
+
+  useEffect(() => {
+    calculateEstimatedAnnualRewards();
+  }, [
+    amountToken,
+    amountTokenMinimalUnit,
+    isFiat,
+    calculateEstimatedAnnualRewards,
+  ]);
+
+  // This component rerenders to recalculate gas estimate which causes duplicate events to fire.
+  // This ref will allow one insufficient funds error to fire per visit to the page.
+  const isSendingInsufficientFundsMetaMetric = useRef(false);
+
+  useEffect(() => {
+    const emitInsufficientFundsMetaMetric = () => {
+      // track insufficient balance for stablecoin lending deposits
+      if (shouldLogStablecoinEvent()) {
+        trackEvent(
+          createEventBuilder(MetaMetricsEvents.EARN_INPUT_INSUFFICIENT_BALANCE)
+            .addProperties({
+              provider: EVENT_PROVIDERS.CONSENSYS,
+              location: EVENT_LOCATIONS.EARN_INPUT_VIEW,
+              token_name: token.name,
+              token: token.symbol,
+              network: network?.name,
+              experience: earnToken?.experience.type,
+            })
+            .build(),
+        );
+      }
+    };
+
+    if (
+      isOverMaximum.isOverMaximumEth ||
+      (isOverMaximum.isOverMaximumToken &&
+        !isSendingInsufficientFundsMetaMetric.current)
+    ) {
+      isSendingInsufficientFundsMetaMetric.current = true;
+      emitInsufficientFundsMetaMetric();
+    }
+  }, [
+    shouldLogStablecoinEvent,
+    createEventBuilder,
+    isOverMaximum?.isOverMaximumEth,
+    isOverMaximum?.isOverMaximumToken,
+    network?.name,
+    token.chainId,
+    token.name,
+    token.symbol,
+    trackEvent,
+    earnToken?.experience.type,
+  ]);
+
+  const isPooledStakingReviewButtonDisabled =
+    isPooledStakingExperience &&
+    (!isPooledStakingEnabled ||
+      isPooledStakingServiceInterruptionBannerEnabled);
+
+  const isStablecoinLendingReviewButtonDisabled =
+    isStablecoinLendingExperience &&
+    (!isStablecoinLendingEnabled ||
+      isStablecoinLendingServiceInterruptionBannerEnabled);
+
+  const isReviewButtonDisabled =
+    isStablecoinLendingReviewButtonDisabled ||
+    isPooledStakingReviewButtonDisabled ||
+    isOverMaximum.isOverMaximumToken ||
+    isOverMaximum.isOverMaximumEth ||
+    !isNonZeroAmount ||
+    (isTronNative ? isTronStakeValidating : isLoadingEarnGasFee) ||
+    isSubmittingStakeDepositTransaction;
+
+  const shouldShowTronReviewButton =
+    isTronEnabled && isTronNative && isPreviewVisible && isNonZeroAmount;
+
+  const handleReviewPress = useCallback(() => {
+    if (isTronEnabled && isTronNative && !isPreviewVisible) {
+      setIsPreviewVisible(true);
+      return;
+    }
+
+    void handleEarnPress();
+  }, [handleEarnPress, isPreviewVisible, isTronEnabled, isTronNative]);
+
+  const renderReviewButton = (isDisabled: boolean) => (
+    <View style={styles.reviewButtonContainer}>
+      <Button
+        label={buttonLabel}
+        size={ButtonSize.Lg}
+        labelTextVariant={TextVariant.BodyMDMedium}
+        variant={ButtonVariants.Primary}
+        loading={isSubmittingStakeDepositTransaction}
+        isDisabled={isDisabled}
+        width={ButtonWidthTypes.Full}
+        onPress={handleReviewPress}
+      />
+    </View>
+  );
+
+  return (
+    <ScreenLayout style={styles.container}>
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        title={headerTitle}
+        onBack={handleBackPress}
+        endButtonIconProps={
+          isStablecoinLendingEnabled
+            ? [{ iconName: IconName.Info, onPress: handleInfoPress }]
+            : undefined
+        }
+        includesTopInset
+      />
+      {isPooledStakingExperience &&
+        isPooledStakingServiceInterruptionBannerEnabled && (
+          <View style={styles.maintenanceBanner}>
+            <EarnMaintenanceBanner
+              experienceName={EARN_EXPERIENCES.POOLED_STAKING}
+            />
+          </View>
+        )}
+      {isStablecoinLendingExperience &&
+        isStablecoinLendingServiceInterruptionBannerEnabled && (
+          <View style={styles.maintenanceBanner}>
+            <EarnMaintenanceBanner
+              experienceName={EARN_EXPERIENCES.STABLECOIN_LENDING}
+            />
+          </View>
+        )}
+      {isTronEnabled && (
+        <ResourceToggle value={resourceType} onChange={setResourceType} />
+      )}
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollViewContent}
+      >
+        <InputDisplay
+          amountToken={amountToken}
+          amountFiatNumber={amountFiatNumber}
+          isFiat={isFiat}
+          asset={token}
+          currentCurrency={currentCurrency}
+          handleCurrencySwitch={handleCurrencySwitchWithTracking}
+          currencyToggleValue={currencyToggleValue}
+          onPressAmount={() => {
+            // Re-open editing if preview mode is active
+            setIsPreviewVisible(false);
+          }}
+        />
+        <View style={styles.rewardsRateContainer}>
+          {!showTronStakingUI &&
+            (isStablecoinLendingEnabled ? (
+              <>
+                <View style={styles.spacer} />
+                <EarnTokenSelector
+                  token={token}
+                  action={EARN_INPUT_VIEW_ACTIONS.DEPOSIT}
+                />
+              </>
+            ) : null)}
+        </View>
+      </ScrollView>
+      {isTronEnabled && isTronNative && isPreviewVisible && isNonZeroAmount && (
+        <TronStakePreview
+          stakeAmount={amountToken}
+          fee={tronPreview?.fee as ComputeFeeResult}
+        />
+      )}
+      {isNonZeroAmount &&
+        (!isTronEnabled || (isTronNative && !isPreviewVisible)) &&
+        renderReviewButton(isReviewButtonDisabled)}
+      {!isPreviewVisible && (
+        <>
+          {!isNonZeroAmount && (
+            <QuickAmounts
+              amounts={percentageOptions}
+              onAmountPress={handleQuickAmountPressWithTracking}
+              onMaxPress={onRightActionPress}
+            />
+          )}
+          <Keypad
+            value={!isFiat ? amountToken : amountFiatNumber}
+            // Debounce used to avoid error message flicker from recalculating gas fee estimate
+            onChange={debounce(handleKeypadChangeWithValidation, 1)}
+            style={styles.keypad}
+            currency={token.symbol}
+            decimals={!isFiat ? 5 : 2}
+          />
+        </>
+      )}
+      {shouldShowTronReviewButton && renderReviewButton(isReviewButtonDisabled)}
+    </ScreenLayout>
+  );
+};
+
+export default EarnInputView;

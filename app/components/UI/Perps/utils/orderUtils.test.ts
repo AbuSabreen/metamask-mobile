@@ -1,0 +1,1739 @@
+import {
+  buildDisplayOrdersWithSyntheticTpsl,
+  inferTriggerConditionKey,
+  isOrderAssociatedWithFullPosition,
+  isSyntheticOrderCancelable,
+  isLimitOrderEditable,
+  isLimitOrderSizeEditable,
+  isSyntheticPlaceholderOrderId,
+  shouldDisplayOrderInMarketDetailsOrders,
+  formatOrderLabel,
+  formatOrderTypeLabel,
+  resolveOrderDisplayPriceAndLabel,
+  getOrderLabelDirection,
+  getOrderPositionDirection,
+  getOrderDirection,
+  willFlipPosition,
+  determineMakerStatus,
+  isPriceOutsideDeviationBand,
+  getPriceDeviationBand,
+  resolveOracleReferencePrice,
+  calculateLimitPriceForPercentage,
+  getOrderPriceRowVisibility,
+  getValidPerpsPrice,
+  resolvePerpsTransactionOrderType,
+} from './orderUtils';
+import { Order, OrderParams } from '@metamask/perps-controller';
+import { Position } from '../hooks';
+
+// Mock DevLogger
+jest.mock('../../../../core/SDKConnect/utils/DevLogger', () => ({
+  DevLogger: {
+    log: jest.fn(),
+  },
+}));
+
+describe('orderUtils', () => {
+  describe('transaction order price rows', () => {
+    it.each([
+      ['market', false, false],
+      ['limit', false, true],
+      ['stop_market', true, false],
+      ['stop_limit', true, true],
+      ['take_profit_market', true, false],
+      ['take_profit_limit', true, true],
+    ] as const)(
+      'maps %s to trigger-price=%s and limit-price=%s',
+      (orderType, showTriggerPrice, showLimitPrice) => {
+        const result = getOrderPriceRowVisibility(orderType);
+
+        expect(result).toEqual({ showTriggerPrice, showLimitPrice });
+      },
+    );
+
+    it.each([
+      ['stop_market', 'market', 'Stop Market'],
+      ['stop_limit', 'limit', 'Stop Limit'],
+      ['take_profit_market', 'market', 'Take Profit Market'],
+      ['take_profit_limit', 'limit', 'Take Profit Limit'],
+    ] as const)(
+      'resolves legacy %s from its detailed order type',
+      (orderType, executionType, detailedOrderType) => {
+        const result = resolvePerpsTransactionOrderType({
+          type: executionType,
+          orderType: executionType,
+          detailedOrderType,
+        });
+
+        expect(result).toBe(orderType);
+      },
+    );
+
+    it('keeps a normalized order type when transaction data provides one', () => {
+      const result = resolvePerpsTransactionOrderType({
+        type: 'market',
+        orderType: 'take_profit_limit',
+        detailedOrderType: 'Take Profit Market',
+      });
+
+      expect(result).toBe('take_profit_limit');
+    });
+
+    it.each([undefined, null, '', '0', 'not-a-price'] as const)(
+      'returns null for a missing or invalid price value %s',
+      (price) => {
+        const result = getValidPerpsPrice(price);
+
+        expect(result).toBeNull();
+      },
+    );
+  });
+
+  describe('formatOrderLabel', () => {
+    it('should format opening long market order', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'buy',
+        orderType: 'market',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: false,
+        isTrigger: false,
+      };
+
+      expect(formatOrderLabel(order)).toBe('Market long');
+    });
+
+    it('should format opening short market order', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'sell',
+        orderType: 'market',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: false,
+        isTrigger: false,
+      };
+
+      expect(formatOrderLabel(order)).toBe('Market short');
+    });
+
+    it('should format closing long market order (sell side with reduceOnly)', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'sell',
+        orderType: 'market',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: true,
+        isTrigger: false,
+      };
+
+      expect(formatOrderLabel(order)).toBe('Market close long');
+    });
+
+    it('should format closing short market order (buy side with reduceOnly)', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'buy',
+        orderType: 'market',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: true,
+        isTrigger: false,
+      };
+
+      expect(formatOrderLabel(order)).toBe('Market close short');
+    });
+
+    it('should format limit long order', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'ETH',
+        side: 'buy',
+        orderType: 'limit',
+        size: '1',
+        originalSize: '1',
+        price: '3000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: false,
+        isTrigger: false,
+      };
+
+      expect(formatOrderLabel(order)).toBe('Limit long');
+    });
+
+    it('should format limit close short order', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'ETH',
+        side: 'buy',
+        orderType: 'limit',
+        size: '1',
+        originalSize: '1',
+        price: '3000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: true,
+        isTrigger: false,
+      };
+
+      expect(formatOrderLabel(order)).toBe('Limit close short');
+    });
+
+    it('uses the canonical Stop Market type with closing direction', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'sell',
+        orderType: 'market',
+        detailedOrderType: 'Stop Market',
+        size: '1',
+        originalSize: '1',
+        price: '45000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: true,
+        isTrigger: true,
+      };
+
+      expect(formatOrderLabel(order)).toBe('Stop market close long');
+    });
+
+    it('uses the canonical Take Limit type with closing direction', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'sell',
+        orderType: 'limit',
+        detailedOrderType: 'Take Profit Limit',
+        size: '1',
+        originalSize: '1',
+        price: '55000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: true,
+        isTrigger: true,
+      };
+
+      expect(formatOrderLabel(order)).toBe('Take limit close long');
+    });
+
+    it.each([
+      ['buy', 'Stop market long'],
+      ['sell', 'Stop market short'],
+    ] as const)(
+      'formats a non-reduce-only %s trigger using its direct direction',
+      (side, expectedLabel) => {
+        const order: Order = {
+          orderId: '1',
+          symbol: 'ETH',
+          side,
+          orderType: 'market',
+          detailedOrderType: 'Stop Market',
+          size: '1',
+          originalSize: '1',
+          price: '2800',
+          filledSize: '0',
+          remainingSize: '1',
+          status: 'open',
+          timestamp: Date.now(),
+          reduceOnly: false,
+          isTrigger: true,
+        };
+
+        const result = formatOrderLabel(order);
+
+        expect(result).toBe(expectedLabel);
+      },
+    );
+
+    it('formats a legacy trigger without reduce-only as a closing order', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'ETH',
+        side: 'buy',
+        orderType: 'market',
+        size: '1',
+        originalSize: '1',
+        price: '2800',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        isTrigger: true,
+      };
+
+      const result = formatOrderLabel(order);
+
+      expect(result).toBe('Market close short');
+    });
+  });
+
+  describe('formatOrderTypeLabel', () => {
+    it.each([
+      ['Stop Limit', 'limit', 'Stop limit'],
+      ['Stop Market', 'market', 'Stop market'],
+      ['Take Profit Limit', 'limit', 'Take limit'],
+      ['Take Profit Market', 'market', 'Take market'],
+    ] as const)(
+      'maps provider type %s to the selected order type label',
+      (detailedOrderType, orderType, expectedLabel) => {
+        const order: Order = {
+          orderId: '1',
+          symbol: 'BTC',
+          side: 'buy',
+          orderType,
+          detailedOrderType,
+          size: '1',
+          originalSize: '1',
+          price: '50000',
+          filledSize: '0',
+          remainingSize: '1',
+          status: 'open',
+          timestamp: Date.now(),
+          reduceOnly: true,
+          isTrigger: true,
+        };
+
+        expect(formatOrderTypeLabel(order)).toBe(expectedLabel);
+      },
+    );
+
+    it('falls back to translated limit or market when detailed type is absent', () => {
+      const limitOrder: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'buy',
+        orderType: 'limit',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: false,
+        isTrigger: false,
+      };
+
+      const marketOrder: Order = {
+        ...limitOrder,
+        orderType: 'market',
+      };
+
+      expect(formatOrderTypeLabel(limitOrder)).toBe('Limit');
+      expect(formatOrderTypeLabel(marketOrder)).toBe('Market');
+    });
+  });
+
+  describe('getOrderLabelDirection', () => {
+    it('should return "long" for opening buy order', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'buy',
+        orderType: 'market',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: false,
+        isTrigger: false,
+      };
+
+      expect(getOrderLabelDirection(order)).toBe('long');
+    });
+
+    it('should return "short" for opening sell order', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'sell',
+        orderType: 'market',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: false,
+        isTrigger: false,
+      };
+
+      expect(getOrderLabelDirection(order)).toBe('short');
+    });
+
+    it('should return "Close Long" for closing long position', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'sell',
+        orderType: 'market',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: true,
+        isTrigger: false,
+      };
+
+      expect(getOrderLabelDirection(order)).toBe('Close Long');
+    });
+
+    it('should return "Close Short" for closing short position', () => {
+      const order: Order = {
+        orderId: '1',
+        symbol: 'BTC',
+        side: 'buy',
+        orderType: 'market',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+        reduceOnly: true,
+        isTrigger: false,
+      };
+
+      expect(getOrderLabelDirection(order)).toBe('Close Short');
+    });
+  });
+
+  describe('getOrderPositionDirection', () => {
+    const baseOrder: Order = {
+      orderId: '1',
+      symbol: 'BTC',
+      side: 'buy',
+      orderType: 'limit',
+      size: '1',
+      originalSize: '1',
+      price: '50000',
+      filledSize: '0',
+      remainingSize: '1',
+      status: 'open',
+      timestamp: Date.now(),
+      reduceOnly: false,
+      isTrigger: false,
+    };
+
+    it('returns "long" for an opening buy order', () => {
+      expect(getOrderPositionDirection({ ...baseOrder, side: 'buy' })).toBe(
+        'long',
+      );
+    });
+
+    it('returns "short" for an opening sell order', () => {
+      expect(getOrderPositionDirection({ ...baseOrder, side: 'sell' })).toBe(
+        'short',
+      );
+    });
+
+    it('returns "long" for a reduce-only sell (limit close of a long)', () => {
+      expect(
+        getOrderPositionDirection({
+          ...baseOrder,
+          side: 'sell',
+          reduceOnly: true,
+        }),
+      ).toBe('long');
+    });
+
+    it('returns "short" for a reduce-only buy (limit close of a short)', () => {
+      expect(
+        getOrderPositionDirection({
+          ...baseOrder,
+          side: 'buy',
+          reduceOnly: true,
+        }),
+      ).toBe('short');
+    });
+
+    it('returns "short" for a non-reduce-only trigger sell', () => {
+      const order: Order = {
+        ...baseOrder,
+        side: 'sell',
+        isTrigger: true,
+      };
+
+      const result = getOrderPositionDirection(order);
+
+      expect(result).toBe('short');
+    });
+  });
+
+  describe('getOrderDirection', () => {
+    it('should return long for buy with no position', () => {
+      const result = getOrderDirection('buy', undefined);
+      expect(result).toBe('long');
+    });
+
+    it('should return short for sell with no position', () => {
+      const result = getOrderDirection('sell', undefined);
+      expect(result).toBe('short');
+    });
+
+    it('should return long for positive position', () => {
+      const result = getOrderDirection('sell', '1.5');
+      expect(result).toBe('long');
+    });
+
+    it('should return short for negative position', () => {
+      const result = getOrderDirection('buy', '-1.5');
+      expect(result).toBe('short');
+    });
+  });
+
+  describe('inferTriggerConditionKey', () => {
+    it('returns price_above for long take-profit', () => {
+      const result = inferTriggerConditionKey({
+        detailedOrderType: 'Take Profit Limit',
+        side: 'sell',
+        triggerPrice: '55000',
+        price: '55000',
+      });
+
+      expect(result).toBe('perps.order_details.price_above');
+    });
+
+    it('returns price_below for short take-profit', () => {
+      const result = inferTriggerConditionKey({
+        detailedOrderType: 'Take Profit Limit',
+        side: 'buy',
+        triggerPrice: '45000',
+        price: '45000',
+      });
+
+      expect(result).toBe('perps.order_details.price_below');
+    });
+
+    it('returns price_below for long stop-loss', () => {
+      const result = inferTriggerConditionKey({
+        detailedOrderType: 'Stop Market',
+        side: 'sell',
+        triggerPrice: '43000',
+        price: '0',
+      });
+
+      expect(result).toBe('perps.order_details.price_below');
+    });
+
+    it('returns price_above for short stop-loss', () => {
+      const result = inferTriggerConditionKey({
+        detailedOrderType: 'Stop Market',
+        side: 'buy',
+        triggerPrice: '87000',
+        price: '0',
+      });
+
+      expect(result).toBe('perps.order_details.price_above');
+    });
+
+    it('uses deterministic fallback for ambiguous types based on trigger vs execution price', () => {
+      const result = inferTriggerConditionKey({
+        detailedOrderType: 'Market',
+        side: 'buy',
+        triggerPrice: '87.12',
+        price: '95.84',
+      });
+
+      expect(result).toBe('perps.order_details.price_above');
+    });
+
+    it('returns undefined when trigger price is missing or invalid', () => {
+      expect(
+        inferTriggerConditionKey({
+          detailedOrderType: 'Stop Market',
+          side: 'buy',
+          triggerPrice: '0',
+          price: '95.84',
+        }),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('resolveOrderDisplayPriceAndLabel', () => {
+    const baseOrder: Order = {
+      orderId: '1',
+      symbol: 'BTC',
+      side: 'sell',
+      orderType: 'limit',
+      size: '1',
+      originalSize: '1',
+      price: '50000',
+      filledSize: '0',
+      remainingSize: '1',
+      status: 'open',
+      timestamp: Date.now(),
+      reduceOnly: true,
+      isTrigger: true,
+      detailedOrderType: 'Take Profit Limit',
+    };
+
+    it('returns limit price from the detailed type compatibility fallback', () => {
+      const result = resolveOrderDisplayPriceAndLabel({
+        ...baseOrder,
+        triggerPrice: '51000',
+      });
+
+      expect(result).toEqual({
+        priceValue: 50000,
+        labelKey: 'perps.order.limit_price',
+      });
+    });
+
+    it('returns limit price for a normalized trigger-limit order', () => {
+      const result = resolveOrderDisplayPriceAndLabel({
+        ...baseOrder,
+        detailedOrderType: undefined,
+        triggerOrderType: 'take_profit_limit',
+        triggerPrice: '51000',
+      });
+
+      expect(result).toEqual({
+        priceValue: 50000,
+        labelKey: 'perps.order.limit_price',
+      });
+    });
+
+    it('returns limit price label for trigger-limit when trigger price is invalid', () => {
+      const result = resolveOrderDisplayPriceAndLabel({
+        ...baseOrder,
+        triggerPrice: '0',
+        price: '49500',
+      });
+
+      expect(result).toEqual({
+        priceValue: 49500,
+        labelKey: 'perps.order.limit_price',
+      });
+    });
+
+    it('returns an unavailable limit price without labelling it as market', () => {
+      const result = resolveOrderDisplayPriceAndLabel({
+        ...baseOrder,
+        triggerOrderType: 'take_profit_limit',
+        triggerPrice: '51000',
+        price: '0',
+      });
+
+      expect(result).toEqual({
+        priceValue: null,
+        labelKey: 'perps.order.limit_price',
+      });
+    });
+
+    it('returns market label for trigger-market with trigger and cap prices', () => {
+      const result = resolveOrderDisplayPriceAndLabel({
+        ...baseOrder,
+        orderType: 'market',
+        detailedOrderType: 'Stop Market',
+        triggerOrderType: 'stop_market',
+        triggerPrice: '49000',
+        price: '48510',
+      });
+
+      expect(result).toEqual({
+        priceValue: null,
+        labelKey: 'perps.order.market_price',
+      });
+    });
+
+    it('returns limit label for non-trigger limit order', () => {
+      const result = resolveOrderDisplayPriceAndLabel({
+        ...baseOrder,
+        isTrigger: false,
+        reduceOnly: false,
+        detailedOrderType: 'Limit',
+        triggerPrice: undefined,
+        price: '48000',
+      });
+
+      expect(result).toEqual({
+        priceValue: 48000,
+        labelKey: 'perps.order.limit_price',
+      });
+    });
+
+    it('returns limit price value when non-trigger limit has both trigger and order prices', () => {
+      const result = resolveOrderDisplayPriceAndLabel({
+        ...baseOrder,
+        isTrigger: false,
+        reduceOnly: false,
+        orderType: 'limit',
+        detailedOrderType: 'Limit',
+        triggerPrice: '51000',
+        price: '48000',
+      });
+
+      expect(result).toEqual({
+        priceValue: 48000,
+        labelKey: 'perps.order.limit_price',
+      });
+    });
+
+    it('returns market label with order price when non-trigger market has both trigger and order prices', () => {
+      const result = resolveOrderDisplayPriceAndLabel({
+        ...baseOrder,
+        isTrigger: false,
+        reduceOnly: false,
+        orderType: 'market',
+        detailedOrderType: 'Market',
+        triggerPrice: '51000',
+        price: '47000',
+      });
+
+      expect(result).toEqual({
+        priceValue: 47000,
+        labelKey: 'perps.order.market_price',
+      });
+    });
+  });
+
+  describe('order display association helpers', () => {
+    const mockLongPosition: Position = {
+      symbol: 'BTC',
+      size: '1.0',
+      entryPrice: '45000',
+      positionValue: '45000',
+      unrealizedPnl: '0',
+      marginUsed: '2000',
+      leverage: { type: 'isolated', value: 5 },
+      liquidationPrice: '40000',
+      maxLeverage: 20,
+      returnOnEquity: '0',
+      cumulativeFunding: {
+        allTime: '0',
+        sinceOpen: '0',
+        sinceChange: '0',
+      },
+      takeProfitCount: 0,
+      stopLossCount: 0,
+    };
+
+    const mockShortPosition: Position = {
+      ...mockLongPosition,
+      size: '-1.0',
+    };
+
+    const mockReduceOnlyOrder: Order = {
+      orderId: 'tp-order',
+      symbol: 'BTC',
+      side: 'sell',
+      orderType: 'limit',
+      size: '1.0',
+      originalSize: '1.0',
+      price: '50000',
+      filledSize: '0',
+      remainingSize: '1.0',
+      status: 'open',
+      timestamp: Date.now(),
+      reduceOnly: true,
+      isTrigger: true,
+    };
+
+    it('associates full-position TP/SL via native flag', () => {
+      const result = isOrderAssociatedWithFullPosition(
+        { ...mockReduceOnlyOrder, isPositionTpsl: true },
+        mockLongPosition,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    it('associates full-position TP/SL via native flag even when position is unavailable', () => {
+      const result = isOrderAssociatedWithFullPosition(
+        { ...mockReduceOnlyOrder, isPositionTpsl: true },
+        undefined,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    it('associates full-position TP/SL via size fallback when flag is missing', () => {
+      const result = isOrderAssociatedWithFullPosition(
+        mockReduceOnlyOrder,
+        mockLongPosition,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    it('associates full-position TP/SL for short positions via size fallback when flag is missing', () => {
+      const result = isOrderAssociatedWithFullPosition(
+        { ...mockReduceOnlyOrder, side: 'buy' },
+        mockShortPosition,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    it('does not use size fallback when provider explicitly sets isPositionTpsl to false', () => {
+      const result = isOrderAssociatedWithFullPosition(
+        { ...mockReduceOnlyOrder, isPositionTpsl: false },
+        mockLongPosition,
+      );
+
+      expect(result).toBe(false);
+    });
+
+    it('does not associate when reduce-only order size does not match full position', () => {
+      const result = isOrderAssociatedWithFullPosition(
+        { ...mockReduceOnlyOrder, size: '0.25', originalSize: '0.25' },
+        mockLongPosition,
+      );
+
+      expect(result).toBe(false);
+    });
+
+    it('does not associate when side does not close the existing position', () => {
+      const result = isOrderAssociatedWithFullPosition(
+        { ...mockReduceOnlyOrder, side: 'buy' },
+        mockLongPosition,
+      );
+
+      expect(result).toBe(false);
+    });
+
+    it('shows non-reduce-only orders in Market Details orders section', () => {
+      const result = shouldDisplayOrderInMarketDetailsOrders(
+        { ...mockReduceOnlyOrder, reduceOnly: false },
+        mockLongPosition,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    it('hides full-position reduce-only TP/SL orders from Market Details orders section', () => {
+      const result = shouldDisplayOrderInMarketDetailsOrders(
+        { ...mockReduceOnlyOrder, isPositionTpsl: true },
+        mockLongPosition,
+      );
+
+      expect(result).toBe(false);
+    });
+
+    it('hides full-position reduce-only TP/SL orders for short positions from Market Details orders section', () => {
+      const result = shouldDisplayOrderInMarketDetailsOrders(
+        { ...mockReduceOnlyOrder, side: 'buy' },
+        mockShortPosition,
+      );
+
+      expect(result).toBe(false);
+    });
+
+    it('shows standalone reduce-only TP/SL orders in Market Details orders section', () => {
+      const result = shouldDisplayOrderInMarketDetailsOrders(
+        { ...mockReduceOnlyOrder, size: '0.25', originalSize: '0.25' },
+        mockLongPosition,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    it('shows full-position limit-close orders (non-TP/SL) in Market Details orders section', () => {
+      const result = shouldDisplayOrderInMarketDetailsOrders(
+        {
+          ...mockReduceOnlyOrder,
+          isTrigger: false,
+          detailedOrderType: 'Limit',
+        },
+        mockLongPosition,
+      );
+
+      expect(result).toBe(true);
+    });
+
+    it('shows full-position limit-close orders for short positions in Market Details orders section', () => {
+      const result = shouldDisplayOrderInMarketDetailsOrders(
+        {
+          ...mockReduceOnlyOrder,
+          side: 'buy',
+          isTrigger: false,
+          detailedOrderType: 'Limit',
+        },
+        mockShortPosition,
+      );
+
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('buildDisplayOrdersWithSyntheticTpsl', () => {
+    const timestamp = 1730151332000;
+
+    const parentLimitOrder: Order = {
+      orderId: 'parent-limit-1',
+      symbol: 'BTC',
+      side: 'buy',
+      orderType: 'limit',
+      size: '0.5',
+      originalSize: '0.5',
+      price: '92000',
+      filledSize: '0',
+      remainingSize: '0.5',
+      status: 'open',
+      timestamp,
+      isTrigger: false,
+      reduceOnly: false,
+    };
+
+    it('creates a synthetic TP row from parent TP metadata', () => {
+      const result = buildDisplayOrdersWithSyntheticTpsl([
+        {
+          ...parentLimitOrder,
+          takeProfitPrice: '95000',
+        },
+      ]);
+
+      expect(result).toHaveLength(2);
+      expect(result[1]).toMatchObject({
+        orderId: 'parent-limit-1-synthetic-tp',
+        parentOrderId: 'parent-limit-1',
+        isSynthetic: true,
+        isPositionTpsl: false,
+        isTrigger: true,
+        reduceOnly: true,
+        side: 'sell',
+        detailedOrderType: 'Take Profit Limit',
+        triggerPrice: '95000',
+        price: '95000',
+      });
+    });
+
+    it('creates both TP and SL synthetic rows when both prices exist', () => {
+      const result = buildDisplayOrdersWithSyntheticTpsl([
+        {
+          ...parentLimitOrder,
+          takeProfitPrice: '95000',
+          stopLossPrice: '89000',
+        },
+      ]);
+
+      expect(result).toHaveLength(3);
+      expect(result.map((order) => order.orderId)).toEqual([
+        'parent-limit-1',
+        'parent-limit-1-synthetic-tp',
+        'parent-limit-1-synthetic-sl',
+      ]);
+    });
+
+    it('uses existing child TP/SL order IDs as synthetic row cancel targets when available', () => {
+      const result = buildDisplayOrdersWithSyntheticTpsl([
+        {
+          ...parentLimitOrder,
+          takeProfitPrice: '95000',
+          stopLossPrice: '89000',
+          takeProfitOrderId: 'child-tp-order-id',
+          stopLossOrderId: 'child-sl-order-id',
+        },
+      ]);
+
+      expect(result).toHaveLength(3);
+      expect(result.map((order) => order.orderId)).toEqual([
+        'parent-limit-1',
+        'child-tp-order-id',
+        'child-sl-order-id',
+      ]);
+      expect(result[1].isSynthetic).toBe(true);
+      expect(result[2].isSynthetic).toBe(true);
+    });
+
+    it('does not create duplicate synthetic row when matching real child trigger exists', () => {
+      const result = buildDisplayOrdersWithSyntheticTpsl([
+        {
+          ...parentLimitOrder,
+          takeProfitPrice: '95000',
+          takeProfitOrderId: 'real-child-tp',
+        },
+        {
+          orderId: 'real-child-tp',
+          symbol: 'BTC',
+          side: 'sell',
+          orderType: 'limit',
+          size: '0.5',
+          originalSize: '0.5',
+          price: '95000',
+          filledSize: '0',
+          remainingSize: '0.5',
+          status: 'open',
+          timestamp,
+          detailedOrderType: 'Take Profit Limit',
+          isTrigger: true,
+          reduceOnly: true,
+          triggerPrice: '95000',
+        },
+      ]);
+
+      expect(result).toHaveLength(2);
+      expect(result.find((order) => order.isSynthetic)).toBeUndefined();
+    });
+
+    it('does not suppress synthetic rows for a different parent with the same trigger price', () => {
+      const secondParentOrder: Order = {
+        ...parentLimitOrder,
+        orderId: 'parent-limit-2',
+      };
+
+      const result = buildDisplayOrdersWithSyntheticTpsl([
+        {
+          ...parentLimitOrder,
+          takeProfitPrice: '95000',
+          takeProfitOrderId: 'real-child-parent-1',
+        },
+        {
+          ...secondParentOrder,
+          takeProfitPrice: '95000',
+        },
+        {
+          orderId: 'real-child-parent-1',
+          symbol: 'BTC',
+          side: 'sell',
+          orderType: 'limit',
+          size: '0.5',
+          originalSize: '0.5',
+          price: '95000',
+          filledSize: '0',
+          remainingSize: '0.5',
+          status: 'open',
+          timestamp,
+          detailedOrderType: 'Take Profit Limit',
+          isTrigger: true,
+          reduceOnly: true,
+          triggerPrice: '95000',
+        },
+      ]);
+
+      expect(result).toHaveLength(4);
+      expect(
+        result.find((order) => order.orderId === 'parent-limit-1-synthetic-tp'),
+      ).toBeUndefined();
+      expect(
+        result.find((order) => order.orderId === 'parent-limit-2-synthetic-tp'),
+      ).toBeDefined();
+    });
+
+    it('does not add synthetic row when a real order with the same orderId already exists', () => {
+      const result = buildDisplayOrdersWithSyntheticTpsl([
+        {
+          ...parentLimitOrder,
+          takeProfitPrice: '95000',
+          takeProfitOrderId: 'existing-order-id',
+        },
+        {
+          orderId: 'existing-order-id',
+          symbol: 'BTC',
+          side: 'sell',
+          orderType: 'limit',
+          size: '0.5',
+          originalSize: '0.5',
+          price: '93000',
+          filledSize: '0',
+          remainingSize: '0.5',
+          status: 'open',
+          timestamp,
+          detailedOrderType: 'Limit',
+          isTrigger: false,
+          reduceOnly: false,
+        },
+      ]);
+
+      expect(
+        result.filter((order) => order.orderId === 'existing-order-id'),
+      ).toHaveLength(1);
+      expect(result.find((order) => order.isSynthetic)).toBeUndefined();
+    });
+
+    it('keeps synthetic rows visible in Orders when position size matches fallback association', () => {
+      const result = buildDisplayOrdersWithSyntheticTpsl([
+        {
+          ...parentLimitOrder,
+          takeProfitPrice: '95000',
+        },
+      ]);
+
+      const syntheticTpOrder = result.find(
+        (order) => order.orderId === 'parent-limit-1-synthetic-tp',
+      );
+
+      expect(syntheticTpOrder).toBeDefined();
+      expect(syntheticTpOrder?.isPositionTpsl).toBe(false);
+
+      const existingPosition: Position = {
+        symbol: 'BTC',
+        size: '0.5',
+        entryPrice: '45000',
+        positionValue: '22500',
+        unrealizedPnl: '0',
+        marginUsed: '1000',
+        leverage: { type: 'isolated', value: 5 },
+        liquidationPrice: '40000',
+        maxLeverage: 20,
+        returnOnEquity: '0',
+        cumulativeFunding: {
+          allTime: '0',
+          sinceOpen: '0',
+          sinceChange: '0',
+        },
+        takeProfitCount: 0,
+        stopLossCount: 0,
+      };
+
+      expect(
+        shouldDisplayOrderInMarketDetailsOrders(
+          syntheticTpOrder as Order,
+          existingPosition,
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe('synthetic order cancelability', () => {
+    it('detects placeholder synthetic IDs', () => {
+      expect(isSyntheticPlaceholderOrderId('abc-synthetic-tp')).toBe(true);
+      expect(isSyntheticPlaceholderOrderId('abc-synthetic-sl')).toBe(true);
+      expect(isSyntheticPlaceholderOrderId('real-child-id-123')).toBe(false);
+    });
+
+    it('treats non-synthetic orders as cancelable', () => {
+      const order: Order = {
+        orderId: 'real-order',
+        symbol: 'BTC',
+        side: 'buy',
+        orderType: 'limit',
+        size: '1',
+        originalSize: '1',
+        price: '50000',
+        filledSize: '0',
+        remainingSize: '1',
+        status: 'open',
+        timestamp: Date.now(),
+      };
+
+      expect(isSyntheticOrderCancelable(order)).toBe(true);
+    });
+
+    it('treats synthetic placeholder orders as non-cancelable', () => {
+      const syntheticOrder = {
+        orderId: 'parent-123-synthetic-tp',
+        isSynthetic: true,
+      } as Order;
+
+      expect(isSyntheticOrderCancelable(syntheticOrder)).toBe(false);
+    });
+
+    it('treats synthetic orders with real child IDs as cancelable', () => {
+      const syntheticOrder = {
+        orderId: 'child-tp-order-id',
+        isSynthetic: true,
+      } as Order;
+
+      expect(isSyntheticOrderCancelable(syntheticOrder)).toBe(true);
+    });
+  });
+
+  describe('isLimitOrderEditable', () => {
+    const editableLimit: Order = {
+      orderId: 'limit-1',
+      symbol: 'BTC',
+      side: 'buy',
+      size: '1',
+      originalSize: '1',
+      filledSize: '0',
+      remainingSize: '1',
+      price: '50000',
+      orderType: 'limit',
+      status: 'open',
+      timestamp: Date.now(),
+      reduceOnly: false,
+      isTrigger: false,
+    };
+
+    it('allows editing open non-trigger limit orders with no fills', () => {
+      expect(isLimitOrderEditable(editableLimit)).toBe(true);
+    });
+
+    it('rejects trigger orders', () => {
+      expect(
+        isLimitOrderEditable({
+          ...editableLimit,
+          isTrigger: true,
+          detailedOrderType: 'Stop Limit',
+        }),
+      ).toBe(false);
+    });
+
+    it('rejects partially filled orders', () => {
+      expect(
+        isLimitOrderEditable({
+          ...editableLimit,
+          filledSize: '0.5',
+          remainingSize: '0.5',
+        }),
+      ).toBe(false);
+    });
+
+    it('rejects market orders', () => {
+      expect(
+        isLimitOrderEditable({
+          ...editableLimit,
+          orderType: 'market',
+        }),
+      ).toBe(false);
+    });
+
+    it('allows price editing when the order has attached TP/SL', () => {
+      expect(
+        isLimitOrderEditable({
+          ...editableLimit,
+          takeProfitPrice: '60000',
+          stopLossPrice: '40000',
+        }),
+      ).toBe(true);
+    });
+  });
+
+  describe('isLimitOrderSizeEditable', () => {
+    const editableLimit: Order = {
+      orderId: 'limit-1',
+      symbol: 'BTC',
+      side: 'buy',
+      size: '1',
+      originalSize: '1',
+      filledSize: '0',
+      remainingSize: '1',
+      price: '50000',
+      orderType: 'limit',
+      status: 'open',
+      timestamp: Date.now(),
+      reduceOnly: false,
+      isTrigger: false,
+    };
+
+    it('allows size editing for open limits without attached TP/SL', () => {
+      expect(isLimitOrderSizeEditable(editableLimit)).toBe(true);
+    });
+
+    it('rejects size editing when the order has attached take profit', () => {
+      expect(
+        isLimitOrderSizeEditable({
+          ...editableLimit,
+          takeProfitPrice: '60000',
+        }),
+      ).toBe(false);
+    });
+
+    it('rejects size editing when the order has attached stop loss', () => {
+      expect(
+        isLimitOrderSizeEditable({
+          ...editableLimit,
+          stopLossPrice: '40000',
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe('willFlipPosition', () => {
+    const mockPosition: Position = {
+      size: '100',
+      entryPrice: '50000',
+      unrealizedPnl: '100',
+      liquidationPrice: '40000',
+      leverage: { type: 'isolated', value: 2 },
+      symbol: 'BTC',
+      positionValue: '100000',
+      marginUsed: '2500',
+      maxLeverage: 20,
+      returnOnEquity: '0',
+      cumulativeFunding: {
+        allTime: '0',
+        sinceOpen: '0',
+        sinceChange: '0',
+      },
+      takeProfitCount: 0,
+      stopLossCount: 0,
+    };
+
+    const mockOrderParams: OrderParams = {
+      symbol: 'BTC',
+      isBuy: false,
+      size: '150',
+      orderType: 'market',
+      reduceOnly: false,
+    };
+
+    it('returns false when reduceOnly is true', () => {
+      const orderParams = { ...mockOrderParams, reduceOnly: true };
+      const result = willFlipPosition(mockPosition, orderParams);
+      expect(result).toBe(false);
+    });
+
+    it('returns false when orderType is not market', () => {
+      const orderParams = {
+        ...mockOrderParams,
+        orderType: 'limit' as OrderParams['orderType'],
+      };
+      const result = willFlipPosition(mockPosition, orderParams);
+      expect(result).toBe(false);
+    });
+
+    it('returns false when position and order direction match', () => {
+      const orderParams = { ...mockOrderParams, isBuy: true };
+      const result = willFlipPosition(mockPosition, orderParams);
+      expect(result).toBe(false);
+    });
+
+    it('returns true when order size exceeds absolute position size', () => {
+      const result = willFlipPosition(mockPosition, mockOrderParams);
+      expect(result).toBe(true);
+    });
+
+    it('returns false when order size does not exceed absolute position size', () => {
+      const orderParams = { ...mockOrderParams, size: '50' };
+      const result = willFlipPosition(mockPosition, orderParams);
+      expect(result).toBe(false);
+    });
+
+    it('returns false when order size equals position size', () => {
+      const currentPosition: Position = {
+        symbol: 'BTC',
+        size: '0.5',
+        entryPrice: '45000',
+        positionValue: '22500',
+        unrealizedPnl: '0',
+        marginUsed: '500',
+        leverage: { type: 'isolated', value: 5 },
+        liquidationPrice: '40000',
+        maxLeverage: 20,
+        returnOnEquity: '0',
+        cumulativeFunding: {
+          allTime: '0',
+          sinceOpen: '0',
+          sinceChange: '0',
+        },
+        takeProfitCount: 0,
+        stopLossCount: 0,
+      };
+
+      const orderParams: OrderParams = {
+        symbol: 'BTC',
+        isBuy: false,
+        size: '0.5',
+        orderType: 'market',
+      };
+
+      const result = willFlipPosition(currentPosition, orderParams);
+      expect(result).toBe(false);
+    });
+
+    it('handles negative position sizes correctly', () => {
+      const currentPosition: Position = {
+        symbol: 'BTC',
+        size: '-0.5',
+        entryPrice: '45000',
+        positionValue: '22500',
+        unrealizedPnl: '0',
+        marginUsed: '500',
+        leverage: { type: 'isolated', value: 5 },
+        liquidationPrice: '40000',
+        maxLeverage: 20,
+        returnOnEquity: '0',
+        cumulativeFunding: {
+          allTime: '0',
+          sinceOpen: '0',
+          sinceChange: '0',
+        },
+        takeProfitCount: 0,
+        stopLossCount: 0,
+      };
+
+      const orderParams: OrderParams = {
+        symbol: 'BTC',
+        isBuy: true,
+        size: '1.0',
+        orderType: 'market',
+      };
+
+      const result = willFlipPosition(currentPosition, orderParams);
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('determineMakerStatus', () => {
+    describe('Market Orders', () => {
+      it('treats market orders as taker regardless of price', () => {
+        const result = determineMakerStatus({
+          orderType: 'market',
+          direction: 'long',
+          limitPrice: '50000',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('Limit Orders - Long Direction', () => {
+      it('treats buy limit above ask as taker', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'long',
+          limitPrice: '50100',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('treats buy limit at ask price as taker', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'long',
+          limitPrice: '50001',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('treats buy limit below ask as maker', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'long',
+          limitPrice: '49500',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('Limit Orders - Short Direction', () => {
+      it('treats sell limit below bid as taker', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'short',
+          limitPrice: '49900',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('treats sell limit at bid price as taker', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'short',
+          limitPrice: '49999',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('treats sell limit above bid as maker', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'short',
+          limitPrice: '50500',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('Edge Cases', () => {
+      it('defaults to taker when limitPrice is missing', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'long',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('defaults to taker when limitPrice is empty string', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'long',
+          limitPrice: '',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('defaults to taker when limitPrice is NaN', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'long',
+          limitPrice: 'invalid',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('defaults to taker when limitPrice is zero', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'long',
+          limitPrice: '0',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('defaults to taker when limitPrice is negative', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'long',
+          limitPrice: '-1000',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('defaults to taker when bid/ask data is unavailable', () => {
+        const result = determineMakerStatus({
+          orderType: 'limit',
+          direction: 'long',
+          limitPrice: '49500',
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+    });
+
+    // These cover the widened OrderType contract, not a reachable regression.
+    // HyperLiquid's adapter resolves Order.orderType through getTriggerExecution
+    // before it reaches this function, so today only 'market' and 'limit' arrive
+    // at runtime; these pin the behaviour for the trigger types the signature
+    // now accepts.
+    describe('Trigger Orders', () => {
+      it('treats a stop market trigger as taker', () => {
+        const result = determineMakerStatus({
+          orderType: 'stop_market',
+          direction: 'long',
+          limitPrice: '49500',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('treats a take profit market trigger as taker', () => {
+        const result = determineMakerStatus({
+          orderType: 'take_profit_market',
+          direction: 'short',
+          limitPrice: '50500',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+
+      it('treats a stop limit trigger resting below the ask as maker', () => {
+        const result = determineMakerStatus({
+          orderType: 'stop_limit',
+          direction: 'long',
+          limitPrice: '49500',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(true);
+      });
+
+      it('treats a take profit limit trigger crossing the book as taker', () => {
+        const result = determineMakerStatus({
+          orderType: 'take_profit_limit',
+          direction: 'long',
+          limitPrice: '50100',
+          bestAsk: 50001,
+          bestBid: 49999,
+          symbol: 'BTC',
+        });
+
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('isPriceOutsideDeviationBand', () => {
+    const maxDeviation = 0.95;
+
+    it('returns false when the price is within the band', () => {
+      // 3100 is ~3.3% from the 3000 reference, well within the band
+      expect(isPriceOutsideDeviationBand(3100, 3000, maxDeviation)).toBe(false);
+    });
+
+    it('returns false for a high price still within the ratio band', () => {
+      // 30000 is 10x the 3000 reference; the reference is 10% of the price,
+      // above the 5% floor, so it is allowed
+      expect(isPriceOutsideDeviationBand(30000, 3000, maxDeviation)).toBe(
+        false,
+      );
+    });
+
+    it('returns true when the price is far above the band', () => {
+      expect(isPriceOutsideDeviationBand(999999999, 3000, maxDeviation)).toBe(
+        true,
+      );
+    });
+
+    it('returns true when the price is far below the band', () => {
+      // 100 is ~3.3% of the 3000 reference, below the 5% floor
+      expect(isPriceOutsideDeviationBand(100, 3000, maxDeviation)).toBe(true);
+    });
+
+    it('is symmetric with respect to the two prices', () => {
+      expect(isPriceOutsideDeviationBand(3000, 999999999, maxDeviation)).toBe(
+        true,
+      );
+    });
+
+    it.each([
+      ['zero reference price', 1000, 0],
+      ['negative reference price', 1000, -5],
+      ['zero price', 0, 3000],
+      ['negative price', -5, 3000],
+      ['NaN price', Number.NaN, 3000],
+    ])(
+      'returns false for %s (incomplete/invalid data)',
+      (_label, price, ref) => {
+        expect(isPriceOutsideDeviationBand(price, ref, maxDeviation)).toBe(
+          false,
+        );
+      },
+    );
+  });
+
+  describe('getPriceDeviationBand', () => {
+    it('returns the inclusive ratio band around a usable reference', () => {
+      const band = getPriceDeviationBand(2000, 0.95);
+
+      expect(band?.min).toBeCloseTo(100);
+      expect(band?.max).toBeCloseTo(40000);
+    });
+
+    it('returns undefined when the reference is not usable', () => {
+      expect(getPriceDeviationBand(0, 0.95)).toBeUndefined();
+      expect(getPriceDeviationBand(2000, 1)).toBeUndefined();
+    });
+  });
+});
+
+describe('resolveOracleReferencePrice', () => {
+  it('prefers a usable mark price', () => {
+    expect(resolveOracleReferencePrice('3050', 3000)).toBe(3050);
+  });
+
+  it('falls back when the mark price is missing', () => {
+    expect(resolveOracleReferencePrice(undefined, 3000)).toBe(3000);
+  });
+
+  it('falls back when the mark price is unparseable or non-positive', () => {
+    expect(resolveOracleReferencePrice('not-a-number', 3000)).toBe(3000);
+    expect(resolveOracleReferencePrice('0', 3000)).toBe(3000);
+    expect(resolveOracleReferencePrice('-5', 3000)).toBe(3000);
+  });
+});
+
+describe('calculateLimitPriceForPercentage', () => {
+  it('offsets from the current limit price when one is set', () => {
+    expect(calculateLimitPriceForPercentage('100', 3000, 10)).toBe('110');
+  });
+
+  it('falls back to the market price when no limit price is set', () => {
+    expect(calculateLimitPriceForPercentage('', 3000, 1)).toBe('3030');
+  });
+
+  it('supports negative offsets', () => {
+    expect(calculateLimitPriceForPercentage('100', 3000, -2)).toBe('98');
+  });
+
+  it('ignores currency formatting in the limit price', () => {
+    expect(calculateLimitPriceForPercentage('$1,000', 3000, 10)).toBe('1100');
+  });
+
+  it('returns empty when there is no usable base price', () => {
+    expect(calculateLimitPriceForPercentage('', 0, 10)).toBe('');
+  });
+});

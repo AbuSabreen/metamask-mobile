@@ -1,0 +1,1602 @@
+import React, { createRef } from 'react';
+import { CaipChainId } from '@metamask/utils';
+import {
+  FeatureId,
+  UnifiedSwapBridgeEventName,
+} from '@metamask/bridge-controller';
+import {
+  asRootState,
+  bridgeTestState,
+  ethToken1Address,
+  initialState,
+} from '../../_mocks_/initialState';
+import { act, fireEvent } from '@testing-library/react-native';
+import { renderScreen } from '../../../../../util/test/renderWithProvider';
+import { TokenInputArea, TokenInputAreaRef, TokenInputAreaType } from '.';
+import { SwapsFeatureIdProvider } from '../../providers/SwapsFeatureIdProvider';
+import { BridgeToken } from '../../types';
+import { CHAIN_IDS } from '@metamask/transaction-controller';
+import { POLYGON_NATIVE_TOKEN } from '../../constants/assets';
+
+const mockTrackUnifiedSwapBridgeEvent = jest.fn();
+jest.mock('../../../../../core/Engine', () => ({
+  __esModule: true,
+  default: {
+    context: {
+      BridgeController: {
+        trackUnifiedSwapBridgeEvent: (...args: unknown[]) =>
+          mockTrackUnifiedSwapBridgeEvent(...args),
+      },
+    },
+  },
+}));
+
+// Mock Input to expose focus/blur/isFocused on its ref for imperative handle tests.
+const mockInputFocus = jest.fn();
+const mockInputBlur = jest.fn();
+const mockInputIsFocused = jest.fn(() => false);
+jest.mock(
+  '../../../../../component-library/components/Form/TextField/foundation/Input',
+  () => {
+    const MockReact = jest.requireActual('react');
+    const { TextInput } = jest.requireActual('react-native');
+    return {
+      __esModule: true,
+      default: MockReact.forwardRef(
+        (props: Record<string, unknown>, inputRef: React.Ref<unknown>) => {
+          MockReact.useImperativeHandle(inputRef, () => ({
+            focus: mockInputFocus,
+            blur: mockInputBlur,
+            isFocused: mockInputIsFocused,
+          }));
+          return MockReact.createElement(TextInput, {
+            ...props,
+            testID: props.testID,
+          });
+        },
+      ),
+    };
+  },
+);
+
+jest.mock('../../hooks/useShouldRenderMaxOption', () => ({
+  useShouldRenderMaxOption: jest.fn(() => true),
+}));
+
+jest.mock('../../hooks/useFormattedBalanceWithThreshold', () => ({
+  useFormattedBalanceWithThreshold: jest.fn(() => '100'),
+}));
+
+jest.mock('../../hooks/useDisplayCurrencyValue', () => ({
+  useDisplayCurrencyValue: jest.fn(() => '$100.00'),
+}));
+
+jest.mock('../../hooks/useInsufficientBalance', () => jest.fn(() => false));
+
+jest.mock('../TokenButton', () => {
+  const { createElement } = jest.requireActual('react');
+  const { Text } = jest.requireActual('react-native');
+
+  return {
+    TokenButton: ({
+      symbol,
+      securityBadgeAssetId,
+    }: {
+      symbol?: string;
+      securityBadgeAssetId?: string;
+    }) =>
+      createElement(
+        Text,
+        { testID: 'token-button', securityBadgeAssetId },
+        symbol,
+      ),
+  };
+});
+
+import { useShouldRenderMaxOption } from '../../hooks/useShouldRenderMaxOption';
+const mockUseShouldRenderMaxOption =
+  useShouldRenderMaxOption as jest.MockedFunction<
+    typeof useShouldRenderMaxOption
+  >;
+
+import { useFormattedBalanceWithThreshold } from '../../hooks/useFormattedBalanceWithThreshold';
+const mockUseFormattedBalanceWithThreshold =
+  useFormattedBalanceWithThreshold as jest.MockedFunction<
+    typeof useFormattedBalanceWithThreshold
+  >;
+
+import useIsInsufficientBalance from '../../hooks/useInsufficientBalance';
+const mockUseIsInsufficientBalance =
+  useIsInsufficientBalance as jest.MockedFunction<
+    typeof useIsInsufficientBalance
+  >;
+
+import { useDisplayCurrencyValue } from '../../hooks/useDisplayCurrencyValue';
+const mockUseDisplayCurrencyValue =
+  useDisplayCurrencyValue as jest.MockedFunction<
+    typeof useDisplayCurrencyValue
+  >;
+
+const mockOnTokenPress = jest.fn();
+const mockOnFocus = jest.fn();
+const mockOnBlur = jest.fn();
+const mockOnInputPress = jest.fn();
+const mockOnMaxPress = jest.fn();
+const mockOnAmountTypeTogglePress = jest.fn();
+
+describe('TokenInputArea', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseShouldRenderMaxOption.mockReturnValue(true);
+    mockUseFormattedBalanceWithThreshold.mockReturnValue('100');
+    mockUseDisplayCurrencyValue.mockReturnValue('$100.00');
+    mockUseIsInsufficientBalance.mockReturnValue(false);
+  });
+
+  describe('empty state token selector press', () => {
+    it('tracks source asset picker opened and calls onTokenPress when the source token button is pressed', () => {
+      const { getByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              isSourceToken
+              onTokenPress={mockOnTokenPress}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      fireEvent.press(getByTestId('token-input'));
+
+      expect(mockTrackUnifiedSwapBridgeEvent).toHaveBeenCalledWith(
+        UnifiedSwapBridgeEventName.AssetPickerOpened,
+        {
+          asset_location: 'source',
+          feature_id: FeatureId.UNIFIED_SWAP_BRIDGE,
+        },
+      );
+      expect(mockOnTokenPress).toHaveBeenCalledTimes(1);
+    });
+
+    it('tracks destination asset picker opened and calls onTokenPress when the dest token button is pressed', () => {
+      const { getByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Destination}
+              onTokenPress={mockOnTokenPress}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      fireEvent.press(getByTestId('token-input'));
+
+      expect(mockTrackUnifiedSwapBridgeEvent).toHaveBeenCalledWith(
+        UnifiedSwapBridgeEventName.AssetPickerOpened,
+        {
+          asset_location: 'destination',
+          feature_id: FeatureId.UNIFIED_SWAP_BRIDGE,
+        },
+      );
+      expect(mockOnTokenPress).toHaveBeenCalledTimes(1);
+    });
+
+    it('tracks the asset picker opened with the feature id of the flow rendering the input', () => {
+      const { getByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.LIMIT_ORDER}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              isSourceToken
+              onTokenPress={mockOnTokenPress}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      fireEvent.press(getByTestId('token-input'));
+
+      expect(mockTrackUnifiedSwapBridgeEvent).toHaveBeenCalledWith(
+        UnifiedSwapBridgeEventName.AssetPickerOpened,
+        {
+          asset_location: 'source',
+          feature_id: FeatureId.LIMIT_ORDER,
+        },
+      );
+    });
+  });
+
+  it('renders with initial state', () => {
+    const { getByTestId } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Source}
+            onTokenPress={mockOnTokenPress}
+            onFocus={mockOnFocus}
+            onBlur={mockOnBlur}
+            onInputPress={mockOnInputPress}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: initialState },
+    );
+
+    expect(getByTestId('token-input-input')).toBeTruthy();
+  });
+
+  it('handles input focus and blur correctly', () => {
+    const { getByTestId } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Source}
+            onFocus={mockOnFocus}
+            onBlur={mockOnBlur}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: initialState },
+    );
+
+    const input = getByTestId('token-input-input');
+    fireEvent(input, 'focus');
+    expect(mockOnFocus).toHaveBeenCalled();
+
+    fireEvent(input, 'blur');
+    expect(mockOnBlur).toHaveBeenCalled();
+  });
+
+  it('applies source selection and forwards selection change', () => {
+    const mockOnSelectionChange = jest.fn();
+    const { getByTestId } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Source}
+            selection={{ start: 2, end: 2 }}
+            onSelectionChange={mockOnSelectionChange}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: initialState },
+    );
+
+    const input = getByTestId('token-input-input');
+    expect(input.props.selection).toEqual({ start: 2, end: 2 });
+
+    fireEvent(input, 'selectionChange', {
+      nativeEvent: { selection: { start: 1, end: 1 } },
+    });
+
+    expect(mockOnSelectionChange).toHaveBeenCalled();
+  });
+
+  it('keeps destination selection pinned to start', () => {
+    const { getByTestId } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Destination}
+            selection={{ start: 3, end: 3 }}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: initialState },
+    );
+
+    const input = getByTestId('token-input-input');
+    expect(input.props.selection).toEqual({ start: 0, end: 0 });
+  });
+
+  it('displays max button for source token with balance and calls onMaxPress when clicked', () => {
+    // Arrange
+    const mockToken: BridgeToken = {
+      address: '0x1234567890123456789012345678901234567890',
+      symbol: 'TEST',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+    const tokenBalance = '100.5';
+
+    const { getByText } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Source}
+            token={mockToken}
+            tokenBalance={tokenBalance}
+            onMaxPress={mockOnMaxPress}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: initialState },
+    );
+
+    // Act
+    const maxButton = getByText('Max');
+    fireEvent.press(maxButton);
+
+    // Assert
+    expect(mockOnMaxPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not display max button for destination token', () => {
+    // Arrange
+    const mockToken: BridgeToken = {
+      address: '0x1234567890123456789012345678901234567890',
+      symbol: 'TEST',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+    const tokenBalance = '100.5';
+
+    const { queryByText } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Destination}
+            token={mockToken}
+            tokenBalance={tokenBalance}
+            onMaxPress={mockOnMaxPress}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: initialState },
+    );
+
+    // Assert
+    expect(queryByText('Max')).toBeNull();
+  });
+
+  it('does not display max button for native assets when gasless swaps are disabled', () => {
+    // Arrange
+    const nativeToken: BridgeToken = {
+      address: '0x0000000000000000000000000000000000000000', // AddressZero for native ETH
+      symbol: 'ETH',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+    const tokenBalance = '1.5';
+
+    // Create state without gasless swap enabled
+    const stateWithoutGasless = asRootState({
+      ...bridgeTestState,
+      engine: {
+        ...bridgeTestState.engine,
+        backgroundState: {
+          ...bridgeTestState.engine.backgroundState,
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              ...bridgeTestState.engine.backgroundState
+                .RemoteFeatureFlagController.remoteFeatureFlags,
+              bridgeConfigV2: {
+                ...bridgeTestState.engine.backgroundState
+                  .RemoteFeatureFlagController.remoteFeatureFlags
+                  .bridgeConfigV2,
+                chains: {
+                  ...bridgeTestState.engine.backgroundState
+                    .RemoteFeatureFlagController.remoteFeatureFlags
+                    .bridgeConfigV2.chains,
+                  'eip155:1': {
+                    ...bridgeTestState.engine.backgroundState
+                      .RemoteFeatureFlagController.remoteFeatureFlags
+                      .bridgeConfigV2.chains['eip155:1'],
+                    isGaslessSwapEnabled: false,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    // Mock hook to return false since gasless is disabled for native token
+    mockUseShouldRenderMaxOption.mockReturnValue(false);
+
+    const { queryByText } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Source}
+            token={nativeToken}
+            tokenBalance={tokenBalance}
+            onMaxPress={mockOnMaxPress}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: stateWithoutGasless },
+    );
+
+    // Assert
+    expect(queryByText('Max')).toBeNull();
+  });
+
+  it('displays max button for native assets when gasless swaps are enabled', () => {
+    // Arrange
+    const nativeToken: BridgeToken = {
+      address: '0x0000000000000000000000000000000000000000', // AddressZero for native ETH
+      symbol: 'ETH',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+    const destToken: BridgeToken = {
+      address: '0x0000000000000000000000000000000000000001', // Different token on same chain
+      symbol: 'TOKEN1',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+    const tokenBalance = '1.5';
+
+    // Create state with swap setup (both source and dest tokens on same chain)
+    const stateWithSwap = {
+      ...initialState,
+      bridge: {
+        ...initialState.bridge,
+        sourceToken: nativeToken,
+        destToken,
+      },
+    };
+
+    const { getByText } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Source}
+            token={nativeToken}
+            tokenBalance={tokenBalance}
+            onMaxPress={mockOnMaxPress}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: stateWithSwap },
+    );
+
+    // Assert
+    expect(getByText('Max')).toBeTruthy();
+  });
+
+  it('treats Polygon native token as native asset after zero address conversion', () => {
+    const polygonNativeToken: BridgeToken = {
+      address: POLYGON_NATIVE_TOKEN, // 0x0000...001010
+      symbol: 'POL',
+      decimals: 18,
+      chainId: CHAIN_IDS.POLYGON as `0x${string}`,
+    };
+    const tokenBalance = '10';
+
+    const stateWithoutGasless = asRootState({
+      ...bridgeTestState,
+      engine: {
+        ...bridgeTestState.engine,
+        backgroundState: {
+          ...bridgeTestState.engine.backgroundState,
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              ...bridgeTestState.engine.backgroundState
+                .RemoteFeatureFlagController.remoteFeatureFlags,
+              bridgeConfigV2: {
+                ...bridgeTestState.engine.backgroundState
+                  .RemoteFeatureFlagController.remoteFeatureFlags
+                  .bridgeConfigV2,
+                chains: {
+                  ...bridgeTestState.engine.backgroundState
+                    .RemoteFeatureFlagController.remoteFeatureFlags
+                    .bridgeConfigV2.chains,
+                  'eip155:137': {
+                    isActiveSrc: true,
+                    isActiveDest: true,
+                    isGaslessSwapEnabled: false,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    // Mock hook to return false since gasless is disabled for native Polygon token
+    mockUseShouldRenderMaxOption.mockReturnValue(false);
+
+    const { queryByText } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Source}
+            token={polygonNativeToken}
+            tokenBalance={tokenBalance}
+            onMaxPress={mockOnMaxPress}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: stateWithoutGasless },
+    );
+
+    // After conversion to zero address, Polygon native token is treated as native
+    // Native tokens hide Max button when gasless swaps are disabled
+    expect(queryByText('Max')).toBeNull();
+  });
+
+  it('displays max button for Polygon native token when gasless swaps are enabled', () => {
+    const polygonNativeToken: BridgeToken = {
+      address: POLYGON_NATIVE_TOKEN, // 0x0000...001010
+      symbol: 'POL',
+      decimals: 18,
+      chainId: CHAIN_IDS.POLYGON as `0x${string}`,
+    };
+    const destToken: BridgeToken = {
+      address: '0x2791bca1f2de4661ed88a30c99a7a9449aa84174', // USDC
+      symbol: 'USDC',
+      decimals: 6,
+      chainId: CHAIN_IDS.POLYGON as `0x${string}`,
+    };
+    const tokenBalance = '10';
+
+    const stateWithGaslessSwap = asRootState({
+      ...bridgeTestState,
+      engine: {
+        ...bridgeTestState.engine,
+        backgroundState: {
+          ...bridgeTestState.engine.backgroundState,
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              ...bridgeTestState.engine.backgroundState
+                .RemoteFeatureFlagController.remoteFeatureFlags,
+              bridgeConfigV2: {
+                ...bridgeTestState.engine.backgroundState
+                  .RemoteFeatureFlagController.remoteFeatureFlags
+                  .bridgeConfigV2,
+                chains: {
+                  ...bridgeTestState.engine.backgroundState
+                    .RemoteFeatureFlagController.remoteFeatureFlags
+                    .bridgeConfigV2.chains,
+                  'eip155:137': {
+                    isActiveSrc: true,
+                    isActiveDest: true,
+                    isGaslessSwapEnabled: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      bridge: {
+        ...bridgeTestState.bridge,
+        sourceToken: polygonNativeToken,
+        destToken,
+      },
+    });
+
+    const { getByText } = renderScreen(
+      () => (
+        <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+          <TokenInputArea
+            testID="token-input"
+            tokenType={TokenInputAreaType.Source}
+            token={polygonNativeToken}
+            tokenBalance={tokenBalance}
+            onMaxPress={mockOnMaxPress}
+          />
+        </SwapsFeatureIdProvider>
+      ),
+      {
+        name: 'TokenInputArea',
+      },
+      { state: stateWithGaslessSwap },
+    );
+
+    // After conversion to zero address, Polygon native token is treated as native
+    // Native tokens show Max button when gasless swaps are enabled
+    expect(getByText('Max')).toBeTruthy();
+  });
+
+  describe('Max button visibility with useShouldRenderMaxOption hook', () => {
+    const nativeToken: BridgeToken = {
+      address: '0x0000000000000000000000000000000000000000',
+      symbol: 'ETH',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+    const tokenBalance = '1.5';
+
+    beforeEach(() => {
+      mockUseShouldRenderMaxOption.mockReturnValue(true);
+    });
+
+    afterEach(() => {
+      mockUseShouldRenderMaxOption.mockReturnValue(true);
+    });
+
+    it('does not display max button when useShouldRenderMaxOption returns false', () => {
+      mockUseShouldRenderMaxOption.mockReturnValue(false);
+
+      const { queryByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={nativeToken}
+              tokenBalance={tokenBalance}
+              onMaxPress={mockOnMaxPress}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        {
+          name: 'TokenInputArea',
+        },
+        { state: initialState },
+      );
+
+      expect(queryByText('Max')).toBeNull();
+      expect(mockUseShouldRenderMaxOption).toHaveBeenCalledWith(
+        nativeToken,
+        tokenBalance,
+        false,
+      );
+    });
+
+    it('displays max button when useShouldRenderMaxOption returns true', () => {
+      mockUseShouldRenderMaxOption.mockReturnValue(true);
+
+      const { getByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={nativeToken}
+              tokenBalance={tokenBalance}
+              onMaxPress={mockOnMaxPress}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        {
+          name: 'TokenInputArea',
+        },
+        { state: initialState },
+      );
+
+      expect(getByText('Max')).toBeTruthy();
+      expect(mockUseShouldRenderMaxOption).toHaveBeenCalledWith(
+        nativeToken,
+        tokenBalance,
+        false,
+      );
+    });
+
+    it('passes isQuoteSponsored to useShouldRenderMaxOption', () => {
+      mockUseShouldRenderMaxOption.mockReturnValue(true);
+
+      renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={nativeToken}
+              tokenBalance={tokenBalance}
+              onMaxPress={mockOnMaxPress}
+              isQuoteSponsored
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        {
+          name: 'TokenInputArea',
+        },
+        { state: initialState },
+      );
+
+      expect(mockUseShouldRenderMaxOption).toHaveBeenCalledWith(
+        nativeToken,
+        tokenBalance,
+        true,
+      );
+    });
+
+    it('does not display max button for destination token', () => {
+      const { queryByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Destination}
+              token={nativeToken}
+              tokenBalance={tokenBalance}
+              onMaxPress={mockOnMaxPress}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        {
+          name: 'TokenInputArea',
+        },
+        { state: initialState },
+      );
+
+      // Destination tokens never show max button
+      expect(queryByText('Max')).toBeNull();
+    });
+  });
+
+  describe('imperative handle (focus, blur, isFocused)', () => {
+    beforeEach(() => {
+      mockInputFocus.mockClear();
+      mockInputBlur.mockClear();
+      mockInputIsFocused.mockClear().mockReturnValue(false);
+    });
+
+    it('focus calls input focus and onFocus callback', () => {
+      const ref = createRef<TokenInputAreaRef>();
+
+      renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              ref={ref}
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              onFocus={mockOnFocus}
+              onBlur={mockOnBlur}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        {
+          name: 'TokenInputArea',
+        },
+        { state: initialState },
+      );
+
+      act(() => {
+        ref.current?.focus();
+      });
+
+      expect(mockInputFocus).toHaveBeenCalledTimes(1);
+      expect(mockOnFocus).toHaveBeenCalledTimes(1);
+    });
+
+    it('blur calls input blur and onBlur callback', () => {
+      const ref = createRef<TokenInputAreaRef>();
+
+      renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              ref={ref}
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              onFocus={mockOnFocus}
+              onBlur={mockOnBlur}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        {
+          name: 'TokenInputArea',
+        },
+        { state: initialState },
+      );
+
+      act(() => {
+        ref.current?.blur();
+      });
+
+      expect(mockInputBlur).toHaveBeenCalledTimes(1);
+      expect(mockOnBlur).toHaveBeenCalledTimes(1);
+    });
+
+    it('isFocused returns the input focused state', () => {
+      const ref = createRef<TokenInputAreaRef>();
+
+      renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              ref={ref}
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        {
+          name: 'TokenInputArea',
+        },
+        { state: initialState },
+      );
+
+      mockInputIsFocused.mockReturnValue(false);
+      expect(ref.current?.isFocused()).toBe(false);
+
+      mockInputIsFocused.mockReturnValue(true);
+      expect(ref.current?.isFocused()).toBe(true);
+    });
+
+    it('focus and blur do not throw when onFocus/onBlur are not provided', () => {
+      const ref = createRef<TokenInputAreaRef>();
+
+      renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              ref={ref}
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        {
+          name: 'TokenInputArea',
+        },
+        { state: initialState },
+      );
+
+      expect(() => {
+        act(() => {
+          ref.current?.focus();
+        });
+      }).not.toThrow();
+
+      expect(() => {
+        act(() => {
+          ref.current?.blur();
+        });
+      }).not.toThrow();
+
+      // Input methods were still called even without callbacks
+      expect(mockInputFocus).toHaveBeenCalledTimes(1);
+      expect(mockInputBlur).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('currency value display', () => {
+    const mockToken: BridgeToken = {
+      address: '0x1234567890123456789012345678901234567890',
+      symbol: 'TEST',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+
+    it('shows currency value when token, amount > 0, and currencyValue are all provided', () => {
+      // Arrange
+      mockUseDisplayCurrencyValue.mockReturnValue('$50.00');
+
+      // Act
+      const { getByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+              amount="1"
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByText('$50.00')).toBeTruthy();
+      expect(mockUseDisplayCurrencyValue).toHaveBeenCalledWith('1', mockToken);
+    });
+
+    it('hides currency value when amount is 0', () => {
+      // Arrange
+      mockUseDisplayCurrencyValue.mockReturnValue('$0.00');
+
+      // Act
+      const { queryByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+              amount="0"
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert — condition Number(amount) > 0 is false
+      expect(queryByText('$0.00')).toBeNull();
+    });
+
+    it('hides currency value when amount is undefined', () => {
+      // Act
+      const { queryByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(queryByText('$100.00')).toBeNull();
+    });
+
+    it('hides currency value when no token is provided', () => {
+      // Act
+      const { queryByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              amount="10"
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(queryByText('$100.00')).toBeNull();
+    });
+
+    it('passes amount and token to useDisplayCurrencyValue', () => {
+      // Act
+      renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+              amount="5"
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(mockUseDisplayCurrencyValue).toHaveBeenCalledWith('5', mockToken);
+    });
+
+    it('passes undefined amount and token when both omitted', () => {
+      // Act
+      renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(mockUseDisplayCurrencyValue).toHaveBeenCalledWith(
+        undefined,
+        undefined,
+      );
+    });
+
+    it('toggles amount type when pressing the secondary denomination value', () => {
+      // Arrange
+      mockUseDisplayCurrencyValue.mockReturnValue('$100.00');
+
+      const { getByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+              amount="1"
+              onAmountTypeTogglePress={mockOnAmountTypeTogglePress}
+              amountTypeToggleTestID="amount-type-toggle"
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Act
+      fireEvent.press(getByText('$100.00'));
+
+      // Assert
+      expect(mockOnAmountTypeTogglePress).toHaveBeenCalledTimes(1);
+    });
+
+    it('hides the currency value of an unpriced token when hideFiatValueWhenUnpriced is set', () => {
+      // Arrange — mockToken has no market data in the mocked state
+      mockUseDisplayCurrencyValue.mockReturnValue('$0.00');
+
+      // Act
+      const { queryByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+              amount="1"
+              hideFiatValueWhenUnpriced
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(queryByText('$0.00')).toBeNull();
+    });
+
+    it('keeps the currency value of a priced token when hideFiatValueWhenUnpriced is set', () => {
+      // Arrange
+      mockUseDisplayCurrencyValue.mockReturnValue('$50.00');
+
+      // Act
+      const { getByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={{ ...mockToken, address: ethToken1Address }}
+              amount="1"
+              hideFiatValueWhenUnpriced
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByText('$50.00')).toBeTruthy();
+    });
+
+    it('shows token amount as primary for an unpriced destination when fiat-as-primary and hideFiatValueWhenUnpriced are both set', () => {
+      // Arrange — mockToken has no market data; limit/recurring buys pass both flags
+      mockUseDisplayCurrencyValue.mockReturnValue('$0.00');
+
+      // Act
+      const { getByTestId, queryByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Destination}
+              token={mockToken}
+              amount="1.5"
+              showFiatAmountAsPrimary
+              hideFiatValueWhenUnpriced
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert — fall back to token amount rather than rendering the unpriced "$0.00"
+      expect(getByTestId('token-input-input').props.value).toBe('1.5');
+      expect(queryByText('$0.00')).toBeNull();
+    });
+  });
+
+  describe('amount overrides', () => {
+    const mockToken: BridgeToken = {
+      address: '0x1234567890123456789012345678901234567890',
+      symbol: 'TEST',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+    const renderAmountOverrideInput = (
+      props: Partial<React.ComponentProps<typeof TokenInputArea>> = {},
+    ) =>
+      renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+              amountTypeToggleTestID="amount-type-toggle"
+              {...props}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+    it('uses token amount for balance checks when display amount is fiat', () => {
+      renderAmountOverrideInput({
+        amount: '113.28',
+        balanceCheckAmount: '0.05',
+        inputPrefix: '$',
+      });
+
+      expect(mockUseIsInsufficientBalance).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: '0.05' }),
+      );
+    });
+
+    it('shows fiat as primary and token amount as secondary for destination display mode', () => {
+      mockUseDisplayCurrencyValue.mockReturnValue('1,23 €');
+
+      const { getByTestId, getByText } = renderAmountOverrideInput({
+        amount: '1.234567',
+        tokenType: TokenInputAreaType.Destination,
+        showFiatAmountAsPrimary: true,
+      });
+
+      expect(getByTestId('token-input-input').props.value).toBe('1,23 €');
+      expect(getByText('1.23456 TEST')).toBeOnTheScreen();
+      expect(mockUseDisplayCurrencyValue).toHaveBeenCalledWith(
+        '1.234567',
+        mockToken,
+      );
+    });
+
+    it('truncates the destination token amount for display only', () => {
+      const { getByTestId } = renderAmountOverrideInput({
+        amount: '1.234567890123456789',
+        tokenType: TokenInputAreaType.Destination,
+      });
+
+      expect(getByTestId('token-input-input').props.value).toBe('1.23456');
+      expect(mockUseDisplayCurrencyValue).toHaveBeenCalledWith(
+        '1.234567890123456789',
+        mockToken,
+      );
+    });
+
+    it('displays the full source token amount', () => {
+      const { getByTestId } = renderAmountOverrideInput({
+        amount: '1.234567890123456789',
+      });
+
+      expect(getByTestId('token-input-input').props.value).toBe(
+        '1.234567890123456789',
+      );
+    });
+  });
+
+  describe('token button vs select button', () => {
+    const mockToken: BridgeToken = {
+      address: '0x1234567890123456789012345678901234567890',
+      symbol: 'TEST',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+
+    it('shows TokenButton with symbol when token is provided', () => {
+      // Act
+      const { getByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByText('TEST')).toBeTruthy();
+    });
+
+    it('passes CAIP asset ID for an EVM ERC-20 token to TokenButton', () => {
+      const { getByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      expect(getByTestId('token-button').props.securityBadgeAssetId).toBe(
+        'eip155:1/erc20:0x1234567890123456789012345678901234567890',
+      );
+    });
+
+    it('passes CAIP asset ID for a native token to TokenButton', () => {
+      const nativeToken: BridgeToken = {
+        address: '0x0000000000000000000000000000000000000000',
+        symbol: 'ETH',
+        decimals: 18,
+        chainId: '0x1' as `0x${string}`,
+      };
+
+      const { getByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={nativeToken}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      expect(getByTestId('token-button').props.securityBadgeAssetId).toBe(
+        'eip155:1/slip44:60',
+      );
+    });
+
+    it('normalizes Polygon native token address before passing CAIP asset ID to TokenButton', () => {
+      const polygonNativeToken: BridgeToken = {
+        address: POLYGON_NATIVE_TOKEN,
+        symbol: 'POL',
+        decimals: 18,
+        chainId: CHAIN_IDS.POLYGON as `0x${string}`,
+      };
+
+      const { getByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={polygonNativeToken}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      expect(getByTestId('token-button').props.securityBadgeAssetId).toBe(
+        'eip155:137/slip44:966',
+      );
+    });
+
+    it('shows "Swap from" button when no token and isSourceToken is true', () => {
+      // Act
+      const { getByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              isSourceToken
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByText('Swap from')).toBeTruthy();
+    });
+
+    it('shows "Swap to" button when no token and isSourceToken is false', () => {
+      // Act
+      const { getByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Destination}
+              isSourceToken={false}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByText('Swap to')).toBeTruthy();
+    });
+  });
+
+  describe('loading state', () => {
+    it('does not render input when isLoading is true', () => {
+      // Act
+      const { queryByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              isLoading
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert — input replaced by Skeleton
+      expect(queryByTestId('token-input-input')).toBeNull();
+    });
+
+    it('renders input when isLoading is false', () => {
+      // Act
+      const { getByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              isLoading={false}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByTestId('token-input-input')).toBeTruthy();
+    });
+  });
+
+  describe('subtitle display', () => {
+    it('source token shows formattedBalance as subtitle', () => {
+      // Arrange
+      mockUseFormattedBalanceWithThreshold.mockReturnValue('42.5 ETH');
+      const mockToken: BridgeToken = {
+        address: '0x0000000000000000000000000000000000000000',
+        symbol: 'ETH',
+        decimals: 18,
+        chainId: '0x1' as `0x${string}`,
+      };
+
+      // Act
+      const { getByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              token={mockToken}
+              tokenBalance="42.5"
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByText('42.5 ETH')).toBeTruthy();
+    });
+
+    it('destination token shows formatted token address as subtitle', () => {
+      // Arrange — use a non-native EVM token address
+      const mockToken: BridgeToken = {
+        address: '0x1234567890123456789012345678901234567890',
+        symbol: 'USDC',
+        decimals: 6,
+        chainId: '0x1' as `0x${string}`,
+      };
+
+      // Act
+      const { queryByText, getByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Destination}
+              token={mockToken}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert — shows formatted address (0x1234...7890), not formattedBalance ('100')
+      expect(queryByText('100')).toBeNull();
+      expect(getByText(/0x.*\.\.\./)).toBeTruthy();
+    });
+
+    it('destination native token shows no address subtitle', () => {
+      // Arrange — native (zero) address should produce no subtitle
+      const nativeToken: BridgeToken = {
+        address: '0x0000000000000000000000000000000000000000',
+        symbol: 'ETH',
+        decimals: 18,
+        chainId: '0x1' as `0x${string}`,
+      };
+
+      // Act
+      const { queryByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Destination}
+              token={nativeToken}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      // Assert — no formatted address rendered for native asset
+      expect(queryByText(/0x.*\.\.\./)).toBeNull();
+    });
+  });
+
+  describe('onInputPress callback', () => {
+    it('fires onInputPress when the input is pressed', () => {
+      // Act
+      const { getByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              onInputPress={mockOnInputPress}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      fireEvent(getByTestId('token-input-input'), 'pressIn');
+
+      // Assert
+      expect(mockOnInputPress).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires onInputPress on input focus', () => {
+      // Act
+      const { getByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Source}
+              onInputPress={mockOnInputPress}
+              onFocus={mockOnFocus}
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      fireEvent(getByTestId('token-input-input'), 'focus');
+
+      // Assert — both onFocus and onInputPress are fired
+      expect(mockOnFocus).toHaveBeenCalledTimes(1);
+      expect(mockOnInputPress).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('hideAmount', () => {
+    const destToken: BridgeToken = {
+      address: '0x1234567890123456789012345678901234567890',
+      symbol: 'TEST',
+      decimals: 18,
+      chainId: '0x1' as `0x${string}`,
+    };
+
+    it('renders the amount label and hides the dest amount, fiat, and subtitle', () => {
+      mockUseDisplayCurrencyValue.mockReturnValue('$100.00');
+
+      const { getByTestId, queryByTestId, queryByText } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Destination}
+              token={destToken}
+              amount="1.5"
+              hideAmount
+              amountReplacementLabel="You get"
+              amountReplacementLabelTestID="token-input-you-get"
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      expect(getByTestId('token-input-you-get')).toHaveTextContent('You get');
+      expect(queryByTestId('token-input-input')).toBeNull();
+      expect(queryByText('$100.00')).toBeNull();
+      expect(queryByText('1.5')).toBeNull();
+      expect(getByTestId('token-button')).toHaveTextContent('TEST');
+    });
+
+    it('renders the dest amount input when hideAmount is not set', () => {
+      const { getByTestId, queryByTestId } = renderScreen(
+        () => (
+          <SwapsFeatureIdProvider featureId={FeatureId.UNIFIED_SWAP_BRIDGE}>
+            <TokenInputArea
+              testID="token-input"
+              tokenType={TokenInputAreaType.Destination}
+              token={destToken}
+              amount="1.5"
+            />
+          </SwapsFeatureIdProvider>
+        ),
+        { name: 'TokenInputArea' },
+        { state: initialState },
+      );
+
+      expect(getByTestId('token-input-input').props.value).toBe('1.5');
+      expect(queryByTestId('token-input-you-get')).toBeNull();
+    });
+  });
+});

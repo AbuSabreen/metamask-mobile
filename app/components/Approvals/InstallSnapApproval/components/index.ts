@@ -1,11 +1,5 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
-import { InstallSnapConnectionRequest } from './InstallSnapConnectionRequest';
-import { InstallSnapSuccess } from './InstallSnapSuccess';
-import { InstallSnapError } from './InstallSnapError';
-import { InstallSnapPermissionsRequest } from './InstallSnapPermissionsRequest';
-
-export { InstallSnapPermissionsRequest };
-export { InstallSnapError };
-export { InstallSnapSuccess };
-export { InstallSnapConnectionRequest };
-///: END:ONLY_INCLUDE_IF
+/* eslint-disable import-x/prefer-default-export */
+export { InstallSnapPermissionsRequest } from './InstallSnapPermissionsRequest';
+export { InstallSnapError } from './InstallSnapError';
+export { InstallSnapSuccess } from './InstallSnapSuccess';
+export { InstallSnapConnectionRequest } from './InstallSnapConnectionRequest';

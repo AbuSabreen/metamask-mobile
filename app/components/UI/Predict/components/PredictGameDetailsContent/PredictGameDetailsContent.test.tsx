@@ -1,0 +1,1003 @@
+import React from 'react';
+import { TEST_HEX_COLORS } from '../../testUtils/mockColors';
+import { render, fireEvent, act } from '@testing-library/react-native';
+import PredictGameDetailsContent from './PredictGameDetailsContent';
+import { PredictMarket, PredictMarketStatus } from '../../types';
+import { useGameDetailsTabs } from '../../hooks/useGameDetailsTabs';
+import { usePredictGame } from '../../hooks/usePredictGame';
+import { PredictMarketDetailsSelectorsIDs } from '../../Predict.testIds';
+
+import { POLYMARKET_PROVIDER_ID } from '../../providers/polymarket/constants';
+
+let mockPredictBrandRefreshEnabled = false;
+jest.mock('react-redux', () => {
+  const { selectPredictBrandRefreshEnabled } = jest.requireActual(
+    '../../../../../selectors/featureFlagController/predictBrandRefresh',
+  );
+  return {
+    ...jest.requireActual('react-redux'),
+    useSelector: (selector: unknown) =>
+      selector === selectPredictBrandRefreshEnabled
+        ? mockPredictBrandRefreshEnabled
+        : undefined,
+  };
+});
+
+jest.mock(
+  '../../../../../component-library/components-temp/CapsuleGlass',
+  () => {
+    const { View } = jest.requireActual('react-native');
+    return {
+      __esModule: true,
+      default: ({ children }: { children: React.ReactNode }) => (
+        <View testID="capsule">{children}</View>
+      ),
+    };
+  },
+);
+
+const mockGoBack = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    goBack: mockGoBack,
+  }),
+}));
+
+jest.mock('../../hooks/usePredictActionGuard', () => ({
+  usePredictActionGuard: () => ({
+    executeGuardedAction: (action: () => void) => action(),
+    isEligible: true,
+  }),
+}));
+
+jest.mock('../../hooks/usePredictNavigation', () => ({
+  usePredictNavigation: () => ({
+    navigateToBuyPreview: jest.fn(),
+  }),
+}));
+
+const mockPredictShareButtonProps = jest.fn();
+jest.mock('../PredictShareButton/PredictShareButton', () => {
+  const { View } = jest.requireActual('react-native');
+  return function MockPredictShareButton(props: {
+    marketId?: string;
+    isCapsule?: boolean;
+  }) {
+    const { marketId } = props;
+    mockPredictShareButtonProps(props);
+    return (
+      <View
+        testID="predict-share-button"
+        accessibilityHint={`marketId:${marketId ?? 'undefined'}`}
+      />
+    );
+  };
+});
+
+jest.mock('../PredictGameDetailsFooter', () => ({
+  PredictGameDetailsFooter: function MockPredictGameDetailsFooter({
+    testID,
+    onInfoPress,
+  }: {
+    testID?: string;
+    onInfoPress?: () => void;
+  }) {
+    const { View, Pressable, Text } = jest.requireActual('react-native');
+    return (
+      <View testID={testID ?? 'predict-game-details-footer'}>
+        <Pressable testID="mock-info-button" onPress={onInfoPress}>
+          <Text>Info</Text>
+        </Pressable>
+      </View>
+    );
+  },
+}));
+
+jest.mock('../PredictGameDetailsFooter/PredictGameAboutSheet', () => {
+  const { View } = jest.requireActual('react-native');
+  return {
+    __esModule: true,
+    default: jest.fn(() => (
+      <View testID="predict-game-about-sheet">About Sheet</View>
+    )),
+  };
+});
+
+jest.mock('../PredictSportScoreboard', () => {
+  const { View } = jest.requireActual('react-native');
+  return {
+    __esModule: true,
+    default: function MockPredictSportScoreboard({
+      testID,
+      game,
+    }: {
+      testID?: string;
+      game?: {
+        status: string;
+        period: string | null;
+        awayTeam: { abbreviation: string };
+        homeTeam: { abbreviation: string };
+      };
+    }) {
+      // Derive UI state label from game.status + game.period (same logic as real component)
+      let stateLabel = 'undefined';
+      if (game?.status === 'scheduled') {
+        stateLabel = 'PreGame';
+      } else if (game?.status === 'ended') {
+        stateLabel = 'Final';
+      } else if (game?.status === 'ongoing' && game?.period === 'HT') {
+        stateLabel = 'Halftime';
+      } else if (game?.status === 'ongoing') {
+        stateLabel = 'InProgress';
+      }
+      return (
+        <View
+          testID={testID}
+          accessibilityHint={`state:${stateLabel},away:${game?.awayTeam?.abbreviation ?? 'undefined'},home:${game?.homeTeam?.abbreviation ?? 'undefined'}`}
+        />
+      );
+    },
+  };
+});
+
+jest.mock('../../hooks/usePredictGame');
+const mockUsePredictGame = usePredictGame as jest.MockedFunction<
+  typeof usePredictGame
+>;
+
+jest.mock('../PredictGameChart', () => {
+  const { View } = jest.requireActual('react-native');
+  return function MockPredictGameChart({
+    testID,
+    market,
+  }: {
+    testID?: string;
+    market?: { id: string };
+  }) {
+    return (
+      <View
+        testID={testID}
+        accessibilityHint={`marketId:${market?.id ?? 'undefined'}`}
+      />
+    );
+  };
+});
+
+jest.mock('./PredictGameDetailsTabsContent', () => {
+  const { Pressable, Text, View } = jest.requireActual('react-native');
+  const { PREDICT_GAME_DETAILS_CONTENT_TEST_IDS: IDS } = jest.requireActual(
+    './PredictGameDetailsContent.testIds',
+  );
+  return {
+    __esModule: true,
+    default: function MockPredictGameDetailsTabsContent({
+      market,
+      onRegTimeInfoPress,
+    }: {
+      market?: { id: string };
+      onRegTimeInfoPress?: () => void;
+    }) {
+      return (
+        <View testID="mock-game-details-tabs-content">
+          <View
+            testID={IDS.GAME_PICK}
+            accessibilityHint={`marketId:${market?.id ?? 'undefined'}`}
+          />
+          <Pressable
+            testID="mock-reg-time-info-button"
+            onPress={onRegTimeInfoPress}
+          >
+            <Text>Reg Time Info</Text>
+          </Pressable>
+        </View>
+      );
+    },
+  };
+});
+
+jest.mock('../PredictPicks/PredictPicks', () => {
+  const { View } = jest.requireActual('react-native');
+  return function MockPredictPicks({
+    testID,
+    market,
+  }: {
+    testID?: string;
+    market?: { id: string };
+  }) {
+    return (
+      <View
+        testID={testID}
+        accessibilityHint={`marketId:${market?.id ?? 'undefined'}`}
+      />
+    );
+  };
+});
+
+const mockAboutSheetOpen = jest.fn();
+const mockRegTimeSheetOpen = jest.fn();
+const mockGetRefHandlers = jest.fn();
+
+jest.mock('../../hooks/usePredictBottomSheet', () => ({
+  usePredictBottomSheet: () => ({
+    sheetRef: { current: null },
+    isVisible: false,
+    handleSheetClosed: jest.fn(),
+    getRefHandlers: mockGetRefHandlers,
+  }),
+}));
+
+jest.mock('../../../../../../locales/i18n', () => ({
+  strings: jest.fn((key: string) => key),
+}));
+
+jest.mock('../../hooks/usePredictPositions', () => ({
+  usePredictPositions: jest.fn(() => ({
+    data: [{ id: 'mock-pos-1' }],
+    isLoading: false,
+    refresh: jest.fn(),
+  })),
+}));
+
+jest.mock('../../hooks/useGameDetailsTabs', () => ({
+  useGameDetailsTabs: jest.fn(() => ({
+    enabled: false,
+    tabs: [],
+    activeTab: null,
+    handleTabPress: jest.fn(),
+    showTabBar: false,
+  })),
+}));
+
+jest.mock('../../../../../util/theme', () => {
+  const { mockTheme } = jest.requireActual('../../../../../util/theme');
+  return {
+    ...jest.requireActual('../../../../../util/theme'),
+    useTheme: () => mockTheme,
+  };
+});
+
+jest.mock(
+  '../../views/PredictMarketDetails/components/PredictMarketDetailsTabBar',
+  () => {
+    const { View } = jest.requireActual('react-native');
+    return {
+      __esModule: true,
+      default: function MockPredictMarketDetailsTabBar() {
+        return <View testID="mock-tab-bar" />;
+      },
+    };
+  },
+);
+
+const mockBaseGame = {
+  id: 'game-123',
+  homeTeam: {
+    id: 'team-home',
+    name: 'Team A',
+    abbreviation: 'TA',
+    color: TEST_HEX_COLORS.PURE_RED,
+    alias: 'Team A',
+    logo: 'https://example.com/logo-a.png',
+  },
+  awayTeam: {
+    id: 'team-away',
+    name: 'Team B',
+    abbreviation: 'TB',
+    color: TEST_HEX_COLORS.PURE_BLUE,
+    alias: 'Team B',
+    logo: 'https://example.com/logo-b.png',
+  },
+  startTime: '2024-12-31T20:00:00Z',
+  status: 'scheduled' as const,
+  league: 'nfl' as const,
+  elapsed: null,
+  period: null,
+  score: null,
+};
+
+const createMockMarket = (
+  overrides: Partial<PredictMarket> = {},
+): PredictMarket =>
+  ({
+    id: 'test-market-id',
+    title: 'Test Game Market',
+    description: 'Test description',
+    image: 'https://example.com/image.png',
+    providerId: POLYMARKET_PROVIDER_ID,
+    status: PredictMarketStatus.OPEN,
+    category: 'sports',
+    tags: ['NFL'],
+    outcomes: [
+      {
+        id: 'outcome-1',
+        marketId: 'test-market-id',
+        title: 'Team A',
+        groupItemTitle: 'Team A',
+        status: 'open',
+        volume: 1000,
+        tokens: [
+          {
+            id: 'token-1',
+            title: 'Team A',
+            price: 0.65,
+          },
+          {
+            id: 'token-2',
+            title: 'Team B',
+            price: 0.35,
+          },
+        ],
+      },
+    ],
+    endDate: '2024-12-31T23:59:59Z',
+    game: mockBaseGame,
+    ...overrides,
+  }) as PredictMarket;
+
+describe('PredictGameDetailsContent', () => {
+  const mockOnBack = jest.fn();
+  const mockOnRefresh = jest.fn().mockResolvedValue(undefined);
+  const mockOnBetPress = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPredictBrandRefreshEnabled = false;
+    mockGetRefHandlers.mockReset();
+    mockGetRefHandlers
+      .mockReturnValueOnce({
+        onOpenBottomSheet: mockAboutSheetOpen,
+        onCloseBottomSheet: jest.fn(),
+      })
+      .mockReturnValueOnce({
+        onOpenBottomSheet: mockRegTimeSheetOpen,
+        onCloseBottomSheet: jest.fn(),
+      });
+    mockUsePredictGame.mockImplementation((market) => ({
+      game: market?.game,
+      isConnected: false,
+      lastUpdateTime: null,
+    }));
+    (useGameDetailsTabs as jest.Mock).mockReturnValue({
+      enabled: false,
+      showTabBar: false,
+      tabs: [],
+      activeTab: 0,
+      handleTabPress: jest.fn(),
+      chips: [],
+      groupMap: new Map(),
+      activeChipKey: '',
+      handleChipSelect: jest.fn(),
+      showChips: false,
+    });
+  });
+
+  describe('Header Rendering', () => {
+    it('renders the back button', () => {
+      const market = createMockMarket();
+
+      const { getByRole } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(getByRole('button')).toBeOnTheScreen();
+    });
+
+    it('renders the market title', () => {
+      const market = createMockMarket({ title: 'NFL Game: Team A vs Team B' });
+
+      const { getByText } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(getByText('NFL Game: Team A vs Team B')).toBeOnTheScreen();
+    });
+
+    it('renders the share button with market id', () => {
+      const market = createMockMarket({ id: 'game-market-123' });
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const shareButton = getByTestId('predict-share-button');
+
+      expect(shareButton).toBeOnTheScreen();
+      expect(shareButton.props.accessibilityHint).toBe(
+        'marketId:game-market-123',
+      );
+    });
+
+    it('renders plain back and share buttons when the brand refresh is off', () => {
+      const market = createMockMarket();
+
+      const { queryByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(queryByTestId('capsule')).toBeNull();
+      expect(mockPredictShareButtonProps).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isCapsule: false }),
+      );
+    });
+
+    it('renders back and share in glass capsules when the brand refresh is on', () => {
+      mockPredictBrandRefreshEnabled = true;
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+      fireEvent.press(
+        getByTestId(PredictMarketDetailsSelectorsIDs.BACK_BUTTON),
+      );
+
+      expect(getByTestId('capsule')).toBeOnTheScreen();
+      expect(mockPredictShareButtonProps).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isCapsule: true }),
+      );
+      expect(mockOnBack).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('User Interactions', () => {
+    it('calls onBack when back button is pressed', async () => {
+      const market = createMockMarket();
+
+      const { getByRole } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const backButton = getByRole('button');
+      fireEvent.press(backButton);
+
+      expect(mockOnBack).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Refresh Control', () => {
+    it('passes refreshing state to RefreshControl', () => {
+      const market = createMockMarket();
+
+      const { UNSAFE_getByType } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing
+        />,
+      );
+
+      const { ScrollView } = jest.requireActual('react-native');
+      const scrollView = UNSAFE_getByType(ScrollView);
+
+      expect(scrollView.props.refreshControl.props.refreshing).toBe(true);
+    });
+
+    it('passes onRefresh callback to RefreshControl', () => {
+      const market = createMockMarket();
+
+      const { UNSAFE_getByType } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const { ScrollView } = jest.requireActual('react-native');
+      const scrollView = UNSAFE_getByType(ScrollView);
+
+      expect(scrollView.props.refreshControl.props.onRefresh).toBe(
+        mockOnRefresh,
+      );
+    });
+  });
+
+  describe('Footer', () => {
+    it('renders the footer component', () => {
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(getByTestId('predict-game-details-footer')).toBeOnTheScreen();
+    });
+
+    it('passes onInfoPress handler to footer', () => {
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const infoButton = getByTestId('mock-info-button');
+
+      expect(infoButton).toBeOnTheScreen();
+    });
+
+    it('opens the root Reg Time sheet from the outcomes content trigger', () => {
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      fireEvent.press(getByTestId('mock-reg-time-info-button'));
+
+      expect(mockRegTimeSheetOpen).toHaveBeenCalledTimes(1);
+      expect(mockAboutSheetOpen).not.toHaveBeenCalled();
+    });
+
+    it('hides the prediction footer when extended sports markets are enabled', () => {
+      (useGameDetailsTabs as jest.Mock).mockReturnValue({
+        enabled: true,
+        showTabBar: false,
+        tabs: [{ label: 'Outcomes', key: 'outcomes' }],
+        activeTab: 0,
+        handleTabPress: jest.fn(),
+        chips: [],
+        groupMap: new Map([
+          ['game_lines', { key: 'game_lines', outcomes: [] }],
+        ]),
+        activeChipKey: 'game_lines',
+        handleChipSelect: jest.fn(),
+        showChips: false,
+      });
+      const market = createMockMarket();
+
+      const { queryByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(queryByTestId('predict-game-details-footer')).toBeNull();
+    });
+
+    it('keeps the prediction footer when only resolved extended markets exist', () => {
+      (useGameDetailsTabs as jest.Mock).mockReturnValue({
+        enabled: true,
+        showTabBar: false,
+        tabs: [{ label: 'Outcomes', key: 'outcomes' }],
+        activeTab: 0,
+        handleTabPress: jest.fn(),
+        chips: [],
+        groupMap: new Map(),
+        resolvedOutcomeGroups: [
+          {
+            key: 'game_lines',
+            outcomes: [
+              {
+                id: 'resolved-outcome',
+                status: 'closed',
+                tokens: [],
+              },
+            ],
+          },
+        ],
+        activeChipKey: '',
+        handleChipSelect: jest.fn(),
+        showChips: false,
+      });
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(getByTestId('predict-game-details-footer')).toBeOnTheScreen();
+    });
+
+    it('keeps the footer for claimable winnings when extended sports markets are enabled', () => {
+      (useGameDetailsTabs as jest.Mock).mockReturnValue({
+        enabled: true,
+        showTabBar: false,
+        tabs: [{ label: 'Outcomes', key: 'outcomes' }],
+        activeTab: 0,
+        handleTabPress: jest.fn(),
+        chips: [],
+        groupMap: new Map([
+          ['game_lines', { key: 'game_lines', outcomes: [] }],
+        ]),
+        activeChipKey: 'game_lines',
+        handleChipSelect: jest.fn(),
+        showChips: false,
+      });
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          onClaimPress={jest.fn()}
+          claimableAmount={1}
+          refreshing={false}
+        />,
+      );
+
+      expect(getByTestId('predict-game-details-footer')).toBeOnTheScreen();
+    });
+  });
+
+  describe('About Sheet', () => {
+    it('does not render about sheet when isVisible is false', () => {
+      const market = createMockMarket();
+
+      const { queryByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(queryByTestId('predict-game-about-sheet')).toBeNull();
+    });
+  });
+
+  describe('Guard Conditions', () => {
+    it('returns null when market.game is undefined', () => {
+      const market = createMockMarket({ game: undefined });
+
+      const { toJSON } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(toJSON()).toBeNull();
+    });
+
+    it('returns null when market has no outcomes', () => {
+      const market = createMockMarket({ outcomes: [] });
+
+      const { toJSON } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(toJSON()).toBeNull();
+    });
+  });
+
+  describe('Scoreboard Integration', () => {
+    it('renders scoreboard with team data', () => {
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const scoreboard = getByTestId('game-scoreboard');
+
+      expect(scoreboard).toBeOnTheScreen();
+      expect(scoreboard.props.accessibilityHint).toContain('away:TB');
+      expect(scoreboard.props.accessibilityHint).toContain('home:TA');
+    });
+
+    it('renders scoreboard with PreGame state for scheduled games', () => {
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const scoreboard = getByTestId('game-scoreboard');
+
+      expect(scoreboard.props.accessibilityHint).toContain('state:PreGame');
+    });
+
+    it('renders scoreboard with InProgress state for ongoing games', () => {
+      const market = createMockMarket({
+        game: {
+          ...mockBaseGame,
+          status: 'ongoing',
+          period: 'Q2',
+          elapsed: '5:30',
+          score: { away: 7, home: 14, raw: '7-14' },
+        },
+      });
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const scoreboard = getByTestId('game-scoreboard');
+
+      expect(scoreboard.props.accessibilityHint).toContain('state:InProgress');
+    });
+
+    it('renders scoreboard with Final state for ended games', () => {
+      const market = createMockMarket({
+        game: {
+          ...mockBaseGame,
+          status: 'ended',
+          period: 'FT',
+          score: { away: 21, home: 28, raw: '21-28' },
+        },
+      });
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const scoreboard = getByTestId('game-scoreboard');
+
+      expect(scoreboard.props.accessibilityHint).toContain('state:Final');
+    });
+
+    it('renders scoreboard with Halftime state when period is HT', () => {
+      const market = createMockMarket({
+        game: {
+          ...mockBaseGame,
+          status: 'ongoing',
+          period: 'HT',
+          score: { away: 10, home: 7, raw: '10-7' },
+        },
+      });
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const scoreboard = getByTestId('game-scoreboard');
+
+      expect(scoreboard.props.accessibilityHint).toContain('state:Halftime');
+    });
+  });
+
+  describe('Chart Integration', () => {
+    it('renders chart with market', () => {
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const chart = getByTestId('game-chart');
+
+      expect(chart).toBeOnTheScreen();
+      expect(chart.props.accessibilityHint).toBe('marketId:test-market-id');
+    });
+  });
+
+  describe('Picks Integration', () => {
+    it('renders picks component with market', () => {
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      const picks = getByTestId('game-picks');
+
+      expect(picks).toBeOnTheScreen();
+      expect(picks.props.accessibilityHint).toBe('marketId:test-market-id');
+    });
+  });
+
+  it('renders all major sections for a valid market', () => {
+    const market = createMockMarket();
+
+    const { getByTestId, getByText, getByRole } = render(
+      <PredictGameDetailsContent
+        market={market}
+        onBack={mockOnBack}
+        onRefresh={mockOnRefresh}
+        onBetPress={mockOnBetPress}
+        refreshing={false}
+      />,
+    );
+
+    expect(getByRole('button')).toBeOnTheScreen();
+    expect(getByText('Test Game Market')).toBeOnTheScreen();
+    expect(getByTestId('predict-share-button')).toBeOnTheScreen();
+    expect(getByTestId('game-scoreboard')).toBeOnTheScreen();
+    expect(getByTestId('game-chart')).toBeOnTheScreen();
+    expect(getByTestId('game-picks')).toBeOnTheScreen();
+    expect(getByTestId('predict-game-details-footer')).toBeOnTheScreen();
+  });
+
+  it('renders the screen container', () => {
+    const market = createMockMarket();
+
+    const { getByTestId } = render(
+      <PredictGameDetailsContent
+        market={market}
+        onBack={mockOnBack}
+        onRefresh={mockOnRefresh}
+        onBetPress={mockOnBetPress}
+        refreshing={false}
+      />,
+    );
+
+    expect(getByTestId('predict-market-details-screen')).toBeOnTheScreen();
+  });
+
+  describe('tab bar rendering', () => {
+    it('renders PredictMarketDetailsTabBar when showTabBar is true', () => {
+      (useGameDetailsTabs as jest.Mock).mockReturnValue({
+        enabled: true,
+        showTabBar: true,
+        tabs: [
+          { label: 'Positions', key: 'positions' },
+          { label: 'Outcomes', key: 'outcomes' },
+        ],
+        activeTab: 0,
+        handleTabPress: jest.fn(),
+        chips: [],
+        groupMap: new Map(),
+        activeChipKey: '',
+        handleChipSelect: jest.fn(),
+        showChips: false,
+      });
+
+      const market = createMockMarket();
+
+      const { getByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(getByTestId('mock-tab-bar')).toBeOnTheScreen();
+    });
+
+    it('does not render PredictMarketDetailsTabBar when showTabBar is false', () => {
+      (useGameDetailsTabs as jest.Mock).mockReturnValue({
+        enabled: false,
+        showTabBar: false,
+        tabs: [],
+        activeTab: 0,
+        handleTabPress: jest.fn(),
+        chips: [],
+        groupMap: new Map(),
+        activeChipKey: '',
+        handleChipSelect: jest.fn(),
+        showChips: false,
+      });
+
+      const market = createMockMarket();
+
+      const { queryByTestId } = render(
+        <PredictGameDetailsContent
+          market={market}
+          onBack={mockOnBack}
+          onRefresh={mockOnRefresh}
+          onBetPress={mockOnBetPress}
+          refreshing={false}
+        />,
+      );
+
+      expect(queryByTestId('mock-tab-bar')).not.toBeOnTheScreen();
+    });
+  });
+});

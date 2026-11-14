@@ -1,0 +1,466 @@
+import { useCallback, useState } from 'react';
+import { strings } from '../../../../../locales/i18n';
+import DevLogger from '../../../../core/SDKConnect/utils/DevLogger';
+import { TraceName, TraceOperation } from '../../../../util/trace';
+import Logger from '../../../../util/Logger';
+import { ensureError } from '../../../../util/errorUtils';
+import { recordPerpsAction } from '../utils/perpsActivityStorage';
+import {
+  PERPS_CONSTANTS,
+  PERPS_EVENT_VALUE,
+  isLimitExecutionOrderType,
+  isTriggerOrderType,
+  type OrderParams,
+  type OrderResult,
+  type Position,
+} from '@metamask/perps-controller';
+import { usePerpsMeasurement } from './usePerpsMeasurement';
+import { usePerpsTrading } from './usePerpsTrading';
+import {
+  startPerpsCufTrace,
+  endPerpsCufTrace,
+  endPerpsCufTraceAfter,
+  armPerpsPlaceOrderCuf,
+  isPerpsPlaceOrderCufCurrent,
+  isPerpsFillRendered,
+  waitForPerpsPlaceOrderPositionRendered,
+  watchPerpsCufLimitRendered,
+} from '../utils/perpsCufTrace';
+import {
+  PERPS_CUF_TAG,
+  PERPS_CUF_END_REASON,
+  PERPS_CUF_BOUNDARY,
+  PERPS_CUF_STREAM_TIMEOUT_MS,
+  PERPS_CUF_STREAM_CONFIRM_RACE_MS,
+} from '../constants/perpsCufTags';
+import type { PerpsErrorInput } from '../utils/translatePerpsError';
+import { usePerpsStream } from '../providers/PerpsStreamManager';
+import { usePerpsNetwork } from './usePerpsNetwork';
+
+interface UsePerpsOrderExecutionParams {
+  /** Called when the order has been successfully submitted to the exchange. */
+  onSubmitted?: () => void;
+  /** Called when the position has rendered via the stream (or, on stream timeout, without it). */
+  onSuccess?: (position?: Position, result?: OrderResult) => void;
+  onError?: (error: PerpsErrorInput) => void;
+}
+
+interface UsePerpsOrderExecutionReturn {
+  placeOrder: (params: OrderParams) => Promise<OrderResult | undefined>;
+  isPlacing: boolean;
+  lastResult?: OrderResult;
+  error?: PerpsErrorInput;
+}
+
+type PerpsOrderTrackingValue = string | number | boolean;
+type PerpsOrderPositionSnapshot = Pick<Position, 'size'>;
+
+interface ControllerPlacementHandlers {
+  onSuccess: (result: OrderResult) => void | Promise<void>;
+  onFailure?: () => void;
+  onException?: () => void;
+  onSettled?: () => void;
+}
+
+const getPerpsOrderPositionSnapshot = (
+  position?: PerpsOrderPositionSnapshot | null,
+) => (position ? position.size : undefined);
+
+/**
+ * Hook to handle order execution flow
+ * Manages loading states, success/error handling, and stream-confirmed
+ * position rendering.
+ *
+ * Trade transaction analytics (submitted + terminal) are emitted by
+ * `@metamask/perps-controller` TradingService — do not re-emit
+ * PERPS_TRADE_TRANSACTION from this hook.
+ *
+ * Partial-fill status on the open-trade path (PARTIALLY_FILLED plus
+ * amount_filled / remaining_amount) is likewise controller-owned and lands with
+ * the next `@metamask/perps-controller` release — do not emit it here, as client
+ * emission would double-count once the controller ships it (same deferral as
+ * `orderExecutionLatencyMs`).
+ */
+export function usePerpsOrderExecution(
+  params: UsePerpsOrderExecutionParams = {},
+): UsePerpsOrderExecutionReturn {
+  const { onSubmitted, onSuccess, onError } = params;
+  const { placeOrder: controllerPlaceOrder } = usePerpsTrading();
+  const stream = usePerpsStream();
+  const network = usePerpsNetwork();
+
+  const [isPlacing, setIsPlacing] = useState(false);
+  const [lastResult, setLastResult] = useState<OrderResult>();
+  const [error, setError] = useState<PerpsErrorInput>();
+
+  // Track order submission toast with unified measurement hook
+  usePerpsMeasurement({
+    traceName: TraceName.PerpsOrderSubmissionToast,
+    op: TraceOperation.PerpsOrderSubmission,
+    startConditions: [isPlacing], // Start when placing begins
+    endConditions: [!!lastResult || !!error], // End when we have result or error
+    resetConditions: [!isPlacing], // Reset when not placing
+  });
+
+  const executeControllerPlacement = useCallback(
+    async (
+      orderParams: OrderParams,
+      handlers: ControllerPlacementHandlers,
+    ): Promise<OrderResult | undefined> => {
+      let controllerSettled = false;
+      const markControllerSettled = () => {
+        if (!controllerSettled) {
+          controllerSettled = true;
+          handlers.onSettled?.();
+        }
+      };
+
+      try {
+        setIsPlacing(true);
+        setError(undefined);
+        setLastResult(undefined);
+
+        DevLogger.log(
+          'usePerpsOrderExecution: Placing order',
+          JSON.stringify(orderParams, null, 2),
+        );
+
+        onSubmitted?.();
+
+        const result = await controllerPlaceOrder(orderParams);
+        markControllerSettled();
+        setLastResult(result);
+
+        if (result.success) {
+          DevLogger.log(
+            'usePerpsOrderExecution: Order placed successfully',
+            result,
+          );
+          recordPerpsAction();
+          await handlers.onSuccess(result);
+        } else {
+          handlers.onFailure?.();
+          const errorInput: PerpsErrorInput = {
+            error: result.error || strings('perps.order.error.unknown'),
+            errorCode: result.errorCode,
+            errorDetails: result.errorDetails,
+            maxSlippageBps:
+              orderParams.maxSlippageBps ??
+              orderParams.trackingData?.maxSlippageBps,
+          };
+          setError(errorInput);
+          DevLogger.log('usePerpsOrderExecution: Order failed', errorInput);
+          onError?.(errorInput);
+        }
+
+        return result;
+      } catch (err) {
+        markControllerSettled();
+        handlers.onException?.();
+        const errorObject = ensureError(
+          err,
+          'usePerpsOrderExecution.placeOrder',
+        );
+        const errorMessage =
+          err instanceof Error
+            ? err.message
+            : strings('perps.order.error.unknown');
+        const errorInput: PerpsErrorInput = {
+          error: errorMessage,
+          maxSlippageBps:
+            orderParams.maxSlippageBps ??
+            orderParams.trackingData?.maxSlippageBps,
+        };
+        setError(errorInput);
+        DevLogger.log('usePerpsOrderExecution: Error placing order', err);
+
+        Logger.error(errorObject, {
+          tags: {
+            feature: PERPS_CONSTANTS.FeatureName,
+            component: 'usePerpsOrderExecution',
+            action: 'order_creation',
+            operation: 'order_management',
+          },
+          context: {
+            name: 'usePerpsOrderExecution',
+            data: {
+              symbol: orderParams.symbol,
+              isBuy: orderParams.isBuy,
+              orderType: orderParams.orderType,
+              size: orderParams.size,
+              price: orderParams.price,
+              leverage: orderParams.leverage,
+              takeProfitPrice: orderParams.takeProfitPrice,
+              stopLossPrice: orderParams.stopLossPrice,
+              twapDuration: orderParams.twapDuration,
+              twapRandomize: orderParams.twapRandomize,
+              providerId: orderParams.providerId,
+              network,
+            },
+          },
+        });
+
+        onError?.(errorInput);
+
+        return undefined;
+      } finally {
+        setIsPlacing(false);
+      }
+    },
+    [controllerPlaceOrder, network, onError, onSubmitted],
+  );
+
+  const placeOrder = useCallback(
+    async (orderParams: OrderParams): Promise<OrderResult | undefined> => {
+      // Market orders measure submit -> position rendered (toast coupled to the
+      // same stream render) via PerpsPlaceOrderToPositionRendered. Limit and
+      // trigger orders measure submit -> resting order rendered in the orders
+      // stream (no exchange fill-wait time) via
+      // PerpsPlaceLimitOrderToOrderRendered. Each start mints a unique op id so
+      // overlapping orders never collide.
+      const isScheduledAcceptanceOrder =
+        orderParams.orderType === 'twap' || orderParams.orderType === 'chase';
+      if (isScheduledAcceptanceOrder) {
+        return executeControllerPlacement(orderParams, {
+          // Strategy acceptance starts a schedule; it does not imply that a
+          // position or resting child order has rendered yet.
+          onSuccess: (result) => onSuccess?.(undefined, result),
+        });
+      }
+
+      const isRestingOrder =
+        orderParams.orderType === 'scale' ||
+        isLimitExecutionOrderType(orderParams.orderType) ||
+        isTriggerOrderType(orderParams.orderType);
+      const isMarketOrder = !isRestingOrder;
+      const cufOpId = startPerpsCufTrace({
+        name: isMarketOrder
+          ? TraceName.PerpsPlaceOrderToPositionRendered
+          : TraceName.PerpsPlaceLimitOrderToOrderRendered,
+        tags: {
+          [PERPS_CUF_TAG.DIRECTION]: orderParams.isBuy
+            ? PERPS_EVENT_VALUE.DIRECTION.LONG
+            : PERPS_EVENT_VALUE.DIRECTION.SHORT,
+          [PERPS_CUF_TAG.ORDER_TYPE]: orderParams.orderType,
+        },
+      });
+      const endCuf = (data: Record<string, PerpsOrderTrackingValue>) =>
+        endPerpsCufTrace({ id: cufOpId, data });
+      const endCufRendered = (renderedAt: number, toastShownAt: number) => {
+        // End at the captured stream render instant, not when this code runs,
+        // so the span measures gesture -> actual position render.
+        endPerpsCufTrace({
+          id: cufOpId,
+          data: {
+            [PERPS_CUF_TAG.SUCCESS]: true,
+            [PERPS_CUF_TAG.BOUNDARY]: PERPS_CUF_BOUNDARY.STREAM,
+            [PERPS_CUF_TAG.TOAST_POSITION_DELTA_MS]: renderedAt - toastShownAt,
+          },
+          timestamp: renderedAt,
+        });
+      };
+      // Limit fast-path end: the confirming order/fill was already present in the
+      // stream cache when we checked, so end at the channel's last delivery
+      // instant rather than now (falls back to now if unavailable).
+      const endCufStreamRendered = (renderedAt: number | null) => {
+        endPerpsCufTrace({
+          id: cufOpId,
+          data: {
+            [PERPS_CUF_TAG.SUCCESS]: true,
+            [PERPS_CUF_TAG.BOUNDARY]: PERPS_CUF_BOUNDARY.STREAM,
+          },
+          timestamp: renderedAt ?? undefined,
+        });
+      };
+      // Baseline lets stream matchers tell this order's fill apart from a
+      // position that already existed on this market before submission. A null
+      // cache means "not loaded", not "no position" — pass that through so the
+      // matcher captures the baseline from the first delivery instead of
+      // assuming absent (which a pre-existing position would falsely satisfy).
+      // We deliberately do NOT block order submission on a REST fetch to
+      // resolve an unloaded cache: the fetch would add latency to every
+      // cold-start trade. The only residual is a rare cold-start order whose
+      // fill lands in that very first delivery — it records a stream_timeout
+      // rather than a render duration, which does not corrupt data or affect
+      // the user's flow.
+      const positionsCache = stream.positions.getSnapshot();
+      const positionsLoaded = positionsCache !== null;
+      const positionBaseline =
+        positionsCache?.find((p) => p.symbol === orderParams.symbol) ?? null;
+      const positionBaselineSnapshot =
+        getPerpsOrderPositionSnapshot(positionBaseline);
+      if (isMarketOrder) {
+        armPerpsPlaceOrderCuf(
+          cufOpId,
+          orderParams.symbol,
+          positionBaseline,
+          positionsLoaded,
+        );
+      }
+
+      // Safety watchdog anchored at the gesture: if the controller never
+      // returns (a hung request), none of the per-flow ends run, so this closes
+      // the span. Once the controller settles, stream-specific waits own the
+      // timeout window and this watchdog must not race them.
+      let controllerSettled = false;
+      setTimeout(() => {
+        if (!controllerSettled) {
+          // Distinct from stream_timeout: the controller request itself never
+          // settled, rather than a settled request whose render never arrived.
+          endCuf({
+            [PERPS_CUF_TAG.SUCCESS]: false,
+            [PERPS_CUF_TAG.REASON]: PERPS_CUF_END_REASON.CONTROLLER_TIMEOUT,
+          });
+        }
+      }, PERPS_CUF_STREAM_TIMEOUT_MS);
+
+      return executeControllerPlacement(orderParams, {
+        onSettled: () => {
+          controllerSettled = true;
+        },
+        onSuccess: async (result) => {
+          if (isRestingOrder) {
+            // Confirm immediately, then end when a resting child or fill
+            // renders. A Scale batch can contain only filled children and
+            // therefore have no resting IDs; that is still a valid acceptance,
+            // so it stays open for a position stream boundary or timeout rather
+            // than being marked as a request failure.
+            onSuccess?.(undefined, result);
+            const orderIds = (
+              orderParams.orderType === 'scale'
+                ? (result.childOrderIds ?? [])
+                : [result.orderId]
+            ).filter(
+              (orderId): orderId is string =>
+                typeof orderId === 'string' && orderId.length > 0,
+            );
+            const renderedOrderId = orderIds.find((orderId) =>
+              stream.orders
+                .getSnapshot()
+                ?.some((order) => order.orderId === orderId),
+            );
+            const orderId = renderedOrderId ?? orderIds[0];
+            const hasAcceptedScaleChildren =
+              orderParams.orderType === 'scale' &&
+              (result.acceptedChildren?.length ?? 0) > 0;
+            if (!orderId && !hasAcceptedScaleChildren) {
+              endCuf({
+                [PERPS_CUF_TAG.SUCCESS]: false,
+                [PERPS_CUF_TAG.REASON]: PERPS_CUF_END_REASON.REQUEST_FAILED,
+              });
+            } else if (renderedOrderId) {
+              // Already rested between submit and here: end at the delivery
+              // instant, not now.
+              endCufStreamRendered(stream.orders.getLastDeliveredAt());
+            } else {
+              // A plain limit can be marketable and fill before its order
+              // renders. Trigger orders must remain on the orders path because
+              // their execution style only applies after activation.
+              const renderedPosition = isTriggerOrderType(orderParams.orderType)
+                ? undefined
+                : stream.positions
+                    .getSnapshot()
+                    ?.find((p) => p.symbol === orderParams.symbol);
+              const filledSynchronously =
+                !isTriggerOrderType(orderParams.orderType) &&
+                positionsLoaded &&
+                isPerpsFillRendered(renderedPosition, positionBaselineSnapshot);
+              if (filledSynchronously) {
+                // Fill already rendered before the watcher armed: end at the
+                // positions channel's last-delivery instant. This is channel-
+                // granular (positions re-deliver on any PnL tick), so it upper-
+                // bounds this symbol's fill instant rather than pinpointing it —
+                // bounded and never optimistic. Rare branch; the normal path
+                // (watcher observes the live delivery) is exact.
+                endCufStreamRendered(stream.positions.getLastDeliveredAt());
+              } else {
+                watchPerpsCufLimitRendered(
+                  cufOpId,
+                  orderParams.orderType === 'scale' ? orderIds : orderId,
+                  orderParams.symbol,
+                  positionBaseline,
+                  positionsLoaded,
+                );
+                endPerpsCufTraceAfter(
+                  {
+                    id: cufOpId,
+                    data: {
+                      [PERPS_CUF_TAG.SUCCESS]: false,
+                      [PERPS_CUF_TAG.REASON]:
+                        PERPS_CUF_END_REASON.STREAM_TIMEOUT,
+                    },
+                  },
+                  PERPS_CUF_STREAM_TIMEOUT_MS,
+                );
+              }
+            }
+          } else {
+            // Wait briefly for the stream to render the new/changed position so
+            // the confirmation toast fires together with it.
+            const rendered = await waitForPerpsPlaceOrderPositionRendered(
+              PERPS_CUF_STREAM_CONFIRM_RACE_MS,
+              cufOpId,
+            );
+            const toastShownAt = Date.now();
+            if (rendered) {
+              endCufRendered(rendered.renderedAt, toastShownAt);
+              const position = stream.positions
+                .getSnapshot()
+                ?.find((p) => p.symbol === orderParams.symbol);
+              DevLogger.log(
+                'usePerpsOrderExecution: Position rendered by stream',
+                rendered.position,
+              );
+              onSuccess?.(position, result);
+            } else {
+              // Stream quiet: unblock the toast now, end the span when the
+              // position finally renders (or record the miss on timeout).
+              DevLogger.log(
+                'usePerpsOrderExecution: Position not rendered yet, toasting without it',
+              );
+              onSuccess?.(undefined, result);
+              // Deliberately not awaited: the caller must not block on the span.
+              waitForPerpsPlaceOrderPositionRendered(
+                PERPS_CUF_STREAM_TIMEOUT_MS,
+                cufOpId,
+              ).then((late) => {
+                // A newer order owns the span now; this continuation is stale.
+                if (!isPerpsPlaceOrderCufCurrent(cufOpId)) {
+                  return;
+                }
+                if (late) {
+                  endCufRendered(late.renderedAt, toastShownAt);
+                } else {
+                  endCuf({
+                    [PERPS_CUF_TAG.SUCCESS]: false,
+                    [PERPS_CUF_TAG.REASON]: PERPS_CUF_END_REASON.STREAM_TIMEOUT,
+                  });
+                }
+              });
+            }
+          }
+        },
+        onFailure: () => {
+          endCuf({
+            [PERPS_CUF_TAG.SUCCESS]: false,
+            [PERPS_CUF_TAG.REASON]: PERPS_CUF_END_REASON.ORDER_FAILED,
+          });
+        },
+        onException: () => {
+          endCuf({
+            [PERPS_CUF_TAG.SUCCESS]: false,
+            [PERPS_CUF_TAG.REASON]: PERPS_CUF_END_REASON.EXCEPTION,
+          });
+        },
+      });
+    },
+    [executeControllerPlacement, stream, onSuccess],
+  );
+
+  return {
+    placeOrder,
+    isPlacing,
+    lastResult,
+    error,
+  };
+}

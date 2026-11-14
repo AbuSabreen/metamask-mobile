@@ -1,93 +1,130 @@
+import { providerErrors } from '@metamask/rpc-errors';
 import { CANCEL_RATE, SPEED_UP_RATE } from '@metamask/transaction-controller';
 import PropTypes from 'prop-types';
-import React, { PureComponent } from 'react';
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
-  FlatList,
   InteractionManager,
   RefreshControl,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
-import Modal from 'react-native-modal';
+import { FlashList } from '@shopify/flash-list';
 import { connect } from 'react-redux';
+import { ActivitiesViewSelectorsIDs } from '../../Views/ActivityView/ActivitiesView.testIds';
 import { strings } from '../../../../locales/i18n';
 import { showAlert } from '../../../actions/alert';
-import Button, {
-  ButtonSize,
-  ButtonVariants,
-} from '../../../component-library/components/Buttons/Button';
+import ExtendedKeyringTypes from '../../../constants/keyringTypes';
 import { NO_RPC_BLOCK_EXPLORER, RPC } from '../../../constants/network';
 import Engine from '../../../core/Engine';
+import { isNonEvmChainId } from '../../../core/Multichain/utils';
 import NotificationManager from '../../../core/NotificationManager';
+import { TransactionDetailLocation } from '../../../core/Analytics/events/transactions';
 import { collectibleContractsSelector } from '../../../reducers/collectibles';
 import {
+  selectSelectedInternalAccount,
+  selectSelectedInternalAccountFormattedAddress,
+} from '../../../selectors/accountsController';
+import { selectAccounts } from '../../../selectors/accountTrackerController';
+import { selectBridgeHistoryForAccount } from '../../../selectors/bridgeStatusController';
+import { selectGasFeeEstimates } from '../../../selectors/confirmTransaction';
+import { selectCurrentCurrency } from '../../../selectors/currencyRateController';
+import { selectGasFeeControllerEstimateType } from '../../../selectors/gasFeeController';
+import {
   selectChainId,
+  selectEvmNetworkConfigurationsByChainId,
+  selectNetworkClientId,
   selectNetworkConfigurations,
   selectProviderConfig,
   selectProviderType,
 } from '../../../selectors/networkController';
-import { selectTokensByAddress } from '../../../selectors/tokensController';
+import { selectPrimaryCurrency } from '../../../selectors/settings';
 import { baseStyles, fontStyles } from '../../../styles/common';
 import { isHardwareAccount } from '../../../util/address';
-import { createLedgerTransactionModalNavDetails } from '../../UI/LedgerModals/LedgerTransactionModal';
-import Device from '../../../util/device';
 import Logger from '../../../util/Logger';
+import { analytics } from '../../../util/analytics/analytics';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
+import { trackBlockExplorerLinkClicked } from '../../../util/analytics/externalLinkTracking';
 import {
+  findBlockExplorerForNonEvmChainId,
   findBlockExplorerForRpc,
+  findBlockExplorerUrlForChain,
   getBlockExplorerAddressUrl,
   getBlockExplorerName,
-  isMainnetByChainId,
+  getHexEvmChainId,
 } from '../../../util/networks';
-import { renderFromWei } from '../../../util/number';
 import { mockTheme, ThemeContext } from '../../../util/theme';
+import {
+  getPreviousGasFromController,
+  speedUpTransaction as speedUpTransactionController,
+} from '../../../util/transaction-controller';
+import {
+  getGasValuesForReplacement,
+  getMediumGasPriceHex,
+  normalizeReplacementGasFeeParams,
+} from '../../../util/confirmation/gas';
 import { validateTransactionActionBalance } from '../../../util/transactions';
-import withQRHardwareAwareness from '../QRHardware/withQRHardwareAwareness';
-import TransactionActionModal from '../TransactionActionModal';
-import TransactionElement from '../TransactionElement';
-import UpdateEIP1559Tx from '../../Views/confirmations/components/UpdateEIP1559Tx';
-import RetryModal from './RetryModal';
+import {
+  createQRSigningTransactionModalNavDetails,
+  QRSignMode,
+} from '../../UI/QRHardware/QRSigningTransactionModal';
+import { CancelSpeedupModal } from '../../Views/confirmations/components/modals/cancel-speedup-modal';
 import PriceChartContext, {
   PriceChartProvider,
 } from '../AssetOverview/PriceChart/PriceChart.context';
-import { providerErrors } from '@metamask/rpc-errors';
+import withQRHardwareAwareness from '../QRHardware/withQRHardwareAwareness';
+import TransactionElement from '../TransactionElement';
+import TransactionsFooter from './TransactionsFooter';
+import { filterDuplicateOutgoingTransactions } from './utils';
+import { TabEmptyState } from '../../../component-library/components-temp/TabEmptyState';
 import {
-  selectConversionRate,
-  selectCurrentCurrency,
-} from '../../../selectors/currencyRateController';
-import { selectContractExchangeRates } from '../../../selectors/tokenRatesController';
-import { selectAccounts } from '../../../selectors/accountTrackerController';
-import { selectSelectedAddress } from '../../../selectors/preferencesController';
+  useHardwareWallet,
+  executeHardwareWalletOperation,
+} from '../../../core/HardwareWallet';
+import { skipHardwareWalletErrorIfReplacementSubmitted } from '../../../core/HardwareWallet/skipHardwareWalletErrorIfReplacementSubmitted';
+import { resolveTransactionUpdateErrorMessage } from '../../../util/confirmation/transactions';
+import { toast, ToastSeverity } from '@metamask/design-system-react-native';
+import { LedgerReplacementTxTypes } from '../LedgerModals/LedgerTransactionModal';
+import AssetDetailsActivityListItem from './AssetDetailsActivityListItem';
+import ActivityListDateHeader from '../ActivityListItemRow/ActivityListDateHeader';
 import {
-  TransactionError,
-  CancelTransactionError,
-  SpeedupTransactionError,
-} from '../../../core/Transaction/TransactionError';
-import { getDeviceId } from '../../../core/Ledger/Ledger';
-import ExtendedKeyringTypes from '../../../constants/keyringTypes';
-import { TOKEN_OVERVIEW_TXN_SCREEN } from '../../../../wdio/screen-objects/testIDs/Screens/TokenOverviewScreen.testIds';
-import {
-  speedUpTransaction,
-  updateIncomingTransactions,
-} from '../../../util/transaction-controller';
-import { selectGasFeeEstimates } from '../../../selectors/confirmTransaction';
+  getGroupedActivityListItemKey,
+  groupActivityListItems,
+} from '../../../util/activity-adapters';
+import { mapTransactionToActivityItem } from './AssetDetailsActivityListItem.utils';
 
-const createStyles = (colors, typography) =>
+// Stable reference so Token Details (which doesn't use `providerConfig`) never
+// sees a "changed" prop from `mapStateToProps` and re-renders needlessly; a
+// fresh `{}` literal on every store update would break shallow-equality.
+const EMPTY_PROVIDER_CONFIG = {};
+
+const createStyles = (colors) =>
   StyleSheet.create({
     wrapper: {
       backgroundColor: colors.background.default,
       flex: 1,
+    },
+    listContentContainer: {
+      paddingBottom: 80,
     },
     bottomModal: {
       justifyContent: 'flex-end',
       margin: 0,
     },
     emptyContainer: {
+      width: '100%',
       justifyContent: 'center',
       alignItems: 'center',
-      paddingBottom: 24,
+      paddingVertical: 40,
+      backgroundColor: colors.background.default,
     },
     keyboardAwareWrapper: {
       flex: 1,
@@ -96,251 +133,231 @@ const createStyles = (colors, typography) =>
     loader: {
       alignSelf: 'center',
     },
-    text: {
+    textTransactions: {
       fontSize: 20,
       color: colors.text.muted,
+      textAlign: 'center',
+      marginLeft: 6,
+      marginRight: 6,
       ...fontStyles.normal,
-    },
-    viewMoreWrapper: {
-      padding: 16,
-    },
-    viewMoreButton: {
-      width: '100%',
-    },
-    disclaimerWrapper: {
-      padding: 16,
-    },
-    disclaimerText: {
-      color: colors.text.default,
-      ...typography.sBodySM,
     },
   });
 
-const ROW_HEIGHT = (Device.isIos() ? 95 : 100) + StyleSheet.hairlineWidth;
+const DEFAULT_HARDWARE_WALLET = {
+  ensureDeviceReady: async () => false,
+  setPendingOperationAddress: () => undefined,
+  showAwaitingConfirmation: () => undefined,
+  hideAwaitingConfirmation: () => undefined,
+  showHardwareWalletError: () => undefined,
+};
 
 /**
  * View that renders a list of transactions for a specific asset
  */
-class Transactions extends PureComponent {
-  static propTypes = {
-    assetSymbol: PropTypes.string,
-    /**
-     * Map of accounts to information objects including balances
-     */
-    accounts: PropTypes.object,
-    /**
-     * Callback to close the view
-     */
-    close: PropTypes.func,
-    /**
-     * Object containing token exchange rates in the format address => exchangeRate
-     */
-    contractExchangeRates: PropTypes.object,
-    /**
-     * Network configurations
-     */
-    networkConfigurations: PropTypes.object,
-    /**
-    /* navigation object required to push new views
-    */
-    navigation: PropTypes.object,
-    /**
-     * Object representing the configuration of the current selected network
-     */
-    providerConfig: PropTypes.object,
-    /**
-     * An array that represents the user collectible contracts
-     */
-    collectibleContracts: PropTypes.array,
-    /**
-     * An array that represents the user tokens
-     */
-    tokens: PropTypes.object,
-    /**
-     * An array of transactions objects
-     */
-    transactions: PropTypes.array,
-    /**
-     * An array of transactions objects that have been submitted
-     */
-    submittedTransactions: PropTypes.array,
-    /**
-     * An array of transactions objects that have been confirmed
-     */
-    confirmedTransactions: PropTypes.array,
-    /**
-     * A string that represents the selected address
-     */
-    selectedAddress: PropTypes.string,
-    /**
-     * ETH to current currency conversion rate
-     */
-    conversionRate: PropTypes.number,
-    /**
-     * Currency code of the currently-active currency
-     */
-    currentCurrency: PropTypes.string,
-    /**
-     * Loading flag from an external call
-     */
-    loading: PropTypes.bool,
-    /**
-     * Pass the flatlist ref to the parent
-     */
-    onRefSet: PropTypes.func,
-    /**
-     * Optional header component
-     */
-    header: PropTypes.object,
-    /**
-     * Optional header height
-     */
-    headerHeight: PropTypes.number,
-    exchangeRate: PropTypes.number,
-    isSigningQRObject: PropTypes.bool,
-    chainId: PropTypes.string,
-    /**
-     * On scroll past navbar callback
-     */
-    onScrollThroughContent: PropTypes.func,
-  };
+const Transactions = (props) => {
+  const {
+    assetSymbol,
+    accounts,
+    close,
+    networkConfigurations,
+    navigation,
+    providerConfig = {},
+    collectibleContracts,
+    transactions = [],
+    submittedTransactions = [],
+    confirmedTransactions = [],
+    selectedAddress,
+    currentCurrency,
+    loading,
+    onRefSet,
+    header,
+    hideEmptyState,
+    headerHeight = 0,
+    exchangeRate,
+    isSigningQRObject,
+    chainId,
+    onScrollThroughContent,
+    gasFeeEstimates,
+    tokenChainId,
+    skipScrollOnClick,
+    location,
+    contentBottomInset,
+    refreshControlOffset,
+    hardwareWallet = DEFAULT_HARDWARE_WALLET,
+    accountImportTime,
+    networkConfigurationsByChainId,
+    bridgeHistory,
+  } = props;
+  const theme = useContext(ThemeContext) || mockTheme;
+  const { colors } = theme;
+  const [selectedTransactions, setSelectedTransactions] = useState(new Map());
+  const [refreshing, setRefreshing] = useState(false);
+  const [cancelIsOpen, setCancelIsOpen] = useState(false);
+  const [speedUpIsOpen, setSpeedUpIsOpen] = useState(false);
+  const [confirmDisabled, setConfirmDisabled] = useState(false);
+  const [rpcBlockExplorer, setRpcBlockExplorer] = useState();
+  const [isQRHardwareAccount, setIsQRHardwareAccount] = useState(false);
+  const [isLedgerAccount, setIsLedgerAccount] = useState(false);
+  const mountedRef = useRef(false);
+  const [existingTx, setExistingTx] = useState(null);
+  const cancelTxIdRef = useRef(null);
+  const speedUpTxIdRef = useRef(null);
+  const selectedTxRef = useRef(null);
+  const scrollingRef = useRef(false);
+  const flatListRef = useRef(null);
+  const latestMountPropsRef = useRef({ transactions, onRefSet });
+  const notificationTimeoutRef = useRef(null);
+  const toggleDetailsViewRef = useRef(null);
 
-  static defaultProps = {
-    headerHeight: 0,
-  };
+  const explorerContextChainId =
+    location === TransactionDetailLocation.AssetDetails
+      ? tokenChainId
+      : (tokenChainId ?? chainId);
+  const isAssetDetailsExplorer =
+    location === TransactionDetailLocation.AssetDetails;
+  const isExplorerContextNonEvm = isNonEvmChainId(explorerContextChainId);
 
-  state = {
-    selectedTx: new Map(),
-    ready: false,
-    refreshing: false,
-    cancelIsOpen: false,
-    cancel1559IsOpen: false,
-    cancelConfirmDisabled: false,
-    speedUpIsOpen: false,
-    speedUp1559IsOpen: false,
-    retryIsOpen: false,
-    speedUpConfirmDisabled: false,
-    rpcBlockExplorer: undefined,
-    errorMsg: undefined,
-    isQRHardwareAccount: false,
-    isLedgerAccount: false,
-  };
+  const closeSpeedUpCancelModal = useCallback(() => {
+    setSpeedUpIsOpen(false);
+    setCancelIsOpen(false);
+    speedUpTxIdRef.current = null;
+    cancelTxIdRef.current = null;
+    setExistingTx(null);
+  }, []);
 
-  existingGas = null;
-  existingTx = null;
-  cancelTxId = null;
-  speedUpTxId = null;
-  selectedTx = null;
-
-  flatList = React.createRef();
-
-  componentDidMount = () => {
-    this.mounted = true;
-    setTimeout(() => {
-      this.mounted && this.setState({ ready: true });
-      this.init();
-      this.props.onRefSet && this.props.onRefSet(this.flatList);
-    }, 100);
-    this.setState({
-      isQRHardwareAccount: isHardwareAccount(this.props.selectedAddress),
-    });
-  };
-
-  componentWillUnmount() {
-    this.mounted = false;
-  }
-
-  updateBlockExplorer = () => {
-    const {
-      providerConfig: { type, rpcUrl },
-      networkConfigurations,
-    } = this.props;
+  const updateBlockExplorer = useCallback(() => {
+    const { type, rpcUrl } = providerConfig;
+    const useAssetOnlyExplorer =
+      isAssetDetailsExplorer || Boolean(tokenChainId);
     let blockExplorer;
-    if (type === RPC) {
+
+    if (!explorerContextChainId && useAssetOnlyExplorer) {
+      blockExplorer = undefined;
+    } else if (isExplorerContextNonEvm) {
+      blockExplorer = findBlockExplorerForNonEvmChainId(explorerContextChainId);
+    } else if (useAssetOnlyExplorer) {
+      blockExplorer = findBlockExplorerUrlForChain(
+        explorerContextChainId,
+        networkConfigurations,
+      );
+    } else if (type === RPC) {
       blockExplorer =
         findBlockExplorerForRpc(rpcUrl, networkConfigurations) ||
         NO_RPC_BLOCK_EXPLORER;
     }
 
-    this.setState({ rpcBlockExplorer: blockExplorer });
-    this.setState({
-      isQRHardwareAccount: isHardwareAccount(this.props.selectedAddress, [
-        ExtendedKeyringTypes.qr,
-      ]),
-      isLedgerAccount: isHardwareAccount(this.props.selectedAddress, [
-        ExtendedKeyringTypes.ledger,
-      ]),
-    });
-  };
+    setRpcBlockExplorer(blockExplorer);
+    setIsQRHardwareAccount(
+      isHardwareAccount(selectedAddress, [ExtendedKeyringTypes.qr]),
+    );
+    setIsLedgerAccount(
+      isHardwareAccount(selectedAddress, [ExtendedKeyringTypes.ledger]),
+    );
+  }, [
+    explorerContextChainId,
+    isAssetDetailsExplorer,
+    isExplorerContextNonEvm,
+    networkConfigurations,
+    providerConfig,
+    selectedAddress,
+    tokenChainId,
+  ]);
 
-  componentDidUpdate() {
-    this.updateBlockExplorer();
-  }
+  const scrollToIndex = useCallback(
+    (index) => {
+      if (!scrollingRef.current && (headerHeight || index)) {
+        scrollingRef.current = true;
+        flatListRef.current?.scrollToIndex({ index, animated: true });
+        setTimeout(() => {
+          scrollingRef.current = false;
+        }, 300);
+      }
+    },
+    [headerHeight],
+  );
 
-  init() {
-    this.mounted && this.setState({ ready: true });
+  const toggleDetailsView = useCallback(
+    (id, index) => {
+      const selectedTx = selectedTxRef.current;
+      const oldId = selectedTx?.id;
+      const oldIndex = selectedTx?.index;
+
+      if (selectedTx && oldId !== id && oldIndex !== index) {
+        selectedTxRef.current = null;
+        toggleDetailsViewRef.current?.(oldId, oldIndex);
+        InteractionManager.runAfterInteractions(() => {
+          toggleDetailsViewRef.current?.(id, index);
+        });
+        return;
+      }
+
+      setSelectedTransactions((currentSelectedTransactions) => {
+        const nextSelectedTransactions = new Map(currentSelectedTransactions);
+        const show = !nextSelectedTransactions.get(id);
+        nextSelectedTransactions.set(id, show);
+        if (show && (headerHeight || index) && !skipScrollOnClick) {
+          InteractionManager.runAfterInteractions(() => {
+            scrollToIndex(index);
+          });
+        }
+        selectedTxRef.current = show ? { id, index } : null;
+        return nextSelectedTransactions;
+      });
+    },
+    [headerHeight, scrollToIndex, skipScrollOnClick],
+  );
+  useLayoutEffect(() => {
+    toggleDetailsViewRef.current = toggleDetailsView;
+  });
+
+  useEffect(() => {
+    latestMountPropsRef.current = { transactions, onRefSet };
+  }, [onRefSet, transactions]);
+
+  useEffect(() => {
+    mountedRef.current = true;
     const txToView = NotificationManager.getTransactionToView();
+    // getTransactionToView() destructively pops the id, so if we unmount
+    // before actually acting on it (e.g. a fast remount or navigating away
+    // before the 1s delay elapses), push it back so a later mount can still
+    // open it instead of silently dropping the notification deep-link.
+    let shouldRequeue = Boolean(txToView);
     if (txToView) {
-      setTimeout(() => {
-        const index = this.props.transactions.findIndex(
-          (tx) => txToView === tx.id,
-        );
+      notificationTimeoutRef.current = setTimeout(() => {
+        shouldRequeue = false;
+        const { transactions: latestTransactions } =
+          latestMountPropsRef.current;
+        const index = latestTransactions.findIndex((tx) => txToView === tx.id);
         if (index >= 0) {
-          this.toggleDetailsView(txToView, index);
+          toggleDetailsViewRef.current?.(txToView, index);
         }
       }, 1000);
     }
-  }
+    latestMountPropsRef.current.onRefSet?.(flatListRef);
 
-  scrollToIndex = (index) => {
-    if (!this.scrolling && (this.props.headerHeight || index)) {
-      this.scrolling = true;
-      // eslint-disable-next-line no-unused-expressions
-      this.flatList?.current?.scrollToIndex({ index, animated: true });
-      setTimeout(() => {
-        this.scrolling = false;
-      }, 300);
+    return () => {
+      mountedRef.current = false;
+      if (notificationTimeoutRef.current) {
+        clearTimeout(notificationTimeoutRef.current);
+      }
+      if (shouldRequeue) {
+        NotificationManager.setTransactionToView(txToView);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    updateBlockExplorer();
+  }, [updateBlockExplorer]);
+
+  useEffect(() => {
+    if (confirmedTransactions.some(({ id }) => id === existingTx?.id)) {
+      closeSpeedUpCancelModal();
     }
-  };
+  }, [closeSpeedUpCancelModal, confirmedTransactions, existingTx]);
 
-  toggleDetailsView = (id, index) => {
-    const oldId = this.selectedTx && this.selectedTx.id;
-    const oldIndex = this.selectedTx && this.selectedTx.index;
-
-    if (this.selectedTx && oldId !== id && oldIndex !== index) {
-      this.selectedTx = null;
-      this.toggleDetailsView(oldId, oldIndex);
-      InteractionManager.runAfterInteractions(() => {
-        this.toggleDetailsView(id, index);
-      });
-    } else {
-      this.setState((state) => {
-        const selectedTx = new Map(state.selectedTx);
-        const show = !selectedTx.get(id);
-        selectedTx.set(id, show);
-        if (show && (this.props.headerHeight || index)) {
-          InteractionManager.runAfterInteractions(() => {
-            this.scrollToIndex(index);
-          });
-        }
-        this.selectedTx = show ? { id, index } : null;
-        return { selectedTx };
-      });
-    }
-  };
-
-  onRefresh = async () => {
-    this.setState({ refreshing: true });
-
-    await updateIncomingTransactions();
-
-    this.setState({ refreshing: false });
-  };
-
-  renderLoader = () => {
-    const { colors, typography } = this.context || mockTheme;
-    const styles = createStyles(colors, typography);
-
+  const renderLoader = () => {
+    const styles = createStyles(colors);
     return (
       <View style={styles.emptyContainer}>
         <ActivityIndicator style={styles.loader} size="small" />
@@ -348,38 +365,77 @@ class Transactions extends PureComponent {
     );
   };
 
-  renderEmpty = () => {
-    const { colors, typography } = this.context || mockTheme;
-    const styles = createStyles(colors, typography);
+  const renderEmpty = () => {
+    if (hideEmptyState) {
+      return null;
+    }
+    const styles = createStyles(colors);
     return (
       <View style={styles.emptyContainer}>
-        <Text style={styles.text}>{strings('wallet.no_transactions')}</Text>
+        <TabEmptyState description={strings('wallet.no_transactions')} />
       </View>
     );
   };
 
-  viewOnBlockExplore = () => {
-    const {
-      navigation,
-      providerConfig: { type },
-      selectedAddress,
-      close,
-    } = this.props;
-    const { rpcBlockExplorer } = this.state;
+  const viewOnBlockExplore = () => {
+    const { type } = providerConfig;
+    const useAssetOnlyExplorer =
+      isAssetDetailsExplorer || Boolean(tokenChainId);
     try {
-      const { url, title } = getBlockExplorerAddressUrl(
-        type,
-        selectedAddress,
-        rpcBlockExplorer,
+      let url;
+      let title;
+      if (useAssetOnlyExplorer) {
+        const base =
+          rpcBlockExplorer && rpcBlockExplorer !== NO_RPC_BLOCK_EXPLORER
+            ? rpcBlockExplorer
+            : findBlockExplorerUrlForChain(
+                explorerContextChainId,
+                networkConfigurations,
+              );
+        if (!base) {
+          Logger.error(new Error('Missing block explorer for asset chain'), {
+            message: `can't get a block explorer link for network `,
+            type,
+          });
+          return;
+        }
+        url = `${base}/address/${selectedAddress}`;
+        title = getBlockExplorerName(base);
+      } else if (isExplorerContextNonEvm && rpcBlockExplorer) {
+        url = `${rpcBlockExplorer}/address/${selectedAddress}`;
+        title = getBlockExplorerName(rpcBlockExplorer);
+      } else {
+        const result = getBlockExplorerAddressUrl(
+          type,
+          selectedAddress,
+          rpcBlockExplorer,
+        );
+        url = result.url;
+        title = result.title;
+      }
+      if (!url) {
+        Logger.error(new Error('Missing block explorer URL'), {
+          message: `can't get a block explorer link for network `,
+          type,
+        });
+        return;
+      }
+      trackBlockExplorerLinkClicked(
+        analytics.trackEvent,
+        AnalyticsEventBuilder.createEventBuilder,
+        {
+          location: 'transactions_list',
+          text: title
+            ? `${strings('transactions.view_full_history_on')} ${title}`
+            : strings('asset_details.options.view_on_block'),
+          url,
+        },
       );
       navigation.push('Webview', {
         screen: 'SimpleWebview',
-        params: {
-          url,
-          title,
-        },
+        params: { url, title },
       });
-      close && close();
+      close?.();
     } catch (e) {
       Logger.error(e, {
         message: `can't get a block explorer link for network `,
@@ -388,502 +444,583 @@ class Transactions extends PureComponent {
     }
   };
 
-  renderViewMore = () => {
-    const { colors, typography } = this.context || mockTheme;
-    const styles = createStyles(colors, typography);
-
-    const {
-      chainId,
-      providerConfig: { type },
-    } = this.props;
-    const blockExplorerText = () => {
-      if (isMainnetByChainId(chainId) || type !== RPC) {
-        return strings('transactions.view_full_history_on_etherscan');
+  const getCancelOrSpeedupValues = useCallback(() => {
+    const existingGasPriceHex = existingTx?.txParams?.gasPrice;
+    if (existingGasPriceHex !== undefined && existingGasPriceHex !== '0x0') {
+      if (parseInt(String(existingGasPriceHex), 16) !== 0) {
+        return undefined;
       }
+    }
+    return { gasPrice: getMediumGasPriceHex(gasFeeEstimates) };
+  }, [existingTx, gasFeeEstimates]);
 
-      if (NO_RPC_BLOCK_EXPLORER !== this.state.rpcBlockExplorer) {
-        return `${strings(
-          'transactions.view_full_history_on',
-        )} ${getBlockExplorerName(this.state.rpcBlockExplorer)}`;
+  const getParamsToSend = useCallback(
+    (transactionObject) => {
+      if (
+        transactionObject?.gasPrice !== undefined &&
+        (transactionObject.gasPrice === '0x0' ||
+          parseInt(String(transactionObject.gasPrice), 16) === 0)
+      ) {
+        return getCancelOrSpeedupValues();
       }
+      if (
+        transactionObject &&
+        (transactionObject.maxFeePerGas || transactionObject.gasPrice)
+      ) {
+        return transactionObject;
+      }
+      return getCancelOrSpeedupValues();
+    },
+    [getCancelOrSpeedupValues],
+  );
 
-      return null;
-    };
+  const showTransactionUpdateErrorToast = (error) => {
+    toast({
+      title: strings('transaction_update_toast.title'),
+      description: resolveTransactionUpdateErrorMessage(error),
+      severity: ToastSeverity.Danger,
+      hasNoTimeout: false,
+      showCloseButton: false,
+    });
+  };
 
-    return (
-      <View style={styles.viewMoreWrapper}>
-        <Button
-          variant={ButtonVariants.Link}
-          size={ButtonSize.Lg}
-          label={blockExplorerText()}
-          style={styles.viewMoreButton}
-          onPress={this.viewOnBlockExplore}
-        />
-      </View>
+  const handleSpeedUpTransactionFailure = (error) => {
+    Logger.error(error, {
+      message: `speedUpTransaction failed `,
+      speedUpTxId: speedUpTxIdRef.current,
+    });
+    InteractionManager.runAfterInteractions(() => {
+      showTransactionUpdateErrorToast(error);
+    });
+    setSpeedUpIsOpen(false);
+    setCancelIsOpen(false);
+  };
+
+  const handleCancelTransactionFailure = (error) => {
+    Logger.error(error, {
+      message: `cancelTransaction failed `,
+      cancelTxId: cancelTxIdRef.current,
+    });
+    InteractionManager.runAfterInteractions(() => {
+      showTransactionUpdateErrorToast(error);
+    });
+    setSpeedUpIsOpen(false);
+    setCancelIsOpen(false);
+  };
+
+  const signLedgerTransaction = async (transaction) => {
+    if (!selectedAddress) {
+      throw new Error('Missing selected address for hardware wallet operation');
+    }
+    const gasFeeParams = normalizeReplacementGasFeeParams(
+      transaction?.replacementParams,
     );
-  };
-
-  getItemLayout = (data, index) => ({
-    length: ROW_HEIGHT,
-    offset: this.props.headerHeight + ROW_HEIGHT * index,
-    index,
-  });
-
-  keyExtractor = (item) => item.id.toString();
-
-  onSpeedUpAction = (speedUpAction, existingGas, tx) => {
-    this.existingGas = existingGas;
-    this.speedUpTxId = tx.id;
-    this.existingTx = tx;
-    if (existingGas.isEIP1559Transaction) {
-      this.setState({ speedUp1559IsOpen: speedUpAction });
-    } else {
-      const speedUpConfirmDisabled = validateTransactionActionBalance(
-        tx,
-        SPEED_UP_RATE,
-        this.props.accounts,
-      );
-      this.setState({ speedUpIsOpen: speedUpAction, speedUpConfirmDisabled });
-    }
-  };
-
-  onSpeedUpCompleted = () => {
-    this.setState({ speedUp1559IsOpen: false, speedUpIsOpen: false });
-    this.existingGas = null;
-    this.speedUpTxId = null;
-    this.existingTx = null;
-  };
-
-  onCancelAction = (cancelAction, existingGas, tx) => {
-    this.existingGas = existingGas;
-    this.cancelTxId = tx.id;
-    this.existingTx = tx;
-
-    if (existingGas.isEIP1559Transaction) {
-      this.setState({ cancel1559IsOpen: cancelAction });
-    } else {
-      const cancelConfirmDisabled = validateTransactionActionBalance(
-        tx,
-        CANCEL_RATE,
-        this.props.accounts,
-      );
-      this.setState({ cancelIsOpen: cancelAction, cancelConfirmDisabled });
-    }
-  };
-
-  onCancelCompleted = () => {
-    this.setState({ cancel1559IsOpen: false, cancelIsOpen: false });
-    this.existingGas = null;
-    this.cancelTxId = null;
-    this.existingTx = null;
-  };
-
-  onScroll = (event) => {
-    const { nativeEvent } = event;
-    const { contentOffset } = nativeEvent;
-    // 16 is the top padding of the list
-    if (this.props.onScrollThroughContent) {
-      this.props.onScrollThroughContent(contentOffset.y);
-    }
-  };
-
-  handleSpeedUpTransactionFailure = (e) => {
-    const speedUpTxId = this.speedUpTxId;
-    const message = e instanceof TransactionError ? e.message : undefined;
-    Logger.error(e, { message: `speedUpTransaction failed `, speedUpTxId });
-    InteractionManager.runAfterInteractions(this.toggleRetry(message));
-    this.setState({
-      speedUp1559IsOpen: false,
-      speedUpIsOpen: false,
-    });
-  };
-
-  handleCancelTransactionFailure = (e) => {
-    const cancelTxId = this.cancelTxId;
-    const message = e instanceof TransactionError ? e.message : undefined;
-    Logger.error(e, { message: `cancelTransaction failed `, cancelTxId });
-    InteractionManager.runAfterInteractions(this.toggleRetry(message));
-    this.setState({
-      cancel1559IsOpen: false,
-      cancelIsOpen: false,
-    });
-  };
-
-  speedUpTransaction = async (transactionObject) => {
-    try {
-      if (transactionObject?.error) {
-        throw new SpeedupTransactionError(transactionObject.error);
-      }
-
-      const isLedgerAccount = isHardwareAccount(this.props.selectedAddress, [
-        ExtendedKeyringTypes.ledger,
-      ]);
-
-      if (isLedgerAccount) {
-        await this.signLedgerTransaction({
-          id: this.speedUpTxId,
-          replacementParams: {
-            type: 'speedUp',
-            eip1559GasFee: {
-              maxFeePerGas: `0x${transactionObject?.suggestedMaxFeePerGasHex}`,
-              maxPriorityFeePerGas: `0x${transactionObject?.suggestedMaxPriorityFeePerGasHex}`,
-            },
-          },
-        });
-      } else {
-        await speedUpTransaction(
-          this.speedUpTxId,
-          transactionObject?.suggestedMaxFeePerGasHex && {
-            maxFeePerGas: `0x${transactionObject?.suggestedMaxFeePerGasHex}`,
-            maxPriorityFeePerGas: `0x${transactionObject?.suggestedMaxPriorityFeePerGasHex}`,
-          },
+    const didComplete = await executeHardwareWalletOperation({
+      address: selectedAddress,
+      operationType: 'transaction',
+      ensureDeviceReady: hardwareWallet.ensureDeviceReady,
+      setPendingOperationAddress: hardwareWallet.setPendingOperationAddress,
+      showAwaitingConfirmation: hardwareWallet.showAwaitingConfirmation,
+      hideAwaitingConfirmation: hardwareWallet.hideAwaitingConfirmation,
+      showHardwareWalletError: hardwareWallet.showHardwareWalletError,
+      onError: skipHardwareWalletErrorIfReplacementSubmitted(transaction.id),
+      execute: async () => {
+        if (
+          transaction?.replacementParams?.type ===
+          LedgerReplacementTxTypes.SPEED_UP
+        ) {
+          await speedUpTransactionController(transaction.id, gasFeeParams);
+          return;
+        }
+        if (
+          transaction?.replacementParams?.type ===
+          LedgerReplacementTxTypes.CANCEL
+        ) {
+          await Engine.context.TransactionController.stopTransaction(
+            transaction.id,
+            gasFeeParams,
+          );
+          return;
+        }
+        await Engine.context.ApprovalController.acceptRequest(
+          transaction.id,
+          undefined,
+          { waitForResult: true },
         );
-      }
-      this.onSpeedUpCompleted();
-    } catch (e) {
-      this.handleSpeedUpTransactionFailure(e);
+      },
+      onRejected: closeSpeedUpCancelModal,
+    });
+    if (didComplete) {
+      closeSpeedUpCancelModal();
     }
   };
 
-  signQRTransaction = async (tx) => {
-    const { KeyringController, ApprovalController } = Engine.context;
-    await KeyringController.resetQRKeyringState();
-    await ApprovalController.accept(tx.id, undefined, { waitForResult: true });
-  };
-
-  signLedgerTransaction = async (transaction) => {
-    const deviceId = await getDeviceId();
-
-    const onConfirmation = (isComplete) => {
-      if (isComplete) {
-        transaction.speedUpParams &&
-        transaction.speedUpParams?.type === 'SpeedUp'
-          ? this.onSpeedUpCompleted()
-          : this.onCancelCompleted();
-      }
-    };
-
-    this.props.navigation.navigate(
-      ...createLedgerTransactionModalNavDetails({
-        transactionId: transaction.id,
-        deviceId,
-        onConfirmationComplete: onConfirmation,
-        type: 'signTransaction',
-        replacementParams: transaction?.replacementParams,
+  const signQRTransaction = async (transactionMeta) => {
+    const { TransactionController } = Engine.context;
+    navigation.navigate(
+      ...createQRSigningTransactionModalNavDetails({
+        transactionId: transactionMeta.id,
+        onConfirmationComplete: (confirmed) => {
+          if (!confirmed) {
+            TransactionController.cancelTransaction(transactionMeta.id);
+          }
+        },
       }),
     );
   };
 
-  cancelUnsignedQRTransaction = async (tx) => {
-    await Engine.context.ApprovalController.reject(
+  const cancelUnsignedQRTransaction = async (tx) => {
+    await Engine.context.ApprovalController.rejectRequest(
       tx.id,
       providerErrors.userRejectedRequest(),
     );
   };
 
-  cancelTransaction = async (transactionObject) => {
+  const submitReplacementTransaction = async (
+    transactionObject,
+    { action, rate, transactionIdRef, signMode, onFailure },
+  ) => {
     try {
       if (transactionObject?.error) {
-        throw new CancelTransactionError(transactionObject.error);
+        return;
       }
-
-      const isLedgerAccount = isHardwareAccount(this.props.selectedAddress, [
+      const ledgerAccount = isHardwareAccount(selectedAddress, [
         ExtendedKeyringTypes.ledger,
       ]);
-
-      if (isLedgerAccount) {
-        await this.signLedgerTransaction({
-          id: this.cancelTxId,
+      const qrHardwareAccount = isHardwareAccount(selectedAddress, [
+        ExtendedKeyringTypes.qr,
+      ]);
+      const params = getGasValuesForReplacement(
+        getParamsToSend(transactionObject),
+        getPreviousGasFromController(transactionIdRef.current),
+        rate,
+      );
+      if (ledgerAccount) {
+        const isEip1559 = params?.maxFeePerGas && params?.maxPriorityFeePerGas;
+        await signLedgerTransaction({
+          id: transactionIdRef.current,
           replacementParams: {
-            type: 'cancel',
-            eip1559GasFee: {
-              maxFeePerGas: `0x${transactionObject?.suggestedMaxFeePerGasHex}`,
-              maxPriorityFeePerGas: `0x${transactionObject?.suggestedMaxPriorityFeePerGasHex}`,
-            },
+            type: action,
+            ...(isEip1559
+              ? { eip1559GasFee: params }
+              : { legacyGasFee: params }),
           },
         });
+        return;
+      }
+      if (qrHardwareAccount) {
+        navigation.navigate(
+          ...createQRSigningTransactionModalNavDetails({
+            transactionId: transactionIdRef.current,
+            signMode,
+            gasValues: params,
+            onConfirmationComplete: () => undefined,
+          }),
+        );
+        closeSpeedUpCancelModal();
+        return;
+      }
+      if (action === LedgerReplacementTxTypes.SPEED_UP) {
+        await speedUpTransactionController(transactionIdRef.current, params);
       } else {
         await Engine.context.TransactionController.stopTransaction(
-          this.cancelTxId,
-          transactionObject?.suggestedMaxFeePerGasHex && {
-            maxFeePerGas: `0x${transactionObject?.suggestedMaxFeePerGasHex}`,
-            maxPriorityFeePerGas: `0x${transactionObject?.suggestedMaxPriorityFeePerGasHex}`,
-          },
+          transactionIdRef.current,
+          params,
         );
       }
-      this.onCancelCompleted();
-    } catch (e) {
-      this.handleCancelTransactionFailure(e);
+      closeSpeedUpCancelModal();
+    } catch (error) {
+      onFailure(error);
     }
   };
 
-  renderItem = ({ item, index }) => (
+  const speedUpTransaction = (transactionObject) =>
+    submitReplacementTransaction(transactionObject, {
+      action: LedgerReplacementTxTypes.SPEED_UP,
+      rate: SPEED_UP_RATE,
+      transactionIdRef: speedUpTxIdRef,
+      signMode: QRSignMode.SpeedUp,
+      onFailure: handleSpeedUpTransactionFailure,
+    });
+
+  const cancelTransaction = (transactionObject) =>
+    submitReplacementTransaction(transactionObject, {
+      action: LedgerReplacementTxTypes.CANCEL,
+      rate: CANCEL_RATE,
+      transactionIdRef: cancelTxIdRef,
+      signMode: QRSignMode.Cancel,
+      onFailure: handleCancelTransactionFailure,
+    });
+
+  const onSpeedUpAction = (speedUpAction, tx) => {
+    if (!speedUpAction) {
+      closeSpeedUpCancelModal();
+      return;
+    }
+    if (!tx) {
+      return;
+    }
+    speedUpTxIdRef.current = tx.id;
+    setExistingTx(tx);
+    setSpeedUpIsOpen(true);
+    setCancelIsOpen(false);
+    setConfirmDisabled(
+      validateTransactionActionBalance(tx, SPEED_UP_RATE, accounts),
+    );
+  };
+
+  const onCancelAction = (cancelAction, tx) => {
+    if (!cancelAction) {
+      closeSpeedUpCancelModal();
+      return;
+    }
+    if (!tx) {
+      return;
+    }
+    cancelTxIdRef.current = tx.id;
+    setExistingTx(tx);
+    setSpeedUpIsOpen(false);
+    setCancelIsOpen(true);
+    setConfirmDisabled(
+      validateTransactionActionBalance(tx, CANCEL_RATE, accounts),
+    );
+  };
+
+  const renderItem = ({ item, index }) => (
     <TransactionElement
       tx={item}
       i={index}
-      assetSymbol={this.props.assetSymbol}
-      onSpeedUpAction={this.onSpeedUpAction}
-      isQRHardwareAccount={this.state.isQRHardwareAccount}
-      isLedgerAccount={this.state.isLedgerAccount}
-      signQRTransaction={this.signQRTransaction}
-      signLedgerTransaction={this.signLedgerTransaction}
-      cancelUnsignedQRTransaction={this.cancelUnsignedQRTransaction}
-      onCancelAction={this.onCancelAction}
-      onPressItem={this.toggleDetailsView}
-      selectedAddress={this.props.selectedAddress}
-      tokens={this.props.tokens}
-      collectibleContracts={this.props.collectibleContracts}
-      contractExchangeRates={this.props.contractExchangeRates}
-      exchangeRate={this.props.exchangeRate}
-      conversionRate={this.props.conversionRate}
-      currentCurrency={this.props.currentCurrency}
-      navigation={this.props.navigation}
+      assetSymbol={assetSymbol}
+      onSpeedUpAction={onSpeedUpAction}
+      isQRHardwareAccount={isQRHardwareAccount}
+      isLedgerAccount={isLedgerAccount}
+      signQRTransaction={signQRTransaction}
+      signLedgerTransaction={signLedgerTransaction}
+      cancelUnsignedQRTransaction={cancelUnsignedQRTransaction}
+      onCancelAction={onCancelAction}
+      onPressItem={toggleDetailsView}
+      selectedAddress={selectedAddress}
+      collectibleContracts={collectibleContracts}
+      exchangeRate={exchangeRate}
+      currentCurrency={currentCurrency}
+      navigation={navigation}
+      txChainId={item.chainId}
+      location={location}
     />
   );
 
-  toggleRetry = (errorMsg) => {
-    this.setState((state) => ({ retryIsOpen: !state.retryIsOpen, errorMsg }));
-  };
+  const transactionByActivityItem = new Map();
 
-  retry = () => {
-    this.setState((state) => ({
-      retryIsOpen: !state.retryIsOpen,
-      errorMsg: undefined,
-    }));
-
-    //If the exitsing TX id true then it is a speed up retry
-    if (this.speedUpTxId) {
-      InteractionManager.runAfterInteractions(() => {
-        this.onSpeedUpAction(true, this.existingGas, this.existingTx);
-      });
+  const renderGroupedActivityItem = ({ item, index }) => {
+    if (item.type === 'pending-header') {
+      return <ActivityListDateHeader label={strings('transaction.pending')} />;
     }
-    if (this.cancelTxId) {
-      InteractionManager.runAfterInteractions(() => {
-        this.onCancelAction(true, this.existingGas, this.existingTx);
-      });
+    if (item.type === 'date-header') {
+      return <ActivityListDateHeader timestamp={item.date} />;
     }
+    const tx = transactionByActivityItem.get(item.item);
+    return tx ? (
+      <AssetDetailsActivityListItem
+        transaction={tx}
+        index={index}
+        assetSymbol={assetSymbol}
+        chainId={chainId}
+        tokenChainId={tokenChainId}
+        navigation={navigation}
+        accountImportTime={accountImportTime}
+        networkConfigurations={networkConfigurationsByChainId}
+        bridgeHistory={bridgeHistory}
+      />
+    ) : null;
   };
 
-  renderUpdateTxEIP1559Gas = (isCancel) => {
-    const { isSigningQRObject } = this.props;
-    const { colors, typography } = this.context || mockTheme;
-    const styles = createStyles(colors, typography);
+  const styles = createStyles(colors);
+  const listTransactions =
+    submittedTransactions?.length > 0
+      ? [...submittedTransactions]
+          .sort((a, b) => b.time - a.time)
+          .concat(confirmedTransactions)
+      : transactions;
+  const filteredTransactions =
+    filterDuplicateOutgoingTransactions(listTransactions);
+  const shouldUseActivityRedesign =
+    location === TransactionDetailLocation.AssetDetails;
+  const activityListData = shouldUseActivityRedesign
+    ? groupActivityListItems(
+        filteredTransactions.map((transaction) => {
+          const activityItem = mapTransactionToActivityItem({
+            transaction,
+            assetSymbol,
+            currentChainId: chainId,
+            tokenChainId,
+          });
+          transactionByActivityItem.set(activityItem, transaction);
+          return activityItem;
+        }),
+      )
+    : filteredTransactions;
+  const useAssetOnlyExplorer = isAssetDetailsExplorer || Boolean(tokenChainId);
+  const footerChainId = useAssetOnlyExplorer
+    ? (getHexEvmChainId(explorerContextChainId) ?? explorerContextChainId)
+    : chainId;
 
-    if (!this.existingGas) return null;
-    if (this.existingGas.isEIP1559Transaction && !isSigningQRObject) {
-      return (
-        <Modal
-          isVisible
-          animationIn="slideInUp"
-          animationOut="slideOutDown"
-          style={styles.bottomModal}
-          backdropColor={colors.overlay.default}
-          backdropOpacity={1}
-          animationInTiming={600}
-          animationOutTiming={600}
-          onBackdropPress={
-            isCancel ? this.onCancelCompleted : this.onSpeedUpCompleted
-          }
-          onBackButtonPress={
-            isCancel ? this.onCancelCompleted : this.onSpeedUpCompleted
-          }
-          onSwipeComplete={
-            isCancel ? this.onCancelCompleted : this.onSpeedUpCompleted
-          }
-          swipeDirection={'down'}
-          propagateSwipe
-        >
-          <KeyboardAwareScrollView
-            contentContainerStyle={styles.keyboardAwareWrapper}
-          >
-            <UpdateEIP1559Tx
-              gas={this.existingTx.txParams.gas}
-              onSave={
-                isCancel ? this.cancelTransaction : this.speedUpTransaction
-              }
-              onCancel={
-                isCancel ? this.onCancelCompleted : this.onSpeedUpCompleted
-              }
-              existingGas={this.existingGas}
-              isCancel={isCancel}
-            />
-          </KeyboardAwareScrollView>
-        </Modal>
-      );
-    }
-  };
-
-  renderDisclaimer = () => {
-    const { colors, typography } = this.context || mockTheme;
-    const styles = createStyles(colors, typography);
-    return (
-      <View style={styles.disclaimerWrapper}>
-        <Text style={styles.disclaimerText}>
-          {strings('asset_overview.disclaimer')}
-        </Text>
-      </View>
-    );
-  };
-
-  renderFooter = () => (
-    <View>
-      {this.renderViewMore()}
-      {this.renderDisclaimer()}
-    </View>
-  );
-
-  renderList = () => {
-    const {
-      submittedTransactions,
-      confirmedTransactions,
-      header,
-      isSigningQRObject,
-    } = this.props;
-    const { cancelConfirmDisabled, speedUpConfirmDisabled } = this.state;
-    const { colors, typography } = this.context || mockTheme;
-    const styles = createStyles(colors, typography);
-
-    const transactions =
-      submittedTransactions && submittedTransactions.length
-        ? submittedTransactions
-            .sort((a, b) => b.time - a.time)
-            .concat(confirmedTransactions)
-        : this.props.transactions;
-
-    const renderSpeedUpGas = () => {
-      if (!this.existingGas) return null;
-      if (!this.existingGas.isEIP1559Transaction)
-        return `${renderFromWei(
-          Math.floor(this.existingGas.gasPrice * SPEED_UP_RATE),
-        )} ${strings('unit.eth')}`;
-    };
-
-    const renderCancelGas = () => {
-      if (!this.existingGas) return null;
-      if (!this.existingGas.isEIP1559Transaction)
-        return `${renderFromWei(
-          Math.floor(this.existingGas.gasPrice * CANCEL_RATE),
-        )} ${strings('unit.eth')}`;
-    };
-
-    return (
+  return (
+    <PriceChartProvider>
       <View style={styles.wrapper}>
-        <PriceChartContext.Consumer>
-          {({ isChartBeingTouched }) => (
-            <FlatList
-              ref={this.flatList}
-              getItemLayout={this.getItemLayout}
-              data={transactions}
-              extraData={this.state}
-              keyExtractor={this.keyExtractor}
-              refreshControl={
-                <RefreshControl
-                  colors={[colors.primary.default]}
-                  tintColor={colors.icon.default}
-                  refreshing={this.state.refreshing}
-                  onRefresh={this.onRefresh}
+        {loading ? (
+          renderLoader()
+        ) : (
+          <View style={styles.wrapper}>
+            <PriceChartContext.Consumer>
+              {({ isChartBeingTouched }) => (
+                <FlashList
+                  testID={ActivitiesViewSelectorsIDs.CONTAINER}
+                  ref={flatListRef}
+                  data={activityListData}
+                  extraData={selectedTransactions}
+                  keyExtractor={
+                    shouldUseActivityRedesign
+                      ? getGroupedActivityListItemKey
+                      : (item) => item.id.toString()
+                  }
+                  getItemType={
+                    shouldUseActivityRedesign ? (item) => item.type : undefined
+                  }
+                  refreshControl={
+                    <RefreshControl
+                      colors={[colors.primary.default]}
+                      tintColor={colors.icon.default}
+                      progressViewOffset={refreshControlOffset}
+                      refreshing={refreshing}
+                      onRefresh={async () => {
+                        setRefreshing(true);
+                        setRefreshing(false);
+                      }}
+                    />
+                  }
+                  renderItem={
+                    shouldUseActivityRedesign
+                      ? renderGroupedActivityItem
+                      : renderItem
+                  }
+                  ListHeaderComponent={header}
+                  ListFooterComponent={
+                    filteredTransactions.length > 0 ? (
+                      <TransactionsFooter
+                        chainId={footerChainId}
+                        providerType={providerConfig.type}
+                        rpcBlockExplorer={rpcBlockExplorer}
+                        isNonEvmChain={isExplorerContextNonEvm}
+                        omitGlobalProviderExplorerFallback={
+                          isAssetDetailsExplorer
+                        }
+                        onViewBlockExplorer={viewOnBlockExplore}
+                        showDisclaimer
+                      />
+                    ) : (
+                      renderEmpty()
+                    )
+                  }
+                  contentContainerStyle={[
+                    styles.listContentContainer,
+                    contentBottomInset !== undefined && {
+                      paddingBottom: contentBottomInset,
+                    },
+                  ]}
+                  style={baseStyles.flexGrow}
+                  showsVerticalScrollIndicator={false}
+                  scrollIndicatorInsets={{ right: 1 }}
+                  onScroll={(event) => {
+                    onScrollThroughContent?.(event.nativeEvent.contentOffset.y);
+                  }}
+                  scrollEnabled={!isChartBeingTouched}
                 />
-              }
-              renderItem={this.renderItem}
-              initialNumToRender={10}
-              maxToRenderPerBatch={2}
-              onEndReachedThreshold={0.5}
-              ListHeaderComponent={header}
-              ListFooterComponent={
-                transactions.length > 0 ? this.renderFooter : this.renderEmpty()
-              }
-              style={baseStyles.flexGrow}
-              scrollIndicatorInsets={{ right: 1 }}
-              onScroll={this.onScroll}
-              scrollEnabled={!isChartBeingTouched}
-            />
-          )}
-        </PriceChartContext.Consumer>
-
-        {!isSigningQRObject && this.state.cancelIsOpen && (
-          <TransactionActionModal
-            isVisible={this.state.cancelIsOpen}
-            confirmDisabled={cancelConfirmDisabled}
-            onCancelPress={this.onCancelCompleted}
-            onConfirmPress={this.cancelTransaction}
-            confirmText={strings('transaction.lets_try')}
-            confirmButtonMode={'confirm'}
-            cancelText={strings('transaction.nevermind')}
-            feeText={renderCancelGas()}
-            titleText={strings('transaction.cancel_tx_title')}
-            gasTitleText={strings('transaction.gas_cancel_fee')}
-            descriptionText={strings('transaction.cancel_tx_message')}
-          />
+              )}
+            </PriceChartContext.Consumer>
+            {!isSigningQRObject && (
+              <CancelSpeedupModal
+                isVisible={speedUpIsOpen || cancelIsOpen}
+                isCancel={cancelIsOpen}
+                tx={existingTx}
+                onConfirm={
+                  cancelIsOpen ? cancelTransaction : speedUpTransaction
+                }
+                onClose={closeSpeedUpCancelModal}
+                confirmDisabled={confirmDisabled}
+              />
+            )}
+          </View>
         )}
-        {!isSigningQRObject && this.state.speedUpIsOpen && (
-          <TransactionActionModal
-            isVisible={this.state.speedUpIsOpen && !isSigningQRObject}
-            confirmDisabled={speedUpConfirmDisabled}
-            onCancelPress={this.onSpeedUpCompleted}
-            onConfirmPress={this.speedUpTransaction}
-            confirmText={strings('transaction.lets_try')}
-            confirmButtonMode={'confirm'}
-            cancelText={strings('transaction.nevermind')}
-            feeText={renderSpeedUpGas()}
-            titleText={strings('transaction.speedup_tx_title')}
-            gasTitleText={strings('transaction.gas_speedup_fee')}
-            descriptionText={strings('transaction.speedup_tx_message')}
-          />
-        )}
-
-        <RetryModal
-          onCancelPress={() => this.toggleRetry(undefined)}
-          onConfirmPress={this.retry}
-          retryIsOpen={this.state.retryIsOpen}
-          errorMsg={this.state.errorMsg}
-        />
       </View>
-    );
+    </PriceChartProvider>
+  );
+};
+
+Transactions.propTypes = {
+  assetSymbol: PropTypes.string,
+  /**
+   * Map of accounts to information objects including balances
+   */
+  accounts: PropTypes.object,
+  /**
+   * Callback to close the view
+   */
+  close: PropTypes.func,
+  /**
+   * Network configurations
+   */
+  networkConfigurations: PropTypes.object,
+  /**
+    /* navigation object required to push new views
+    */
+  navigation: PropTypes.object,
+  /**
+   * Object representing the configuration of the current selected network
+   */
+  providerConfig: PropTypes.object,
+  /**
+   * An array that represents the user collectible contracts
+   */
+  collectibleContracts: PropTypes.array,
+  /**
+   * An array of transactions objects
+   */
+  transactions: PropTypes.array,
+  /**
+   * An array of transactions objects that have been submitted
+   */
+  submittedTransactions: PropTypes.array,
+  /**
+   * An array of transactions objects that have been confirmed
+   */
+  confirmedTransactions: PropTypes.array,
+  /**
+   * A string that represents the selected address
+   */
+  selectedAddress: PropTypes.string,
+  /**
+   * Currency code of the currently-active currency
+   */
+  currentCurrency: PropTypes.string,
+  /**
+   * Loading flag from an external call
+   */
+  loading: PropTypes.bool,
+  /**
+   * Pass the flatlist ref to the parent
+   */
+  onRefSet: PropTypes.func,
+  /**
+   * Optional header component
+   */
+  header: PropTypes.object,
+  /**
+   * When true, suppresses the empty state footer when there are no transactions
+   */
+  hideEmptyState: PropTypes.bool,
+  /**
+   * Optional header height
+   */
+  headerHeight: PropTypes.number,
+  exchangeRate: PropTypes.number,
+  isSigningQRObject: PropTypes.bool,
+  chainId: PropTypes.string,
+  /**
+   * On scroll past navbar callback
+   */
+  onScrollThroughContent: PropTypes.func,
+  gasFeeEstimates: PropTypes.object,
+  /**
+   * Chain ID of the token
+   */
+  tokenChainId: PropTypes.string,
+  /**
+   * (optional) Skip automatic scrolling when a transaction is clicked/expanded.
+   * Useful in views like Asset Details scrolling inside modals will cause issues (such as closing the stacked tx modal)
+   */
+  skipScrollOnClick: PropTypes.bool,
+  /**
+   * Location context for analytics tracking (home or asset_details)
+   */
+  location: PropTypes.string,
+  /**
+   * (optional) Bottom padding for the list, e.g. to clear a footer floating over it
+   */
+  contentBottomInset: PropTypes.number,
+  /**
+   * Moves the pull-to-refresh spinner down, e.g. below a floating header
+   */
+  refreshControlOffset: PropTypes.number,
+  hardwareWallet: PropTypes.shape({
+    ensureDeviceReady: PropTypes.func,
+    setPendingOperationAddress: PropTypes.func,
+    showAwaitingConfirmation: PropTypes.func,
+    hideAwaitingConfirmation: PropTypes.func,
+    showHardwareWalletError: PropTypes.func,
+  }),
+  accountImportTime: PropTypes.number,
+  networkConfigurationsByChainId: PropTypes.object,
+  bridgeHistory: PropTypes.object,
+};
+
+Transactions.defaultProps = {
+  headerHeight: 0,
+  hardwareWallet: {
+    ensureDeviceReady: async () => false,
+    setPendingOperationAddress: () => undefined,
+    showAwaitingConfirmation: () => undefined,
+    hideAwaitingConfirmation: () => undefined,
+    showHardwareWalletError: () => undefined,
+  },
+};
+
+const mapStateToProps = (state, ownProps) => {
+  // Token Details always carries its own `tokenChainId` and must not react to
+  // network switches elsewhere in the app (which would re-render this screen
+  // for a chain it isn't even showing). Only the Activity tab (no
+  // `tokenChainId`) needs the globally selected network.
+  const isAssetDetails = Boolean(ownProps.tokenChainId);
+
+  return {
+    accounts: selectAccounts(state),
+    accountImportTime: isAssetDetails
+      ? selectSelectedInternalAccount(state)?.metadata.importTime
+      : undefined,
+    networkConfigurationsByChainId: isAssetDetails
+      ? selectEvmNetworkConfigurationsByChainId(state)
+      : undefined,
+    bridgeHistory: isAssetDetails
+      ? selectBridgeHistoryForAccount(state)
+      : undefined,
+    chainId: isAssetDetails ? ownProps.tokenChainId : selectChainId(state),
+    networkClientId: isAssetDetails ? undefined : selectNetworkClientId(state),
+    collectibleContracts: collectibleContractsSelector(state),
+    currentCurrency: selectCurrentCurrency(state),
+    selectedAddress: selectSelectedInternalAccountFormattedAddress(state),
+    networkConfigurations: selectNetworkConfigurations(state),
+    providerConfig: isAssetDetails
+      ? EMPTY_PROVIDER_CONFIG
+      : selectProviderConfig(state),
+    gasFeeEstimates: selectGasFeeEstimates(state),
+    primaryCurrency: selectPrimaryCurrency(state),
+    gasEstimateType: selectGasFeeControllerEstimateType(state),
+    networkType: isAssetDetails ? undefined : selectProviderType(state),
   };
-
-  render = () => {
-    const { colors, typography } = this.context || mockTheme;
-    const styles = createStyles(colors, typography);
-
-    return (
-      <PriceChartProvider>
-        <View style={styles.wrapper} testID={TOKEN_OVERVIEW_TXN_SCREEN}>
-          {!this.state.ready || this.props.loading
-            ? this.renderLoader()
-            : this.renderList()}
-          {(this.state.speedUp1559IsOpen || this.state.cancel1559IsOpen) &&
-            this.renderUpdateTxEIP1559Gas(this.state.cancel1559IsOpen)}
-        </View>
-      </PriceChartProvider>
-    );
-  };
-}
-
-const mapStateToProps = (state) => ({
-  accounts: selectAccounts(state),
-  chainId: selectChainId(state),
-  collectibleContracts: collectibleContractsSelector(state),
-  contractExchangeRates: selectContractExchangeRates(state),
-  conversionRate: selectConversionRate(state),
-  currentCurrency: selectCurrentCurrency(state),
-  selectedAddress: selectSelectedAddress(state),
-  networkConfigurations: selectNetworkConfigurations(state),
-  providerConfig: selectProviderConfig(state),
-  gasFeeEstimates: selectGasFeeEstimates(state),
-  primaryCurrency: state.settings.primaryCurrency,
-  tokens: selectTokensByAddress(state),
-  gasEstimateType:
-    state.engine.backgroundState.GasFeeController.gasEstimateType,
-  networkType: selectProviderType(state),
-});
-
-Transactions.contextType = ThemeContext;
+};
 
 const mapDispatchToProps = (dispatch) => ({
   showAlert: (config) => dispatch(showAlert(config)),
 });
 
+export { Transactions as UnconnectedTransactions, mapStateToProps };
+
+const TransactionsWithHardwareWallet = (props) => {
+  const hardwareWallet = useHardwareWallet();
+
+  return <Transactions {...props} hardwareWallet={hardwareWallet} />;
+};
+
 export default connect(
   mapStateToProps,
   mapDispatchToProps,
-)(withQRHardwareAwareness(Transactions));
+)(withQRHardwareAwareness(TransactionsWithHardwareWallet));

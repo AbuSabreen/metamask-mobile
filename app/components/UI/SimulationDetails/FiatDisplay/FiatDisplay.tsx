@@ -1,14 +1,18 @@
 /* eslint-disable react/prop-types */
 import React from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, ViewProps } from 'react-native';
+import { BigNumber } from 'bignumber.js';
 import { useStyles } from '../../../hooks/useStyles';
-import Text, {
-  TextColor,
-  TextVariant,
-} from '../../../../component-library/components/Texts/Text';
 import { strings } from '../../../../../locales/i18n';
 import useFiatFormatter from './useFiatFormatter';
 import { FIAT_UNAVAILABLE, FiatAmount } from '../types';
+import useHideFiatForTestnet from '../../../hooks/useHideFiatForTestnet';
+import { shortenString } from '../../../../util/notifications';
+import {
+  Text,
+  TextVariant,
+  TextColor,
+} from '@metamask/design-system-react-native';
 
 const styleSheet = () =>
   StyleSheet.create({
@@ -19,23 +23,17 @@ const styleSheet = () =>
   });
 
 const sharedTextProps = {
-  color: TextColor.Alternative,
-  variant: TextVariant.BodyMD,
+  color: TextColor.TextAlternative,
+  variant: TextVariant.BodyMd,
 } as const;
 
-const FiatNotAvailableDisplay: React.FC = () => {
-  const { styles } = useStyles(styleSheet, {});
-  return (
-    <Text {...sharedTextProps} style={styles.base}>
-      {strings('simulation_details.fiat_not_available')}
-    </Text>
-  );
-};
-
-export function calculateTotalFiat(fiatAmounts: FiatAmount[]): number {
+export function calculateTotalFiat(fiatAmounts: FiatAmount[]): BigNumber {
   return fiatAmounts.reduce(
-    (total: number, fiat) => total + (fiat === FIAT_UNAVAILABLE ? 0 : fiat),
-    0,
+    (total: BigNumber, fiat) =>
+      total.plus(
+        fiat === FIAT_UNAVAILABLE ? new BigNumber(0) : new BigNumber(fiat),
+      ),
+    new BigNumber(0),
   );
 }
 
@@ -45,20 +43,41 @@ export function calculateTotalFiat(fiatAmounts: FiatAmount[]): number {
  * @param props - Properties object.
  * @param props.fiatAmount - The fiat amount to display.
  */
-export const IndividualFiatDisplay: React.FC<{ fiatAmount: FiatAmount }> = ({
+
+interface IndividualFiatDisplayProps extends ViewProps {
+  fiatAmount: BigNumber | FiatAmount;
+  shorten?: boolean;
+}
+
+export const IndividualFiatDisplay: React.FC<IndividualFiatDisplayProps> = ({
   fiatAmount,
+  shorten = true,
 }) => {
+  const hideFiatForTestnet = useHideFiatForTestnet();
   const { styles } = useStyles(styleSheet, {});
   const fiatFormatter = useFiatFormatter();
 
-  if (fiatAmount === FIAT_UNAVAILABLE) {
-    return <FiatNotAvailableDisplay />;
+  if (hideFiatForTestnet) {
+    return null;
   }
-  const absFiat = Math.abs(fiatAmount);
+
+  if (fiatAmount === FIAT_UNAVAILABLE) {
+    return null;
+  }
+  const absFiat = new BigNumber(fiatAmount).abs();
+
+  const absFiatFormatted = shorten
+    ? shortenString(fiatFormatter(absFiat), {
+        truncatedCharLimit: 15,
+        truncatedStartChars: 15,
+        truncatedEndChars: 0,
+        skipCharacterInEnd: true,
+      })
+    : fiatFormatter(absFiat);
 
   return (
-    <Text {...sharedTextProps} style={styles.base}>
-      {fiatFormatter(absFiat)}
+    <Text {...sharedTextProps} style={styles.base} variant={TextVariant.BodySm}>
+      {absFiatFormatted}
     </Text>
   );
 };
@@ -72,16 +91,23 @@ export const IndividualFiatDisplay: React.FC<{ fiatAmount: FiatAmount }> = ({
 export const TotalFiatDisplay: React.FC<{
   fiatAmounts: FiatAmount[];
 }> = ({ fiatAmounts }) => {
+  const hideFiatForTestnet = useHideFiatForTestnet();
   const { styles } = useStyles(styleSheet, {});
   const fiatFormatter = useFiatFormatter();
   const totalFiat = calculateTotalFiat(fiatAmounts);
 
-  return totalFiat === 0 ? (
-    <FiatNotAvailableDisplay />
-  ) : (
-    <Text {...sharedTextProps} style={styles.base}>
+  if (hideFiatForTestnet) {
+    return null;
+  }
+
+  if (totalFiat === null || totalFiat.eq(0)) {
+    return null;
+  }
+
+  return (
+    <Text {...sharedTextProps} variant={TextVariant.BodySm} style={styles.base}>
       {strings('simulation_details.total_fiat', {
-        currency: fiatFormatter(Math.abs(totalFiat)),
+        currency: fiatFormatter(totalFiat.abs()),
       })}
     </Text>
   );

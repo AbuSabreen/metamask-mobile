@@ -34,7 +34,6 @@
     "import_wallet_button": "Sincronizar ou importar carteira",
     "new_to_crypto": "A criptomoeda é uma novidade para você?",
     "start_exploring_now": "Criar nova carteira",
-    "unlock": "Desbloquear",
     "new_to_metamask": "O MetaMask é uma novidade para você?",
     "already_have_wallet": "Já tem uma carteira?",
     "optin_back_title": "Fique de olho!",
@@ -133,7 +132,7 @@
     "reset_wallet": "Redefinir Carteira",
     "cant_proceed": "Você não pode prosseguir antes de digitar a palavra 'Delete'. Desta forma você está optando por excluir sua carteira atual.",
     "invalid_password": "Senha inválida",
-    "type_delete": "Digite '%{delete}' para excluir sua carteira atual permanentemente",
+    "type_delete": "Digite '{{delete}}' para excluir sua carteira atual permanentemente",
     "delete_my": "Apagar minha carteira",
     "are_you_sure": "Tem certeza de que deseja excluir sua carteira?",
     "your_current_wallet": "Sua carteira atual, suas contas e seus ativos serão ",
@@ -273,7 +272,6 @@
     "no_collectibles": "Não está vendo seu NFT?",
     "add_tokens": "Adicionar Tokens",
     "no_tokens": "Você não tem nenhum token!",
-    "no_nfts_yet": "Nenhum NFT ainda",
     "learn_more": "Saiba mais",
     "add_collectibles": "ADICIONAR NFTs",
     "no_transactions": "Você não tem transações!",
@@ -440,8 +438,6 @@
     "privacy_mode_desc": "Os websites devem solicitar acesso para exibir as informações da sua conta.",
     "show_hex_data": "Mostrar dados hexadecimais",
     "show_hex_data_desc": "Selecione esta opção para mostrar o campo de dados hexadecimais na tela de envio.",
-    "show_custom_nonce": "Personalizar nonce da transação",
-    "custom_nonce_desc": "Ative isso para alterar o nonce (número da transação) nas telas de confirmação. Esse é um recurso avançado; use com cautela.",
     "accounts_identicon_title": "Identicon da conta",
     "accounts_identicon_desc": "Jazzicons e Blockies são dois estilos diferentes de ícones exclusivos que ajudam você a identificar uma conta rapidamente.",
     "jazzicons": "Jazzicons",
@@ -505,13 +501,13 @@
     "security_heading": "Segurança",
     "privacy_heading": "Privacidade",
     "failed_to_fetch_chain_id": "Não foi possível fazer o fetch do ID da chain. O URL da RPC está correto?",
-    "endpoint_returned_different_chain_id": "O endpoint retornou um ID diferente da chain: %{chainIdReturned}",
+    "endpoint_returned_different_chain_id": "O endpoint retornou um ID diferente da chain: {{chainIdReturned}}",
     "chain_id_required": "O ID da chain é obrigatório. É preciso ser igual ao ID da chain retornado pela rede. Você pode informar um número decimal ou um número hexadecimal com o prefixo “0x”.",
     "invalid_hex_number": "Número hexadecimal inválido.",
     "invalid_hex_number_leading_zeros": "Número hexadecimal inválido. Remover zeros à esquerda.",
     "invalid_number": "Número inválido. Informe um número decimal ou um número hexadecimal com o prefixo “0x”.",
     "invalid_number_leading_zeros": "Número inválido. Remover zeros à esquerda.",
-    "invalid_number_range": "Número inválido. Insira um número entre 1 e %{maxSafeChainId}",
+    "invalid_number_range": "Número inválido. Insira um número entre 1 e {{maxSafeChainId}}",
     "hide_zero_balance_tokens_title": "Oculta tokens sem saldo",
     "hide_zero_balance_tokens_desc": "Impede que tokens sem saldo sejam exibidos na sua lista de tokens."
   },
@@ -585,6 +581,7 @@
     "ok": "OK",
     "cancel": "Cancelar",
     "error": "Erro",
+    "open_settings": "Configurações",
     "attempting_to_scan_with_wallet_locked": "Parece que você está tentando escanear um código QR. Você deve destravar sua carteira para conseguir usá-la.",
     "attempting_sync_from_wallet_error": "Parece que você está tentando sincronizar com uma extensão. Para fazê-lo, você precisará excluir sua carteira atual. \n\nApós ter excluído ou reinstalado uma versão mais recente do app, selecione a opção para \"Sincronizar com a Extensão MetaMask\". Importante! Antes de excluir a sua carteira, certifique-se de ter feito uma cópia de segurança da sua Frase de Recuperação Secreta."
   },
@@ -896,8 +893,7 @@
     "message": "Mensagem",
     "message_from": "Mensagem de",
     "learn_more": "Saiba mais",
-    "read_more": "Ler mais",
-    "eth_sign_warning": "Tenha cuidado. Esta ação pode ser usada para sacar ativos da sua conta. Você precisa confiar neste site."
+    "read_more": "Ler mais"
   },
   "watch_asset_request": {
     "title": "Adicionar token sugerido",
@@ -1536,7 +1532,7 @@
     "title": "Confira as novidades"
   },
   "invalid_network": {
-    "title": "O ID da chain da rede personalizada \n %{network} \n precisa ser inserido novamente.",
+    "title": "O ID da chain da rede personalizada \n {{network}} \n precisa ser inserido novamente.",
     "message": "Para proteger você contra provedores de rede mal-intencionados ou defeituosos, as IDs da chain agora são obrigatórias para todas as redes personalizadas.",
     "hint": "Encontre as IDs da chain das redes mais populares em ",
     "edit_network_button": "Editar rede",
@@ -1565,7 +1561,7 @@
     "cancel": "Cancelar",
     "approve": "Aprovar",
     "unrecognized_chain": "Esta rede personalizada não é reconhecida",
-    "invalid_chain": "A %{rpcUrl} para essa ID da chain não corresponde à lista de chainid.network.",
+    "invalid_chain": "A {{rpcUrl}} para essa ID da chain não corresponde à lista de chainid.network.",
     "alert_recommend": "Recomendamos",
     "alert_verify": "verificar o ID da chain"
   },

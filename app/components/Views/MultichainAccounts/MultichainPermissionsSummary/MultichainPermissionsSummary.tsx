@@ -1,0 +1,758 @@
+import React, { useCallback, useMemo } from 'react';
+import { ImageSourcePropType, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ScrollableTabView from '@tommasini/react-native-scrollable-tab-view';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import { navigateWithDetails } from '../../../../util/navigation/navUtils';
+import { strings } from '../../../../../locales/i18n';
+import { useTheme } from '../../../../util/theme';
+import { CommonSelectorsIDs } from '../../../../util/Common.testIds';
+import { AvatarSize } from '../../../../component-library/components/Avatars/Avatar';
+import {
+  IconColor,
+  IconName,
+} from '../../../../component-library/components/Icons/Icon';
+import {
+  Text,
+  TextColor,
+  TextVariant,
+  Button,
+  ButtonVariant,
+  ButtonBaseSize,
+  IconName as DesignSystemIconName,
+  Icon as DesignSystemIcon,
+  IconSize as DesignSystemIconSize,
+  ListItem,
+  ListItemVariant,
+  AvatarIcon,
+  AvatarIconSize,
+  AvatarGroup,
+  AvatarGroupSize,
+  AvatarGroupVariant,
+  AvatarAccountVariant,
+  AvatarNetwork,
+  AvatarNetworkSize,
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+} from '@metamask/design-system-react-native';
+import { getHost } from '../../../../util/browser';
+import WebsiteIcon from '../../../UI/WebsiteIcon';
+import styleSheet from './MultichainPermissionsSummary.styles';
+import { useStyles } from '../../../../component-library/hooks';
+import {
+  MaliciousDappUrlIcon,
+  getConnectButtonContent,
+} from '../../../UI/PermissionsSummary/MaliciousDappIndicators';
+import Routes from '../../../../constants/navigation/Routes';
+import ButtonIcon, {
+  ButtonIconSizes,
+} from '../../../../component-library/components/Buttons/ButtonIcon';
+import TabBar from '../../../../component-library/components-temp/TabBar';
+import { getNetworkImageSource } from '../../../../util/networks';
+import Engine from '../../../../core/Engine';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { SDKSelectorsIDs } from '../../SDK/SDK.testIds';
+import { useSelector } from 'react-redux';
+import {
+  selectEvmChainId,
+  selectProviderConfig,
+} from '../../../../selectors/networkController';
+import { useNetworkInfo } from '../../../../selectors/selectedNetworkController';
+import { ConnectedAccountsSelectorsIDs } from '../../MultichainAccounts/shared/ConnectedAccountModal.testIds';
+import { PermissionSummaryBottomSheetSelectorsIDs } from '../../MultichainAccounts/shared/PermissionSummaryBottomSheet.testIds';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { NetworkNonPemittedBottomSheetSelectorsIDs } from '../../NetworkConnect/NetworkNonPemittedBottomSheet.testIds';
+import { selectPrivacyMode } from '../../../../selectors/preferencesController';
+import BadgeWrapper from '../../../../component-library/components/Badges/BadgeWrapper';
+import Badge, {
+  BadgeVariant,
+} from '../../../../component-library/components/Badges/Badge';
+import AvatarFavicon from '../../../../component-library/components/Avatars/Avatar/variants/AvatarFavicon';
+import AvatarToken from '../../../../component-library/components/Avatars/Avatar/variants/AvatarToken';
+import { NetworkAvatarProps } from '../../MultichainAccounts/shared/AccountConnect.types';
+import MultichainAccountsConnectedList from '../MultichainAccountsConnectedList/MultichainAccountsConnectedList';
+import { AccountGroupId } from '@metamask/account-api';
+import { selectAccountGroups } from '../../../../selectors/multichainAccounts/accountTreeController';
+import { selectIconSeedAddressesByAccountGroupIds } from '../../../../selectors/multichainAccounts/accounts';
+import { RootState } from '../../../../reducers';
+
+const TAB_BAR_HORIZONTAL_PADDING = 0;
+
+const getNetworkAvatarSrc = (
+  imageSource?: ImageSourcePropType,
+): number | { uri: string } | undefined => {
+  if (typeof imageSource === 'number') {
+    return imageSource;
+  }
+  if (
+    imageSource &&
+    !Array.isArray(imageSource) &&
+    typeof imageSource === 'object' &&
+    'uri' in imageSource &&
+    typeof imageSource.uri === 'string'
+  ) {
+    return { uri: imageSource.uri };
+  }
+  return undefined;
+};
+
+export interface MultichainPermissionsSummaryProps {
+  currentPageInformation: {
+    currentEnsName: string;
+    icon: string | { uri: string };
+    url: string;
+  };
+  onEdit?: () => void;
+  onEditNetworks?: () => void;
+  onBack?: () => void;
+  onCancel?: () => void;
+  onConfirm?: () => void;
+  onRevokeAll?: () => void;
+  onAddNetwork?: () => void;
+  showActionButtons?: boolean;
+  isAlreadyConnected?: boolean;
+  isDisconnectAllShown?: boolean;
+  isNetworkSwitch?: boolean;
+  customNetworkInformation?: {
+    chainName: string;
+    chainId: string;
+  };
+  selectedAccountGroupIds: AccountGroupId[];
+  networkAvatars?: NetworkAvatarProps[];
+  isNonDappNetworkSwitch?: boolean;
+  onChooseFromPermittedNetworks?: () => void;
+  setTabIndex?: (tabIndex: number) => void;
+  tabIndex?: number;
+  showPermissionsOnly?: boolean;
+  showAccountsOnly?: boolean;
+  isMaliciousDapp?: boolean;
+}
+
+const MultichainPermissionsSummary = ({
+  currentPageInformation,
+  customNetworkInformation,
+  onEdit,
+  onEditNetworks,
+  onBack,
+  onCancel,
+  onConfirm,
+  onRevokeAll,
+  showActionButtons = true,
+  isAlreadyConnected = true,
+  isDisconnectAllShown = true,
+  isNetworkSwitch = false,
+  isNonDappNetworkSwitch = false,
+  selectedAccountGroupIds = [],
+  networkAvatars = [],
+  onAddNetwork = () => undefined,
+  onChooseFromPermittedNetworks = () => undefined,
+  setTabIndex = () => undefined,
+  tabIndex = 0,
+  showAccountsOnly = false,
+  showPermissionsOnly = false,
+  isMaliciousDapp = false,
+}: MultichainPermissionsSummaryProps) => {
+  const insets = useSafeAreaInsets();
+  const nonTabView = showAccountsOnly || showPermissionsOnly;
+  const { colors } = useTheme();
+  const { styles } = useStyles(styleSheet, {});
+  const safeAreaContainerStyle = useMemo(
+    () => [
+      styles.safeArea,
+      { paddingTop: insets.top, paddingBottom: insets.bottom },
+    ],
+    [styles.safeArea, insets.top, insets.bottom],
+  );
+  const navigation = useNavigation<AppNavigationProp>();
+  const { navigate } = navigation;
+  const providerConfig = useSelector(selectProviderConfig);
+  const chainId = useSelector(selectEvmChainId);
+  const privacyMode = useSelector(selectPrivacyMode);
+  const accountGroups = useSelector(selectAccountGroups);
+
+  const hostname = useMemo(() => {
+    try {
+      return new URL(currentPageInformation.url).origin;
+    } catch {
+      return currentPageInformation.url;
+    }
+  }, [currentPageInformation.url]);
+  const { networkName, networkImageSource } = useNetworkInfo(hostname);
+
+  // if network switch, we get the chain name from the customNetworkInformation
+  let chainName = '';
+  let chainImage: ImageSourcePropType | undefined;
+  if (isNetworkSwitch && customNetworkInformation?.chainId) {
+    chainName = customNetworkInformation?.chainName;
+    chainImage = getNetworkImageSource({
+      chainId: customNetworkInformation?.chainId,
+    });
+  }
+
+  const confirm = () => {
+    onConfirm?.();
+  };
+
+  const cancel = () => {
+    onCancel?.();
+  };
+
+  const handleEditAccountsButtonPress = useCallback(() => {
+    onEdit?.();
+  }, [onEdit]);
+
+  const handleEditNetworksButtonPress = () => {
+    onEditNetworks?.();
+  };
+
+  const switchNetwork = useCallback(() => {
+    navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.SHEET.NETWORK_SELECTOR,
+    });
+  }, [navigate]);
+
+  const renderTopIcon = () => {
+    const { currentEnsName, icon } = currentPageInformation;
+    const url = currentPageInformation.url;
+    const iconTitle = getHost(currentEnsName || url);
+
+    return isAlreadyConnected && !showPermissionsOnly ? (
+      <View style={[styles.domainLogoContainer, styles.assetLogoContainer]}>
+        <TouchableOpacity
+          onPress={switchNetwork}
+          testID={ConnectedAccountsSelectorsIDs.NETWORK_PICKER}
+        >
+          <BadgeWrapper
+            badgeElement={
+              <Badge
+                variant={BadgeVariant.Network}
+                name={networkName}
+                imageSource={networkImageSource}
+              />
+            }
+          >
+            {icon ? (
+              <AvatarFavicon
+                imageSource={{
+                  uri: typeof icon === 'string' ? icon : icon?.uri,
+                }}
+                size={AvatarSize.Md}
+              />
+            ) : (
+              <AvatarToken
+                name={iconTitle}
+                isHaloEnabled
+                size={AvatarSize.Md}
+              />
+            )}
+          </BadgeWrapper>
+        </TouchableOpacity>
+      </View>
+    ) : (
+      <WebsiteIcon
+        style={styles.domainLogoContainer}
+        viewStyle={styles.assetLogoContainer}
+        title={iconTitle}
+        url={currentEnsName || url}
+        icon={typeof icon === 'string' ? icon : icon?.uri}
+      />
+    );
+  };
+
+  function renderHeader() {
+    return (
+      <View style={styles.header}>
+        <View style={styles.startAccessory}>
+          {onBack && !isNonDappNetworkSwitch && (
+            <ButtonIcon
+              testID={PermissionSummaryBottomSheetSelectorsIDs.BACK_BUTTON}
+              iconColor={IconColor.Default}
+              onPress={onBack}
+              iconName={IconName.ArrowLeft}
+            />
+          )}
+        </View>
+
+        <View
+          style={[
+            styles.logoContainer,
+            isNonDappNetworkSwitch && styles.logoContainerNonDapp,
+          ]}
+        >
+          {renderTopIcon()}
+        </View>
+        <View style={styles.endAccessory}>
+          <ButtonIcon
+            size={ButtonIconSizes.Sm}
+            iconName={IconName.Info}
+            iconColor={IconColor.Default}
+            onPress={() => {
+              // Keep hostInfo at runtime; escape hatch avoids UX-owned param type.
+              navigateWithDetails(navigation, [
+                Routes.MODAL.ROOT_MODAL_FLOW,
+                {
+                  screen: Routes.SHEET.CONNECTION_DETAILS,
+                  params: {
+                    hostInfo: {
+                      metadata: {
+                        origin: hostname,
+                      },
+                    },
+                    connectionDateTime: new Date().getTime(),
+                  },
+                },
+              ]);
+            }}
+            testID={SDKSelectorsIDs.CONNECTION_DETAILS_BUTTON}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  const renderEndAccessory = () => (
+    <View testID={SDKSelectorsIDs.CONNECTION_DETAILS_BUTTON}>
+      {isAlreadyConnected ? (
+        <DesignSystemIcon
+          size={DesignSystemIconSize.Md}
+          name={DesignSystemIconName.ArrowRight}
+        />
+      ) : (
+        <Text color={TextColor.PrimaryDefault} variant={TextVariant.BodyMd}>
+          {strings('permissions.edit')}
+        </Text>
+      )}
+    </View>
+  );
+
+  const onRevokeAllHandler = useCallback(async () => {
+    if (onRevokeAll) {
+      // Use custom revoke handler if provided
+      await onRevokeAll();
+    } else {
+      // Fall back to default behavior
+      await Engine.context.PermissionController.hasPermissions(hostname);
+      await Engine.context.PermissionController.revokeAllPermissions(hostname);
+      navigation.navigate(Routes.BROWSER.HOME);
+    }
+  }, [onRevokeAll, hostname, navigation]);
+
+  const toggleRevokeAllPermissionsModal = useCallback(() => {
+    navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.SHEET.REVOKE_ALL_ACCOUNT_PERMISSIONS,
+      params: {
+        hostInfo: {
+          metadata: {
+            origin: hostname,
+          },
+        },
+        onRevokeAll: onRevokeAllHandler,
+      },
+    });
+  }, [onRevokeAllHandler, hostname, navigate]);
+
+  const getNetworkLabel = useCallback(() => {
+    if (isAlreadyConnected) {
+      return networkAvatars.length === 1
+        ? networkAvatars[0]?.name
+        : `${strings('permissions.n_networks_connect', {
+            numberOfNetworks: networkAvatars.length,
+          })}`;
+    }
+
+    if (networkAvatars.length === 1) {
+      return (
+        networkAvatars[0]?.name &&
+        `${strings('permissions.requesting_for')}${networkAvatars[0]?.name}`
+      );
+    }
+
+    return strings('permissions.requesting_for_networks', {
+      numberOfNetworks: networkAvatars.length,
+    });
+  }, [networkAvatars, isAlreadyConnected]);
+
+  const selectedAccountGroups = useMemo(
+    () =>
+      accountGroups.filter((accountGroup) =>
+        selectedAccountGroupIds.includes(accountGroup.id),
+      ),
+    [accountGroups, selectedAccountGroupIds],
+  );
+
+  const iconSeedAddresses = useSelector((state: RootState) =>
+    selectIconSeedAddressesByAccountGroupIds(state, selectedAccountGroupIds),
+  );
+
+  const networkLabel = getNetworkLabel();
+  const networkPermissionLabel =
+    typeof networkLabel === 'string' ? networkLabel : '';
+  const isSingleNetworkPermissionRequest =
+    isNetworkSwitch || isNonDappNetworkSwitch;
+  const singleNetworkName = isNonDappNetworkSwitch
+    ? networkName || providerConfig.nickname
+    : chainName;
+  const singleNetworkImage = isNonDappNetworkSwitch
+    ? getNetworkImageSource({ chainId })
+    : chainImage;
+
+  function renderAccountPermissionsRequestInfoCard() {
+    return (
+      <ListItem
+        isInteractive
+        onPress={handleEditAccountsButtonPress}
+        testID={PermissionSummaryBottomSheetSelectorsIDs.CONTAINER}
+        variant={ListItemVariant.TwoLines}
+        style={styles.permissionRow}
+        accessoryGap={2}
+        avatar={
+          <AvatarIcon
+            iconName={DesignSystemIconName.Wallet}
+            size={AvatarIconSize.Md}
+          />
+        }
+        title={strings('permissions.see_your_accounts')}
+        description={
+          <Box
+            flexDirection={BoxFlexDirection.Row}
+            alignItems={BoxAlignItems.Center}
+            gap={1}
+            twClassName="w-full"
+          >
+            <Text
+              testID={
+                PermissionSummaryBottomSheetSelectorsIDs.ACCOUNT_PERMISSION_CONTAINER
+              }
+              variant={TextVariant.BodySm}
+              numberOfLines={1}
+              style={styles.permissionLabel}
+            >
+              {strings('permissions.requesting_for')}
+            </Text>
+            {selectedAccountGroups.length > 0 && (
+              <AvatarGroup
+                testID="avatar-group-container"
+                variant={AvatarGroupVariant.Account}
+                size={AvatarGroupSize.Xs}
+                avatarPropsArr={selectedAccountGroups.map((accountGroup) => ({
+                  address:
+                    iconSeedAddresses[accountGroup.id] ?? accountGroup.id,
+                  variant: AvatarAccountVariant.Maskicon,
+                }))}
+              />
+            )}
+          </Box>
+        }
+        endAccessory={renderEndAccessory()}
+      />
+    );
+  }
+
+  function renderNetworkPermissionsRequestInfoCard() {
+    return (
+      <ListItem
+        isInteractive
+        onPress={handleEditNetworksButtonPress}
+        testID={
+          ConnectedAccountsSelectorsIDs.NAVIGATE_TO_EDIT_NETWORKS_PERMISSIONS_BUTTON
+        }
+        variant={ListItemVariant.TwoLines}
+        style={styles.permissionRow}
+        accessoryGap={2}
+        avatar={
+          <AvatarIcon
+            iconName={DesignSystemIconName.Data}
+            size={AvatarIconSize.Md}
+          />
+        }
+        title={strings('permissions.use_enabled_networks')}
+        description={
+          <Box
+            flexDirection={BoxFlexDirection.Row}
+            alignItems={BoxAlignItems.Center}
+            gap={1}
+            twClassName="w-full"
+          >
+            {isSingleNetworkPermissionRequest ? (
+              <>
+                <Text
+                  variant={TextVariant.BodySm}
+                  numberOfLines={1}
+                  style={styles.permissionLabel}
+                >
+                  {strings('permissions.requesting_for')}
+                </Text>
+                <Text
+                  variant={TextVariant.BodyMd}
+                  numberOfLines={1}
+                  style={styles.permissionLabel}
+                >
+                  {singleNetworkName}
+                </Text>
+                <AvatarNetwork
+                  size={AvatarNetworkSize.Xs}
+                  name={singleNetworkName}
+                  src={getNetworkAvatarSrc(singleNetworkImage)}
+                />
+              </>
+            ) : (
+              <>
+                {networkPermissionLabel !== '' && (
+                  <Text
+                    variant={TextVariant.BodySm}
+                    numberOfLines={1}
+                    style={styles.permissionLabel}
+                  >
+                    {networkPermissionLabel}
+                  </Text>
+                )}
+                {networkAvatars.length > 0 && (
+                  <AvatarGroup
+                    testID="avatar-group-container"
+                    variant={AvatarGroupVariant.Network}
+                    size={AvatarGroupSize.Xs}
+                    avatarPropsArr={networkAvatars.map((avatar) => ({
+                      name: avatar.name,
+                      src: getNetworkAvatarSrc(avatar.imageSource),
+                    }))}
+                  />
+                )}
+              </>
+            )}
+          </Box>
+        }
+        endAccessory={
+          isSingleNetworkPermissionRequest ? undefined : renderEndAccessory()
+        }
+      />
+    );
+  }
+
+  const onChangeTab = useCallback(
+    (tabInfo: { i: number; ref: unknown }) => {
+      setTabIndex?.(tabInfo.i);
+    },
+    [setTabIndex],
+  );
+
+  const accountsConnectedTabProps = useMemo(
+    () => ({
+      key: 'account-connected-tab',
+      tabLabel: 'Accounts',
+      navigation,
+    }),
+    [navigation],
+  );
+
+  const permissionsTabProps = useMemo(
+    () => ({
+      key: 'permissions-tab',
+      tabLabel: 'Permissions',
+      navigation,
+    }),
+    [navigation],
+  );
+
+  const renderTabBar = useCallback(
+    (props: Record<string, unknown>) => (
+      <TabBar
+        backgroundColor={colors.background.default}
+        tabPadding={TAB_BAR_HORIZONTAL_PADDING}
+        {...props}
+      />
+    ),
+    [colors],
+  );
+
+  const renderAccountsConnectedList = useCallback(
+    (
+      accountsConnectedTabKey: string,
+      restAccountsConnectedTabProps: Record<string, unknown>,
+    ) => (
+      <MultichainAccountsConnectedList
+        key={accountsConnectedTabKey}
+        privacyMode={privacyMode}
+        selectedAccountGroups={selectedAccountGroups}
+        handleEditAccountsButtonPress={handleEditAccountsButtonPress}
+        isConnectionFlow={!isAlreadyConnected}
+        {...restAccountsConnectedTabProps}
+      />
+    ),
+    [
+      privacyMode,
+      selectedAccountGroups,
+      handleEditAccountsButtonPress,
+      isAlreadyConnected,
+    ],
+  );
+
+  const renderTabsContent = () => {
+    const { key: accountsConnectedTabKey, ...restAccountsConnectedTabProps } =
+      accountsConnectedTabProps;
+    const { key: permissionsTabKey, ...restPermissionsTabProps } =
+      permissionsTabProps;
+    return (
+      <ScrollableTabView
+        initialPage={tabIndex}
+        renderTabBar={renderTabBar}
+        onChangeTab={onChangeTab}
+      >
+        {renderAccountsConnectedList(
+          accountsConnectedTabKey,
+          restAccountsConnectedTabProps,
+        )}
+        <View
+          key={permissionsTabKey}
+          style={styles.permissionsManagementContainer}
+          {...restPermissionsTabProps}
+        >
+          {!isNetworkSwitch && renderAccountPermissionsRequestInfoCard()}
+          {renderNetworkPermissionsRequestInfoCard()}
+        </View>
+      </ScrollableTabView>
+    );
+  };
+
+  return (
+    <View style={safeAreaContainerStyle}>
+      <View style={styles.mainContainer}>
+        <View style={styles.contentContainer}>
+          {renderHeader()}
+          <View
+            style={styles.title}
+            testID={
+              PermissionSummaryBottomSheetSelectorsIDs.NETWORK_PERMISSIONS_CONTAINER
+            }
+          >
+            <Text
+              style={styles.connectionTitle}
+              variant={TextVariant.HeadingMd}
+              color={
+                isMaliciousDapp && !isAlreadyConnected
+                  ? TextColor.ErrorDefault
+                  : undefined
+              }
+            >
+              {isNonDappNetworkSwitch
+                ? strings('permissions.title_add_network_permission')
+                : !isAlreadyConnected || isNetworkSwitch
+                  ? hostname
+                  : strings('permissions.title_dapp_url_has_approval_to', {
+                      dappUrl: hostname,
+                    })}
+            </Text>
+            {isMaliciousDapp && !isAlreadyConnected && <MaliciousDappUrlIcon />}
+            <Text variant={TextVariant.BodyMd}>
+              {strings('account_dapp_connections.account_summary_header')}
+            </Text>
+          </View>
+          {isNonDappNetworkSwitch && (
+            <Text variant={TextVariant.BodyMd} style={styles.description}>
+              {strings('permissions.non_permitted_network_description')}
+            </Text>
+          )}
+          {!nonTabView ? (
+            <View style={styles.tabsContainer}>{renderTabsContent()}</View>
+          ) : (
+            <View style={styles.container}>
+              {showAccountsOnly && renderAccountPermissionsRequestInfoCard()}
+              {showPermissionsOnly && renderNetworkPermissionsRequestInfoCard()}
+            </View>
+          )}
+        </View>
+        <View style={styles.bottomButtonsContainer}>
+          {isAlreadyConnected && isDisconnectAllShown && (
+            <View style={styles.disconnectAllContainer}>
+              <Button
+                variant={ButtonVariant.Secondary}
+                testID={
+                  ConnectedAccountsSelectorsIDs.DISCONNECT_ALL_ACCOUNTS_NETWORKS
+                }
+                onPress={toggleRevokeAllPermissionsModal}
+                startIconName={DesignSystemIconName.Logout}
+                isDanger
+                size={ButtonBaseSize.Lg}
+                style={{
+                  ...styles.disconnectButton,
+                }}
+              >
+                {strings('accounts.disconnect_all')}
+              </Button>
+            </View>
+          )}
+          {showActionButtons && !isNonDappNetworkSwitch && (
+            <View style={styles.actionButtonsContainer}>
+              <Button
+                variant={ButtonVariant.Secondary}
+                onPress={cancel}
+                size={ButtonBaseSize.Lg}
+                twClassName="flex-1"
+                testID={CommonSelectorsIDs.CANCEL_BUTTON}
+              >
+                {strings('permissions.cancel')}
+              </Button>
+              <Button
+                variant={ButtonVariant.Primary}
+                onPress={confirm}
+                isDanger={isMaliciousDapp && !isNetworkSwitch}
+                startIconName={
+                  isMaliciousDapp && !isNetworkSwitch
+                    ? DesignSystemIconName.Danger
+                    : undefined
+                }
+                isDisabled={
+                  !isNetworkSwitch &&
+                  (selectedAccountGroupIds.length === 0 ||
+                    networkAvatars.length === 0)
+                }
+                size={ButtonBaseSize.Lg}
+                twClassName="flex-1"
+                testID={CommonSelectorsIDs.CONNECT_BUTTON}
+              >
+                {getConnectButtonContent(isMaliciousDapp, isNetworkSwitch)}
+              </Button>
+            </View>
+          )}
+          {isNonDappNetworkSwitch && (
+            <View style={styles.nonDappNetworkSwitchButtons}>
+              <View style={styles.actionButtonsContainer}>
+                <Button
+                  variant={ButtonVariant.Primary}
+                  testID={
+                    NetworkNonPemittedBottomSheetSelectorsIDs.ADD_THIS_NETWORK_BUTTON
+                  }
+                  onPress={onAddNetwork}
+                  size={ButtonBaseSize.Lg}
+                  style={{
+                    ...styles.disconnectButton,
+                  }}
+                >
+                  {strings('permissions.add_this_network')}
+                </Button>
+              </View>
+              <View style={styles.actionButtonsContainer}>
+                <Button
+                  variant={ButtonVariant.Secondary}
+                  testID={
+                    NetworkNonPemittedBottomSheetSelectorsIDs.CHOOSE_FROM_PERMITTED_NETWORKS_BUTTON
+                  }
+                  onPress={onChooseFromPermittedNetworks}
+                  size={ButtonBaseSize.Lg}
+                  style={{
+                    ...styles.disconnectButton,
+                  }}
+                >
+                  {strings('permissions.choose_from_permitted_networks')}
+                </Button>
+              </View>
+            </View>
+          )}
+        </View>
+      </View>
+    </View>
+  );
+};
+
+export default MultichainPermissionsSummary;

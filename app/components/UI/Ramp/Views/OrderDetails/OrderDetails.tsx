@@ -1,207 +1,369 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, RefreshControl } from 'react-native';
-import { useDispatch, useSelector } from 'react-redux';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, RefreshControl, StyleSheet } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { Order } from '@consensys/on-ramp-sdk';
-import { OrderOrderTypeEnum } from '@consensys/on-ramp-sdk/dist/API';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
 import { ScrollView } from 'react-native-gesture-handler';
-import useAnalytics from '../../hooks/useAnalytics';
-import useThunkDispatch from '../../../../hooks/useThunkDispatch';
-import ScreenLayout from '../../components/ScreenLayout';
-import OrderDetail from '../../components/OrderDetails';
-import Row from '../../components/Row';
-import StyledButton from '../../../StyledButton';
 import {
-  getOrderById,
-  updateFiatOrder,
-} from '../../../../../reducers/fiatOrders';
+  Box,
+  Text,
+  TextVariant,
+  Icon,
+  IconName,
+  IconSize,
+  FontWeight,
+  Button,
+  ButtonVariant,
+  ButtonSize,
+} from '@metamask/design-system-react-native';
+import { RampsOrderStatus } from '@metamask/ramps-controller';
+import { isBailedOrderStatus } from '../BuildQuote/BuildQuote';
+import { extractOrderCode } from '../../utils/extractOrderCode';
+import {
+  getNavigateAfterExternalBrowserRoutes,
+  type RampsOrderDetailsParams,
+} from '../../utils/rampsNavigation';
+import ScreenLayout from '../../Aggregator/components/ScreenLayout';
 import { strings } from '../../../../../../locales/i18n';
-import { getFiatOnRampAggNavbar } from '../../../Navbar';
 import Routes from '../../../../../constants/navigation/Routes';
-import { processFiatOrder } from '../../index';
 import {
   createNavigationDetails,
   useParams,
+  resetWithRoutes,
 } from '../../../../../util/navigation/navUtils';
 import { useTheme } from '../../../../../util/theme';
 import Logger from '../../../../../util/Logger';
-import { RootState } from '../../../../../reducers';
-import { FIAT_ORDER_STATES } from '../../../../../constants/on-ramp';
-import ErrorView from '../../components/ErrorView';
-import useInterval from '../../../../hooks/useInterval';
-import AppConstants from '../../../../../core/AppConstants';
+import OrderContent from './OrderContent';
+import {
+  emitOrderConfirmedAnalyticsFromCallback,
+  emitTerminalOrderAnalyticsFromCallback,
+  isTerminalOrderStatus,
+} from '../../../../../core/Engine/controllers/ramps-controller/event-handlers/analytics';
+import { useRampsOrders } from '../../hooks/useRampsOrders';
+import { showV2OrderToast } from '../../utils/v2OrderToast';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import { RampsOrderDetailsSelectorsIDs } from './OrderDetails.testIds';
+import { endRampsBuyCufTrace } from '../../utils/rampsBuyCufTrace';
+import {
+  RAMPS_BUY_CUF_BOUNDARY,
+  RAMPS_BUY_CUF_END_REASON,
+  RAMPS_BUY_CUF_TAG,
+} from '../../constants/rampsBuyCufTags';
+import { setWalletHomeOnboardingFundFlowOrderAccepted } from '../../../WalletHomeOnboardingSteps/walletHomeOnboardingFundFlow';
+import { useRampScreenPerformance } from '../../hooks/useRampScreenPerformance';
+import {
+  RAMP_SCREEN_CONTENT_STATE,
+  RAMP_V2_SCREEN_ID,
+} from '../../constants/rampScreenPerformance';
+import { useSelector } from 'react-redux';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
 
-interface OrderDetailsParams {
-  orderId?: string;
-  redirectToSendTransaction?: boolean;
+export const createRampsOrderDetailsNavDetails =
+  createNavigationDetails<RampsOrderDetailsParams>(
+    Routes.RAMP.RAMPS_ORDER_DETAILS,
+  );
+
+const PENDING_STATUSES = new Set([
+  RampsOrderStatus.Pending,
+  RampsOrderStatus.Created,
+  RampsOrderStatus.Precreated,
+  RampsOrderStatus.Unknown,
+]);
+
+/**
+ * Whether an order counts as funding for the Wallet Home onboarding Fund step: every status
+ * this screen shows as processing or complete.
+ *
+ * @param status - The order status shown.
+ * @returns `true` for pending and completed orders.
+ */
+export function isWalletHomeOnboardingFundFlowOrderAccepted(
+  status: RampsOrderStatus | undefined,
+): boolean {
+  return (
+    status !== undefined &&
+    (PENDING_STATUSES.has(status) || status === RampsOrderStatus.Completed)
+  );
 }
 
-export const createOrderDetailsNavDetails =
-  createNavigationDetails<OrderDetailsParams>(Routes.RAMP.ORDER_DETAILS);
+/**
+ * V2 order detail screen. Reads RampsOrder from controller state only.
+ * Legacy orders (DEPOSIT, RAMPS_V2 in Redux) are routed to the aggregator
+ * detail screen by OrdersList — they never reach this component.
+ */
+const styles = StyleSheet.create({
+  scrollContentContainer: {
+    flexGrow: 1,
+  },
+  contentContainer: {
+    flex: 1,
+  },
+});
 
 const OrderDetails = () => {
-  const trackEvent = useAnalytics();
-  const params = useParams<OrderDetailsParams>();
-  const order = useSelector((state: RootState) =>
-    getOrderById(state, params.orderId),
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const params = useParams<RampsOrderDetailsParams>();
+  const { getOrderById, refreshOrder, getOrderFromCallback, addOrder } =
+    useRampsOrders();
+  const orderCode = params.orderId ? extractOrderCode(params.orderId) : '';
+  const order = getOrderById(orderCode);
+  const isPending = order ? PENDING_STATUSES.has(order.status) : false;
+  const hasCallbackParams = Boolean(
+    params.callbackUrl && params.providerCode && params.walletAddress,
   );
-  const [isLoading, setIsLoading] = useState(
-    order?.state === FIAT_ORDER_STATES.CREATED,
-  );
+
+  const [isLoading, setIsLoading] = useState(isPending || hasCallbackParams);
   const [error, setError] = useState<string | null>(null);
-  const { colors } = useTheme();
-  const navigation = useNavigation();
-  const dispatch = useDispatch();
-  const dispatchThunk = useThunkDispatch();
+  const theme = useTheme();
+  const { colors } = theme;
+  const navigation = useNavigation<AppNavigationProp>();
+  const { trackEvent, createEventBuilder } = useAnalytics();
 
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isRefreshingInterval, setIsRefreshingInterval] = useState(false);
+  const hasFetchedFromCallback = useRef(false);
+
+  useRampScreenPerformance({
+    screenId: RAMP_V2_SCREEN_ID.ORDER_DETAILS,
+    contentReady: !isLoading && Boolean(order || error),
+    contentState: error
+      ? RAMP_SCREEN_CONTENT_STATE.ERROR
+      : RAMP_SCREEN_CONTENT_STATE.POPULATED,
+  });
+
+  const executeCallbackFetch = useCallback(
+    async (
+      providerCode: string,
+      callbackUrl: string,
+      walletAddress: string,
+      logContext: string,
+    ) => {
+      try {
+        setError(null);
+        const fetchedOrder = await getOrderFromCallback(
+          providerCode,
+          callbackUrl,
+          walletAddress,
+        );
+        if (!fetchedOrder || isBailedOrderStatus(fetchedOrder.status)) {
+          endRampsBuyCufTrace({
+            data: {
+              [RAMPS_BUY_CUF_TAG.SUCCESS]: false,
+              [RAMPS_BUY_CUF_TAG.REASON]: RAMPS_BUY_CUF_END_REASON.BAILED,
+            },
+          });
+          resetWithRoutes(navigation, {
+            index: 0,
+            routes: getNavigateAfterExternalBrowserRoutes({
+              returnDestination: 'buildQuote',
+            }),
+          });
+          return;
+        }
+        addOrder(fetchedOrder);
+
+        // TRAM-3738: non-terminal callback orders emit Confirmed (payment
+        // submitted). Terminal orders skip Confirmed and emit Completed/Failed
+        // directly — see TRAM-3691.
+        if (isTerminalOrderStatus(fetchedOrder.status)) {
+          emitTerminalOrderAnalyticsFromCallback(fetchedOrder);
+        } else {
+          emitOrderConfirmedAnalyticsFromCallback(fetchedOrder, {
+            rampType: 'UNIFIED_BUY_2',
+          });
+        }
+
+        showV2OrderToast({
+          orderId: fetchedOrder.providerOrderId,
+          cryptocurrency:
+            fetchedOrder.cryptoCurrency?.symbol ?? params.cryptocurrency ?? '',
+          cryptoAmount: fetchedOrder.cryptoAmount,
+          status: fetchedOrder.status,
+        });
+        navigation.setParams({
+          orderId: fetchedOrder.providerOrderId,
+          callbackUrl: undefined,
+          providerCode: undefined,
+          walletAddress: undefined,
+        });
+      } catch (fetchError) {
+        const normalizedError =
+          fetchError instanceof Error
+            ? fetchError
+            : new Error(String(fetchError));
+        Logger.error(normalizedError, {
+          message: `RampsOrderDetails: error fetching order from callback URL${logContext}`,
+          callbackUrl,
+        });
+        setError(
+          fetchError instanceof Error && fetchError.message
+            ? fetchError.message
+            : strings('ramps_order_details.error_message'),
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [getOrderFromCallback, addOrder, navigation, params.cryptocurrency],
+  );
+
+  const handleHeaderBack = useCallback(() => {
+    navigation.goBack();
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.RAMPS_BACK_BUTTON_CLICKED)
+        .addProperties({
+          location: 'Order Details',
+          ramp_type: 'UNIFIED_BUY_2',
+        })
+        .build(),
+    );
+  }, [navigation, trackEvent, createEventBuilder]);
+
+  // Synced from the order shown, not from Close, so every way of leaving counts.
+  const orderStatus = order?.status;
+  useEffect(() => {
+    if (!params.showCloseButton || orderStatus === undefined) {
+      return;
+    }
+    setWalletHomeOnboardingFundFlowOrderAccepted(
+      isWalletHomeOnboardingFundFlowOrderAccepted(orderStatus),
+    );
+  }, [orderStatus, params.showCloseButton]);
+
+  const handleRetryCallbackFetch = useCallback(async () => {
+    if (!params.callbackUrl || !params.providerCode || !params.walletAddress) {
+      return;
+    }
+    setIsLoading(true);
+    await executeCallbackFetch(
+      params.providerCode,
+      params.callbackUrl,
+      params.walletAddress,
+      ' (retry)',
+    );
+  }, [
+    params.callbackUrl,
+    params.providerCode,
+    params.walletAddress,
+    executeCallbackFetch,
+  ]);
+
+  const hasTrackedScreenView = useRef(false);
+  const hasEndedBuyCuf = useRef(false);
+  useEffect(() => {
+    if (order && !hasTrackedScreenView.current) {
+      hasTrackedScreenView.current = true;
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.RAMPS_SCREEN_VIEWED)
+          .addProperties({
+            location: 'Order Details',
+            ramp_type: 'UNIFIED_BUY_2',
+          })
+          .build(),
+      );
+    }
+  }, [order, createEventBuilder, trackEvent]);
 
   useEffect(() => {
-    navigation.setOptions(
-      getFiatOnRampAggNavbar(
-        navigation,
-        {
-          title: strings('fiat_on_ramp_aggregator.order_details.details_main'),
-          showCancel: false,
-        },
-        colors,
-      ),
-    );
-  }, [colors, navigation]);
-
-  const navigateToSendTransaction = useCallback(() => {
-    if (order?.id) {
-      navigation.navigate(Routes.RAMP.SEND_TRANSACTION, {
-        orderId: order.id,
-      });
+    if (!order || hasEndedBuyCuf.current) {
+      return;
     }
-  }, [navigation, order?.id]);
+    hasEndedBuyCuf.current = true;
+    endRampsBuyCufTrace({
+      data: {
+        [RAMPS_BUY_CUF_TAG.SUCCESS]: true,
+        [RAMPS_BUY_CUF_TAG.BOUNDARY]: RAMPS_BUY_CUF_BOUNDARY.ORDER_DETAILS,
+        orderId: order.providerOrderId,
+      },
+    });
+  }, [order]);
+
+  const handleOnRefresh = useCallback(async () => {
+    if (!order) return;
+    try {
+      setError(null);
+      setIsRefreshing(true);
+      const providerCode = order.provider?.id ?? '';
+      await refreshOrder(
+        providerCode,
+        order.providerOrderId,
+        order.walletAddress,
+      );
+    } catch (fetchError) {
+      Logger.error(fetchError as Error, {
+        message: 'FiatOrders::RampsOrderDetails error while refreshing order',
+        orderId: order.providerOrderId,
+        provider: order.provider?.id,
+        status: order.status,
+      });
+      setError(
+        fetchError instanceof Error && fetchError.message
+          ? fetchError.message
+          : strings('ramps_order_details.error_message'),
+      );
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  }, [order, refreshOrder]);
+
+  // Preserve prior mount-only semantics: evaluate once on first effect run.
+  // Marking the ref before the condition matters — callback success clears
+  // callback params via setParams while the order may still be pending; if we
+  // only marked the ref when refreshing, that transition would spuriously
+  // call handleOnRefresh.
+  const hasAttemptedInitialPendingRefreshRef = useRef(false);
+
+  useEffect(() => {
+    if (hasAttemptedInitialPendingRefreshRef.current) {
+      return;
+    }
+    hasAttemptedInitialPendingRefreshRef.current = true;
+    if (isPending && !hasCallbackParams) {
+      handleOnRefresh();
+    }
+  }, [isPending, hasCallbackParams, handleOnRefresh]);
 
   useEffect(() => {
     if (
-      order?.state === FIAT_ORDER_STATES.CREATED &&
-      !order.sellTxHash &&
-      params.redirectToSendTransaction
+      !hasCallbackParams ||
+      hasFetchedFromCallback.current ||
+      !params.callbackUrl ||
+      !params.providerCode ||
+      !params.walletAddress
     ) {
-      navigateToSendTransaction();
+      return;
     }
-  }, [
-    order?.state,
-    params.redirectToSendTransaction,
-    navigateToSendTransaction,
-    order?.sellTxHash,
-  ]);
+    hasFetchedFromCallback.current = true;
 
-  useEffect(() => {
-    if (order) {
-      const { data, state, cryptocurrency, orderType, currency, network } =
-        order;
-
-      const providerName = (data as Order).provider?.name;
-
-      const payload = {
-        status: state,
-        payment_method_id: (data as Order).paymentMethod?.id,
-        order_type: orderType,
-      };
-      if (order.orderType === OrderOrderTypeEnum.Buy) {
-        trackEvent('ONRAMP_PURCHASE_DETAILS_VIEWED', {
-          ...payload,
-          currency_destination: cryptocurrency,
-          currency_source: currency,
-          provider_onramp: providerName,
-          chain_id_destination: network,
-        });
-      } else {
-        trackEvent('OFFRAMP_PURCHASE_DETAILS_VIEWED', {
-          ...payload,
-          currency_source: cryptocurrency,
-          currency_destination: currency,
-          provider_offramp: providerName,
-          chain_id_source: network,
-        });
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackEvent]);
-
-  const dispatchUpdateFiatOrder = useCallback(
-    (updatedOrder) => {
-      dispatch(updateFiatOrder(updatedOrder));
-    },
-    [dispatch],
-  );
-
-  const handleOnRefresh = useCallback(
-    async ({ fromInterval }: { fromInterval?: boolean } = {}) => {
-      if (!order) return;
-      try {
-        setError(null);
-        if (fromInterval) {
-          setIsRefreshingInterval(true);
-        } else {
-          setIsRefreshing(true);
-        }
-        await processFiatOrder(order, dispatchUpdateFiatOrder, dispatchThunk, {
-          forced: true,
-        });
-      } catch (fetchError) {
-        Logger.error(fetchError as Error, {
-          message: 'FiatOrders::OrderDetails error while processing order',
-          order,
-        });
-        setError((fetchError as Error).message || 'An error as occurred');
-      } finally {
-        if (fromInterval) {
-          setIsRefreshingInterval(false);
-        } else {
-          setIsLoading(false);
-          setIsRefreshing(false);
-        }
-      }
-    },
-    [dispatchThunk, dispatchUpdateFiatOrder, order],
-  );
-
-  useEffect(() => {
-    if (order?.state === FIAT_ORDER_STATES.CREATED) {
-      handleOnRefresh();
-    }
-    // only run on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const handleMakeAnotherPurchase = useCallback(() => {
-    navigation.goBack();
-    navigation.navigate(
-      order?.orderType === OrderOrderTypeEnum.Buy
-        ? Routes.RAMP.BUY
-        : Routes.RAMP.SELL,
+    executeCallbackFetch(
+      params.providerCode,
+      params.callbackUrl,
+      params.walletAddress,
+      '',
     );
-  }, [navigation, order?.orderType]);
-
-  useInterval(
-    () => {
-      handleOnRefresh({ fromInterval: true });
-    },
-    !isLoading &&
-      !isRefreshingInterval &&
-      order &&
-      order.state === FIAT_ORDER_STATES.CREATED &&
-      order.sellTxHash
-      ? AppConstants.FIAT_ORDERS.POLLING_FREQUENCY
-      : null,
-  );
-
-  if (!order) {
-    return <ScreenLayout />;
-  }
+  }, [
+    hasCallbackParams,
+    params.callbackUrl,
+    params.providerCode,
+    params.walletAddress,
+    executeCallbackFetch,
+  ]);
 
   if (isLoading) {
     return (
       <ScreenLayout>
         <ScreenLayout.Body>
+          <HeaderStandardGlass
+            isGlass={isGlassHeader}
+            isFloating={false}
+            title={strings('ramps_order_details.title')}
+            onBack={handleHeaderBack}
+            backButtonProps={{
+              testID: 'ramps-order-details-back-navbar-button',
+            }}
+            includesTopInset
+          />
           <ScreenLayout.Content>
             <ActivityIndicator />
           </ScreenLayout.Content>
@@ -211,13 +373,68 @@ const OrderDetails = () => {
   }
 
   if (error) {
+    const onRetry = hasCallbackParams
+      ? handleRetryCallbackFetch
+      : handleOnRefresh;
     return (
       <ScreenLayout>
         <ScreenLayout.Body>
-          <ErrorView
-            description={error}
-            ctaOnPress={handleOnRefresh}
-            location="Order Details Screen"
+          <HeaderStandardGlass
+            isGlass={isGlassHeader}
+            isFloating={false}
+            title={strings('ramps_order_details.title')}
+            onBack={handleHeaderBack}
+            backButtonProps={{
+              testID: 'ramps-order-details-back-navbar-button',
+            }}
+            includesTopInset
+          />
+          <Box twClassName="flex-1 items-center justify-center px-16 py-16">
+            <Icon
+              name={IconName.Danger}
+              size={IconSize.Xl}
+              twClassName="text-error-default mb-2"
+            />
+            <Text
+              variant={TextVariant.HeadingSm}
+              fontWeight={FontWeight.Bold}
+              twClassName="text-center mb-2"
+            >
+              {strings('ramps_order_details.error_title')}
+            </Text>
+            <Text
+              variant={TextVariant.BodyMd}
+              twClassName="text-alternative text-center mb-8"
+            >
+              {error}
+            </Text>
+            <Button
+              variant={ButtonVariant.Primary}
+              size={ButtonSize.Lg}
+              isFullWidth
+              onPress={onRetry}
+            >
+              {strings('ramps_order_details.try_again')}
+            </Button>
+          </Box>
+        </ScreenLayout.Body>
+      </ScreenLayout>
+    );
+  }
+
+  if (!order) {
+    return (
+      <ScreenLayout>
+        <ScreenLayout.Body>
+          <HeaderStandardGlass
+            isGlass={isGlassHeader}
+            isFloating={false}
+            title={strings('ramps_order_details.title')}
+            onBack={handleHeaderBack}
+            backButtonProps={{
+              testID: 'ramps-order-details-back-navbar-button',
+            }}
+            includesTopInset
           />
         </ScreenLayout.Body>
       </ScreenLayout>
@@ -225,53 +442,37 @@ const OrderDetails = () => {
   }
 
   return (
-    <ScreenLayout>
-      <ScrollView
-        refreshControl={
-          <RefreshControl
-            colors={[colors.primary.default]}
-            tintColor={colors.icon.default}
-            refreshing={isRefreshing}
-            onRefresh={handleOnRefresh}
-          />
-        }
-      >
-        <ScreenLayout.Body>
-          <ScreenLayout.Content>
-            <OrderDetail order={order} />
+    <ScreenLayout testID={RampsOrderDetailsSelectorsIDs.CONTAINER}>
+      <ScreenLayout.Body>
+        <HeaderStandardGlass
+          isGlass={isGlassHeader}
+          isFloating={false}
+          title={strings('ramps_order_details.title')}
+          onBack={handleHeaderBack}
+          backButtonProps={{
+            testID: 'ramps-order-details-back-navbar-button',
+          }}
+          includesTopInset
+        />
+        <ScrollView
+          contentContainerStyle={styles.scrollContentContainer}
+          refreshControl={
+            <RefreshControl
+              colors={[colors.primary.default]}
+              tintColor={colors.icon.default}
+              refreshing={isRefreshing}
+              onRefresh={handleOnRefresh}
+            />
+          }
+        >
+          <ScreenLayout.Content style={styles.contentContainer}>
+            <OrderContent
+              order={order}
+              showCloseButton={params.showCloseButton}
+            />
           </ScreenLayout.Content>
-        </ScreenLayout.Body>
-        <ScreenLayout.Footer>
-          <ScreenLayout.Content>
-            {order.orderType === OrderOrderTypeEnum.Sell &&
-            !order.sellTxHash &&
-            order.state === FIAT_ORDER_STATES.CREATED ? (
-              <Row>
-                <StyledButton
-                  type="confirm"
-                  onPress={navigateToSendTransaction}
-                >
-                  {strings(
-                    'fiat_on_ramp_aggregator.order_details.continue_order',
-                  )}
-                </StyledButton>
-              </Row>
-            ) : null}
-
-            {order.state !== FIAT_ORDER_STATES.CREATED &&
-              order.state !== FIAT_ORDER_STATES.PENDING && (
-                <StyledButton
-                  type="confirm"
-                  onPress={handleMakeAnotherPurchase}
-                >
-                  {strings(
-                    'fiat_on_ramp_aggregator.order_details.start_new_order',
-                  )}
-                </StyledButton>
-              )}
-          </ScreenLayout.Content>
-        </ScreenLayout.Footer>
-      </ScrollView>
+        </ScrollView>
+      </ScreenLayout.Body>
     </ScreenLayout>
   );
 };

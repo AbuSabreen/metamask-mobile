@@ -1,0 +1,139 @@
+import React from 'react';
+import { render, fireEvent, waitFor } from '@testing-library/react-native';
+import { useNavigation } from '@react-navigation/native';
+import { strings } from '../../../../../locales/i18n';
+import Routes from '../../../../constants/navigation/Routes';
+import { Linking } from 'react-native';
+import AppConstants from '../../../../core/AppConstants';
+import DefaultSettings from './';
+import { useSelector } from 'react-redux';
+import { selectSeedlessOnboardingLoginFlow } from '../../../../selectors/seedlessOnboardingController';
+import { selectMobileUxBftcConsolidationFlagEnabled } from '../../../../selectors/featureFlagController/basicFunctionalityConsolidation';
+import Logger from '../../../../util/Logger';
+
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: jest.fn(),
+}));
+
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(),
+}));
+
+describe('DefaultSettings', () => {
+  const mockNavigation = {
+    goBack: jest.fn(),
+    setOptions: jest.fn(),
+    navigate: jest.fn(),
+  };
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (useNavigation as jest.Mock).mockReturnValue(mockNavigation);
+    (useSelector as jest.Mock).mockReturnValue(false);
+  });
+
+  it('should render correctly', () => {
+    const { getByText } = render(<DefaultSettings />);
+    expect(
+      getByText(strings('default_settings.drawer_general_title')),
+    ).toBeOnTheScreen();
+  });
+
+  it('opens privacy best practices link when "Learn more" is pressed', () => {
+    const { getByText } = render(<DefaultSettings />);
+    const learnMoreText = getByText(
+      strings('default_settings.learn_more_about_privacy'),
+    );
+    fireEvent.press(learnMoreText);
+    expect(Linking.openURL).toHaveBeenCalledWith(
+      AppConstants.URLS.PRIVACY_BEST_PRACTICES,
+    );
+  });
+
+  it('logs when the privacy best practices link fails to open', async () => {
+    const openError = new Error('cannot open url');
+    (Linking.openURL as jest.Mock).mockRejectedValueOnce(openError);
+    const loggerError = jest
+      .spyOn(Logger, 'error')
+      .mockImplementation(() => undefined);
+
+    const { getByText } = render(<DefaultSettings />);
+    fireEvent.press(
+      getByText(strings('default_settings.learn_more_about_privacy')),
+    );
+
+    await waitFor(() => {
+      expect(loggerError).toHaveBeenCalledWith(
+        openError,
+        'DefaultSettings: failed to open privacy best practices',
+      );
+    });
+    loggerError.mockRestore();
+  });
+
+  it('navigates to General Settings when pressed', () => {
+    const { getByText } = render(<DefaultSettings />);
+    const generalSettingsDrawer = getByText(
+      strings('default_settings.drawer_general_title'),
+    );
+    fireEvent.press(generalSettingsDrawer);
+    expect(mockNavigation.navigate).toHaveBeenCalledWith(
+      Routes.ONBOARDING.GENERAL_SETTINGS,
+    );
+  });
+
+  it('navigates to Assets Settings when pressed', () => {
+    const { getByText } = render(<DefaultSettings />);
+    const assetsSettingsDrawer = getByText(
+      strings('default_settings.drawer_assets_title'),
+    );
+    fireEvent.press(assetsSettingsDrawer);
+    expect(mockNavigation.navigate).toHaveBeenCalledWith(
+      Routes.ONBOARDING.ASSETS_SETTINGS,
+    );
+  });
+
+  it('navigates to Security Settings when pressed', () => {
+    const { getByText } = render(<DefaultSettings />);
+    const securitySettingsDrawer = getByText(
+      strings('default_settings.drawer_security_title'),
+    );
+    fireEvent.press(securitySettingsDrawer);
+    expect(mockNavigation.navigate).toHaveBeenCalledWith(
+      Routes.ONBOARDING.SECURITY_SETTINGS,
+    );
+  });
+
+  it('navigates back when the header back button is pressed', () => {
+    const { getAllByTestId } = render(<DefaultSettings />);
+    fireEvent.press(getAllByTestId('button-icon')[0]);
+    expect(mockNavigation.goBack).toHaveBeenCalled();
+  });
+
+  it('hides the empty Security category for consolidated SRP onboarding', () => {
+    (useSelector as jest.Mock).mockImplementation((selector) => {
+      if (selector === selectMobileUxBftcConsolidationFlagEnabled) return true;
+      if (selector === selectSeedlessOnboardingLoginFlow) return false;
+      return null;
+    });
+
+    const { queryByText } = render(<DefaultSettings />);
+
+    expect(
+      queryByText(strings('default_settings.drawer_security_title')),
+    ).toBeNull();
+  });
+
+  it('keeps the Security category for consolidated social-login onboarding', () => {
+    (useSelector as jest.Mock).mockImplementation((selector) => {
+      if (selector === selectMobileUxBftcConsolidationFlagEnabled) return true;
+      if (selector === selectSeedlessOnboardingLoginFlow) return true;
+      return null;
+    });
+
+    const { getByText } = render(<DefaultSettings />);
+
+    expect(
+      getByText(strings('default_settings.drawer_security_title')),
+    ).toBeOnTheScreen();
+  });
+});

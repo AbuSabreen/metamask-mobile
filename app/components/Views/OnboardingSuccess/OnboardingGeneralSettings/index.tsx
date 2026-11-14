@@ -1,0 +1,100 @@
+import React from 'react';
+import { ScrollView } from 'react-native';
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import { useSelector } from 'react-redux';
+import { useOnboardingHeader } from '../../../hooks/useOnboardingHeader';
+import Routes from '../../../../constants/navigation/Routes';
+import { strings } from '../../../../../locales/i18n';
+import BasicFunctionalityComponent from '../../../UI/BasicFunctionality/BasicFunctionality';
+import ManageNetworksComponent from '../../../UI/ManageNetworks/ManageNetworks';
+import BackupAndSyncToggle from '../../../UI/Identity/BackupAndSyncToggle/BackupAndSyncToggle';
+import { selectIsBackupAndSyncEnabled } from '../../../../selectors/identity';
+import { RootState } from '../../../../reducers';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import HeaderStandardGlass from '../../../../component-library/components-temp/HeaderStandardGlass';
+import { useHeaderGlassInset } from '../../../../component-library/components-temp/HeaderGlass';
+import { selectIsSocialLoginBasicFunctionalityLocked } from '../../../../selectors/featureFlagController/basicFunctionalityConsolidation';
+
+const GeneralSettings = () => {
+  const tw = useTailwind();
+  const { top: safeAreaTop } = useSafeAreaInsets();
+  const { inset: headerInset, onLayout: onHeaderLayout } = useHeaderGlassInset(
+    true,
+    safeAreaTop,
+  );
+  const navigation = useNavigation<AppNavigationProp>();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const isBasicFunctionalityEnabled = useSelector(
+    (state: RootState) => state?.settings?.basicFunctionalityEnabled,
+  );
+  const isBackupAndSyncEnabled = useSelector(selectIsBackupAndSyncEnabled);
+  const isSocialLoginBasicFunctionalityLocked = useSelector(
+    selectIsSocialLoginBasicFunctionalityLocked,
+  );
+
+  const handleSwitchToggle = () => {
+    if (isSocialLoginBasicFunctionalityLocked) {
+      return;
+    }
+    navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.SHEET.BASIC_FUNCTIONALITY,
+    });
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.SETTINGS_UPDATED)
+        .addProperties({
+          settings_group: 'onboarding_advanced_configuration',
+          settings_type: 'basic_functionality',
+          old_value: isBasicFunctionalityEnabled,
+          new_value: !isBasicFunctionalityEnabled,
+          was_profile_syncing_on: isBackupAndSyncEnabled,
+        })
+        .build(),
+    );
+  };
+
+  const trackBackupAndSyncToggleEvent = async () => {
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.SETTINGS_UPDATED)
+        .addProperties({
+          settings_group: 'onboarding_advanced_configuration',
+          settings_type: 'profile_syncing',
+          old_value: isBackupAndSyncEnabled,
+          new_value: !isBackupAndSyncEnabled,
+        })
+        .build(),
+    );
+  };
+
+  return (
+    <SafeAreaView edges={{ bottom: 'additive' }} style={tw.style('flex-1')}>
+      <HeaderStandardGlass
+        backdrop="static"
+        onLayout={onHeaderLayout}
+        includesTopInset
+        title={strings('default_settings.drawer_general_title')}
+        onBack={() => navigation.goBack()}
+      />
+      <ScrollView
+        style={[tw.style('flex-1 pt-4 px-4'), { marginTop: headerInset }]}
+      >
+        <BasicFunctionalityComponent
+          disabled={isSocialLoginBasicFunctionalityLocked}
+          handleSwitchToggle={handleSwitchToggle}
+        />
+        <BackupAndSyncToggle
+          trackBackupAndSyncToggleEventOverride={trackBackupAndSyncToggleEvent}
+        />
+        <ManageNetworksComponent />
+      </ScrollView>
+    </SafeAreaView>
+  );
+};
+
+export default GeneralSettings;

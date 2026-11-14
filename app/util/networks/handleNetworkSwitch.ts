@@ -1,13 +1,11 @@
-import { CurrencyRateController } from '@metamask/assets-controllers';
-import { InfuraNetworkType, toHex } from '@metamask/controller-utils';
-import { NetworkController } from '@metamask/network-controller';
-import { getNetworkTypeById } from './index';
+import { toHex } from '@metamask/controller-utils';
 import Engine from '../../core/Engine';
 import {
-  selectChainId,
-  selectNetworkConfigurations,
+  selectEvmChainId,
+  selectEvmNetworkConfigurationsByChainId,
 } from '../../selectors/networkController';
 import { store } from '../../store';
+import { MultichainNetworkController } from '@metamask/multichain-network-controller';
 
 /**
  * Switch to the given chain ID.
@@ -23,12 +21,12 @@ const handleNetworkSwitch = (switchToChainId: string): string | undefined => {
     return;
   }
 
-  const currencyRateController = Engine.context
-    .CurrencyRateController as CurrencyRateController;
-  const networkController = Engine.context
-    .NetworkController as NetworkController;
-  const chainId = selectChainId(store.getState());
-  const networkConfigurations = selectNetworkConfigurations(store.getState());
+  const multichainNetworkController = Engine.context
+    .MultichainNetworkController as MultichainNetworkController;
+  const chainId = selectEvmChainId(store.getState());
+  const networkConfigurations = selectEvmNetworkConfigurationsByChainId(
+    store.getState(),
+  );
 
   // If current network is the same as the one we want to switch to, do nothing
   if (chainId === toHex(switchToChainId)) {
@@ -41,21 +39,13 @@ const handleNetworkSwitch = (switchToChainId: string): string | undefined => {
   );
 
   if (entry) {
-    const [networkConfigurationId, networkConfiguration] = entry;
-    const { ticker, nickname } = networkConfiguration;
-    currencyRateController.updateExchangeRate(ticker);
-    networkController.setActiveNetwork(networkConfigurationId);
+    const [, { name: nickname, rpcEndpoints, defaultRpcEndpointIndex }] = entry;
+
+    const { networkClientId } = rpcEndpoints[defaultRpcEndpointIndex];
+    multichainNetworkController.setActiveNetwork(networkClientId);
+
     return nickname;
-  }
-
-  const networkType = getNetworkTypeById(switchToChainId);
-
-  if (networkType) {
-    currencyRateController.updateExchangeRate('ETH');
-    // TODO: Align mobile and core types to remove this type cast
-    networkController.setProviderType(networkType as InfuraNetworkType);
-    return networkType;
   }
 };
 
-export default handleNetworkSwitch;
+export { handleNetworkSwitch };

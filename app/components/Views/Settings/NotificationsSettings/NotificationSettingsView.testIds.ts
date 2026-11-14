@@ -1,0 +1,27 @@
+import enContent from '../../../../../locales/languages/en.json';
+
+export const NotificationSettingsViewSelectorsText = {
+  ACCOUNT_ACTIVITY_SECTION:
+    enContent.app_settings.notifications_opts.account_session_title,
+};
+
+export const NotificationSettingsViewSelectorsIDs = {
+  NOTIFICATIONS_TOGGLE: 'notification-settings-notifications-toggle',
+  PUSH_NOTIFICATIONS_TOGGLE: 'notification-settings-push-notifications-toggle',
+  FEATURE_ANNOUNCEMENTS_TOGGLE:
+    'notification-settings-feature-announcements-toggle',
+  FEATURE_ANNOUNCEMENT_SEPARATOR:
+    'notification-settings-feature-announcements-separator',
+  SECTION_SCROLL_VIEW: 'notification-settings-section-scroll-view',
+  WALLET_ACTIVITY_LIST: 'notification-settings-wallet-activity-list',
+  PERPS_NOTIFICATIONS_TOGGLE:
+    'notification-settings-perps-notifications-toggle',
+  ACCOUNT_NOTIFICATIONS_SELECT_ALL:
+    'notification-settings-account-notifications-select-all',
+  ACCOUNT_NOTIFICATION_TOGGLE: (address: string) =>
+    `notification-settings-account-notifications-${address}`,
+  FEATURE_GATE_SHEET: 'notification-settings-feature-gate-sheet',
+  FEATURE_GATE_CLOSE_BUTTON: 'notification-settings-feature-gate-close-button',
+  FEATURE_GATE_TURN_ON_BUTTON:
+    'notification-settings-feature-gate-turn-on-button',
+};

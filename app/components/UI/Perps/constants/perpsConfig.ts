@@ -1,0 +1,534 @@
+/**
+ * Perps configuration constants - Mobile UI layer
+ *
+ * Controller-portable exports live in controllers/constants/perpsConfig.ts
+ * and should be imported from '@metamask/perps-controller/constants/perpsConfig'.
+ *
+ * This file contains:
+ * - UI-only configuration constants (layout, display, navigation)
+ * - Mobile-specific exports (TokenI)
+ */
+import type { Hex } from '@metamask/utils';
+import {
+  CHASE_ORDER_STATUS,
+  HYPERLIQUID_TWAP_LIMITS,
+  type ChaseOrder,
+} from '@metamask/perps-controller';
+import { TokenI } from '../../Tokens/types';
+import {
+  PERPS_ADL_URL,
+  PERPS_TROUBLESHOOT_URL,
+  METAMASK_SUPPORT_URL,
+} from '../../../../constants/urls';
+import { DAY } from '../../../../constants/time';
+
+/** Address used to represent "Perps balance" as the payment token (synthetic option). */
+export const PERPS_BALANCE_PLACEHOLDER_ADDRESS =
+  '0x0000000000000000000000000000000000000000' as Hex;
+
+/**
+ * Collateral asset shown in market pair labels (e.g. `ETH-USD perp`).
+ * Perps markets are USD-margined, so this is the display quote across the UI.
+ */
+export const PERPS_COLLATERAL_SYMBOL = 'USD';
+
+/** Chain id used for the "Perps balance" payment option. */
+export { ARBITRUM_MAINNET_CHAIN_ID_HEX as PERPS_BALANCE_CHAIN_ID } from '@metamask/perps-controller/constants/hyperLiquidConfig';
+import {
+  HYPERLIQUID_MAINNET_CHAIN_ID,
+  HYPERLIQUID_TESTNET_CHAIN_ID,
+} from '@metamask/perps-controller/constants/hyperLiquidConfig';
+
+export { HYPERLIQUID_MAINNET_CHAIN_ID, HYPERLIQUID_TESTNET_CHAIN_ID };
+
+/**
+ * Minimum perps balance (USD) threshold for default pay token logic.
+ * When available perps balance is above this, we do not preselect a pay token.
+ * When below, we may preselect the allowlist token with highest balance.
+ * Also used as the minimum token balance (USD) to consider for preselection.
+ */
+export const PERPS_MIN_BALANCE_THRESHOLD = 0.01;
+
+/**
+ * Minimum number of aggregators (exchanges) a token must be listed on
+ * to be considered trustworthy for showing the Perps Discovery Banner.
+ * Native tokens (ETH, BNB, etc.) bypass this check.
+ */
+export const PERPS_MIN_AGGREGATORS_FOR_TRUST = 2;
+
+/**
+ * Decimal places shown for a taker/maker fee rate percentage (e.g.
+ * `0.00143` → `"0.143"`). Used by `PerpsFeesDisplay`'s percentage mode
+ * (Perps Fee Display Format A/B test).
+ */
+export const PERPS_FEE_RATE_DISPLAY_DECIMALS = 3;
+
+/**
+ * Checks if an asset is trustworthy for displaying the Perps Discovery Banner.
+ * An asset is considered trustworthy if:
+ * - It is a native asset (ETH, BNB, SOL, etc.), OR
+ * - It is listed on at least PERPS_MIN_AGGREGATORS_FOR_TRUST exchanges
+ *
+ * @param asset - Asset object (TokenI or partial TokenI)
+ * @returns true if the asset is trustworthy, false otherwise
+ */
+export const isTokenTrustworthyForPerps = (asset: Partial<TokenI>): boolean => {
+  const isNativeAsset = asset.isNative || asset.isETH;
+  const hasEnoughAggregators =
+    (asset.aggregators?.length ?? 0) >= PERPS_MIN_AGGREGATORS_FOR_TRUST;
+  return isNativeAsset || hasEnoughAggregators;
+};
+
+// ─── UI-only configuration constants ───────────────────────────────────
+// These are purely UI concerns (layout, display, navigation) with zero
+// controller-layer consumers.
+
+/**
+ * Redesigned confirmations screen header configuration (Perps)
+ * Controls whether the Perps header is shown when navigating to the confirmation screen
+ */
+export const CONFIRMATION_HEADER_CONFIG = {
+  /** Default: show Perps header when opening confirmations from Perps flows */
+  DefaultShowPerpsHeader: true,
+  /** Hide Perps header when navigating from deposit-and-trade flow */
+  ShowPerpsHeaderForDepositAndTrade: false,
+} as const;
+
+/**
+ * Leverage slider UI configuration
+ * Controls the visual and interactive aspects of the leverage slider
+ */
+export const LEVERAGE_SLIDER_CONFIG = {
+  // Step sizes for tick marks based on max leverage
+  TickStepLow: 5, // Step size when max leverage <= 20
+  TickStepMedium: 10, // Step size when max leverage <= 50
+  TickStepHigh: 20, // Step size when max leverage > 50
+
+  // Thresholds for determining tick step size
+  MaxLeverageLowThreshold: 20,
+  MaxLeverageMediumThreshold: 50,
+} as const;
+
+/**
+ * Maximum number of digits allowed in any perps price/size/percentage input.
+ * Prevents overflow and keeps inputs within safe numeric range.
+ */
+export const MAX_PERPS_INPUT_DIGITS = 9;
+
+const MINUTES_PER_HOUR = 60;
+const HOURS_PER_DAY = 24;
+const SECONDS_PER_MINUTE = 60;
+const MILLISECONDS_PER_SECOND = 1000;
+const TWAP_DEFAULT_DURATION_MINUTES = 30;
+const TWAP_LIVE_UPDATE_INTERVAL_MS = 5000;
+const TWAP_HISTORY_PAGE_SIZE = 20;
+const TWAP_FILL_HISTORY_PAGE_SIZE = 50;
+// Hyperliquid's `randomize` TWAP option varies individual suborder sizes by
+// up to 20%: https://hyperliquid.gitbook.io/hyperliquid-docs/trading/order-types#twap
+const TWAP_RANDOMIZE_VARIANCE_PERCENT = 20;
+// Hyperliquid submits one TWAP suborder every 30 seconds, so the suborder count
+// is the runtime divided by this interval:
+// https://hyperliquid.gitbook.io/hyperliquid-docs/trading/order-types#twap
+const TWAP_SUBORDER_INTERVAL_SECONDS = 30;
+
+/**
+ * Mobile-only TWAP input and copy configuration derived from the controller's
+ * executable Hyperliquid limits. Controller v13 caps duration at 1,440 minutes
+ * and exposes neither TWAP trigger price nor max price, so Mobile intentionally
+ * omits those venue-documented fields until Core owns executable contracts.
+ */
+export const PERPS_TWAP_UI_CONFIG = {
+  MinutesPerHour: MINUTES_PER_HOUR,
+  HoursPerDay: HOURS_PER_DAY,
+  SecondsPerMinute: SECONDS_PER_MINUTE,
+  MillisecondsPerSecond: MILLISECONDS_PER_SECOND,
+  SuborderIntervalSeconds: TWAP_SUBORDER_INTERVAL_SECONDS,
+  MinimumDurationMinutes: HYPERLIQUID_TWAP_LIMITS.MinDurationMinutes,
+  MaximumDurationMinutes: HYPERLIQUID_TWAP_LIMITS.MaxDurationMinutes,
+  MinimumNotionalUsd: HYPERLIQUID_TWAP_LIMITS.MinNotionalUsd,
+  DefaultMinutes: String(TWAP_DEFAULT_DURATION_MINUTES),
+  MaximumDays: Math.floor(
+    HYPERLIQUID_TWAP_LIMITS.MaxDurationMinutes /
+      (HOURS_PER_DAY * MINUTES_PER_HOUR),
+  ),
+  MaximumHours: HOURS_PER_DAY - 1,
+  MaximumMinutes: MINUTES_PER_HOUR - 1,
+  DurationRangeI18nValues: {
+    minDurationMinutes: HYPERLIQUID_TWAP_LIMITS.MinDurationMinutes,
+    maxDurationHours:
+      HYPERLIQUID_TWAP_LIMITS.MaxDurationMinutes / MINUTES_PER_HOUR,
+  },
+  MinimumSizeI18nValues: {
+    minNotionalUsd: HYPERLIQUID_TWAP_LIMITS.MinNotionalUsd,
+  },
+  RandomizeI18nValues: {
+    randomizeVariancePercent: TWAP_RANDOMIZE_VARIANCE_PERCENT,
+  },
+  /** REST fill reconciliation while the venue schedule stream is active. */
+  LiveUpdateIntervalMs: TWAP_LIVE_UPDATE_INTERVAL_MS,
+  /** Maximum schedule cards mounted on one History page. */
+  HistoryPageSize: TWAP_HISTORY_PAGE_SIZE,
+  /** Maximum fill rows mounted on one Fill History page. */
+  FillHistoryPageSize: TWAP_FILL_HISTORY_PAGE_SIZE,
+} as const;
+
+export const CHASE_ORDER_UI_CONFIG = {
+  RefreshIntervalMs: 1000,
+  DiscoveryRetryMaxAttempts: 4,
+  DiscoveryRetryMaxDelayMs: 8000,
+  BackgroundSuspensionTimeoutMs: 3000,
+  TerminalHistoryLimit: 50,
+  AggregatedOmissionGraceReads: 1,
+} as const;
+
+export const CHASE_HISTORY_STATUSES: ReadonlySet<ChaseOrder['status']> =
+  new Set([
+    CHASE_ORDER_STATUS.Backgrounded,
+    CHASE_ORDER_STATUS.Canceled,
+    CHASE_ORDER_STATUS.DurationReached,
+    CHASE_ORDER_STATUS.Failed,
+    CHASE_ORDER_STATUS.Filled,
+    CHASE_ORDER_STATUS.MaxDistanceReached,
+    CHASE_ORDER_STATUS.RepricingLimitReached,
+  ]);
+
+export const CHASE_RETAINED_STATUSES: ReadonlySet<ChaseOrder['status']> =
+  new Set([CHASE_ORDER_STATUS.Active, CHASE_ORDER_STATUS.TerminationPending]);
+
+/**
+ * Decimal places used when displaying how far a position's current price sits
+ * from its liquidation price, as a percentage. Whole-number rounding hid
+ * meaningful headroom — a position 0.4% from liquidation displayed as 0%.
+ */
+export const LIQUIDATION_DISTANCE_DECIMALS = 2;
+
+/**
+ * Share of position notional kept back from the removable-margin maximum.
+ * The exchange re-checks the transfer requirement at the mark price it sees on
+ * submit, and isolated margin moves 1:1 with that price, so a max computed from
+ * the last position snapshot with no headroom is rejected on any adverse tick.
+ */
+export const MARGIN_REMOVAL_PRICE_MOVE_BUFFER = 0.01;
+
+/**
+ * How long a remove-margin form trusts a fresh read that stopped a removal
+ * over the live stream. Later submissions are still re-checked before sending.
+ */
+export const MARGIN_REMOVAL_FRESH_LIMIT_HOLD_MS = 10_000;
+
+/**
+ * TP/SL View UI configuration
+ * Controls the Take Profit / Stop Loss screen behavior and display options
+ */
+export const TP_SL_VIEW_CONFIG = {
+  // Quick percentage button presets for Take Profit (positive RoE percentages)
+  TakeProfitRoePresets: [10, 25, 50, 100], // +10%, +25%, +50%, +100% RoE
+
+  // Quick percentage button presets for Stop Loss (negative RoE percentages)
+  StopLossRoePresets: [-5, -10, -25, -50], // -5%, -10%, -25%, -50% RoE
+
+  // WebSocket price update throttle delay (milliseconds)
+  // Reduces re-renders by batching price updates in the TP/SL screen
+  PriceThrottleMs: 1000,
+
+  // WebSocket position update throttle delay (milliseconds)
+  // The screen only reads position existence, so it does not need every tick
+  PositionThrottleMs: 1000,
+
+  // Maximum number of digits allowed in price/percentage input fields
+  // Prevents overflow and maintains reasonable input constraints
+  MaxInputDigits: MAX_PERPS_INPUT_DIGITS,
+
+  // Keypad configuration for price inputs
+  // USD_PERPS is not a real currency - it's a custom configuration
+  // that allows 5 decimal places for crypto prices, overriding the
+  // default USD configuration which only allows 2 decimal places
+  KeypadCurrencyCode: 'USD_PERPS' as const,
+  KeypadDecimals: 5,
+
+  // Longest wait for a sheet close animation before confirming anyway.
+  // Comfortably past the animation, short enough not to read as a hang.
+  DismissTimeoutMs: 1000,
+} as const;
+
+/**
+ * Limit price configuration
+ * Controls preset percentages and behavior for limit orders
+ */
+export const LIMIT_PRICE_CONFIG = {
+  // Preset percentage options for quick selection
+  PresetPercentages: [1, 2], // Available as both positive and negative
+
+  // Modal opening delay when switching to limit order (milliseconds)
+  // Allows order type modal to close smoothly before opening limit price modal
+  ModalOpenDelay: 300,
+
+  // Direction-specific preset configurations (Mid/Bid/Ask buttons handled separately)
+  LongPresets: [-1, -2], // Buy below market for long orders
+  ShortPresets: [1, 2], // Sell above market for short orders
+
+  // Maximum allowed deviation of the order price from the reference (mark)
+  // price, as a decimal (0.95 = 95%). HyperLiquid rejects orders whose price is
+  // more than 95% away from the reference price ("oracleRejected"). The check is
+  // ratio-based: the smaller of the order price and the reference price must be
+  // at least (1 - 0.95) = 5% of the larger one. We block submission up front
+  // instead of letting the order fail at the exchange.
+  MaxDeviationFromMarket: 0.95,
+
+  // Warn when a limit/scale price is more than 5% from the near-touch
+  // (best bid long, best ask short). Equal to 5% does not warn.
+  FarFromMarketThreshold: 0.05,
+
+  // Keypad decimal places for the shared USD_PERPS currency override used by
+  // both the full-screen limit-price sheet and the Trade sheet editor.
+  KeypadDecimals: 5,
+} as const;
+
+// Local warning-type literal. PERPS_EVENT_VALUE.WARNING_TYPE has no
+// far-from-market member.
+export const FAR_FROM_MARKET_WARNING_INTERACTION =
+  'far_from_market_warning_shown';
+export const FAR_FROM_MARKET_WARNING_TYPE = 'limit_price_far_from_market';
+
+export { FUNDING_RATE_CONFIG } from '@metamask/perps-controller';
+
+export const PAGE_WINDOW_MS = 30 * DAY;
+
+export const MAX_LOOKBACK_MS = 365 * DAY;
+
+export const PERPS_GTM_WHATS_NEW_MODAL = 'perps-gtm-whats-new-modal';
+export const PERPS_GTM_MODAL_ENGAGE = 'engage';
+export const PERPS_GTM_MODAL_DECLINE = 'decline';
+
+/**
+ * Retry policy for per-asset market-data fetches (TAT-3645).
+ *
+ * `getMarkets` throws while the Perps connection is still initialising (e.g.
+ * `CLIENT_NOT_INITIALIZED` right after unlocking, or during a reconnect). That
+ * is transient, not a verdict about the asset, so the fetch is retried across
+ * the initialisation window instead of being surfaced as a failure. The total
+ * budget comfortably covers a provider re-initialisation, which is ~1.5s.
+ */
+export const MARKET_DATA_FETCH_RETRY_CONFIG = {
+  /** Extra attempts after the first, when the fetch throws. */
+  MaxRetries: 3,
+  /** Delay between attempts. */
+  RetryDelayMs: 1000,
+} as const;
+
+/**
+ * Longest a filled market close keeps its market locked while the positions
+ * stream catches up. Bounded so a stalled stream cannot block closing.
+ */
+export const PERPS_CLOSE_STREAM_CONFIRM_TIMEOUT_MS = 10_000;
+
+/**
+ * Longest a pay-with-token order waits, after its deposit confirms on-chain,
+ * for HyperLiquid to credit the Perps balance before giving up on the order.
+ */
+export const PERPS_PAY_WITH_TOKEN_CREDIT_TIMEOUT_MS = 90_000;
+
+/** Extra capability requests after transient provider unavailability. */
+export const PERPS_ORDER_CAPABILITIES_MAX_RETRIES = 2;
+
+/** Initial delay for exponential capability-request retries. */
+export const PERPS_ORDER_CAPABILITIES_RETRY_BASE_DELAY_MS = 500;
+
+/**
+ * Development-only configuration for testing and debugging
+ * These constants are only active when __DEV__ is true
+ */
+export const DEVELOPMENT_CONFIG = {
+  // Magic number to simulate rewards error state (set order amount to this value)
+  SimulateRewardsErrorAmount: 42,
+
+  // Magic number to simulate rewards loading state
+  SimulateRewardsLoadingAmount: 43,
+
+  // Future: Add other development helpers as needed
+} as const;
+
+/**
+ * Home screen configuration
+ * Controls carousel limits and display settings for the main Perps home screen
+ */
+export const HOME_SCREEN_CONFIG = {
+  // Show action buttons (Add Funds / Withdraw) in header instead of fixed footer
+  // Can be controlled via feature flag in the future
+  ShowHeaderActionButtons: true,
+
+  // Maximum number of items to show in each carousel.
+  // Note: positions and orders are intentionally uncapped on the home screen —
+  // they render in a vertical ScrollView and must show every open entry.
+  TrendingMarketsLimit: 5,
+  RecentActivityLimit: 3,
+
+  // Carousel display behavior
+  CarouselSnapAlignment: 'start' as const,
+  CarouselVisibleItems: 1.2, // Show 1 full item + 20% of next
+
+  // Icon sizes for consistent display across sections
+  DefaultIconSize: 40, // Default token icon size for cards and rows
+} as const;
+
+/**
+ * Learn more card configuration
+ * External resources and content for Perps education
+ */
+export const LEARN_MORE_CONFIG = {
+  ExternalUrl: 'https://metamask.io/perps',
+  TitleKey: 'perps.tutorial.card.title',
+  DescriptionKey: 'perps.learn_more.description',
+  CtaKey: 'perps.learn_more.cta',
+} as const;
+
+/**
+ * Support configuration
+ * Contact support button configuration (matches Settings behavior)
+ */
+export const SUPPORT_CONFIG = {
+  Url: METAMASK_SUPPORT_URL,
+  TitleKey: 'perps.support.title',
+  DescriptionKey: 'perps.support.description',
+} as const;
+
+/**
+ * Service interruption (outage) banner configuration
+ * The FAQ link opens the Perps disruption article so users can manage
+ * positions while trading is degraded. The support link opens the MetaMask
+ * help center through the consent flow, the same destination as the general
+ * contact-support button.
+ */
+export const SERVICE_INTERRUPTION_CONFIG = {
+  FaqUrl: PERPS_TROUBLESHOOT_URL,
+  FaqTitleKey: 'perps.service_interruption.faq_title',
+  SupportUrl: METAMASK_SUPPORT_URL,
+} as const;
+
+/**
+ * Feedback survey configuration
+ * External survey for collecting user feedback on Perps trading experience
+ */
+export const FEEDBACK_CONFIG = {
+  Url: 'https://survey.alchemer.com/s3/8649911/MetaMask-Perps-Trading-Feedback',
+  TitleKey: 'perps.feedback.title',
+} as const;
+
+/**
+ * Support article URLs
+ * Links to specific MetaMask support articles for Perps features
+ */
+export const PERPS_SUPPORT_ARTICLES_URLS = {
+  AdlUrl: PERPS_ADL_URL,
+} as const;
+
+/**
+ * Stop loss prompt banner configuration
+ * Controls when and how the stop loss prompt banner is displayed
+ * Based on TAT-1693 specifications
+ */
+export const STOP_LOSS_PROMPT_CONFIG = {
+  // Distance to liquidation threshold (percentage)
+  // Shows "Add margin" banner when position is within this % of liquidation
+  LiquidationDistanceThreshold: 3,
+
+  // ROE (Return on Equity) threshold (percentage)
+  // Shows "Set stop loss" banner when ROE drops below this value
+  RoeThreshold: -10,
+
+  // Minimum loss threshold to show ANY banner (percentage)
+  // No banner shown until ROE drops below this value
+  MinLossThreshold: -10,
+
+  // Minimum position age before showing any banner (milliseconds)
+  // Prevents banner from appearing immediately after opening a position
+  PositionMinAgeMs: 120_000, // 2 minutes
+
+  // Suggested stop loss ROE percentage
+  // When suggesting a stop loss, calculate price at this ROE from entry
+  SuggestedStopLossRoe: -50,
+} as const;
+
+/**
+ * Provider configuration
+ * Controls which perpetual DEX providers are available
+ */
+export const PROVIDER_CONFIG = {
+  /** Default perpetual DEX provider when no explicit selection exists */
+  DefaultProvider: 'hyperliquid' as const,
+  /** Controller mode that aggregates reads across active providers. */
+  AggregatedProvider: 'aggregated' as const,
+  /** Provider whose Scale quantities are normalized by the venue. */
+  VenueSizedScaleProvider: 'lighter' as const,
+  /** Trades from its own balance, so it has no deposit-with-order route. */
+  LighterProvider: 'lighter' as const,
+} as const;
+
+/** Network mode for perps (testnet vs mainnet). */
+export type PerpsNetwork = 'mainnet' | 'testnet';
+
+/**
+ * Chain IDs for each perps provider by network.
+ * Identifies the provider's native chain (where "Perps balance" lives) so callers
+ * can exclude it from pay-with-any-token allowlist or filter tokens.
+ * Add entries when integrating new providers.
+ */
+export const PERPS_PROVIDER_CHAIN_IDS: Record<
+  string,
+  Partial<Record<PerpsNetwork, string>>
+> = {
+  hyperliquid: {
+    mainnet: HYPERLIQUID_MAINNET_CHAIN_ID,
+    testnet: HYPERLIQUID_TESTNET_CHAIN_ID,
+  },
+};
+
+/**
+ * Returns the chain ID for the given perps provider and network.
+ * Used to exclude the provider's native chain from pay-with-any-token options.
+ *
+ * @param provider - Perps provider (e.g. 'hyperliquid'). Use concrete provider;
+ * for 'aggregated' mode callers should pass PROVIDER_CONFIG.DefaultProvider.
+ * @param network - 'mainnet' or 'testnet'
+ * @returns Chain ID hex string, or undefined if provider has no chain configured
+ */
+export function getPerpsProviderChainId(
+  provider: string,
+  network: PerpsNetwork,
+): string | undefined {
+  return PERPS_PROVIDER_CHAIN_IDS[provider]?.[network];
+}
+
+// Re-export disk cache constants from controller layer
+export {
+  PERPS_DISK_CACHE_MARKETS,
+  PERPS_DISK_CACHE_USER_DATA,
+  PERPS_DISK_CACHE_THROTTLE_MS,
+} from '@metamask/perps-controller/constants/perpsConfig';
+
+/** Source identifiers for PerpsConnectionManager.connect/ensureConnected/resumeFromForeground calls. */
+export const PERPS_CONNECTION_SOURCE = {
+  WALLET_ROOT_MOUNT: 'wallet_root_mount',
+  WALLET_ROOT_RETRY: 'wallet_root_retry',
+  WALLET_ROOT_FOREGROUND: 'wallet_root_foreground',
+  TUTORIAL_PRELOAD: 'tutorial_preload',
+  PERPS_FULLSCREEN_ENTRY: 'perps_fullscreen_entry',
+  PERPS_CONNECTION_PROVIDER: 'perps_connection_provider',
+  UNSPECIFIED: 'unspecified',
+} as const;
+
+/**
+ * Pro-mode layout defaults that intentionally differ from the shared controller
+ * defaults. Mobile shows the order-book column pinned right; Extension opens its
+ * slide-in panel closed on the left. Confirmed as a deliberate per-platform
+ * split, so mobile overrides rather than changing the shared default.
+ *
+ * Applied to fresh installs at controller init; migration 151 moves installs
+ * that were created before the split.
+ */
+export const MOBILE_PRO_LAYOUT_DEFAULTS = {
+  orderBookExpanded: true,
+  orderBookPosition: 'right',
+} as const;
+/** Maximum retained development submission/cancellation records and Scale form lifetimes. */
+export const PERPS_UI_OBSERVATION_LIMIT = 50;

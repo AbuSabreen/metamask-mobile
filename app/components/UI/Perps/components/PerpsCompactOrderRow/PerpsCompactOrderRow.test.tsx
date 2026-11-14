@@ -1,0 +1,284 @@
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react-native';
+import PerpsCompactOrderRow from './PerpsCompactOrderRow';
+import { type Order } from '@metamask/perps-controller';
+const { mockTheme } = jest.requireActual('../../../../../util/theme');
+
+// Mock dependencies
+jest.mock('../../../../../component-library/hooks', () => ({
+  useStyles: () => ({
+    styles: {
+      container: {},
+      leftSection: {},
+      infoContainer: {},
+      rightSection: {},
+      priceText: {},
+      labelText: {},
+    },
+    theme: mockTheme,
+  }),
+}));
+
+jest.mock('../../utils/formatUtils', () => ({
+  formatPositionSize: jest.fn((value) => value),
+  formatPerpsFiat: jest.fn((value) => `$${value.toFixed(2)}`),
+  PRICE_RANGES_UNIVERSAL: [{ id: 'universal' }],
+}));
+
+jest.mock('@metamask/perps-controller', () => ({
+  getPerpsDisplaySymbol: jest.fn((symbol) => symbol),
+  PERPS_CONSTANTS: {
+    FallbackPriceDisplay: '$---',
+  },
+  isLimitExecutionOrderType: jest.fn((orderType) =>
+    String(orderType).includes('limit'),
+  ),
+  isTPSLOrder: jest.fn(
+    (detailedOrderType?: string) =>
+      (detailedOrderType ?? '').toLowerCase().includes('take profit') ||
+      (detailedOrderType ?? '').toLowerCase().includes('stop'),
+  ),
+}));
+
+jest.mock('../PerpsTokenLogo', () => 'PerpsTokenLogo');
+
+describe('PerpsCompactOrderRow', () => {
+  const mockLimitBuyOrder: Order = {
+    orderId: 'order-123',
+    symbol: 'BTC',
+    size: '0.5',
+    originalSize: '0.5',
+    filledSize: '0',
+    remainingSize: '0.5',
+    price: '50000',
+    side: 'buy',
+    orderType: 'limit',
+    timestamp: Date.now(),
+    status: 'open',
+    reduceOnly: false,
+    detailedOrderType: 'Limit',
+  };
+
+  const mockLimitSellOrder: Order = {
+    ...mockLimitBuyOrder,
+    orderId: 'order-456',
+    side: 'sell',
+  };
+
+  const mockMarketOrder: Order = {
+    ...mockLimitBuyOrder,
+    orderId: 'order-789',
+    orderType: 'market',
+    detailedOrderType: 'Market',
+  };
+
+  const mockTriggerOrder: Order = {
+    ...mockLimitBuyOrder,
+    orderId: 'order-trigger',
+    orderType: 'limit',
+    isTrigger: true,
+    price: '48000',
+    triggerPrice: '47000',
+    detailedOrderType: 'Stop Market',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders order info for limit buy order', () => {
+    render(<PerpsCompactOrderRow order={mockLimitBuyOrder} />);
+
+    expect(screen.getByText('Limit long')).toBeOnTheScreen();
+    expect(screen.getByText('0.5 BTC')).toBeOnTheScreen();
+    expect(screen.getByText('Limit price')).toBeOnTheScreen();
+  });
+
+  it('renders order info for limit sell order (short direction)', () => {
+    render(<PerpsCompactOrderRow order={mockLimitSellOrder} />);
+
+    expect(screen.getByText('Limit short')).toBeOnTheScreen();
+  });
+
+  it('renders market price label for market orders', () => {
+    render(<PerpsCompactOrderRow order={mockMarketOrder} />);
+
+    expect(screen.getByText('Market price')).toBeOnTheScreen();
+    expect(screen.getByText('Market long')).toBeOnTheScreen();
+  });
+
+  it('renders long direction for a non-reduce-only buy trigger', () => {
+    render(<PerpsCompactOrderRow order={mockTriggerOrder} />);
+
+    expect(screen.getByText('Stop market long')).toBeOnTheScreen();
+  });
+
+  it('renders market price for trigger-market with a valid trigger', () => {
+    render(<PerpsCompactOrderRow order={mockTriggerOrder} />);
+
+    expect(screen.getByText('Market')).toBeOnTheScreen();
+    expect(screen.getByText('Market price')).toBeOnTheScreen();
+  });
+
+  it('ignores cap price for trigger-market without a valid trigger', () => {
+    const triggerOrderWithInvalidTriggerPrice: Order = {
+      ...mockTriggerOrder,
+      orderType: 'market',
+      detailedOrderType: 'Stop Market',
+      triggerPrice: '0',
+      price: '48000',
+    };
+
+    render(
+      <PerpsCompactOrderRow order={triggerOrderWithInvalidTriggerPrice} />,
+    );
+
+    expect(screen.getByText('Market')).toBeOnTheScreen();
+    expect(screen.getByText('Market price')).toBeOnTheScreen();
+    expect(screen.queryByText('Trigger price')).toBeNull();
+  });
+
+  it('uses limit price label when trigger price is invalid for trigger-limit orders', () => {
+    const triggerLimitOrderWithInvalidTriggerPrice: Order = {
+      ...mockTriggerOrder,
+      detailedOrderType: 'Take Profit Limit',
+      triggerPrice: '0',
+      price: '46000',
+    };
+
+    render(
+      <PerpsCompactOrderRow order={triggerLimitOrderWithInvalidTriggerPrice} />,
+    );
+
+    expect(screen.getByText('Limit price')).toBeOnTheScreen();
+    expect(screen.queryByText('Trigger price')).toBeNull();
+  });
+
+  it('renders unavailable price for trigger-limit order without a limit price', () => {
+    const triggerLimitOrderWithoutPrice: Order = {
+      ...mockTriggerOrder,
+      triggerOrderType: 'take_profit_limit',
+      detailedOrderType: 'Take Profit Limit',
+      triggerPrice: '47000',
+      price: '0',
+    };
+
+    render(<PerpsCompactOrderRow order={triggerLimitOrderWithoutPrice} />);
+
+    expect(screen.getByText('$---')).toBeOnTheScreen();
+    expect(screen.getByText('Limit price')).toBeOnTheScreen();
+    expect(screen.queryByText('Market')).toBeNull();
+  });
+
+  it('uses order price for limit orders', () => {
+    const { formatPerpsFiat } = jest.requireMock('../../utils/formatUtils');
+    render(<PerpsCompactOrderRow order={mockLimitBuyOrder} />);
+
+    // Should have called formatPerpsFiat with the order price value (50000)
+    expect(formatPerpsFiat).toHaveBeenCalledWith(50000, expect.any(Object));
+  });
+
+  it('formats price with PRICE_RANGES_UNIVERSAL for market-appropriate decimals', () => {
+    const { formatPerpsFiat, PRICE_RANGES_UNIVERSAL } = jest.requireMock(
+      '../../utils/formatUtils',
+    );
+    render(<PerpsCompactOrderRow order={mockLimitBuyOrder} />);
+
+    expect(formatPerpsFiat).toHaveBeenCalledWith(50000, {
+      ranges: PRICE_RANGES_UNIVERSAL,
+    });
+  });
+
+  it('calls onPress when tapped', () => {
+    const mockOnPress = jest.fn();
+    render(
+      <PerpsCompactOrderRow
+        order={mockLimitBuyOrder}
+        onPress={mockOnPress}
+        testID="compact-order-row"
+      />,
+    );
+
+    fireEvent.press(screen.getByTestId('compact-order-row'));
+
+    expect(mockOnPress).toHaveBeenCalled();
+  });
+
+  it('is disabled when no onPress handler is provided', () => {
+    render(
+      <PerpsCompactOrderRow
+        order={mockLimitBuyOrder}
+        testID="compact-order-row"
+      />,
+    );
+
+    // TouchableOpacity should be disabled - we verify by checking it renders
+    expect(screen.getByTestId('compact-order-row')).toBeOnTheScreen();
+  });
+
+  it('renders with custom testID', () => {
+    render(
+      <PerpsCompactOrderRow
+        order={mockLimitBuyOrder}
+        testID="custom-test-id"
+      />,
+    );
+
+    expect(screen.getByTestId('custom-test-id')).toBeOnTheScreen();
+  });
+
+  it('formats position size correctly', () => {
+    const { formatPositionSize } = jest.requireMock('../../utils/formatUtils');
+    render(<PerpsCompactOrderRow order={mockLimitBuyOrder} />);
+
+    expect(formatPositionSize).toHaveBeenCalledWith('0.5');
+  });
+
+  it('gets display symbol for the order', () => {
+    const { getPerpsDisplaySymbol } = jest.requireMock(
+      '@metamask/perps-controller',
+    );
+    render(<PerpsCompactOrderRow order={mockLimitBuyOrder} />);
+
+    expect(getPerpsDisplaySymbol).toHaveBeenCalledWith('BTC');
+  });
+
+  it('handles order without detailedOrderType', () => {
+    const orderWithoutDetailedType: Order = {
+      ...mockLimitBuyOrder,
+      detailedOrderType: undefined,
+    };
+    render(<PerpsCompactOrderRow order={orderWithoutDetailedType} />);
+
+    // Falls back to 'Limit' for order type display
+    expect(screen.getByText('Limit long')).toBeOnTheScreen();
+  });
+
+  it('shows close long for reduce-only sell orders', () => {
+    const reduceOnlySellOrder: Order = {
+      ...mockLimitBuyOrder,
+      side: 'sell',
+      reduceOnly: true,
+      detailedOrderType: 'Take Profit Limit',
+      isTrigger: true,
+    };
+
+    render(<PerpsCompactOrderRow order={reduceOnlySellOrder} />);
+
+    expect(screen.getByText('Take limit close long')).toBeOnTheScreen();
+  });
+
+  it('shows close short for reduce-only buy orders', () => {
+    const reduceOnlyBuyOrder: Order = {
+      ...mockLimitBuyOrder,
+      side: 'buy',
+      reduceOnly: true,
+      detailedOrderType: 'Stop Market',
+      isTrigger: true,
+    };
+
+    render(<PerpsCompactOrderRow order={reduceOnlyBuyOrder} />);
+
+    expect(screen.getByText('Stop market close short')).toBeOnTheScreen();
+  });
+});

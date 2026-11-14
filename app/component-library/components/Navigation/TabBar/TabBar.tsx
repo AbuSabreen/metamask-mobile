@@ -7,122 +7,167 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
 // External dependencies.
 import TabBarItem from '../TabBarItem';
-import { useStyles } from '../../../hooks';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  Box,
+  BoxFlexDirection,
+  BoxAlignItems,
+} from '@metamask/design-system-react-native';
 import Routes from '../../../../constants/navigation/Routes';
-import { useTheme } from '../../../../util/theme';
+import { IconName } from '../../Icons/Icon';
+
 import { MetaMetricsEvents } from '../../../../core/Analytics';
-import { selectChainId } from '../../../../selectors/networkController';
+import { ActivityScreenEntryPoint } from '../../../../core/Analytics/events/activity';
 import { getDecimalChainId } from '../../../../util/networks';
-import { useMetrics } from '../../../../components/hooks/useMetrics';
+import { useAnalytics } from '../../../../components/hooks/useAnalytics/useAnalytics';
+import { buildBottomNavClickedProperties } from '../../../../core/Analytics/events/navigation';
+import { strings } from '../../../../../locales/i18n';
 
 // Internal dependencies.
-import { TabBarProps } from './TabBar.types';
-import styleSheet from './TabBar.styles';
-import { ICON_BY_TAB_BAR_ICON_KEY } from './TabBar.constants';
-import { colors as importedColors } from '../../../../styles/common';
-import { AvatarSize } from '../../Avatars/Avatar';
-import OnboardingWizard from '../../../../components/UI/OnboardingWizard';
+import { TabBarProps, TabBarIconKey } from './TabBar.types';
+import {
+  BOTTOM_NAV_NAME_BY_TAB_BAR_ICON_KEY,
+  ICON_BY_TAB_BAR_ICON_KEY,
+  LABEL_BY_TAB_BAR_ICON_KEY,
+} from './TabBar.constants';
+import { selectChainId } from '../../../../selectors/networkController';
+import { useMoneyHomeNavigation } from '../../../../components/UI/Money/hooks/useMoneyHomeNavigation';
+
+const FILLED_ICONS: Partial<Record<TabBarIconKey, IconName>> = {
+  [TabBarIconKey.Wallet]: IconName.HomeFilled,
+  [TabBarIconKey.Activity]: IconName.ClockFilled,
+  [TabBarIconKey.Rewards]: IconName.MetamaskFoxFilled,
+  [TabBarIconKey.Money]: IconName.MusdFilled,
+};
 
 const TabBar = ({ state, descriptors, navigation }: TabBarProps) => {
-  const { colors } = useTheme();
-  const { trackEvent } = useMetrics();
+  const { trackEvent, createEventBuilder } = useAnalytics();
   const { bottom: bottomInset } = useSafeAreaInsets();
-  const { styles } = useStyles(styleSheet, { bottomInset });
   const chainId = useSelector(selectChainId);
   const tabBarRef = useRef(null);
-  /**
-   * Current onboarding wizard step
-   */
-  const wizardStep = useSelector((reduxState: any) => reduxState.wizard.step);
-  /**
-   * Return current step of onboarding wizard if not step 5 nor 0
-   */
-  const renderOnboardingWizard = useCallback(
-    () =>
-      [4, 5, 6].includes(wizardStep) && (
-        <OnboardingWizard navigation={navigation} coachmarkRef={tabBarRef} />
-      ),
-    [navigation, wizardStep],
-  );
+  const previousTabIndexRef = useRef<number>(state.index);
+  const tw = useTailwind();
+  const { navigateToMoneyHome } = useMoneyHomeNavigation();
 
   const renderTabBarItem = useCallback(
     (route: { name: string; key: string }, index: number) => {
-      const { options } = descriptors[route.key];
+      const descriptor = descriptors[route.key];
+      if (!descriptor) return null;
+      const { options } = descriptor;
       const tabBarIconKey = options.tabBarIconKey;
-      const label = options.tabBarLabel as string;
       //TODO: use another option on add it to the prop interface
       const callback = options.callback;
       const rootScreenName = options.rootScreenName;
       const key = `tab-bar-item-${tabBarIconKey}`; // this key is also used to identify elements for e2e testing
-      const isSelected = state.index === index;
-      const icon = ICON_BY_TAB_BAR_ICON_KEY[tabBarIconKey];
+      const isSelected = options?.isSelected
+        ? options.isSelected(state.routeNames[state.index])
+        : state.index === index;
+      const baseIcon = ICON_BY_TAB_BAR_ICON_KEY[tabBarIconKey];
+      const icon = isSelected
+        ? (FILLED_ICONS[tabBarIconKey] ?? baseIcon)
+        : baseIcon;
+      const labelKey = LABEL_BY_TAB_BAR_ICON_KEY[tabBarIconKey];
+      const labelText = labelKey ? strings(labelKey) : '';
       const onPress = () => {
+        // Call onLeave callback for the previous tab before switching
+        if (previousTabIndexRef.current !== index) {
+          const previousRoute = state.routes[previousTabIndexRef.current];
+          const previousOptions = descriptors[previousRoute?.key]?.options;
+          previousOptions?.onLeave?.();
+          previousTabIndexRef.current = index;
+        }
         callback?.();
+        trackEvent(
+          createEventBuilder(MetaMetricsEvents.NAVIGATION_DRAWER)
+            .addProperties(
+              buildBottomNavClickedProperties(
+                BOTTOM_NAV_NAME_BY_TAB_BAR_ICON_KEY[tabBarIconKey],
+              ),
+            )
+            .build(),
+        );
         switch (rootScreenName) {
           case Routes.WALLET_VIEW:
             navigation.navigate(Routes.WALLET.HOME, {
-              screen: Routes.WALLET.TAB_STACK_FLOW,
-              params: {
-                screen: Routes.WALLET_VIEW,
-              },
+              screen: Routes.WALLET_VIEW,
             });
             break;
           case Routes.MODAL.WALLET_ACTIONS:
             navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
               screen: Routes.MODAL.WALLET_ACTIONS,
             });
-            trackEvent(MetaMetricsEvents.ACTIONS_BUTTON_CLICKED, {
-              text: '',
-              chain_id: getDecimalChainId(chainId),
-            });
+            trackEvent(
+              createEventBuilder(MetaMetricsEvents.ACTIONS_BUTTON_CLICKED)
+                .addProperties({
+                  text: '',
+                  chain_id: getDecimalChainId(chainId),
+                })
+                .build(),
+            );
             break;
-          case Routes.BROWSER_VIEW:
+          case Routes.BROWSER.VIEW:
             navigation.navigate(Routes.BROWSER.HOME, {
-              screen: Routes.BROWSER_VIEW,
+              screen: Routes.BROWSER.VIEW,
             });
             break;
           case Routes.TRANSACTIONS_VIEW:
-            navigation.navigate(Routes.TRANSACTIONS_VIEW);
+            navigation.navigate(Routes.TRANSACTIONS_VIEW, {
+              screen: Routes.TRANSACTIONS_VIEW,
+              params: {
+                entryPoint: ActivityScreenEntryPoint.BottomNavClick,
+              },
+            });
+            break;
+          case Routes.REWARDS_VIEW:
+            navigation.navigate(Routes.REWARDS_VIEW);
             break;
           case Routes.SETTINGS_VIEW:
             navigation.navigate(Routes.SETTINGS_VIEW, {
-              screen: 'Settings',
+              screen: Routes.ACCOUNTS_MENU_VIEW,
             });
+            break;
+          case Routes.TRENDING_VIEW:
+            navigation.navigate(Routes.TRENDING_VIEW);
+            break;
+          case Routes.MONEY.HOME: {
+            navigateToMoneyHome();
+            break;
+          }
         }
       };
 
-      const isWalletAction = rootScreenName === Routes.MODAL.WALLET_ACTIONS;
+      const isWalletAction =
+        rootScreenName === Routes.MODAL.TRADE_WALLET_ACTIONS;
 
-      const handleIconColor = () => {
-        if (isWalletAction) return colors.primary.inverse;
-
-        if (isSelected) return colors.primary.default;
-
-        return colors.icon.muted;
-      };
-
-      const iconProps = {
-        size: isWalletAction ? AvatarSize.Md : AvatarSize.Lg,
-        backgroundColor: isWalletAction
-          ? colors.primary.default
-          : importedColors.transparent,
-        color: handleIconColor(),
-      };
+      if (options?.isHidden) {
+        return null;
+      }
 
       return (
-        <TabBarItem
-          key={key}
-          label={label}
-          icon={icon}
-          onPress={onPress}
-          iconSize={iconProps.size}
-          iconBackgroundColor={iconProps.backgroundColor}
-          iconColor={iconProps.color}
-          testID={key}
-        />
+        <View key={key} style={tw.style('flex-1 w-full')}>
+          <TabBarItem
+            label={labelText}
+            iconName={icon}
+            onPress={onPress}
+            isActive={isSelected}
+            isTradeButton={isWalletAction}
+            testID={key}
+          />
+        </View>
       );
     },
-    [state, descriptors, navigation, colors, chainId, trackEvent],
+    [
+      descriptors,
+      state.routeNames,
+      state.index,
+      state.routes,
+      tw,
+      navigation,
+      trackEvent,
+      createEventBuilder,
+      chainId,
+      navigateToMoneyHome,
+    ],
   );
 
   const renderTabBarItems = useCallback(
@@ -131,13 +176,16 @@ const TabBar = ({ state, descriptors, navigation }: TabBarProps) => {
   );
 
   return (
-    <>
-      <View style={styles.border} />
-      <View style={styles.base} ref={tabBarRef}>
+    <View ref={tabBarRef}>
+      <Box
+        flexDirection={BoxFlexDirection.Row}
+        alignItems={BoxAlignItems.End}
+        twClassName="w-full pt-3 mb-1 px-2 bg-default border-t border-muted"
+        style={[tw.style(`pb-[${bottomInset}px]`)]}
+      >
         {renderTabBarItems()}
-        {renderOnboardingWizard()}
-      </View>
-    </>
+      </Box>
+    </View>
   );
 };
 

@@ -1,0 +1,95 @@
+import { StakeViewSelectors } from '../../selectors/Stake/StakeView.selectors.js';
+import Matchers from '../../framework/Matchers';
+import Gestures from '../../framework/Gestures';
+import Utilities from '../../framework/Utilities';
+import {
+  Assertions,
+  type AppiumElement,
+  PlatformDetector,
+} from '../../framework';
+
+class StakeView {
+  get stakeContainer(): Promise<AppiumElement> {
+    return Matchers.getElementByText(StakeViewSelectors.STAKE_CONTAINER);
+  }
+
+  get unstakeContainer(): Promise<AppiumElement> {
+    return Matchers.getElementByText(StakeViewSelectors.UNSTAKE_CONTAINER);
+  }
+
+  get reviewButton(): Promise<AppiumElement> {
+    return Matchers.getElementByText(StakeViewSelectors.REVIEW_BUTTON);
+  }
+
+  get confirmButton(): Promise<AppiumElement> {
+    return Matchers.getElementByText(StakeViewSelectors.CONFIRM);
+  }
+
+  async selectAmount(amount: string): Promise<void> {
+    const amountButton = Matchers.getElementByText(amount);
+    await Gestures.waitAndTap(amountButton);
+  }
+
+  async enterAmount(amount: string): Promise<void> {
+    // Text match for "1"/"0" hits balances; use keypad testIDs.
+    // iOS: accessibility-id matching for these keys is unreliable — use name XPath
+    // (same pattern as QuoteView.enterAmount / RedesignedSendView.enterAmountViaNumpad).
+    const isAndroid = PlatformDetector.isAndroid();
+    for (const digit of amount.split('')) {
+      const keyName = digit === '.' ? 'keypad-key-dot' : `keypad-key-${digit}`;
+      const el = isAndroid
+        ? Matchers.getElementByID(keyName)
+        : Matchers.getElementByNativeXPath(`//*[contains(@name,'${keyName}')]`);
+      await Assertions.expectElementToBeVisible(el, {
+        timeout: 10000,
+        description: `Keypad digit ${digit} should be visible`,
+      });
+      await Gestures.waitAndTap(el, {
+        elemDescription: `Digit ${digit} in Stake Amount`,
+        checkForDisplayed: true,
+        checkEnabled: true,
+        delay: 500,
+      });
+    }
+  }
+
+  async tapReview(timeout?: number): Promise<void> {
+    await Gestures.waitAndTap(this.reviewButton, {
+      timeout,
+      elemDescription: 'Review Button in Stake View',
+    });
+  }
+
+  async tapReviewWithRetry(timeout = 90000): Promise<void> {
+    await Utilities.executeWithRetry(
+      async () => {
+        // Only tap review if we haven't already navigated to the confirm screen
+        const onConfirmScreen = await Utilities.isElementVisible(
+          this.confirmButton,
+          2000,
+        );
+        if (!onConfirmScreen) {
+          await Gestures.waitAndTap(this.reviewButton, {
+            timeout: 5000,
+            elemDescription: 'Review Button in Stake View',
+          });
+        }
+        await Utilities.waitForElementToBeEnabled(this.confirmButton, 5000);
+      },
+      {
+        timeout,
+        description: 'Tap Review and wait for Confirm screen',
+        elemDescription: 'Review → Confirm flow in Stake View',
+      },
+    );
+  }
+
+  async tapConfirm(timeout?: number): Promise<void> {
+    await Gestures.waitAndTap(this.confirmButton, {
+      timeout,
+      elemDescription: 'Confirm Button in Stake View',
+    });
+  }
+}
+
+export default new StakeView();

@@ -1,0 +1,373 @@
+import React, { useCallback, useState, useEffect, useRef } from 'react';
+import { TextInput } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import {
+  Box,
+  HelpText,
+  HelpTextSeverity,
+  Text,
+  TextButton,
+  TextColor,
+  TextVariant,
+  IconName,
+  TextField,
+} from '@metamask/design-system-react-native';
+import Routes from '../../../../../constants/navigation/Routes';
+import { strings } from '../../../../../../locales/i18n';
+import OnboardingStep from './OnboardingStep';
+import { useParams } from '../../../../../util/navigation/navUtils';
+import useEmailVerificationVerify from '../../hooks/useEmailVerificationVerify';
+import { CardError } from '../../types';
+import {
+  resetOnboardingState,
+  selectContactVerificationId,
+  setContactVerificationId,
+  setOnboardingId,
+} from '../../../../../core/redux/slices/card';
+import { useDispatch, useSelector } from 'react-redux';
+import useEmailVerificationSend from '../../hooks/useEmailVerificationSend';
+import { CardActions, CardScreens, withCardProvider } from '../../util/metrics';
+import { CardProviderIds } from '../../../../../core/Engine/controllers/card-controller/provider-types';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import useRegions from '../../hooks/useRegions';
+import useScreenTransitionComplete from '../../../../hooks/useScreenTransitionComplete';
+
+const CODE_LENGTH = 6;
+
+const ConfirmEmail = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const dispatch = useDispatch();
+  const codeInputRef = useRef<TextInput>(null);
+  const isScreenTransitionComplete = useScreenTransitionComplete();
+  const [confirmCode, setConfirmCode] = useState('');
+  const [resendCooldown, setResendCooldown] = useState(60);
+  const { getRegionByCode } = useRegions();
+  const contactVerificationId = useSelector(selectContactVerificationId);
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const [latestValueSubmitted, setLatestValueSubmitted] = useState<
+    string | null
+  >(null);
+
+  const { email, password, countryKey } = useParams<{
+    email: string;
+    password: string;
+    countryKey: string;
+  }>();
+
+  const selectedCountry = getRegionByCode(countryKey);
+
+  const {
+    sendEmailVerification,
+    isLoading: emailVerificationIsLoading,
+    isError: emailVerificationIsError,
+    error: emailVerificationError,
+  } = useEmailVerificationSend();
+
+  const {
+    verifyEmailVerification,
+    isLoading: verifyLoading,
+    isError: verifyIsError,
+    error: verifyError,
+    reset: resetVerifyEmailVerification,
+  } = useEmailVerificationVerify();
+
+  const handleConfirmCodeChange = useCallback(
+    (text: string) => {
+      resetVerifyEmailVerification();
+      // Filter to only allow numeric input and limit to CODE_LENGTH digits
+      const cleanedText = text.replace(/\D/g, '').slice(0, CODE_LENGTH);
+      setConfirmCode(cleanedText);
+      setLatestValueSubmitted(null);
+    },
+    [resetVerifyEmailVerification],
+  );
+
+  useEffect(() => {
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.CARD_VIEWED)
+        .addProperties(
+          withCardProvider(CardProviderIds.Baanx, {
+            screen: CardScreens.CONFIRM_EMAIL,
+          }),
+        )
+        .build(),
+    );
+  }, [trackEvent, createEventBuilder]);
+
+  const handleResendVerification = useCallback(async () => {
+    if (resendCooldown > 0 || !email) return;
+
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.CARD_BUTTON_CLICKED)
+        .addProperties(
+          withCardProvider(CardProviderIds.Baanx, {
+            action: CardActions.CONFIRM_EMAIL_RESEND_BUTTON,
+          }),
+        )
+        .build(),
+    );
+    try {
+      const { contactVerificationId: newContactVerificationId } =
+        await sendEmailVerification(email);
+      dispatch(setContactVerificationId(newContactVerificationId));
+      setResendCooldown(60); // 1 minute cooldown
+    } catch {
+      // Allow error message to display
+    }
+  }, [
+    dispatch,
+    email,
+    resendCooldown,
+    sendEmailVerification,
+    trackEvent,
+    createEventBuilder,
+  ]);
+
+  const handleContinue = useCallback(async () => {
+    if (
+      !selectedCountry ||
+      !email ||
+      !password ||
+      !confirmCode ||
+      !contactVerificationId
+    ) {
+      return;
+    }
+    try {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.CARD_BUTTON_CLICKED)
+          .addProperties(
+            withCardProvider(CardProviderIds.Baanx, {
+              action: CardActions.CONFIRM_EMAIL_BUTTON,
+            }),
+          )
+          .build(),
+      );
+      const { onboardingId, hasAccount } = await verifyEmailVerification({
+        email,
+        password,
+        verificationCode: confirmCode,
+        contactVerificationId,
+        countryOfResidence: selectedCountry?.key || '',
+        allowMarketing: true,
+        allowSms: true,
+      });
+
+      if (onboardingId) {
+        dispatch(setOnboardingId(onboardingId));
+        navigation.navigate(Routes.CARD.ONBOARDING.SET_PHONE_NUMBER, {
+          countryKey,
+        });
+      } else if (hasAccount) {
+        const navigateToAuthentication = () => {
+          navigation.reset({
+            index: 0,
+            routes: [{ name: Routes.CARD.AUTHENTICATION }],
+          });
+        };
+
+        navigation.navigate(Routes.CARD.MODALS.ID, {
+          screen: Routes.CARD.MODALS.CONFIRM_MODAL,
+          params: {
+            title: strings('card.card_onboarding.account_exists.title'),
+            description: strings(
+              'card.card_onboarding.account_exists.description',
+              {
+                email,
+              },
+            ),
+            confirmAction: {
+              label: strings(
+                'card.card_onboarding.account_exists.confirm_button',
+              ),
+              onPress: navigateToAuthentication,
+            },
+            onClose: navigateToAuthentication,
+            icon: IconName.UserCheck,
+          },
+        });
+        dispatch(resetOnboardingState());
+      }
+    } catch (error) {
+      if (
+        error instanceof CardError &&
+        error.message.includes('Invalid or expired contact verification ID')
+      ) {
+        // navigate back and restart the flow
+        dispatch(resetOnboardingState());
+        navigation.navigate(Routes.CARD.ONBOARDING.SIGN_UP);
+      }
+    }
+  }, [
+    confirmCode,
+    contactVerificationId,
+    countryKey,
+    dispatch,
+    email,
+    navigation,
+    password,
+    selectedCountry,
+    verifyEmailVerification,
+    trackEvent,
+    createEventBuilder,
+  ]);
+
+  // Cooldown timer effect
+  useEffect(() => {
+    if (resendCooldown > 0) {
+      const timer = setTimeout(() => {
+        setResendCooldown((prev) => prev - 1);
+      }, 1000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [resendCooldown]);
+
+  useEffect(() => {
+    if (
+      confirmCode.length === CODE_LENGTH &&
+      latestValueSubmitted !== confirmCode &&
+      selectedCountry &&
+      email &&
+      password &&
+      contactVerificationId
+    ) {
+      setLatestValueSubmitted(confirmCode);
+      handleContinue();
+    }
+  }, [
+    confirmCode,
+    contactVerificationId,
+    email,
+    handleContinue,
+    latestValueSubmitted,
+    password,
+    selectedCountry,
+  ]);
+
+  useEffect(() => {
+    if (!isScreenTransitionComplete) {
+      return;
+    }
+    codeInputRef.current?.focus();
+  }, [isScreenTransitionComplete]);
+
+  const isDisabled =
+    verifyLoading ||
+    verifyIsError ||
+    !selectedCountry ||
+    !email ||
+    !password ||
+    !confirmCode ||
+    !contactVerificationId;
+
+  const renderFormFields = () => (
+    <>
+      <Box gap={2}>
+        <TextField
+          inputRef={codeInputRef}
+          onChangeText={handleConfirmCodeChange}
+          value={confirmCode}
+          isError={verifyIsError}
+          inputProps={{
+            autoCapitalize: 'none',
+            numberOfLines: 1,
+            keyboardType: 'number-pad',
+            textContentType: 'oneTimeCode',
+            autoComplete: 'one-time-code',
+            maxLength: CODE_LENGTH,
+            accessibilityLabel: strings(
+              'card.card_onboarding.confirm_email.code_label',
+            ),
+            testID: 'confirm-email-code-field',
+          }}
+        />
+        {verifyIsError && (
+          <HelpText
+            severity={HelpTextSeverity.Danger}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+            testID="confirm-email-error-text"
+          >
+            {verifyError}
+          </HelpText>
+        )}
+
+        {/* Resend verification */}
+        <Text
+          variant={TextVariant.BodySm}
+          color={TextColor.TextAlternative}
+          testID="confirm-email-resend-verification"
+        >
+          {resendCooldown > 0 ? (
+            strings('card.card_onboarding.confirm_email.resend_cooldown', {
+              seconds: resendCooldown,
+            })
+          ) : (
+            <>
+              {strings('card.card_onboarding.confirm_email.didnt_receive_code')}
+              <TextButton
+                variant={TextVariant.BodySm}
+                onPress={
+                  resendCooldown > 0 ? undefined : handleResendVerification
+                }
+                disabled={
+                  resendCooldown > 0 ||
+                  !email ||
+                  !selectedCountry ||
+                  emailVerificationIsLoading
+                }
+              >
+                {strings(
+                  'card.card_onboarding.confirm_email.resend_verification',
+                )}
+              </TextButton>
+            </>
+          )}
+        </Text>
+        {emailVerificationIsError && (
+          <HelpText
+            severity={HelpTextSeverity.Danger}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+            testID="confirm-email-error-text"
+          >
+            {emailVerificationError}
+          </HelpText>
+        )}
+      </Box>
+    </>
+  );
+
+  return (
+    <OnboardingStep
+      title={strings('card.card_onboarding.confirm_email.title')}
+      description={strings('card.card_onboarding.confirm_email.description', {
+        email,
+      })}
+      formFields={renderFormFields()}
+      footerContent={
+        <Text
+          variant={TextVariant.BodySm}
+          color={TextColor.TextAlternative}
+          twClassName="text-center"
+          testID="confirm-email-legal-terms"
+        >
+          {strings('card.card_onboarding.confirm_email.legal_terms')}
+        </Text>
+      }
+      primaryButtonProps={{
+        children: strings('card.card_onboarding.continue_button'),
+        onPress: handleContinue,
+        isDisabled,
+        isLoading: verifyLoading,
+        testID: 'confirm-email-continue-button',
+      }}
+      headerMode="back"
+    />
+  );
+};
+
+export default ConfirmEmail;

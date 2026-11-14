@@ -1,0 +1,107 @@
+import React, { useCallback, useRef } from 'react';
+import { View, Linking } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import {
+  BottomSheet,
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  Text,
+  TextColor,
+  TextVariant,
+  type BottomSheetRef,
+} from '@metamask/design-system-react-native';
+import styleSheet from './EligibilityFailedModal.styles';
+import { useStyles } from '../../../../hooks/useStyles';
+import { createNavigationDetails } from '../../../../../util/navigation/navUtils';
+import Routes from '../../../../../constants/navigation/Routes';
+import { strings } from '../../../../../../locales/i18n';
+import { ELIGIBILITY_FAILED_MODAL_TEST_IDS } from './EligibilityFailedModal.testIds';
+import { METAMASK_SUPPORT_URL } from '../../../../../constants/urls';
+import { useSupportConsent } from '../../../../hooks/useSupportConsent';
+import BottomSheetHeaderGlass from '../../../../../component-library/components-temp/BottomSheetHeaderGlass';
+import { useSelector } from 'react-redux';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+const SUPPORT_URL = METAMASK_SUPPORT_URL;
+
+export const createEligibilityFailedModalNavigationDetails =
+  createNavigationDetails(
+    Routes.MODAL.ROOT_MODAL_FLOW,
+    Routes.SHEET.ELIGIBILITY_FAILED_MODAL,
+  );
+
+function EligibilityFailedModal() {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const sheetRef = useRef<BottomSheetRef>(null);
+  const navigation = useNavigation<AppNavigationProp>();
+  const { styles } = useStyles(styleSheet, {});
+  const { openSupportWithConsent } = useSupportConsent();
+
+  const navigateToContactSupport = useCallback(() => {
+    openSupportWithConsent(
+      (url) =>
+        Linking.openURL(url).catch((error: unknown) => {
+          console.error('Failed to open support URL:', error);
+        }),
+      SUPPORT_URL,
+    );
+  }, [openSupportWithConsent]);
+
+  const handleClose = useCallback(() => {
+    sheetRef.current?.onCloseBottomSheet();
+  }, []);
+
+  return (
+    <BottomSheet
+      ref={sheetRef}
+      goBack={navigation.goBack}
+      isInteractable={false}
+      testID={ELIGIBILITY_FAILED_MODAL_TEST_IDS.MODAL}
+    >
+      <BottomSheetHeaderGlass
+        isGlass={isGlassHeader}
+        onClose={handleClose}
+        closeButtonProps={{
+          testID: ELIGIBILITY_FAILED_MODAL_TEST_IDS.CLOSE_BUTTON,
+        }}
+      >
+        <Text variant={TextVariant.HeadingMd}>
+          {strings('fiat_on_ramp_aggregator.eligibility_failed_modal.title')}
+        </Text>
+      </BottomSheetHeaderGlass>
+
+      <View style={styles.content}>
+        <Text variant={TextVariant.BodyMd} color={TextColor.TextAlternative}>
+          {strings(
+            'fiat_on_ramp_aggregator.eligibility_failed_modal.description',
+          )}
+        </Text>
+      </View>
+
+      <View style={styles.footer}>
+        <Button
+          size={ButtonSize.Lg}
+          onPress={navigateToContactSupport}
+          variant={ButtonVariant.Secondary}
+          isFullWidth
+        >
+          {strings(
+            'fiat_on_ramp_aggregator.eligibility_failed_modal.contact_support',
+          )}
+        </Button>
+        <Button
+          size={ButtonSize.Lg}
+          onPress={handleClose}
+          variant={ButtonVariant.Primary}
+          isFullWidth
+        >
+          {strings('fiat_on_ramp_aggregator.eligibility_failed_modal.got_it')}
+        </Button>
+      </View>
+    </BottomSheet>
+  );
+}
+
+export default EligibilityFailedModal;

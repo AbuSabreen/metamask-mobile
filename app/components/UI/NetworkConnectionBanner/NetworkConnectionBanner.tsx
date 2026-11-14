@@ -1,0 +1,314 @@
+import React, { useEffect, useState } from 'react';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import { useAppTheme } from '../../../util/theme';
+import { useNetworkConnectionBanner } from '../../hooks/useNetworkConnectionBanner';
+import { strings } from '../../../../locales/i18n';
+import type { FailedNetwork } from '@metamask/network-connection-banner-controller';
+import BannerBase from '../../../component-library/components/Banners/Banner/foundation/BannerBase';
+import { Theme } from '../../../util/theme/models';
+import Animated, {
+  cancelAnimation,
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
+import {
+  FontWeight,
+  Icon,
+  IconColor,
+  IconName,
+  IconProps,
+  IconSize,
+  Text,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+
+interface BannerIcon {
+  color: IconColor;
+  name: IconName;
+  component: typeof Icon | typeof SpinningIcon;
+}
+
+// This is alternative to AnimatedSpinner that allows us to use the "loading"
+// icon from the design system
+const SpinningIcon = ({ twClassName, ...iconProps }: IconProps) => {
+  const tw = useTailwind();
+  const rotation = useSharedValue(0);
+  const animatedRotation = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${rotation.value}deg` }],
+  }));
+
+  useEffect(() => {
+    rotation.value = withRepeat(
+      withTiming(360, {
+        duration: 1000,
+        easing: Easing.linear,
+      }),
+      // The -1 means to run the animation infinitely
+      -1,
+    );
+
+    return () => {
+      cancelAnimation(rotation);
+    };
+  }, [rotation]);
+
+  return (
+    <Animated.View
+      style={[animatedRotation, twClassName && tw`${twClassName}`]}
+    >
+      <Icon {...iconProps} />
+    </Animated.View>
+  );
+};
+
+const PrimaryMessage = ({
+  primaryMessageKey,
+  network,
+}: {
+  primaryMessageKey: string;
+  network: FailedNetwork;
+}) => (
+  <Text
+    variant={TextVariant.BodyXs}
+    fontWeight={FontWeight.Medium}
+    twClassName="inline-block vertical-align-middle pr-1"
+    numberOfLines={2}
+  >
+    {strings(primaryMessageKey, {
+      networkName: network.name,
+    })}
+  </Text>
+);
+
+const SecondaryMessage = ({ content }: { content: React.ReactNode }) => (
+  <Text
+    variant={TextVariant.BodyXs}
+    fontWeight={FontWeight.Medium}
+    twClassName="inline-block vertical-align-middle"
+  >
+    {content}
+  </Text>
+);
+
+/**
+ * Shared button component for action links in the banner.
+ *
+ * Rendered as a nested `Text` rather than a `Pressable`/`TextButton` so it
+ * participates in the surrounding paragraph's line layout. A `Pressable`
+ * renders a `View`, and on iOS a `View` nested inside a `Text` becomes an
+ * opaque text attachment: it can't be broken across lines, is baseline-aligned
+ * by its bottom edge, and pushes any trailing text (the ".") onto the previous
+ * line. Android lays inline views out closer to real text, which is why the
+ * old per-platform `translate-y` offsets only ever looked right there.
+ */
+const ActionButton = ({
+  isLowerCase,
+  onPress,
+  text,
+}: {
+  isLowerCase: boolean;
+  onPress: () => void;
+  text: string;
+}) => {
+  const tw = useTailwind();
+  const [isPressed, setIsPressed] = useState(false);
+
+  return (
+    <Text
+      accessibilityRole="button"
+      suppressHighlighting
+      onPress={onPress}
+      onPressIn={() => setIsPressed(true)}
+      onPressOut={() => setIsPressed(false)}
+      variant={TextVariant.BodyXs}
+      fontWeight={FontWeight.Medium}
+      style={tw.style(
+        isPressed
+          ? 'text-primary-default-pressed underline'
+          : 'text-primary-default no-underline',
+      )}
+    >
+      {isLowerCase ? text[0].toLowerCase() + text.slice(1) : text}
+    </Text>
+  );
+};
+
+const UpdateRpcButton = ({
+  isLowerCase,
+  updateRpc,
+}: {
+  isLowerCase: boolean;
+  updateRpc: () => void;
+}) => (
+  <ActionButton
+    isLowerCase={isLowerCase}
+    onPress={updateRpc}
+    text={strings('network_connection_banner.update_rpc')}
+  />
+);
+
+const SwitchToInfuraButton = ({
+  isLowerCase,
+  switchToInfura,
+}: {
+  isLowerCase: boolean;
+  switchToInfura: () => Promise<void>;
+}) => (
+  <ActionButton
+    isLowerCase={isLowerCase}
+    onPress={switchToInfura}
+    text={strings('network_connection_banner.switch_to_metamask_default_rpc')}
+  />
+);
+
+const getBannerContent = (
+  theme: Theme,
+  status: 'degraded' | 'unavailable',
+  network: FailedNetwork,
+  updateRpc: () => void,
+  switchToInfura: () => Promise<void>,
+): {
+  primaryMessage: React.ReactNode;
+  secondaryMessage: React.ReactNode;
+  backgroundColor: string;
+  icon: BannerIcon;
+} => {
+  // Check if we have an Infura endpoint available to switch to
+  const hasInfuraEndpoint = network.switchableInfuraNetworkClientId !== null;
+
+  if (status === 'degraded') {
+    const primaryMessage = (
+      <PrimaryMessage
+        primaryMessageKey="network_connection_banner.still_connecting_network"
+        network={network}
+      />
+    );
+
+    let secondaryMessage: React.ReactNode = null;
+    if (!network.isInfuraEndpoint) {
+      // For custom endpoints, show either "Switch to MetaMask default RPC" or "Update RPC"
+      const buttonContent = hasInfuraEndpoint ? (
+        <SwitchToInfuraButton
+          isLowerCase={false}
+          switchToInfura={switchToInfura}
+        />
+      ) : (
+        <UpdateRpcButton isLowerCase={false} updateRpc={updateRpc} />
+      );
+      secondaryMessage = <SecondaryMessage content={buttonContent} />;
+    }
+
+    return {
+      primaryMessage,
+      secondaryMessage,
+      backgroundColor: theme.colors.background.section,
+      icon: {
+        color: IconColor.IconDefault,
+        name: IconName.Loading,
+        component: SpinningIcon,
+      },
+    };
+  }
+
+  const primaryMessage = (
+    <PrimaryMessage
+      primaryMessageKey="network_connection_banner.unable_to_connect_network"
+      network={network}
+    />
+  );
+
+  let secondaryMessageContent: React.ReactNode;
+  if (network.isInfuraEndpoint) {
+    // Already on Infura, just show connectivity message
+    secondaryMessageContent = strings(
+      'network_connection_banner.check_network_connectivity',
+    );
+  } else if (hasInfuraEndpoint) {
+    // Has Infura endpoint available, show "Switch to MetaMask default RPC"
+    secondaryMessageContent = (
+      <>
+        {strings('network_connection_banner.check_network_connectivity_or')}{' '}
+        <SwitchToInfuraButton
+          key="switchToInfura"
+          isLowerCase
+          switchToInfura={switchToInfura}
+        />
+        {'.'}
+      </>
+    );
+  } else {
+    // No Infura endpoint available, show "Update RPC"
+    secondaryMessageContent = (
+      <>
+        {strings('network_connection_banner.check_network_connectivity_or')}{' '}
+        <UpdateRpcButton key="updateRpc" isLowerCase updateRpc={updateRpc} />
+        {'.'}
+      </>
+    );
+  }
+
+  const secondaryMessage = (
+    <SecondaryMessage content={secondaryMessageContent} />
+  );
+
+  return {
+    primaryMessage,
+    secondaryMessage,
+    // Can't use Tailwind class here because they don't allow for using this
+    // color as a background color
+    backgroundColor: theme.colors.error.muted,
+    icon: {
+      color: IconColor.ErrorDefault,
+      name: IconName.Danger,
+      component: Icon,
+    },
+  };
+};
+
+type NetworkConnectionBannerData = ReturnType<
+  typeof useNetworkConnectionBanner
+>;
+
+export const NetworkConnectionBannerContent = ({
+  network,
+  status,
+  switchToInfura,
+  updateRpc,
+}: NetworkConnectionBannerData) => {
+  const theme = useAppTheme();
+  const tw = useTailwind();
+
+  if ((status !== 'degraded' && status !== 'unavailable') || !network) {
+    return null;
+  }
+
+  const { primaryMessage, secondaryMessage, backgroundColor, icon } =
+    getBannerContent(theme, status, network, updateRpc, switchToInfura);
+
+  return (
+    <BannerBase
+      style={{ backgroundColor, ...tw`rounded-md` }}
+      startAccessory={
+        <icon.component
+          name={icon.name}
+          size={IconSize.Sm}
+          color={icon.color}
+          // Vertically align icon with text better
+          twClassName="mt-[0.1rem]"
+        />
+      }
+      title={primaryMessage}
+      description={secondaryMessage}
+    />
+  );
+};
+
+export const NetworkConnectionBanner = () => {
+  const bannerData = useNetworkConnectionBanner();
+  return <NetworkConnectionBannerContent {...bannerData} />;
+};
+
+export default NetworkConnectionBanner;

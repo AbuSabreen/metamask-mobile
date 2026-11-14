@@ -1,0 +1,426 @@
+import React from 'react';
+import { act, fireEvent, waitFor } from '@testing-library/react-native';
+import { toast, ToastSeverity } from '@metamask/design-system-react-native';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import { Source } from '@metamask/assets-controllers';
+import AddCustomCollectible from './AddCustomCollectible';
+import Engine from '../../../../../core/Engine';
+// eslint-disable-next-line import-x/no-namespace
+import * as utilsTransactions from '../../../../../util/transactions';
+
+// --- Module mocks ---
+
+jest.mock('../../../../../core/Engine', () => ({
+  context: {
+    NftController: {
+      addNft: jest.fn(),
+      isNftOwner: jest.fn(),
+    },
+  },
+}));
+
+jest.mock('../../../../../../locales/i18n', () => ({
+  strings: jest.fn((key: string) => key),
+}));
+
+jest.mock('../../../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(() => ({
+    trackEvent: jest.fn(),
+    createEventBuilder: jest.fn(() => ({
+      addProperties: jest.fn(() => ({ build: jest.fn() })),
+    })),
+  })),
+}));
+
+jest.mock('@metamask/design-system-react-native', () => {
+  const actual = jest.requireActual('@metamask/design-system-react-native');
+  return {
+    ...actual,
+    toast: Object.assign(jest.fn(), {
+      dismiss: jest.fn(),
+    }),
+  };
+});
+
+const VALID_ADDRESS = '0x1a92f7381b9f03921564a437210bb9396471050c';
+
+const mockInitialState = {
+  settings: {},
+  engine: {
+    backgroundState: {
+      ...backgroundState,
+    },
+  },
+};
+
+const renderComponent = (
+  overrides: {
+    navigation?: Record<string, jest.Mock>;
+    selectedNetwork?: string | null;
+    networkClientId?: string | null;
+    collectibleContract?: { address: string };
+  } = {},
+) => {
+  const component = (
+    <AddCustomCollectible
+      navigation={overrides.navigation}
+      selectedNetwork={
+        'selectedNetwork' in overrides
+          ? (overrides.selectedNetwork as string | null)
+          : 'Ethereum Mainnet'
+      }
+      networkClientId={overrides.networkClientId ?? 'mainnet'}
+      collectibleContract={overrides.collectibleContract}
+    />
+  );
+
+  return renderWithProvider(component, { state: mockInitialState });
+};
+
+/**
+ * Fills the form and waits for async smart contract validation to resolve.
+ */
+const fillFormAndWait = async (
+  utils: ReturnType<typeof renderComponent>,
+  address = VALID_ADDRESS,
+  tokenId = '55',
+) => {
+  await act(async () => {
+    fireEvent.changeText(
+      utils.getByTestId('input-collectible-address'),
+      address,
+    );
+  });
+  // Wait for the async smart contract check to complete
+  await waitFor(() => {
+    expect(utils.getByTestId('add-collectible-button')).toBeTruthy();
+  });
+  await act(async () => {
+    fireEvent.changeText(
+      utils.getByTestId('input-collectible-identifier'),
+      tokenId,
+    );
+  });
+};
+
+// --- Tests ---
+
+describe('AddCustomCollectible', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (Engine.context.NftController.addNft as jest.Mock).mockResolvedValue(
+      undefined,
+    );
+    (Engine.context.NftController.isNftOwner as jest.Mock).mockResolvedValue(
+      true,
+    );
+    jest
+      .spyOn(utilsTransactions, 'isSmartContractAddress')
+      .mockResolvedValue(true);
+  });
+
+  it('adds NFT and navigates back on successful submission', async () => {
+    const mockGoBack = jest.fn();
+
+    const utils = renderComponent({
+      navigation: { navigate: jest.fn(), goBack: mockGoBack },
+    });
+
+    await fillFormAndWait(utils);
+
+    await act(async () => {
+      fireEvent.press(utils.getByTestId('add-collectible-button'));
+    });
+
+    expect(Engine.context.NftController.addNft).toHaveBeenCalledTimes(1);
+    expect(Engine.context.NftController.addNft).toHaveBeenCalledWith(
+      VALID_ADDRESS,
+      '55',
+      'mainnet',
+      { source: Source.Custom },
+    );
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  describe('address validation', () => {
+    it('shows error for invalid address after typing', async () => {
+      const { getByTestId } = renderComponent();
+
+      await act(async () => {
+        fireEvent.changeText(
+          getByTestId('input-collectible-address'),
+          'invalid-address',
+        );
+      });
+
+      await waitFor(() => {
+        expect(getByTestId('collectible-address-warning')).toHaveTextContent(
+          'collectible.address_must_be_valid',
+        );
+      });
+    });
+
+    it('enables the button after the contract check rejects', async () => {
+      jest
+        .spyOn(utilsTransactions, 'isSmartContractAddress')
+        .mockRejectedValue(new Error('rpc down'));
+
+      const utils = renderComponent();
+
+      await fillFormAndWait(utils);
+
+      await waitFor(() => {
+        expect(utils.getByTestId('add-collectible-button')).not.toBeDisabled();
+      });
+    });
+
+    it('shows error when address is not a smart contract', async () => {
+      jest
+        .spyOn(utilsTransactions, 'isSmartContractAddress')
+        .mockResolvedValue(false);
+
+      const { getByTestId } = renderComponent();
+
+      await act(async () => {
+        fireEvent.changeText(
+          getByTestId('input-collectible-address'),
+          VALID_ADDRESS,
+        );
+      });
+
+      await waitFor(() => {
+        expect(getByTestId('collectible-address-warning')).toHaveTextContent(
+          'collectible.address_must_be_smart_contract',
+        );
+      });
+    });
+
+    it('shows no error when address is a valid smart contract', async () => {
+      const { getByTestId, queryByTestId } = renderComponent();
+
+      await act(async () => {
+        fireEvent.changeText(
+          getByTestId('input-collectible-address'),
+          VALID_ADDRESS,
+        );
+      });
+
+      await waitFor(() => {
+        expect(queryByTestId('collectible-address-warning')).toBeNull();
+      });
+    });
+
+    it('shows empty address error after typing and clearing', async () => {
+      const utils = renderComponent({
+        navigation: { navigate: jest.fn(), goBack: jest.fn() },
+      });
+
+      // Type a valid-looking address then clear it to trigger the empty error
+      await act(async () => {
+        fireEvent.changeText(
+          utils.getByTestId('input-collectible-address'),
+          'a',
+        );
+      });
+      await act(async () => {
+        fireEvent.changeText(
+          utils.getByTestId('input-collectible-address'),
+          '',
+        );
+      });
+
+      // The button should be disabled when address is empty
+      expect(utils.getByTestId('add-collectible-button')).toBeDisabled();
+    });
+  });
+
+  describe('token ID validation', () => {
+    it('shows error when token ID is empty on blur', () => {
+      const { getByTestId } = renderComponent();
+
+      fireEvent(getByTestId('input-collectible-identifier'), 'onBlur');
+
+      expect(getByTestId('collectible-identifier-warning')).toHaveTextContent(
+        'collectible.token_id_cant_be_empty',
+      );
+    });
+
+    it('shows no error when token ID has value', () => {
+      const { getByTestId, queryByTestId } = renderComponent();
+
+      fireEvent.changeText(getByTestId('input-collectible-identifier'), '123');
+      fireEvent(getByTestId('input-collectible-identifier'), 'onBlur');
+
+      expect(queryByTestId('collectible-identifier-warning')).toBeNull();
+    });
+  });
+
+  describe('ownership validation', () => {
+    it('shows toast when user is not the owner', async () => {
+      (Engine.context.NftController.isNftOwner as jest.Mock).mockResolvedValue(
+        false,
+      );
+
+      const utils = renderComponent({
+        navigation: { navigate: jest.fn(), goBack: jest.fn() },
+      });
+
+      await fillFormAndWait(utils);
+
+      await act(async () => {
+        fireEvent.press(utils.getByTestId('add-collectible-button'));
+      });
+
+      expect(toast).toHaveBeenCalledWith({
+        title: 'collectible.not_owner_error_title',
+        description: 'collectible.not_owner_error',
+        severity: ToastSeverity.Danger,
+        hasNoTimeout: false,
+      });
+    });
+
+    it('enables the button when the account does not own the collectible', async () => {
+      (Engine.context.NftController.isNftOwner as jest.Mock).mockResolvedValue(
+        false,
+      );
+
+      const utils = renderComponent({
+        navigation: { navigate: jest.fn(), goBack: jest.fn() },
+      });
+
+      await fillFormAndWait(utils);
+
+      await act(async () => {
+        fireEvent.press(utils.getByTestId('add-collectible-button'));
+      });
+
+      await waitFor(() => {
+        expect(utils.getByTestId('add-collectible-button')).not.toBeDisabled();
+      });
+    });
+
+    it('shows toast when ownership verification fails', async () => {
+      (Engine.context.NftController.isNftOwner as jest.Mock).mockRejectedValue(
+        new Error('Network error'),
+      );
+
+      const utils = renderComponent({
+        navigation: { navigate: jest.fn(), goBack: jest.fn() },
+      });
+
+      await fillFormAndWait(utils);
+
+      await act(async () => {
+        fireEvent.press(utils.getByTestId('add-collectible-button'));
+      });
+
+      expect(toast).toHaveBeenCalledWith({
+        title: 'collectible.ownership_verification_error_title',
+        description: 'collectible.ownership_verification_error',
+        severity: ToastSeverity.Danger,
+        hasNoTimeout: false,
+      });
+    });
+  });
+
+  describe('button state', () => {
+    it('is disabled when required fields are empty', () => {
+      const { getByTestId } = renderComponent();
+      expect(getByTestId('add-collectible-button')).toBeDisabled();
+    });
+
+    it('is enabled when all required fields are filled and validated', async () => {
+      const utils = renderComponent();
+      await fillFormAndWait(utils);
+
+      await waitFor(() => {
+        expect(utils.getByTestId('add-collectible-button')).not.toBeDisabled();
+      });
+    });
+
+    it('is disabled when network is not selected', async () => {
+      const utils = renderComponent({ selectedNetwork: null });
+      await fillFormAndWait(utils);
+
+      expect(utils.getByTestId('add-collectible-button')).toBeDisabled();
+    });
+
+    it('enables the button when the import rejects', async () => {
+      const importError = new Error('import failed');
+      (Engine.context.NftController.addNft as jest.Mock).mockRejectedValue(
+        importError,
+      );
+
+      const utils = renderComponent({
+        navigation: { navigate: jest.fn(), goBack: jest.fn() },
+      });
+
+      await fillFormAndWait(utils);
+
+      let caught: unknown;
+      await act(async () => {
+        try {
+          await fireEvent.press(utils.getByTestId('add-collectible-button'));
+        } catch (error) {
+          caught = error;
+        }
+      });
+
+      expect(caught).toBe(importError);
+      expect(utils.getByTestId('add-collectible-button')).not.toBeDisabled();
+    });
+
+    it('is disabled during submission', async () => {
+      (Engine.context.NftController.addNft as jest.Mock).mockImplementation(
+        () => new Promise((resolve) => setTimeout(resolve, 100)),
+      );
+
+      const utils = renderComponent({
+        navigation: { navigate: jest.fn(), goBack: jest.fn() },
+      });
+      await fillFormAndWait(utils);
+
+      act(() => {
+        fireEvent.press(utils.getByTestId('add-collectible-button'));
+      });
+
+      expect(utils.getByTestId('add-collectible-button')).toBeDisabled();
+    });
+  });
+
+  it('pre-fills address from collectibleContract prop', () => {
+    const { getByTestId } = renderComponent({
+      collectibleContract: { address: VALID_ADDRESS },
+    });
+
+    expect(getByTestId('input-collectible-address')).toHaveProp(
+      'value',
+      VALID_ADDRESS,
+    );
+  });
+
+  it('navigates back when cancel is pressed', () => {
+    const mockGoBack = jest.fn();
+
+    const { getByText } = renderComponent({
+      navigation: { navigate: jest.fn(), goBack: mockGoBack },
+    });
+
+    fireEvent.press(getByText('add_asset.collectibles.cancel_add_collectible'));
+
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call addNft when validation fails', async () => {
+    const utils = renderComponent({
+      navigation: { navigate: jest.fn(), goBack: jest.fn() },
+    });
+
+    await act(async () => {
+      fireEvent.press(utils.getByTestId('add-collectible-button'));
+    });
+
+    expect(Engine.context.NftController.addNft).not.toHaveBeenCalled();
+  });
+});

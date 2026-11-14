@@ -1,561 +1,398 @@
 /* eslint-disable no-mixed-spaces-and-tabs */
-import React, { useEffect, useState } from 'react';
+import React, {
+  useEffect,
+  useState,
+  useCallback,
+  useContext,
+  useRef,
+} from 'react';
+import { Linking } from 'react-native';
 import {
-  Dimensions,
-  Linking,
-  Platform,
+  useNavigation,
+  useRoute,
+  StackActions,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import { BottomTabBarHeightContext } from '@react-navigation/bottom-tabs';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSelector } from 'react-redux';
+import {
+  BannerAlert,
+  BannerAlertSeverity,
+  Box,
   Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { useDispatch, useSelector } from 'react-redux';
-import { wordlist } from '@metamask/scure-bip39/dist/wordlists/english';
-import QRCode from 'react-native-qrcode-svg';
-import ScrollableTabView, {
-  DefaultTabBar,
-} from 'react-native-scrollable-tab-view';
-const CustomTabView = View as any;
-import Icon from 'react-native-vector-icons/FontAwesome5';
-import AsyncStorage from '../../../store/async-storage-wrapper';
+  TextColor,
+  TextVariant,
+  toast,
+} from '@metamask/design-system-react-native';
 import ActionView from '../../UI/ActionView';
-import ButtonReveal from '../../UI/ButtonReveal';
-import Button, {
-  ButtonSize,
-  ButtonVariants,
-} from '../../../component-library/components/Buttons/Button';
-import InfoModal from '../../UI/Swaps/components/InfoModal';
 import { ScreenshotDeterrent } from '../../UI/ScreenshotDeterrent';
-import { showAlert } from '../../../actions/alert';
-import { recordSRPRevealTimestamp } from '../../../actions/privacy';
-import { WRONG_PASSWORD_ERROR } from '../../../constants/error';
-import {
-  KEEP_SRP_SAFE_URL,
-  NON_CUSTODIAL_WALLET_URL,
-  SRP_GUIDE_URL,
-} from '../../../constants/urls';
+import { SRP_GUIDE_URL } from '../../../constants/urls';
 import ClipboardManager from '../../../core/ClipboardManager';
-import { useTheme } from '../../../util/theme';
-import Engine from '../../../core/Engine';
-import { BIOMETRY_CHOICE } from '../../../constants/storage';
-import { MetaMetricsEvents } from '../../../core/Analytics';
-import { uint8ArrayToMnemonic } from '../../../util/mnemonic';
+import { MetaMetricsEvents } from '../../../core/Analytics/MetaMetrics.events';
 import { passwordRequirementsMet } from '../../../util/password';
-import { Authentication } from '../../../core/';
-
 import Device from '../../../util/device';
 import { strings } from '../../../../locales/i18n';
-import { isHardwareAccount } from '../../../util/address';
 import AppConstants from '../../../core/AppConstants';
-import { createStyles } from './styles';
-import { getNavigationOptionsTitle } from '../../../components/UI/Navbar';
-import generateTestId from '../../../../wdio/utils/generateTestId';
-import { RevealSeedViewSelectorsIDs } from '../../../../e2e/selectors/Settings/SecurityAndPrivacy/RevealSeedView.selectors';
+import { RevealSeedViewSelectorsIDs } from './RevealSeedView.testIds';
+import { selectSelectedInternalAccountFormattedAddress } from '../../../selectors/accountsController';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
+import Routes from '../../../constants/navigation/Routes';
+import {
+  SRPQuizIntroduction,
+  SRPSecurityQuiz,
+  PasswordEntry,
+  SRPTabView,
+} from './components';
+import { useRevealCredential, useSRPQuiz } from './hooks';
+import {
+  IRevealPrivateCredentialProps,
+  RevealPrivateCredentialRouteProp,
+  RevealSrpStage,
+} from './types';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
 
-import { selectSelectedAddress } from '../../../selectors/preferencesController';
-import { useMetrics } from '../../../components/hooks/useMetrics';
-
-const PRIVATE_KEY = 'private_key';
-
-interface IRevealPrivateCredentialProps {
-  navigation: any;
-  credentialName: string;
-  cancel: () => void;
-  route: any;
-}
+// Locales such as Greek wrap this title onto a second line, which defaults to
+// left alignment inside the centered header column.
+const HEADER_TITLE_PROPS = {
+  twClassName: 'text-center',
+  testID: RevealSeedViewSelectorsIDs.REVEAL_CREDENTIAL_TITLE_ID,
+} as const;
 
 const RevealPrivateCredential = ({
-  navigation,
-  credentialName,
   cancel,
-  route,
+  showCancelButton,
 }: IRevealPrivateCredentialProps) => {
-  const hasNavigation = !!navigation;
-  // TODO - Refactor or split RevealPrivateCredential when used in Nav stack vs outside of it
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
+  const route = useRoute<RevealPrivateCredentialRouteProp>();
+  const tabBarHeight = useContext(BottomTabBarHeightContext);
+  const { bottom: safeAreaBottom } = useSafeAreaInsets();
+  const bottomSpacing = tabBarHeight ?? safeAreaBottom;
+  const hasNavigation = !cancel;
   const shouldUpdateNav = route?.params?.shouldUpdateNav;
-  const [clipboardPrivateCredential, setClipboardPrivateCredential] =
-    useState<string>('');
-  const [unlocked, setUnlocked] = useState<boolean>(false);
-  const [isUserUnlocked, setIsUserUnlocked] = useState<boolean>(false);
-  const [password, setPassword] = useState<string>('');
-  const [warningIncorrectPassword, setWarningIncorrectPassword] =
-    useState<string>('');
+  const keyringId = route?.params?.keyringId;
+
   const [clipboardEnabled, setClipboardEnabled] = useState<boolean>(false);
-  const [isModalVisible, setIsModalVisible] = useState<boolean>(false);
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [showSeedPhrase, setShowSeedPhrase] = useState<boolean>(false);
 
-  const selectedAddress = useSelector(selectSelectedAddress);
-  const passwordSet = useSelector((state: any) => state.user.passwordSet);
+  const checkSummedAddress = useSelector(
+    selectSelectedInternalAccountFormattedAddress,
+  );
+  const { trackEvent, createEventBuilder } = useAnalytics();
 
-  const dispatch = useDispatch();
+  const selectedAddress =
+    route?.params?.selectedAccount?.address || checkSummedAddress;
 
-  const theme = useTheme();
-  const { trackEvent } = useMetrics();
-  const { colors, themeAppearance } = theme;
-  const styles = createStyles(theme);
+  const {
+    unlocked,
+    password,
+    warningIncorrectPassword,
+    clipboardPrivateCredential,
+    setPassword,
+    revealCredential,
+    tryUnlock,
+  } = useRevealCredential({
+    selectedAddress,
+    keyringId,
+  });
 
-  const credentialSlug = credentialName || route?.params.credentialName;
-  const isPrivateKey = credentialSlug === PRIVATE_KEY;
+  const {
+    revealSrpStage,
+    currentQuestionIndex,
+    questionAnswered,
+    correctAnswer,
+    handleGetStartedClick,
+    handleQuestionAnswerClick,
+    handleAnsweredQuestionClick,
+  } = useSRPQuiz({
+    initialStage: route?.params?.skipQuiz
+      ? RevealSrpStage.ActionViewScreen
+      : undefined,
+  });
 
-  const updateNavBar = () => {
-    if (!hasNavigation || !shouldUpdateNav) {
-      return;
-    }
-    navigation.setOptions(
-      getNavigationOptionsTitle(
-        strings(`reveal_credential.${credentialSlug ?? ''}_title`),
-        navigation,
-        false,
-        colors,
-        MetaMetricsEvents.GO_BACK_SRP_SCREEN,
-      ),
+  const headerNavigationBack = useCallback(() => {
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.GO_BACK_SRP_SCREEN).build(),
     );
-  };
-
-  const tryUnlockWithPassword = async (
-    pswd: string,
-    privCredentialName?: string,
-  ) => {
-    const { KeyringController } = Engine.context as any;
-    const isPrivateKeyReveal = privCredentialName === PRIVATE_KEY;
-
-    try {
-      let privateCredential;
-      if (!isPrivateKeyReveal) {
-        const uint8ArraySeed = await KeyringController.exportSeedPhrase(pswd);
-        privateCredential = uint8ArrayToMnemonic(uint8ArraySeed, wordlist);
-      } else {
-        privateCredential = await KeyringController.exportAccount(
-          pswd,
-          selectedAddress,
-        );
-      }
-
-      if (privateCredential && (isUserUnlocked || isPrivateKeyReveal)) {
-        setClipboardPrivateCredential(privateCredential);
-        setUnlocked(true);
-      }
-    } catch (e: any) {
-      let msg = strings('reveal_credential.warning_incorrect_password');
-      if (isHardwareAccount(selectedAddress)) {
-        msg = strings('reveal_credential.hardware_error');
-      } else if (
-        e.toString().toLowerCase() !== WRONG_PASSWORD_ERROR.toLowerCase()
-      ) {
-        msg = strings('reveal_credential.unknown_error');
-      }
-
-      setIsModalVisible(false);
-      setUnlocked(false);
-      setWarningIncorrectPassword(msg);
-    }
-  };
-
-  useEffect(() => {
-    updateNavBar();
-    // Track SRP Reveal screen rendered
-    if (!isPrivateKey) {
-      trackEvent(MetaMetricsEvents.REVEAL_SRP_SCREEN);
-    }
-
-    const unlockWithBiometrics = async () => {
-      // Try to use biometrics to unlock
-      const { availableBiometryType } = await Authentication.getType();
-      if (!passwordSet) {
-        tryUnlockWithPassword('');
-      } else if (availableBiometryType) {
-        const biometryChoice = await AsyncStorage.getItem(BIOMETRY_CHOICE);
-        if (biometryChoice !== '' && biometryChoice === availableBiometryType) {
-          const credentials = await Authentication.getPassword();
-          if (credentials) {
-            tryUnlockWithPassword(credentials.password);
-          }
-        }
-      }
-    };
-
-    unlockWithBiometrics();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const navigateBack = () => {
-    if (hasNavigation && shouldUpdateNav) {
-      navigation.pop();
+    if (hasNavigation) {
+      navigation.goBack();
     } else {
       cancel?.();
     }
-  };
+  }, [hasNavigation, navigation, cancel, trackEvent, createEventBuilder]);
 
-  const cancelReveal = () => {
-    if (!unlocked)
-      trackEvent(
-        isPrivateKey
-          ? MetaMetricsEvents.REVEAL_PRIVATE_KEY_CANCELLED
-          : MetaMetricsEvents.REVEAL_SRP_CANCELLED,
-        { view: 'Enter password' },
-      );
-
-    if (!isPrivateKey) trackEvent(MetaMetricsEvents.CANCEL_REVEAL_SRP_CTA);
-    if (cancel) return cancel();
-    navigateBack();
-  };
-
-  const tryUnlock = async () => {
-    const { KeyringController } = Engine.context as any;
-    try {
-      await KeyringController.verifyPassword(password);
-    } catch {
-      const msg = strings('reveal_credential.warning_incorrect_password');
-      setWarningIncorrectPassword(msg);
-      return;
-    }
-
-    if (!isPrivateKey) {
-      const currentDate = new Date();
-      dispatch(recordSRPRevealTimestamp(currentDate.toString()));
-      trackEvent(MetaMetricsEvents.NEXT_REVEAL_SRP_CTA);
-    }
-    setIsModalVisible(true);
-    setWarningIncorrectPassword('');
-  };
-
-  const onPasswordChange = (pswd: string) => {
-    setPassword(pswd);
-  };
-
-  const done = () => {
-    if (!isPrivateKey) trackEvent(MetaMetricsEvents.SRP_DONE_CTA);
-    navigateBack();
-  };
-
-  const copyPrivateCredentialToClipboard = async (
-    privCredentialName: string,
-  ) => {
-    trackEvent(
-      privCredentialName === PRIVATE_KEY
-        ? MetaMetricsEvents.REVEAL_PRIVATE_KEY_COMPLETED
-        : MetaMetricsEvents.REVEAL_SRP_COMPLETED,
-      { action: 'copied to clipboard' },
-    );
-
-    if (!isPrivateKey) trackEvent(MetaMetricsEvents.COPY_SRP);
-
-    await ClipboardManager.setStringExpire(clipboardPrivateCredential);
-
-    const msg = `${strings(
-      `reveal_credential.${privCredentialName}_copied_${Platform.OS}`,
-    )}${
-      Device.isIos()
-        ? strings(`reveal_credential.${privCredentialName}_copied_time`)
-        : ''
-    }`;
-
-    dispatch(
-      showAlert({
-        isVisible: true,
-        autodismiss: 1500,
-        content: 'clipboard-alert',
-        data: {
-          msg,
-          width: '70%',
-        },
-      }),
-    );
-  };
-
-  const revealCredential = (privCredentialName: string) => {
-    tryUnlockWithPassword(password, privCredentialName);
-    setIsUserUnlocked(true);
-    setIsModalVisible(false);
-  };
-
-  const renderTabBar = () => (
-    <DefaultTabBar
-      underlineStyle={styles.tabUnderlineStyle}
-      activeTextColor={colors.primary.default}
-      inactiveTextColor={colors.text.alternative}
-      backgroundColor={colors.background.default}
-      tabStyle={styles.tabStyle}
-      textStyle={styles.textStyle}
-      style={styles.tabBar}
-    />
-  );
-
-  const onTabBarChange = (event: { i: number }) => {
-    if (event.i === 0) {
-      trackEvent(
-        isPrivateKey
-          ? MetaMetricsEvents.REVEAL_PRIVATE_KEY_COMPLETED
-          : MetaMetricsEvents.REVEAL_SRP_COMPLETED,
-        { action: 'viewed SRP' },
-      );
-
-      if (!isPrivateKey) trackEvent(MetaMetricsEvents.VIEW_SRP);
-    } else if (event.i === 1) {
-      trackEvent(
-        isPrivateKey
-          ? MetaMetricsEvents.REVEAL_PRIVATE_KEY_COMPLETED
-          : MetaMetricsEvents.REVEAL_SRP_COMPLETED,
-        { action: 'viewed QR code' },
-      );
-
-      if (!isPrivateKey) trackEvent(MetaMetricsEvents.VIEW_SRP_QR);
-    }
-  };
+  // Only when user reaches the action view (after quiz): track once, then attempt reveal once.
+  const hasRunRevealForActionView = useRef(false);
+  useEffect(() => {
+    if (revealSrpStage !== RevealSrpStage.ActionViewScreen) return;
+    if (hasRunRevealForActionView.current) return;
+    hasRunRevealForActionView.current = true;
+    trackEvent(createEventBuilder(MetaMetricsEvents.REVEAL_SRP_SCREEN).build());
+    revealCredential();
+  }, [revealSrpStage, revealCredential, trackEvent, createEventBuilder]);
 
   useEffect(() => {
-    Device.isAndroid() &&
-      Device.getDeviceAPILevel().then((apiLevel) => {
-        if (apiLevel < AppConstants.LEAST_SUPPORTED_ANDROID_API_LEVEL) {
-          setClipboardEnabled(false);
-          return;
-        }
-      });
-
-    setClipboardEnabled(true);
+    if (Device.isAndroid()) {
+      Device.getDeviceAPILevel()
+        .then((apiLevel) => {
+          setClipboardEnabled(
+            apiLevel >= AppConstants.LEAST_SUPPORTED_ANDROID_API_LEVEL,
+          );
+        })
+        .catch(() => {
+          setClipboardEnabled(true);
+        });
+    } else {
+      setClipboardEnabled(true);
+    }
   }, []);
 
-  const renderTabView = (privCredentialName: string) => (
-    <ScrollableTabView
-      renderTabBar={() => renderTabBar()}
-      onChangeTab={(event: any) => onTabBarChange(event)}
-    >
-      <CustomTabView
-        tabLabel={strings(`reveal_credential.text`)}
-        style={styles.tabContent}
-      >
-        <Text style={styles.boldText}>
-          {strings(`reveal_credential.${privCredentialName}`)}
-        </Text>
-        <View style={styles.seedPhraseView}>
-          <TextInput
-            value={clipboardPrivateCredential}
-            numberOfLines={3}
-            multiline
-            selectTextOnFocus
-            style={styles.seedPhrase}
-            editable={false}
-            testID={RevealSeedViewSelectorsIDs.SECRET_RECOVERY_PHRASE_TEXT}
-            placeholderTextColor={colors.text.muted}
-            keyboardAppearance={themeAppearance}
-          />
-          {clipboardEnabled ? (
-            <Button
-              label={strings('reveal_credential.copy_to_clipboard')}
-              variant={ButtonVariants.Secondary}
-              size={ButtonSize.Sm}
-              onPress={() =>
-                copyPrivateCredentialToClipboard(privCredentialName)
-              }
-              testID={
-                RevealSeedViewSelectorsIDs.REVEAL_SECRET_RECOVERY_PHRASE_TOUCHABLE_BOX_ID
-              }
-              style={styles.clipboardButton}
-            />
-          ) : null}
-        </View>
-      </CustomTabView>
-      <CustomTabView
-        tabLabel={strings(`reveal_credential.qr_code`)}
-        style={styles.tabContent}
-      >
-        <View style={styles.qrCodeWrapper}>
-          <QRCode
-            value={clipboardPrivateCredential}
-            size={Dimensions.get('window').width - 176}
-          />
-        </View>
-      </CustomTabView>
-    </ScrollableTabView>
-  );
+  const navigateBack = useCallback(() => {
+    if (!hasNavigation) {
+      cancel?.();
+      return;
+    }
+    if (route?.params?.popToTopOnDone) {
+      navigation.dispatch(StackActions.popToTop());
+      return;
+    }
+    if (shouldUpdateNav) {
+      navigation.dispatch(StackActions.pop());
+      return;
+    }
+    navigation.dispatch(StackActions.pop());
+  }, [
+    hasNavigation,
+    shouldUpdateNav,
+    navigation,
+    cancel,
+    route?.params?.popToTopOnDone,
+  ]);
 
-  const renderPasswordEntry = () => (
-    <>
-      <Text style={styles.enterPassword}>
-        {strings('reveal_credential.enter_password')}
-      </Text>
-      <TextInput
-        style={styles.input}
-        placeholder={'Password'}
-        placeholderTextColor={colors.text.muted}
-        onChangeText={onPasswordChange}
-        secureTextEntry
-        onSubmitEditing={tryUnlock}
-        keyboardAppearance={themeAppearance}
-        testID={RevealSeedViewSelectorsIDs.PASSWORD_INPUT_BOX_ID}
-      />
-      <Text
-        style={styles.warningText}
-        testID={RevealSeedViewSelectorsIDs.PASSWORD_WARNING_ID}
-      >
-        {warningIncorrectPassword}
-      </Text>
-    </>
-  );
+  const cancelReveal = useCallback(() => {
+    if (!unlocked)
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.REVEAL_SRP_CANCELLED)
+          .addProperties({
+            view: 'Enter password',
+          })
+          .build(),
+      );
 
-  const closeModal = () => {
     trackEvent(
-      isPrivateKey
-        ? MetaMetricsEvents.REVEAL_PRIVATE_KEY_CANCELLED
-        : MetaMetricsEvents.REVEAL_SRP_CANCELLED,
-      { view: 'Hold to reveal' },
+      createEventBuilder(MetaMetricsEvents.CANCEL_REVEAL_SRP_CTA).build(),
+    );
+    if (cancel) return cancel();
+    navigateBack();
+  }, [unlocked, trackEvent, createEventBuilder, cancel, navigateBack]);
+
+  const done = useCallback(() => {
+    trackEvent(createEventBuilder(MetaMetricsEvents.SRP_DONE_CTA).build());
+    navigateBack();
+  }, [trackEvent, createEventBuilder, navigateBack]);
+
+  const handleLearnMoreClick = useCallback(() => {
+    if (hasNavigation) {
+      navigation.navigate(Routes.WEBVIEW.MAIN, {
+        screen: Routes.WEBVIEW.SIMPLE,
+        params: {
+          url: SRP_GUIDE_URL,
+        },
+      });
+    } else {
+      Linking.openURL(SRP_GUIDE_URL);
+    }
+  }, [hasNavigation, navigation]);
+
+  const onTabBarChange = useCallback(
+    (event: { i: number }) => {
+      if (event.i === 0) {
+        trackEvent(
+          createEventBuilder(MetaMetricsEvents.REVEAL_SRP_COMPLETED)
+            .addProperties({ action: 'viewed SRP' })
+            .build(),
+        );
+        trackEvent(createEventBuilder(MetaMetricsEvents.VIEW_SRP).build());
+      } else if (event.i === 1) {
+        trackEvent(
+          createEventBuilder(MetaMetricsEvents.REVEAL_SRP_COMPLETED)
+            .addProperties({ action: 'viewed QR code' })
+            .build(),
+        );
+        trackEvent(createEventBuilder(MetaMetricsEvents.VIEW_SRP_QR).build());
+      }
+    },
+    [trackEvent, createEventBuilder],
+  );
+
+  const lastCopyTimeRef = useRef<number>(0);
+  const COPY_THROTTLE_MS = 2000;
+
+  const copyPrivateCredentialToClipboard = useCallback(async () => {
+    const now = Date.now();
+    if (now - lastCopyTimeRef.current < COPY_THROTTLE_MS) {
+      return;
+    }
+    lastCopyTimeRef.current = now;
+
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.REVEAL_SRP_COMPLETED)
+        .addProperties({
+          action: 'copied to clipboard',
+        })
+        .build(),
     );
 
-    trackEvent(MetaMetricsEvents.SRP_DISMISS_HOLD_TO_REVEAL_DIALOG);
+    trackEvent(createEventBuilder(MetaMetricsEvents.COPY_SRP).build());
+    await ClipboardManager.setStringExpire(clipboardPrivateCredential);
 
-    setIsModalVisible(false);
-  };
-
-  const renderModal = (
-    isPrivateKeyReveal: boolean,
-    privCredentialName: string,
-  ) => (
-    <InfoModal
-      isVisible={isModalVisible}
-      toggleModal={closeModal}
-      title={strings('reveal_credential.keep_credential_safe', {
-        credentialName: isPrivateKeyReveal
-          ? strings('reveal_credential.private_key_text')
-          : strings('reveal_credential.srp_abbreviation_text'),
-      })}
-      body={
-        <>
-          <Text style={[styles.normalText, styles.revealModalText]}>
-            {
-              strings('reveal_credential.reveal_credential_modal', {
-                credentialName: isPrivateKeyReveal
-                  ? strings('reveal_credential.private_key_text')
-                  : strings('reveal_credential.srp_text'),
-              })[0]
-            }
-            <Text style={styles.boldText}>
-              {isPrivateKeyReveal
-                ? strings('reveal_credential.reveal_credential_modal')[1]
-                : strings('reveal_credential.reveal_credential_modal')[2]}
-            </Text>
-            {strings('reveal_credential.reveal_credential_modal')[3]}
-            <TouchableOpacity
-              onPress={() => Linking.openURL(KEEP_SRP_SAFE_URL)}
-            >
-              <Text style={[styles.blueText, styles.link]}>
-                {strings('reveal_credential.reveal_credential_modal')[4]}
-              </Text>
-            </TouchableOpacity>
-          </Text>
-
-          <ButtonReveal
-            label={strings('reveal_credential.hold_to_reveal_credential', {
-              credentialName: isPrivateKeyReveal
-                ? strings('reveal_credential.private_key_text')
-                : strings('reveal_credential.srp_abbreviation_text'),
-            })}
-            onLongPress={() => revealCredential(privCredentialName)}
-            {...generateTestId(
-              Platform,
-              RevealSeedViewSelectorsIDs.SECRET_RECOVERY_PHRASE_LONG_PRESS_BUTTON_ID,
-            )}
-          />
-        </>
-      }
-    />
-  );
+    toast({
+      title: strings('reveal_credential.copied_to_clipboard'),
+      hasNoTimeout: false,
+      showCloseButton: false,
+    });
+  }, [trackEvent, createEventBuilder, clipboardPrivateCredential]);
 
   const renderSRPExplanation = () => (
-    <Text style={styles.normalText}>
+    <Text variant={TextVariant.BodyMd} color={TextColor.TextAlternative}>
       {strings('reveal_credential.seed_phrase_explanation')[0]}{' '}
-      <Text
-        style={[styles.blueText, styles.link]}
-        onPress={() => Linking.openURL(SRP_GUIDE_URL)}
-      >
+      <Text color={TextColor.PrimaryDefault} onPress={handleLearnMoreClick}>
         {strings('reveal_credential.seed_phrase_explanation')[1]}
       </Text>{' '}
       {strings('reveal_credential.seed_phrase_explanation')[2]}{' '}
-      <Text style={styles.boldText}>
+      <Text variant={TextVariant.BodyMd} color={TextColor.TextAlternative}>
         {strings('reveal_credential.seed_phrase_explanation')[3]}
-      </Text>
-      {strings('reveal_credential.seed_phrase_explanation')[4]}{' '}
-      <Text
-        style={[styles.blueText, styles.link]}
-        onPress={() => Linking.openURL(NON_CUSTODIAL_WALLET_URL)}
-      >
-        {strings('reveal_credential.seed_phrase_explanation')[5]}{' '}
-      </Text>
-      {strings('reveal_credential.seed_phrase_explanation')[6]}{' '}
-      <Text style={styles.boldText}>
-        {strings('reveal_credential.seed_phrase_explanation')[7]}
       </Text>
     </Text>
   );
 
-  const renderWarning = (privCredentialName: string) => (
-    <View style={styles.warningWrapper}>
-      <View style={[styles.rowWrapper, styles.warningRowWrapper]}>
-        <Icon style={styles.icon} name="eye-slash" size={20} solid />
-        {privCredentialName === PRIVATE_KEY ? (
-          <Text style={styles.warningMessageText}>
-            {strings(
-              `reveal_credential.${privCredentialName}_warning_explanation`,
-            )}
-          </Text>
-        ) : (
-          <Text style={styles.warningMessageText}>
-            {strings('reveal_credential.seed_phrase_warning_explanation')[0]}
-            <Text style={styles.boldText}>
-              {strings('reveal_credential.seed_phrase_warning_explanation')[1]}
-            </Text>
-          </Text>
-        )}
-      </View>
-    </View>
+  const renderWarning = () => (
+    <BannerAlert
+      severity={BannerAlertSeverity.Danger}
+      description={strings('reveal_credential.seed_phrase_warning_explanation')}
+      twClassName="mt-6"
+      testID={RevealSeedViewSelectorsIDs.SEED_PHRASE_WARNING_ID}
+    />
   );
 
-  return (
-    <View
-      style={[styles.wrapper]}
-      testID={RevealSeedViewSelectorsIDs.SECRET_RECOVERY_PHRASE_CONTAINER_ID}
+  const renderActionView = () => (
+    <ActionView
+      cancelText={
+        unlocked
+          ? strings('reveal_credential.done')
+          : strings('reveal_credential.cancel')
+      }
+      confirmText={strings('reveal_credential.confirm')}
+      onCancelPress={unlocked ? done : cancelReveal}
+      onConfirmPress={() => tryUnlock()}
+      showConfirmButton={!unlocked}
+      confirmDisabled={!passwordRequirementsMet(password)}
+      cancelTestID={
+        RevealSeedViewSelectorsIDs.SECRET_RECOVERY_PHRASE_CANCEL_BUTTON_ID
+      }
+      confirmTestID={
+        RevealSeedViewSelectorsIDs.SECRET_RECOVERY_PHRASE_NEXT_BUTTON_ID
+      }
+      scrollViewTestID={RevealSeedViewSelectorsIDs.REVEAL_CREDENTIAL_SCROLL_ID}
+      showCancelButton={Boolean(showCancelButton || unlocked)}
+      enableOnAndroid
+      enableAutomaticScroll
+      extraScrollHeight={40}
+      showsVerticalScrollIndicator={false}
     >
-      <ActionView
-        cancelText={
-          unlocked
-            ? strings('reveal_credential.done')
-            : strings('reveal_credential.cancel')
-        }
-        confirmText={strings('reveal_credential.confirm')}
-        onCancelPress={unlocked ? done : cancelReveal}
-        onConfirmPress={() => tryUnlock()}
-        showConfirmButton={!unlocked}
-        confirmDisabled={!passwordRequirementsMet(password)}
-        cancelTestID={
-          RevealSeedViewSelectorsIDs.SECRET_RECOVERY_PHRASE_CANCEL_BUTTON_ID
-        }
-        confirmTestID={
-          RevealSeedViewSelectorsIDs.SECRET_RECOVERY_PHRASE_NEXT_BUTTON_ID
-        }
-      >
-        <>
-          <View style={[styles.rowWrapper, styles.normalText]}>
-            {isPrivateKey ? (
-              <Text style={styles.normalText}>
-                {strings(`reveal_credential.private_key_explanation`)}
+      <>
+        <Box twClassName="p-5 pb-0">
+          <>
+            {unlocked ? (
+              <Text
+                variant={TextVariant.BodyMd}
+                color={TextColor.TextAlternative}
+              >
+                {strings('reveal_credential.reveal_srp_description')}
               </Text>
             ) : (
               renderSRPExplanation()
             )}
-          </View>
-          {renderWarning(credentialSlug)}
+            {unlocked ? null : renderWarning()}
+          </>
+        </Box>
+        {unlocked ? (
+          <SRPTabView
+            clipboardPrivateCredential={clipboardPrivateCredential}
+            showSeedPhrase={showSeedPhrase}
+            clipboardEnabled={clipboardEnabled}
+            onRevealSeedPhrase={() => setShowSeedPhrase(!showSeedPhrase)}
+            onCopyToClipboard={copyPrivateCredentialToClipboard}
+            onTabChange={onTabBarChange}
+          />
+        ) : (
+          <Box twClassName="p-5 pb-0">
+            <PasswordEntry
+              password={password}
+              onPasswordChange={setPassword}
+              onSubmit={tryUnlock}
+              warningMessage={warningIncorrectPassword}
+              showPassword={showPassword}
+              onToggleShowPassword={() => setShowPassword(!showPassword)}
+            />
+          </Box>
+        )}
+      </>
+    </ActionView>
+  );
 
-          <View style={styles.rowWrapper}>
-            {unlocked ? renderTabView(credentialSlug) : renderPasswordEntry()}
-          </View>
-        </>
-      </ActionView>
-      {renderModal(isPrivateKey, credentialSlug)}
+  const renderContent = () => {
+    if (revealSrpStage === RevealSrpStage.Introduction) {
+      return (
+        <SRPQuizIntroduction
+          onGetStarted={handleGetStartedClick}
+          onLearnMore={handleLearnMoreClick}
+        />
+      );
+    }
+    if (revealSrpStage === RevealSrpStage.Quiz) {
+      return (
+        <SRPSecurityQuiz
+          currentQuestionIndex={currentQuestionIndex}
+          questionAnswered={questionAnswered}
+          correctAnswer={correctAnswer}
+          onAnswerClick={handleQuestionAnswerClick}
+          onContinueClick={handleAnsweredQuestionClick}
+          onLearnMore={handleLearnMoreClick}
+        />
+      );
+    }
+    return renderActionView();
+  };
 
-      <ScreenshotDeterrent
-        enabled={unlocked}
-        isSRP={credentialSlug !== PRIVATE_KEY}
-        hasNavigation={hasNavigation}
+  return (
+    <Box
+      twClassName="flex-1 h-full bg-default"
+      style={{ paddingBottom: bottomSpacing }}
+      testID={RevealSeedViewSelectorsIDs.REVEAL_CREDENTIAL_CONTAINER_ID}
+    >
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        title={strings('reveal_credential.seed_phrase_title')}
+        titleProps={HEADER_TITLE_PROPS}
+        onBack={headerNavigationBack}
+        backButtonProps={{
+          testID: RevealSeedViewSelectorsIDs.REVEAL_CREDENTIAL_BACK_BUTTON_ID,
+        }}
+        includesTopInset
       />
-    </View>
+      {renderContent()}
+      <ScreenshotDeterrent
+        enabled
+        isSRP
+        hasNavigation={hasNavigation}
+        warnOnScreenshot={unlocked}
+      />
+    </Box>
   );
 };
 

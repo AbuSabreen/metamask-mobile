@@ -1,0 +1,230 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import DevLogger from '../../../../core/SDKConnect/utils/DevLogger';
+import {
+  type MarketInfo,
+  type PerpsProviderType,
+  wait,
+} from '@metamask/perps-controller';
+import { MARKET_DATA_FETCH_RETRY_CONFIG } from '../constants/perpsConfig';
+import usePerpsToasts from './usePerpsToasts';
+import { usePerpsTrading } from './usePerpsTrading';
+
+export interface UsePerpsMarketDataParams {
+  /** Asset symbol to fetch market data for */
+  asset: string;
+  /**
+   * Provider whose record to use when several providers list the asset.
+   * Untagged records (single-provider mode) still match.
+   */
+  providerId?: PerpsProviderType;
+  /**
+   * Read directly from the provider when the Terminal snapshot does not carry
+   * venue-only metadata such as isolated-margin restrictions.
+   */
+  useProviderMetadata?: boolean;
+  /** Whether to show error toast notifications (default: false) */
+  showErrorToast?: boolean;
+}
+
+interface UsePerpsMarketDataResult {
+  marketData: MarketInfo | null;
+  isLoading: boolean;
+  /** Whether the requested provider metadata is available. */
+  isProviderMetadataAvailable: boolean;
+  error: string | null;
+  refetch: () => Promise<void>;
+}
+
+/**
+ * Hook to fetch and manage market data for a specific asset
+ * @param params - Asset symbol (string) or configuration object
+ * @returns Market data, loading state, and error state
+ *
+ * @example
+ * // Simple usage (legacy, no toast)
+ * const { marketData, isLoading, error } = usePerpsMarketData('BTC');
+ *
+ * @example
+ * // With error toast notifications
+ * const { marketData, isLoading, error } = usePerpsMarketData({
+ *   asset: 'BTC',
+ *   showErrorToast: true,
+ * });
+ */
+export const usePerpsMarketData = (
+  params: string | UsePerpsMarketDataParams,
+): UsePerpsMarketDataResult => {
+  // Support both legacy string and new object params
+  const asset = typeof params === 'string' ? params : params.asset;
+  const showErrorToast =
+    typeof params === 'string' ? false : (params.showErrorToast ?? false);
+  const providerId = typeof params === 'string' ? undefined : params.providerId;
+  const useProviderMetadata =
+    typeof params === 'string' ? false : (params.useProviderMetadata ?? false);
+  const { getMarkets } = usePerpsTrading();
+  const [marketData, setMarketData] = useState<MarketInfo | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isProviderMetadataAvailable, setIsProviderMetadataAvailable] =
+    useState(!useProviderMetadata);
+  const [error, setError] = useState<string | null>(null);
+  // Distinguishes "the market list says this asset is not tradable" from "the
+  // market list could not be fetched". Only the former may be shown to the
+  // user as a tradability verdict.
+  const [isAssetUntradable, setIsAssetUntradable] = useState(false);
+
+  // Always call hook (Rules of Hooks requirement)
+  const { showToast, PerpsToastOptions } = usePerpsToasts();
+
+  // The retry loop below awaits between attempts, so a fetch for a previous
+  // asset can still be in flight when a newer one starts. Track the latest
+  // request and the mounted state so only the current request may write state
+  // — same guards as `usePerpsMarketForAsset`.
+  const isMountedRef = useRef(true);
+  const requestIdRef = useRef(0);
+
+  const fetchMarketData = useCallback(async () => {
+    if (!asset) {
+      // The order sheet defers the fetch with an empty symbol until first
+      // paint. That is still in-flight, not a finished empty result.
+      setMarketData(null);
+      setIsLoading(true);
+      setIsProviderMetadataAvailable(!useProviderMetadata);
+      return;
+    }
+
+    // Any request started here supersedes every earlier one.
+    const requestId = ++requestIdRef.current;
+    const isCurrentRequest = () =>
+      requestIdRef.current === requestId && isMountedRef.current;
+
+    setIsLoading(true);
+    setError(null);
+
+    // `getMarkets` throws while the Perps connection is still initialising —
+    // after unlocking, or during a reconnect. That says nothing about whether
+    // the asset is tradable, so retry across the initialisation window rather
+    // than reporting a failure the user cannot act on (TAT-3645).
+    for (
+      let attempt = 0;
+      attempt <= MARKET_DATA_FETCH_RETRY_CONFIG.MaxRetries;
+      attempt++
+    ) {
+      try {
+        const markets = await getMarkets({ symbols: [asset] });
+        if (!isCurrentRequest()) {
+          return;
+        }
+
+        const allowedMarket = markets.find(
+          (market) =>
+            market.name === asset &&
+            (!providerId ||
+              !market.providerId ||
+              market.providerId === providerId),
+        );
+        let resolvedMarket = allowedMarket;
+        let providerMetadataAvailable = !useProviderMetadata;
+
+        if (allowedMarket && useProviderMetadata) {
+          try {
+            const providerMarkets = await getMarkets({
+              symbols: [asset],
+              skipFilters: true,
+            });
+            if (!isCurrentRequest()) {
+              return;
+            }
+            const providerMarket = providerMarkets.find(
+              (market) =>
+                market.name === asset &&
+                (!providerId ||
+                  !market.providerId ||
+                  market.providerId === providerId),
+            );
+            if (providerMarket) {
+              resolvedMarket = { ...allowedMarket, ...providerMarket };
+              providerMetadataAvailable = true;
+            }
+          } catch (providerError) {
+            DevLogger.log(
+              'Error fetching provider market metadata:',
+              providerError,
+            );
+          }
+        }
+        if (!isCurrentRequest()) {
+          return;
+        }
+
+        // The market list came back, so its contents are a real verdict on
+        // whether this asset can be traded.
+        setIsAssetUntradable(allowedMarket === undefined);
+        setError(
+          allowedMarket === undefined ? `Asset ${asset} is not tradable` : null,
+        );
+        setMarketData(resolvedMarket ?? null);
+        setIsProviderMetadataAvailable(providerMetadataAvailable);
+        setIsLoading(false);
+        return;
+      } catch (err) {
+        if (!isCurrentRequest()) {
+          return;
+        }
+
+        if (attempt < MARKET_DATA_FETCH_RETRY_CONFIG.MaxRetries) {
+          await wait(MARKET_DATA_FETCH_RETRY_CONFIG.RetryDelayMs);
+          if (!isCurrentRequest()) {
+            return;
+          }
+          continue;
+        }
+
+        DevLogger.log('Error fetching market data:', err);
+        // Never a tradability verdict: the market list was never retrieved.
+        setIsAssetUntradable(false);
+        setError(
+          err instanceof Error ? err.message : 'Failed to fetch market data',
+        );
+        setMarketData(null);
+        setIsLoading(false);
+      }
+    }
+  }, [getMarkets, asset, providerId, useProviderMetadata]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    fetchMarketData();
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [fetchMarketData]);
+
+  // Show the "not tradable" toast only when the market list actually came back
+  // without this asset. A failed fetch is transient and must not be reported as
+  // a tradability verdict (TAT-3645).
+  useEffect(() => {
+    if (showErrorToast && isAssetUntradable && !isLoading) {
+      showToast(
+        PerpsToastOptions.dataFetching.market.error.marketDataUnavailable(
+          asset,
+        ),
+      );
+    }
+  }, [
+    showErrorToast,
+    isAssetUntradable,
+    isLoading,
+    asset,
+    showToast,
+    PerpsToastOptions,
+  ]);
+
+  return {
+    marketData,
+    isLoading,
+    isProviderMetadataAvailable,
+    error,
+    refetch: fetchMarketData,
+  };
+};

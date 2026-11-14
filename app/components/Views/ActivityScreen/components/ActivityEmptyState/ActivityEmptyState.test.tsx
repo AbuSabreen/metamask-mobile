@@ -1,0 +1,209 @@
+import React from 'react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react-native';
+import { useNavigation } from '@react-navigation/native';
+import ActivityEmptyState from './ActivityEmptyState';
+import { ActivityTypeFilter } from '../../types';
+import Routes from '../../../../../constants/navigation/Routes';
+import { ActivityScreenSelectorsIDs } from '../../ActivityScreen.testIds';
+import { useRampNavigation } from '../../../../UI/Ramp/hooks/useRampNavigation';
+import { useMoneyAccountDeposit } from '../../../../UI/Money/hooks/useMoneyAccount';
+import { MetaMetricsSwapsEventSource } from '@metamask/bridge-controller';
+import type { CaipChainId } from '@metamask/utils';
+import { BridgeTabKey } from '../../../../UI/Bridge/Views/BridgeView/BridgeView.constants';
+import { getDefaultTokenPairForChains } from '../../../../UI/Bridge/utils/tokenUtils';
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: jest.fn(),
+}));
+
+const mockGoToSwaps = jest.fn();
+const mockUseSwapBridgeNavigation = jest.fn((args: unknown) => ({
+  goToSwaps: mockGoToSwaps,
+}));
+jest.mock('../../../../UI/Bridge/hooks/useSwapBridgeNavigation', () => {
+  const { MetaMetricsSwapsEventSource: swapsEventSource } = jest.requireActual(
+    '@metamask/bridge-controller',
+  );
+  return {
+    SwapBridgeNavigationLocation: {
+      MainView: swapsEventSource.MainView,
+    },
+    useSwapBridgeNavigation: (args: unknown) =>
+      mockUseSwapBridgeNavigation(args),
+  };
+});
+
+jest.mock('react-redux', () => {
+  const { backgroundState } = jest.requireActual(
+    '../../../../../util/test/initial-root-state',
+  );
+  const { selectAddressHasTokenBalances } = jest.requireActual(
+    '../../../../../selectors/tokenBalancesController',
+  );
+  return {
+    // The account has funds; other selectors, such as Predict's Active
+    // Venue, read the default state.
+    useSelector: jest.fn((selector: (state: unknown) => unknown) =>
+      selector === selectAddressHasTokenBalances
+        ? true
+        : selector({ engine: { backgroundState } }),
+    ),
+  };
+});
+
+jest.mock('@metamask/design-system-twrnc-preset', () => ({
+  ...jest.requireActual('@metamask/design-system-twrnc-preset'),
+  Theme: { Dark: 'dark', Light: 'light' },
+  useTheme: jest.fn(() => 'light'),
+}));
+
+jest.mock('@metamask/design-system-react-native', () => {
+  const ReactActual = jest.requireActual('react');
+  const { Text, TouchableOpacity, View } = jest.requireActual('react-native');
+
+  return {
+    ...jest.requireActual('@metamask/design-system-react-native'),
+    Box: ({
+      children,
+      testID,
+    }: {
+      children?: React.ReactNode;
+      testID?: string;
+    }) => <View testID={testID}>{children}</View>,
+    TabEmptyState: ({
+      actionButtonText,
+      description,
+      onAction,
+      testID,
+    }: {
+      actionButtonText: string;
+      description: string;
+      onAction: () => void;
+      testID?: string;
+    }) => (
+      <TouchableOpacity testID={testID} onPress={onAction}>
+        {ReactActual.createElement(Text, null, description)}
+        {ReactActual.createElement(Text, null, actionButtonText)}
+      </TouchableOpacity>
+    ),
+  };
+});
+
+jest.mock('../../../../../images/activity-empty-dark.svg', () => 'DarkIcon');
+jest.mock('../../../../../images/activity-empty-light.svg', () => 'LightIcon');
+
+jest.mock('../../../../UI/Ramp/hooks/useRampNavigation', () => ({
+  useRampNavigation: jest.fn(),
+}));
+
+jest.mock('../../../../UI/Money/hooks/useMoneyAccount', () => ({
+  useMoneyAccountDeposit: jest.fn(),
+}));
+
+const mockNavigate = jest.fn();
+const mockGoToBuy = jest.fn();
+const mockInitiateDeposit = jest.fn(() => Promise.resolve());
+
+describe('ActivityEmptyState', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (useNavigation as jest.Mock).mockReturnValue({ navigate: mockNavigate });
+    (useRampNavigation as jest.Mock).mockReturnValue({ goToBuy: mockGoToBuy });
+    (useMoneyAccountDeposit as jest.Mock).mockReturnValue({
+      initiateDeposit: mockInitiateDeposit,
+    });
+  });
+
+  it('renders the empty state container and action copy', () => {
+    render(<ActivityEmptyState typeFilter={ActivityTypeFilter.Transactions} />);
+
+    expect(
+      screen.getByTestId(ActivityScreenSelectorsIDs.LIST),
+    ).toBeOnTheScreen();
+    expect(
+      screen.getByTestId(ActivityScreenSelectorsIDs.EMPTY_STATE),
+    ).toBeOnTheScreen();
+    expect(screen.getByText('Swap tokens')).toBeOnTheScreen();
+  });
+
+  it('opens swaps from the funded transactions empty state', () => {
+    render(<ActivityEmptyState typeFilter={ActivityTypeFilter.Transactions} />);
+
+    expect(mockUseSwapBridgeNavigation).toHaveBeenCalledWith({
+      sourcePage: 'ActivityEmptyState',
+      location: MetaMetricsSwapsEventSource.MainView,
+    });
+    fireEvent.press(screen.getByTestId(ActivityScreenSelectorsIDs.EMPTY_STATE));
+
+    expect(mockGoToSwaps).toHaveBeenCalledWith();
+    expect(mockGoToSwaps).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['all networks', null, '0x1'],
+    ['an empty network filter', [], '0x1'],
+    ['Linea', ['eip155:59144'], '0xe708'],
+  ] as [string, CaipChainId[] | null, string][])(
+    'opens swaps on the Limit tab with the default pair for %s',
+    (_label, networkFilter, expectedChainId) => {
+      const expectedPair = getDefaultTokenPairForChains([
+        networkFilter?.[0] ?? 'eip155:1',
+      ]);
+      render(
+        <ActivityEmptyState
+          typeFilter={ActivityTypeFilter.LimitOrders}
+          networkFilter={networkFilter}
+        />,
+      );
+
+      fireEvent.press(
+        screen.getByTestId(ActivityScreenSelectorsIDs.EMPTY_STATE),
+      );
+
+      expect(expectedPair?.sourceToken.chainId).toBe(expectedChainId);
+      expect(expectedPair?.destToken?.chainId).toBe(expectedChainId);
+      expect(mockGoToSwaps).toHaveBeenCalledWith(
+        expectedPair?.sourceToken,
+        expectedPair?.destToken,
+        undefined,
+        undefined,
+        undefined,
+        BridgeTabKey.Limit,
+      );
+      expect(mockGoToSwaps).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('routes each CTA to the expected destination', async () => {
+    render(<ActivityEmptyState typeFilter={ActivityTypeFilter.Predictions} />);
+    fireEvent.press(screen.getByTestId(ActivityScreenSelectorsIDs.EMPTY_STATE));
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.PREDICT.ROOT, {
+      screen: Routes.PREDICT.MARKET_LIST,
+    });
+
+    cleanup();
+    render(<ActivityEmptyState typeFilter={ActivityTypeFilter.Perps} />);
+    fireEvent.press(screen.getByTestId(ActivityScreenSelectorsIDs.EMPTY_STATE));
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.PERPS.ROOT, {
+      screen: Routes.PERPS.MARKET_LIST,
+      params: {},
+    });
+
+    cleanup();
+    render(<ActivityEmptyState typeFilter={ActivityTypeFilter.BuySell} />);
+    fireEvent.press(screen.getByTestId(ActivityScreenSelectorsIDs.EMPTY_STATE));
+    expect(mockGoToBuy).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    render(<ActivityEmptyState typeFilter={ActivityTypeFilter.MetamaskCard} />);
+    fireEvent.press(screen.getByTestId(ActivityScreenSelectorsIDs.EMPTY_STATE));
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.CARD.ROOT);
+  });
+});

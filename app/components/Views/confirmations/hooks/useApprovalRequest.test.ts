@@ -14,7 +14,8 @@ jest.mock('react', () => {
 
   return {
     ...originalReact,
-    useCallback: (fn: any) => fn,
+    useCallback: (fn: unknown) => fn,
+    useMemo: (fn: () => unknown) => fn(),
   };
 });
 
@@ -26,7 +27,7 @@ jest.mock('../../../../core/Engine', () => ({
 const APPROVAL_REQUEST = {
   id: 'testId1',
   origin: 'testOrigin1',
-  type: 'eth_sign',
+  type: 'eth_signTypedData',
   time: 123456789,
   expectsResult: false,
   requestData: {
@@ -39,7 +40,7 @@ const APPROVAL_REQUEST = {
 const APPROVAL_REQUEST_2 = {
   id: 'testId2',
   origin: 'testOrigin2',
-  type: 'eth_sign',
+  type: 'eth_signTypedData',
   time: 123456780,
   expectsResult: true,
   requestData: {
@@ -53,11 +54,20 @@ const PAGE_META_MOCK = {
   test: 'value',
 };
 
+// Runs the real selector against a minimal state, rather than stubbing its
+// result, so `selectFirstPendingApproval` is actually exercised.
 const mockSelector = (
   approvalRequests: ApprovalControllerState['pendingApprovals'],
 ) => {
-  (useSelector as jest.MockedFn<typeof useSelector>).mockReturnValue(
-    approvalRequests,
+  (useSelector as jest.MockedFn<typeof useSelector>).mockImplementation(
+    (selector) =>
+      selector({
+        engine: {
+          backgroundState: {
+            ApprovalController: { pendingApprovals: approvalRequests },
+          },
+        },
+      }),
   );
 };
 
@@ -101,12 +111,16 @@ describe('useApprovalRequest', () => {
     it('set to empty object if no request data', () => {
       mockSelector({
         [APPROVAL_REQUEST.id]: { ...APPROVAL_REQUEST, requestData: undefined },
+        // TODO: Replace "any" with type
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);
 
       expect(useApprovalRequest().pageMeta).toEqual({});
     });
 
     it('set to empty object if no approval request', () => {
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockSelector({} as any);
       expect(useApprovalRequest().pageMeta).toEqual({});
     });
@@ -127,6 +141,8 @@ describe('useApprovalRequest', () => {
     });
 
     it('does nothing if no approval request', () => {
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockSelector({} as any);
       useApprovalRequest().onConfirm();
 
@@ -144,10 +160,13 @@ describe('useApprovalRequest', () => {
       expect(Engine.rejectPendingApproval).toHaveBeenCalledWith(
         APPROVAL_REQUEST.id,
         providerErrors.userRejectedRequest(),
+        { ignoreMissing: true },
       );
     });
 
     it('does nothing if no approval request', () => {
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockSelector({} as any);
       useApprovalRequest().onReject();
 

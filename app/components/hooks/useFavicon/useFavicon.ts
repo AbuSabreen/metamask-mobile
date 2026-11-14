@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ImageSourcePropType } from 'react-native';
+import { ImageURISource } from 'react-native';
 import {
   getFaviconURLFromHtml,
   getFaviconFromCache,
@@ -8,7 +8,48 @@ import {
 import Logger from '../../../util/Logger';
 
 //Empty value uset to trigger fallback favicon in the UI and prevent use of undefined
-const EMPTY_FAVICON_URI: ImageSourcePropType = {};
+const EMPTY_FAVICON_URI: ImageURISource = {};
+
+interface FaviconStateSetters {
+  setFaviconURI: (uri: ImageURISource) => void;
+  setIsLoading: (loading: boolean) => void;
+  setIsLoaded: (loaded: boolean) => void;
+}
+
+// Extracted out of the hook body so the favicon fetch (which uses conditionals
+// and optional chaining inside a try/catch) lives in a plain function. The
+// React Compiler cannot yet optimize "value blocks" within try/catch, and only
+// optimizes components/hooks, so keeping this here lets the hook itself compile.
+const loadFavicon = async (
+  origin: string,
+  { setFaviconURI, setIsLoading, setIsLoaded }: FaviconStateSetters,
+) => {
+  setIsLoading(true);
+  setIsLoaded(false);
+  try {
+    // If the origin is null, we don't want to fetch a favicon
+    // This can happen when the site is unreachable (DNS error)
+    if (!origin || origin === 'null') {
+      setIsLoading(false);
+      setIsLoaded(true);
+      return;
+    }
+    const cachedFaviconUrl = await getFaviconFromCache(origin);
+    if (cachedFaviconUrl) {
+      setFaviconURI({ uri: cachedFaviconUrl });
+    } else {
+      const fetchedFaviconUrl = await getFaviconURLFromHtml(origin);
+      if (fetchedFaviconUrl) {
+        cacheFavicon(origin, fetchedFaviconUrl);
+        setFaviconURI({ uri: fetchedFaviconUrl?.toString() });
+      }
+    }
+  } catch (error) {
+    await Logger.log('Error fetching or caching favicon: ', error);
+  }
+  setIsLoading(false);
+  setIsLoaded(true);
+};
 
 /**
  * Custom hook that returns the favicon URI for the given origin
@@ -16,33 +57,15 @@ const EMPTY_FAVICON_URI: ImageSourcePropType = {};
  */
 const useFavicon = (origin: string) => {
   const [faviconURI, setFaviconURI] =
-    useState<ImageSourcePropType>(EMPTY_FAVICON_URI);
+    useState<ImageURISource>(EMPTY_FAVICON_URI);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      try {
-        // If the origin is null, we don't want to fetch a favicon
-        // This can happen when the site is unreachable (DNS error)
-        if (!origin || origin === 'null') {
-          return;
-        }
-        const cachedFaviconUrl = await getFaviconFromCache(origin);
-        if (cachedFaviconUrl) {
-          setFaviconURI({ uri: cachedFaviconUrl });
-        } else {
-          const fetchedFaviconUrl = await getFaviconURLFromHtml(origin);
-          if (fetchedFaviconUrl) {
-            cacheFavicon(origin, fetchedFaviconUrl);
-            setFaviconURI({ uri: fetchedFaviconUrl?.toString() });
-          }
-        }
-      } catch (error) {
-        await Logger.log('Error fetching or caching favicon: ', error);
-      }
-    })();
+    loadFavicon(origin, { setFaviconURI, setIsLoading, setIsLoaded });
   }, [origin]);
 
-  return faviconURI;
+  return { faviconURI, isLoading, isLoaded };
 };
 
 export default useFavicon;

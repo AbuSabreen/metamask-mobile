@@ -1,3 +1,5 @@
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-nocheck - Snaps team directory
 import React from 'react';
 import { render } from '@testing-library/react-native';
 import SnapElement from '../SnapElement';
@@ -88,12 +90,10 @@ describe('SnapElement', () => {
   };
 
   it('renders correctly', () => {
-    const { getByTestId } = render(<SnapElement {...mockSnap} />);
+    const { getByTestId, getByText } = render(<SnapElement {...mockSnap} />);
 
-    const cell = getByTestId(SNAP_ElEMENT);
-    expect(cell.props.children.props.title).toEqual(
-      mockSnap.manifest.proposedName,
-    );
-    expect(cell.props.children.props.secondaryText).toEqual(mockSnap.id);
+    expect(getByTestId(SNAP_ElEMENT)).toBeTruthy();
+    expect(getByText(mockSnap.manifest.proposedName)).toBeTruthy();
+    expect(getByText(mockSnap.id)).toBeTruthy();
   });
 });

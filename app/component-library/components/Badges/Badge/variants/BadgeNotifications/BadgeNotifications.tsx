@@ -9,16 +9,25 @@ import Icon, { IconSize, IconColor } from '../../../../Icons/Icon';
 // Internal dependencies
 import { BadgeNotificationsProps } from './BadgeNotifications.types';
 import styleSheet from './BadgeNotifications.styles';
-import { BADGE_NOTIFICATIONS_TEST_ID } from './BadgeNotifications.constants';
 
-const BadgeNotifications = ({ style, iconName }: BadgeNotificationsProps) => {
+/**
+ * @deprecated Please update your code to use `BadgeIcon` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/BadgeIcon/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#badgeicon-component Migration docs}
+ */
+const BadgeNotifications = ({
+  style,
+  iconName,
+  testID,
+}: BadgeNotificationsProps) => {
   const { size: containerSize, onLayout: onLayoutContainerSize } =
     useComponentSize();
   const { styles } = useStyles(styleSheet, { style, containerSize });
   return (
     <BadgeBase
       style={styles.base}
-      testID={BADGE_NOTIFICATIONS_TEST_ID}
+      testID={testID}
       onLayout={onLayoutContainerSize}
     >
       <Icon name={iconName} size={IconSize.Xss} color={IconColor.Inverse} />

@@ -22,8 +22,9 @@
  */
 
 import BigNumber from 'bignumber.js';
+import BN from 'bnjs4';
 
-import { stripHexPrefix, BN } from 'ethereumjs-util';
+import { stripHexPrefix } from 'ethereumjs-util';
 
 // Big Number Constants
 const BIG_NUMBER_WEI_MULTIPLIER = new BigNumber('1000000000000000000');
@@ -232,52 +233,9 @@ const multiplyCurrencies = (a, b, options = {}) => {
   });
 };
 
-const conversionGreaterThan = ({ ...firstProps }, { ...secondProps }) => {
-  const firstValue = converter({ ...firstProps });
-  const secondValue = converter({ ...secondProps });
-
-  return firstValue.gt(secondValue);
-};
-
-const conversionLessThan = ({ ...firstProps }, { ...secondProps }) => {
-  const firstValue = converter({ ...firstProps });
-  const secondValue = converter({ ...secondProps });
-
-  return firstValue.lt(secondValue);
-};
-
-const conversionMax = ({ ...firstProps }, { ...secondProps }) => {
-  const firstIsGreater = conversionGreaterThan(
-    { ...firstProps },
-    { ...secondProps },
-  );
-
-  return firstIsGreater ? firstProps.value : secondProps.value;
-};
-
-const conversionGTE = ({ ...firstProps }, { ...secondProps }) => {
-  const firstValue = converter({ ...firstProps });
-  const secondValue = converter({ ...secondProps });
-  return firstValue.greaterThanOrEqualTo(secondValue);
-};
-
-const conversionLTE = ({ ...firstProps }, { ...secondProps }) => {
-  const firstValue = converter({ ...firstProps });
-  const secondValue = converter({ ...secondProps });
-  return firstValue.lessThanOrEqualTo(secondValue);
-};
-
-const toNegative = (n, options = {}) => multiplyCurrencies(n, -1, options);
-
 export {
   conversionUtil,
   addCurrencies,
   multiplyCurrencies,
-  conversionGreaterThan,
-  conversionLessThan,
-  conversionGTE,
-  conversionLTE,
-  conversionMax,
-  toNegative,
   subtractCurrencies,
 };

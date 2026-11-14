@@ -1,0 +1,394 @@
+import { useNavigation } from '@react-navigation/native';
+import { TransactionType } from '@metamask/transaction-controller';
+
+import Engine from '../../../../core/Engine';
+import { renderHookWithProvider } from '../../../../util/test/renderWithProvider';
+import {
+  personalSignatureConfirmationState,
+  stakingDepositConfirmationState,
+} from '../../../../util/test/confirm-data-helpers';
+import PPOMUtil from '../../../../lib/ppom/ppom-util';
+// eslint-disable-next-line import-x/no-namespace
+import * as QRHardwareHook from '../context/qr-hardware-context/qr-hardware-context';
+import { useTransactionConfirm } from './transactions/useTransactionConfirm';
+import { useConfirmActions } from './useConfirmActions';
+
+jest.mock('./transactions/useTransactionConfirm');
+
+jest.mock('./useIsConfirmationFromLedgerAccount', () => ({
+  useIsConfirmationFromLedgerAccount: jest.fn().mockReturnValue(false),
+}));
+
+jest.mock(
+  '../../../../core/HardwareWallet/hooks/useIsConfirmationFromQrAccount',
+  () => ({
+    useIsConfirmationFromQrAccount: jest.fn().mockReturnValue(false),
+  }),
+);
+
+const mockOnLedgerConfirm = jest.fn().mockResolvedValue(undefined);
+const mockUseLedgerConfirm = jest.fn((_options?: unknown) => ({
+  onConfirm: mockOnLedgerConfirm,
+}));
+jest.mock('./useLedgerConfirm', () => ({
+  useLedgerConfirm: (options: unknown) => mockUseLedgerConfirm(options),
+}));
+
+const mockOnQrConfirm = jest.fn().mockResolvedValue(undefined);
+const mockUseQrConfirm = jest.fn((_options?: unknown) => ({
+  onConfirm: mockOnQrConfirm,
+}));
+jest.mock('../../../../core/HardwareWallet/hooks/useQrConfirm', () => ({
+  useQrConfirm: (options: unknown) => mockUseQrConfirm(options),
+}));
+
+const mockIsConfirmationFromQrAccount = jest.requireMock(
+  '../../../../core/HardwareWallet/hooks/useIsConfirmationFromQrAccount',
+).useIsConfirmationFromQrAccount;
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: jest.fn(),
+}));
+
+jest.mock('../../../../core/Engine', () => ({
+  acceptPendingApproval: jest.fn(),
+  rejectPendingApproval: jest.fn(),
+  context: {
+    KeyringController: {
+      state: {
+        keyrings: [
+          {
+            accounts: ['0x0000000000000000000000000000000000000000'],
+          },
+        ],
+      },
+    },
+  },
+}));
+
+jest.mock('./gas/useGasFeeToken');
+
+jest.mock('../../../../util/transaction-controller', () => ({
+  ...jest.requireActual('../../../../util/transaction-controller'),
+  updateTransaction: jest.fn(),
+}));
+
+const mockCaptureSignatureMetrics = jest.fn();
+jest.mock('./signatures/useSignatureMetrics', () => ({
+  useSignatureMetrics: () => ({
+    captureSignatureMetrics: mockCaptureSignatureMetrics,
+  }),
+}));
+
+const flushPromises = async () => await new Promise(process.nextTick);
+
+describe('useConfirmAction', () => {
+  const useTransactionConfirmMock = jest.mocked(useTransactionConfirm);
+  const useNavigationMock = jest.mocked(useNavigation);
+  const navigateMock = jest.fn();
+  const navigateOnConfirmMock = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    useNavigationMock.mockReturnValue({
+      goBack: jest.fn(),
+      navigate: navigateMock,
+    } as unknown as ReturnType<typeof useNavigation>);
+
+    useTransactionConfirmMock.mockReturnValue({
+      navigateOnConfirm: navigateOnConfirmMock,
+      onConfirm: jest.fn(),
+    });
+  });
+
+  it('passes the confirmation from address to hardware wallet confirmation hooks', () => {
+    renderHookWithProvider(() => useConfirmActions(), {
+      state: personalSignatureConfirmationState,
+    });
+
+    expect(mockUseLedgerConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromAddress: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+        onSigningComplete: navigateOnConfirmMock,
+      }),
+    );
+    expect(mockUseQrConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromAddress: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+      }),
+    );
+  });
+
+  it('passes the transaction metadata from address when approval request has no from address', () => {
+    renderHookWithProvider(() => useConfirmActions(), {
+      state: stakingDepositConfirmationState,
+    });
+
+    expect(mockUseLedgerConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromAddress: '0xdc47789de4ceff0e8fe9d15d728af7f17550c164',
+      }),
+    );
+    expect(mockUseQrConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromAddress: '0xdc47789de4ceff0e8fe9d15d728af7f17550c164',
+      }),
+    );
+  });
+
+  it('sets signing confirmed and shows scanner when QR signing is in progress', async () => {
+    const clearSecurityAlertResponseSpy = jest.spyOn(
+      PPOMUtil,
+      'clearSignatureSecurityAlertResponse',
+    );
+    const mockSetScannerVisible = jest.fn().mockResolvedValue(undefined);
+    const mockSetSigningConfirmed = jest.fn();
+    jest.spyOn(QRHardwareHook, 'useQRHardwareContext').mockReturnValue({
+      isSigningQRObject: true,
+      setScannerVisible: mockSetScannerVisible,
+      setSigningConfirmed: mockSetSigningConfirmed,
+    } as unknown as QRHardwareHook.QRHardwareContextType);
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: personalSignatureConfirmationState,
+    });
+    result?.current?.onConfirm();
+    expect(mockSetSigningConfirmed).toHaveBeenCalledTimes(1);
+    expect(mockSetScannerVisible).toHaveBeenCalledTimes(1);
+    expect(mockSetScannerVisible).toHaveBeenLastCalledWith(true);
+    expect(Engine.acceptPendingApproval).toHaveBeenCalledTimes(0);
+    await flushPromises();
+    expect(mockCaptureSignatureMetrics).toHaveBeenCalledTimes(0);
+    expect(clearSecurityAlertResponseSpy).toHaveBeenCalledTimes(0);
+  });
+
+  it('delegates to useQrConfirm when account is QR hardware and request is a transaction', async () => {
+    mockIsConfirmationFromQrAccount.mockReturnValue(true);
+    mockOnQrConfirm.mockClear();
+
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: stakingDepositConfirmationState,
+    });
+
+    await result?.current?.onConfirm();
+
+    expect(mockOnQrConfirm).toHaveBeenCalledTimes(1);
+    expect(Engine.acceptPendingApproval).not.toHaveBeenCalled();
+
+    mockIsConfirmationFromQrAccount.mockReturnValue(false);
+  });
+
+  it('delegates to useQrConfirm when account is QR hardware and request is a signature', async () => {
+    mockIsConfirmationFromQrAccount.mockReturnValue(true);
+    mockOnQrConfirm.mockClear();
+
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: personalSignatureConfirmationState,
+    });
+
+    await result?.current?.onConfirm();
+
+    expect(mockOnQrConfirm).toHaveBeenCalledTimes(1);
+    expect(Engine.acceptPendingApproval).not.toHaveBeenCalled();
+
+    mockIsConfirmationFromQrAccount.mockReturnValue(false);
+  });
+
+  it('calls setSigningConfirmed before executeApproval on default confirm path', async () => {
+    const mockSetSigningConfirmed = jest.fn();
+    jest.spyOn(QRHardwareHook, 'useQRHardwareContext').mockReturnValue({
+      isSigningQRObject: false,
+      setScannerVisible: jest.fn(),
+      setSigningConfirmed: mockSetSigningConfirmed,
+    } as unknown as QRHardwareHook.QRHardwareContextType);
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: personalSignatureConfirmationState,
+    });
+    result?.current?.onConfirm();
+    expect(mockSetSigningConfirmed).toHaveBeenCalledTimes(1);
+    expect(Engine.acceptPendingApproval).toHaveBeenCalledTimes(1);
+    await flushPromises();
+  });
+
+  it('calls setSigningConfirmed before confirming a transaction', async () => {
+    const mockSetSigningConfirmed = jest.fn();
+    const mockTransactionConfirm = jest.fn().mockResolvedValue(undefined);
+    useTransactionConfirmMock.mockReturnValue({
+      navigateOnConfirm: navigateOnConfirmMock,
+      onConfirm: mockTransactionConfirm,
+    });
+    jest.spyOn(QRHardwareHook, 'useQRHardwareContext').mockReturnValue({
+      isSigningQRObject: false,
+      setScannerVisible: jest.fn(),
+      setSigningConfirmed: mockSetSigningConfirmed,
+    } as unknown as QRHardwareHook.QRHardwareContextType);
+
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: stakingDepositConfirmationState,
+    });
+
+    await result?.current?.onConfirm();
+
+    expect(mockSetSigningConfirmed).toHaveBeenCalledTimes(1);
+    expect(mockTransactionConfirm).toHaveBeenCalledTimes(1);
+    expect(mockSetSigningConfirmed.mock.invocationCallOrder[0]).toBeLessThan(
+      mockTransactionConfirm.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('delegates to useLedgerConfirm when account is Ledger', async () => {
+    const { useIsConfirmationFromLedgerAccount } = jest.requireMock(
+      './useIsConfirmationFromLedgerAccount',
+    );
+    useIsConfirmationFromLedgerAccount.mockReturnValue(true);
+
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: personalSignatureConfirmationState,
+    });
+
+    await result?.current?.onConfirm();
+
+    expect(mockOnLedgerConfirm).toHaveBeenCalledTimes(1);
+    expect(Engine.acceptPendingApproval).not.toHaveBeenCalled();
+
+    useIsConfirmationFromLedgerAccount.mockReturnValue(false);
+  });
+
+  it('does not call signature related methods when onConfirm is called if confirmation is not of type signature', async () => {
+    const clearSecurityAlertResponseSpy = jest.spyOn(
+      PPOMUtil,
+      'clearSignatureSecurityAlertResponse',
+    );
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: stakingDepositConfirmationState,
+    });
+    result?.current?.onConfirm();
+    await flushPromises();
+    expect(mockCaptureSignatureMetrics).not.toHaveBeenCalled();
+    expect(clearSecurityAlertResponseSpy).not.toHaveBeenCalled();
+  });
+
+  it('call required callbacks when confirm button is clicked', async () => {
+    const clearSecurityAlertResponseSpy = jest.spyOn(
+      PPOMUtil,
+      'clearSignatureSecurityAlertResponse',
+    );
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: personalSignatureConfirmationState,
+    });
+    result?.current?.onConfirm();
+    expect(Engine.acceptPendingApproval).toHaveBeenCalledTimes(1);
+    await flushPromises();
+    expect(mockCaptureSignatureMetrics).toHaveBeenCalledTimes(1);
+    expect(clearSecurityAlertResponseSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets waitForResult to false when approvalType is TransactionBatch', async () => {
+    const transactionBatchState = {
+      engine: {
+        backgroundState: {
+          ...stakingDepositConfirmationState.engine.backgroundState,
+          ApprovalController: {
+            pendingApprovals: {
+              'batch-approval-id': {
+                id: 'batch-approval-id',
+                origin: 'metamask',
+                type: 'transaction_batch',
+                time: 1738825814816,
+                requestData: { batchId: '0x123456789abcdef' },
+                requestState: null,
+                expectsResult: false,
+              },
+            },
+            pendingApprovalCount: 1,
+            approvalFlows: [],
+          },
+        },
+      },
+    };
+
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: transactionBatchState,
+    });
+
+    result?.current?.onConfirm();
+    expect(Engine.acceptPendingApproval).toHaveBeenCalledTimes(1);
+    const callArgs = (Engine.acceptPendingApproval as jest.Mock).mock.calls[0];
+    expect(callArgs[0]).toBe('batch-approval-id');
+    expect(callArgs[2]).toEqual({
+      waitForResult: false,
+      deleteAfterResult: true,
+      handleErrors: false,
+    });
+    await flushPromises();
+  });
+
+  it('sets waitForResult to true when approvalType is not TransactionBatch', async () => {
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: personalSignatureConfirmationState,
+    });
+
+    result?.current?.onConfirm();
+    expect(Engine.acceptPendingApproval).toHaveBeenCalledTimes(1);
+    const callArgs = (Engine.acceptPendingApproval as jest.Mock).mock.calls[0];
+    expect(callArgs[0]).toBe('76b33b40-7b5c-11ef-bc0a-25bce29dbc09');
+    expect(callArgs[2]).toEqual({
+      waitForResult: true,
+      deleteAfterResult: true,
+      handleErrors: false,
+    });
+    await flushPromises();
+  });
+
+  it('navigates to transactions view when confirming batch transaction', async () => {
+    const lendingBatchId = 'lending-batch-id';
+    const lendingDepositBatchState = {
+      engine: {
+        backgroundState: {
+          ...stakingDepositConfirmationState.engine.backgroundState,
+          ApprovalController: {
+            pendingApprovals: {
+              [lendingBatchId]: {
+                id: lendingBatchId,
+                origin: 'metamask',
+                type: 'transaction_batch',
+                time: 1738825814816,
+                requestData: {},
+                requestState: null,
+                expectsResult: false,
+              },
+            },
+            pendingApprovalCount: 1,
+            approvalFlows: [],
+          },
+          TransactionController: {
+            transactions: [],
+            transactionBatches: [
+              {
+                id: lendingBatchId,
+                chainId: '0x1' as `0x${string}`,
+                origin: 'metamask',
+                from: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+                transactions: [
+                  { type: TransactionType.contractInteraction },
+                  { type: TransactionType.lendingDeposit },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    const { result } = renderHookWithProvider(() => useConfirmActions(), {
+      state: lendingDepositBatchState,
+    });
+
+    result?.current?.onConfirm();
+    await flushPromises();
+
+    expect(navigateMock).toHaveBeenCalledTimes(1);
+    expect(navigateMock).toHaveBeenCalledWith('TransactionsView');
+  });
+});

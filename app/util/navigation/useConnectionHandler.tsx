@@ -1,0 +1,45 @@
+import { useRef, useCallback } from 'react';
+import { MetaMetricsEvents } from '../../core/Analytics';
+import { useAnalytics } from '../../components/hooks/useAnalytics/useAnalytics';
+
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const useConnectionHandler = (navigation: any) => {
+  const connectedRef = useRef(true);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const { trackEvent, createEventBuilder } = useAnalytics();
+
+  const connectionChangeHandler = useCallback(
+    (state: { isConnected: boolean } | null) => {
+      if (!state) return;
+      const { isConnected } = state;
+
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+
+      if (connectedRef.current !== isConnected) {
+        if (isConnected === false) {
+          trackEvent(
+            createEventBuilder(MetaMetricsEvents.CONNECTION_DROPPED).build(),
+          );
+          timeoutRef.current = setTimeout(() => {
+            navigation.navigate('OfflineModeView', {
+              autoDismissOnReconnect: true,
+            });
+          }, 3000);
+        } else {
+          trackEvent(
+            createEventBuilder(MetaMetricsEvents.CONNECTION_RESTORED).build(),
+          );
+        }
+        connectedRef.current = isConnected;
+      }
+    },
+    [createEventBuilder, navigation, trackEvent],
+  );
+
+  return { connectionChangeHandler };
+};

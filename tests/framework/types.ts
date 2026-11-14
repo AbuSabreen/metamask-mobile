@@ -1,0 +1,527 @@
+// Device Matrix
+
+export interface DeviceMatrixEntry {
+  name: string;
+  os_version: string;
+  category: 'high' | 'medium' | 'low';
+  description: string;
+}
+
+export interface DeviceMatrix {
+  android_devices: DeviceMatrixEntry[];
+  ios_devices: DeviceMatrixEntry[];
+  device_categories: Record<string, string>;
+  os_coverage: {
+    android: string[];
+    ios: string[];
+  };
+  notes: Record<string, string>;
+}
+
+// Gestures
+
+import { DappVariants } from './Constants.ts';
+import { AnvilManager, Hardfork } from '../seeder/anvil-manager.ts';
+import ContractAddressRegistry from '../../app/util/test/contract-address-registry';
+import Ganache from '../../app/util/test/ganache';
+import { Mockttp } from 'mockttp';
+import type { EventPayload } from '../helpers/analytics/helpers.ts';
+import FixtureBuilder from './fixtures/FixtureBuilder.ts';
+import type { Fixture } from './fixtures/types.ts';
+import CommandQueueServer from './fixtures/CommandQueueServer.ts';
+import { CurrentDeviceDetails } from './fixtures/playwright';
+import type { PlatformDeviceCommandHandler } from './services/device-commands/types';
+
+export interface LanguageAndLocale {
+  language?: string;
+  locale?: string;
+}
+/*
+ * WDIO PLAYWRIGHT TESTS
+ */
+export enum ProviderName {
+  EMULATOR = 'emulator',
+  SIMULATOR = 'simulator',
+  BROWSERSTACK = 'browserstack',
+  TESTMU = 'testmu',
+}
+
+export enum Platform {
+  ANDROID = 'android',
+  IOS = 'ios',
+}
+
+export enum DeviceOrientation {
+  PORTRAIT = 'portrait',
+  LANDSCAPE = 'landscape',
+}
+
+/**
+ * Local emulator / simulator profile for WebDriver.
+ *
+ * **Android:** `name` is usually the AVD name (as returned by
+ * `adb -s <serial> emu avd name`, e.g. `Pixel_5_Pro_API_34`). Omitted
+ * `udid` is resolved to an adb serial such as `emulator-5554` at setup time.
+ * You may set `udid` directly to that serial; if both are set, a mismatch
+ * with the AVD name is warned.
+ *
+ * **iOS:** `name` is the simulator name/identifier used with `xcrun simctl`
+ * (e.g. booted device name or UDID, depending on your environment).
+ */
+export interface EmulatorConfig {
+  provider: ProviderName;
+  name?: string;
+  osVersion?: string;
+  udid?: string;
+  orientation?: DeviceOrientation;
+}
+
+export interface BrowserStackConfig {
+  provider: ProviderName;
+  name: string;
+  osVersion: string;
+  orientation?: DeviceOrientation;
+  enableCameraImageInjection?: boolean;
+  selfHeal?: boolean;
+  otherApps?: string[];
+}
+
+/**
+ * TestMu AI (LambdaTest) real-device profile.
+ * Session capability names are resolved from the BrowserStack matrix names.
+ */
+export interface TestMuConfig {
+  provider: ProviderName;
+  name: string;
+  osVersion: string;
+  orientation?: DeviceOrientation;
+  enableCameraImageInjection?: boolean;
+  otherApps?: string[];
+}
+
+export interface AppConfig {
+  appId?: string;
+  packageName?: string;
+  launchableActivity?: string;
+  buildPath?: string;
+}
+
+export type DeviceConfig = EmulatorConfig | BrowserStackConfig | TestMuConfig;
+
+export interface TimeoutOptions {
+  /**
+   * The maximum amount of time (in milliseconds) to wait for the condition to be met.
+   */
+  expectTimeout: number;
+}
+
+export interface WebDriverConfig {
+  platform: Platform;
+  device: DeviceConfig;
+  appBundleId: string;
+  expectTimeout: number;
+  app: AppConfig;
+}
+/**
+ * END OF WDIO PLAYWRIIGHT
+ */
+
+export interface GestureOptions {
+  timeout?: number;
+  checkStability?: boolean;
+  checkVisibility?: boolean;
+  checkEnabled?: boolean;
+  /** Appium: when false, skip waitForDisplayed (XCUITest visible=false nodes). */
+  checkForDisplayed?: boolean;
+  elemDescription?: string; // For better error messages - i.e "Get Started button"
+}
+
+export interface TapOptions extends GestureOptions {
+  delay?: number; // Delay before the tap action
+  waitForElementToDisappear?: boolean; // If true, waits for the element to disappear after tapping
+  /** Appium: stricter enabled polling before tap (AppiumGestures.waitUntilInteractive) */
+  waitForInteractive?: boolean;
+  /** Appium: consecutive interactive reads required when waitForInteractive is true */
+  enabledStableReads?: number;
+  /** Appium: extra settle time after interactive wait before tap */
+  postEnabledSettleMs?: number;
+}
+
+export interface TypeTextOptions extends GestureOptions {
+  clearFirst?: boolean;
+  hideKeyboard?: boolean;
+  sensitive?: boolean; // If true, the text will not be logged in the test report
+  delay?: number; // Delay before the type text action
+}
+
+export interface SwipeOptions extends GestureOptions {
+  speed?: 'fast' | 'slow';
+  percentage?: number;
+  startOffsetPercentage?: { x: number; y: number };
+}
+
+export interface LongPressOptions extends GestureOptions {
+  duration?: number;
+}
+
+export interface MatcherOptions {
+  exact?: boolean;
+  lastElement?: boolean;
+  index?: number;
+}
+
+/** Scroll container for Gestures.scrollToElement — Appium testID string. */
+export type ScrollContainer = string;
+
+/**
+ * The options for the scroll gesture.
+ * @param {string} direction - The direction to scroll.
+ * @param {number} scrollAmount - The amount to scroll.
+ * @param {number} delay - The delay before the scroll.
+ * @param {number} startPositionX - The starting position on the X axis.
+ * @param {number} startPositionY - The starting position on the Y axis.
+ */
+export interface ScrollOptions extends GestureOptions {
+  direction?: 'up' | 'down' | 'left' | 'right';
+  scrollAmount?: number;
+  delay?: number;
+  startPositionX?: number;
+  startPositionY?: number;
+}
+
+// Assertions
+
+export interface AssertionOptions extends RetryOptions {
+  timeout?: number;
+  description?: string; // Description for the assertion, e.g. "The Wallet View should be visible"
+}
+
+export interface RetryOptions {
+  timeout?: number;
+  interval?: number;
+  description?: string; // Description for the retry operation, e.g. "tap() or "waitForReadyState()"
+  elemDescription?: string;
+  maxRetries?: number;
+}
+
+export interface StabilityOptions {
+  timeout?: number;
+  interval?: number;
+  stableCount?: number;
+}
+export interface RampsRegion {
+  currencies: string[];
+  emoji: string;
+  id: string;
+  name: string;
+  countryName: string;
+  countryIsoCode: string;
+  stateName?: string;
+  stateIsoCode?: string;
+  support: { buy: boolean; sell: boolean; recurringBuy: boolean };
+  unsupported: boolean;
+  recommended: boolean;
+  detected: boolean;
+}
+
+/**
+ * Returns the full ISO 3166-2 location code for a region,
+ * combining country and subdivision when present (e.g. 'US-CA', 'FR').
+ */
+export function getRegionLocationCode(region: RampsRegion): string {
+  return region.stateIsoCode
+    ? `${region.countryIsoCode}-${region.stateIsoCode}`
+    : region.countryIsoCode;
+}
+
+export enum ServerStatus {
+  STOPPED = 'stopped',
+  STARTED = 'started',
+}
+
+/**
+ * Interface representing a resource that can be started and stopped.
+ * Examples: FixtureServer, MockServer, CommandQueueServer, etc.
+ */
+export interface Resource {
+  stop(): Promise<void>;
+  start(): Promise<void>;
+  isStarted(): boolean;
+  setServerPort(port: number): void;
+  getServerPort(): number;
+  getServerStatus(): ServerStatus;
+  getServerUrl?: string;
+}
+
+// Fixtures and Local Node Types
+// Available local node types
+export enum LocalNodeType {
+  anvil = 'anvil',
+  ganache = 'ganache',
+  bitcoin = 'bitcoin',
+}
+
+/**
+ * Body the app POSTs for the export-app-state command.
+ */
+export interface ExportedAppState {
+  /** The in-app state log document, parsed. */
+  stateLogs: Record<string, unknown>;
+  /**
+   * Fields, per controller, that controller metadata leaves out of state logs.
+   * Read from the running app, so it covers every Engine controller.
+   */
+  omittedFields: Record<string, string[]>;
+}
+
+export enum E2ECommandTypes {
+  pushPrice = 'push-price',
+  forceLiquidation = 'force-liquidation',
+  mockDeposit = 'mock-deposit',
+  exportState = 'export-state',
+  /** State log export, sanitized the same way as the in-app state logs. */
+  exportAppState = 'export-app-state',
+  /** Inject QR sync sync-ready SRP payload (HAS_TEST_OVERRIDES Appium/Detox). */
+  applyQrSyncSyncReady = 'apply-qr-sync-sync-ready',
+}
+
+export enum GanacheHardfork {
+  london = 'london',
+}
+
+export interface LocalNodeConfig {
+  type: LocalNodeType;
+  options: AnvilNodeOptions | GanacheNodeOptions;
+}
+
+export interface GanacheNodeOptions {
+  hardfork: GanacheHardfork;
+  mnemonic: string;
+  [key: string]: unknown; // Allow additional properties of any type
+}
+export interface AnvilNodeOptions {
+  hardfork?: Hardfork;
+  forkUrl?: string;
+  loadState?: string;
+  balance?: number;
+  blockTime?: number;
+  chainId?: number;
+  gasLimit?: number;
+  gasPrice?: number;
+  host?: string;
+  mnemonic?: string;
+  port?: number;
+  noMining?: boolean;
+}
+
+export type LocalNodeOptionsInput = LocalNodeConfig[];
+
+// Fixture Builder types
+export interface BackupAndSyncSettings {
+  isBackupAndSyncEnabled: boolean;
+  isAccountSyncingEnabled: boolean;
+  isContactSyncingEnabled: boolean;
+}
+
+export interface LaunchArgs {
+  fixtureServerPort: string;
+  detoxURLBlacklistRegex: string;
+  mockServerPort: string;
+  commandQueueServerPort: string;
+  /** Account-activity WebSocket mock port; launch-arg key matches `launchArgKey` in `tests/websocket/constants.ts`. */
+  accountActivityWsPort: string;
+  /** Test-only source account used to bypass the transaction-pay headless fiat flow. */
+  transactionPayFiatTestFundingSource: string;
+  /** Optional human-readable funding amount for the transaction-pay fiat test flow. */
+  transactionPayFiatTestAmountOverride: string;
+  /** Appium specific launch args */
+  stop: boolean;
+  wait: boolean;
+}
+
+/**
+ * The options for the dapp to load for test.
+ * @param {DappVariants | string} dappVariant - The variant of the dapp to load.
+ * If a string is provided, a dappPath needs to be provided as well.
+ * Please consider adding the new dapp to the existing enum.
+ * @example
+ * {
+ *  dappVariant: DappVariants.TEST_DAPP,
+ * }
+ * // or
+ * @example
+ * {
+ *  dappVariant: 'https://example.com',
+ *  dappPath: 'PATH_TO_DAPP',
+ * }
+ * @param {string} [dappPath] - The path to the dapp to load.
+ */
+export interface DappOptions {
+  dappVariant: DappVariants | string;
+  dappPath?: string;
+}
+
+export type TestSuiteFunction = (params: TestSuiteParams) => Promise<void>;
+
+export type LocalNode = AnvilManager | Ganache;
+
+export interface TestSuiteParams {
+  contractRegistry?: ContractAddressRegistry;
+  mockServer: Mockttp;
+  localNodes?: LocalNode[];
+  commandQueueServer?: CommandQueueServer;
+  deviceCommands?: PlatformDeviceCommandHandler;
+}
+
+/**
+ * ONLY TO BE USED BY DEFAULT MOCKS
+ *
+ * If you are using individual mocks for specific tests
+ * Use the `testSpecificMock` function instead for improved mock management and type safety.
+ *
+ * Interface representing a collection of mock API endpoints grouped by HTTP methods.
+ * Each property corresponds to an HTTP method (GET, POST, PUT, etc.) and contains
+ * an array of mock endpoints for that method.
+ *
+ * @example
+ * ```typescript
+ * // Deprecated usage - avoid this pattern
+ * const mocks: MockObject = {
+ *   GET: [{ url: '/api/users', response: { users: [] } }],
+ *   POST: [{ url: '/api/users', response: { id: 1 } }]
+ * };
+ *
+ * // Preferred approach - use testSpecificMock instead
+ * testSpecificMock(mockServer) {
+ *   mockServer.forGet('/api/users').thenReply(200, JSON.stringify({ users: [] }));
+ *   mockServer.forPost('/api/users').thenReply(200, JSON.stringify({ id: 1 }));
+ * };
+ * ```
+ */
+export interface MockEventsObject {
+  GET?: MockApiEndpoint[];
+  POST?: MockApiEndpoint[];
+  PUT?: MockApiEndpoint[];
+  [key: string]: MockApiEndpoint[] | undefined;
+}
+
+export interface MockApiEndpoint {
+  urlEndpoint: string | RegExp;
+  requestBody?: unknown;
+  ignoreFields?: string[];
+  response: unknown;
+  responseCode: number;
+  priority?: number;
+}
+
+export type TestSpecificMock = (mockServer: Mockttp) => Promise<void>;
+
+/**
+ * Declarative expectation for a single MetaMetrics event name captured during E2E.
+ */
+export interface AnalyticsEventExpectation {
+  /** MetaMetrics event name (e.g. `'Wallet Imported'`). */
+  name: string;
+  /** Minimum number of payloads with this event name. @default 1 */
+  minCount?: number;
+  /**
+   * Which captured occurrence to use for `matchProperties`, `containProperties`, and
+   * `requiredDefinedPropertyKeys`. @default 0
+   */
+  matchEventIndex?: number;
+  /**
+   * Property shape checks using the same value contract as
+   * `Assertions.checkIfObjectHasKeysAndValidValues` (e.g. `'string'`, `'number'`, `'array'`).
+   * Applied to **every** captured payload with this event name.
+   */
+  requiredProperties?: Record<string, string | ((value: unknown) => boolean)>;
+  /**
+   * Exact property match on the payload at `matchEventIndex` via
+   * `Assertions.checkIfObjectsMatch`.
+   */
+  matchProperties?: Record<string, unknown>;
+  /**
+   * Subset property match on the payload at `matchEventIndex` via
+   * `Assertions.checkIfObjectContains`.
+   */
+  containProperties?: Record<string, unknown>;
+  /**
+   * Keys on the payload at `matchEventIndex` that must be defined (via
+   * `Assertions.checkIfValueIsDefined`).
+   */
+  requiredDefinedPropertyKeys?: string[];
+}
+
+/**
+ * Optional MetaMetrics validation for `withFixtures`.
+ * Executed after `testSuite` and `endTestfn`, before the mock server enters drain mode,
+ * so captured Segment/MetaMetrics requests are still available on `mockServer`.
+ */
+export interface AnalyticsExpectations {
+  /**
+   * Subset of event names to pass to `getEventsPayloads`.
+   * When omitted and no `events` entries exist, all captured MetaMetrics payloads are loaded.
+   */
+  eventNames?: string[];
+  /**
+   * When set, asserts the filtered payload list length equals this value (after `getEventsPayloads`).
+   */
+  expectedTotalCount?: number;
+  /** Declarative per-event count and property checks. */
+  events?: AnalyticsEventExpectation[];
+  /**
+   * Custom validation after declarative rules are evaluated. Runs in the same `SoftAssert` pass as
+   * declarative checks, so failures are merged: all expected events are still checked even when
+   * some already failed (unless you throw before returning from `validate`).
+   */
+  validate?: (ctx: {
+    events: EventPayload[];
+    mockServer: Mockttp;
+  }) => Promise<void>;
+}
+
+/**
+ * The options for the withFixtures function.
+ * @param {FixtureBuilder | ((ctx: { localNodes?: LocalNode[] }) => FixtureBuilder | Promise<FixtureBuilder>)} fixture - The state of the fixture to load or a function that returns a fixture builder.
+ * @param {boolean} [restartDevice=false] - If true, restarts the app to apply the loaded fixture.
+ * @param {string[]} [smartContracts] - The smart contracts to load for test. These will be deployed on the different {localNodeOptions}
+ * @param {LocalNodeOptionsInput} [localNodeOptions] - The local node options to use for the test.
+ * @param {boolean} [disableLocalNodes=false] - If true, disables the local nodes.
+ * @param {DappOptions[]} [dapps] - The dapps to load for test. The base static port is defined and all dapps from dapp[1] will have the port incremented by 1.
+ * @param {Record<string, unknown>} [testSpecificMock] - The test specific mock function to use for the test.
+ * @param {Partial<LaunchArgs>} [launchArgs] - The launch arguments to use for the test.
+ * @param {LanguageAndLocale} [languageAndLocale] - The language and locale to use for the test.
+ * @param {Record<string, unknown>} [permissions] - The permissions to set for the device.
+ * @param {() => Promise<void>} [endTestfn] - The function to execute after the test is finished.
+ * @param {AnalyticsExpectations} [analyticsExpectations] - Optional MetaMetrics assertions run after `endTestfn`, before mock drain.
+ * @param {CurrentDeviceDetails} [currentDeviceDetails] - The current device details to use for the test.
+ */
+export interface WithFixturesOptions {
+  fixture:
+    | FixtureBuilder
+    | Fixture
+    | ((ctx: {
+        localNodes?: LocalNode[];
+      }) => FixtureBuilder | Fixture | Promise<FixtureBuilder | Fixture>);
+  restartDevice?: boolean;
+  smartContracts?: string[];
+  disableLocalNodes?: boolean;
+  dapps?: DappOptions[];
+  localNodeOptions?: LocalNodeOptionsInput;
+  testSpecificMock?: TestSpecificMock;
+  launchArgs?: Partial<LaunchArgs>;
+  languageAndLocale?: LanguageAndLocale;
+  permissions?: Record<string, unknown>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  endTestfn?: (...args: any[]) => Promise<void>;
+  /**
+   * Skip reloading React Native during cleanup to preserve app state between tests.
+   * Use this when tests need to maintain state across multiple `it` blocks.
+   * @default false
+   */
+  skipReactNativeReload?: boolean;
+  useCommandQueueServer?: boolean;
+  analyticsExpectations?: AnalyticsExpectations;
+  currentDeviceDetails?: CurrentDeviceDetails;
+  disableSynchronization?: boolean;
+}

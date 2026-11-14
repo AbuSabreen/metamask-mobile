@@ -1,0 +1,155 @@
+import { useSelector } from 'react-redux';
+import { Hex } from '@metamask/utils';
+import { RootState } from '../../../../reducers';
+import { TokenI } from '../../Tokens/types';
+import {
+  selectAsset,
+  selectTronSpecialAssetsBySelectedAccountGroup,
+} from '../../../../selectors/assets/assets-list';
+import { toFormattedAddress } from '../../../../util/address';
+import {
+  selectCurrencyRateForChainId,
+  selectUSDConversionRateByChainId,
+} from '../../../../selectors/currencyRateController';
+import I18n from '../../../../../locales/i18n';
+import { formatWithThreshold } from '../../../../util/assets';
+import { createStakedTrxAsset } from '../../AssetOverview/utils/createStakedTrxAsset';
+import { isTronNativeToken } from '../utils/isTronNativeToken';
+
+export interface UseTokenBalanceResult {
+  /**
+   * Token balance as a locale-formatted display string (e.g. `'1,500'`,
+   * `'<0.00001'`, or `'0'` for zero). Do not parse this with `Number()` —
+   * formatted values return `NaN`. For presence checks use
+   * `Boolean(balance) && balance !== '0'`. For approximate USD amounts
+   * (e.g. analytics buckets) use `balanceFiatUsd` via the
+   * `calculateUsdBalance: true` overload — never as a presence check: it
+   * returns 0 when conversion rates are missing and mis-parses
+   * non-'.'-decimal locales.
+   */
+  balance: string | undefined;
+  fiatBalance: string | undefined;
+  tokenFormattedBalance: string | undefined;
+  isTronNative: boolean;
+  stakedTrxAsset: TokenI | undefined;
+  inLockPeriodBalance: string | undefined;
+  readyForWithdrawalBalance: string | undefined;
+}
+
+export interface UseTokenBalanceWithUsdResult extends UseTokenBalanceResult {
+  /** Token balance converted to USD regardless of the user's selected display currency. */
+  balanceFiatUsd: number;
+}
+
+export function useTokenBalance(
+  token: TokenI,
+  options: { calculateUsdBalance: true },
+): UseTokenBalanceWithUsdResult;
+export function useTokenBalance(
+  token: TokenI,
+  options?: { calculateUsdBalance?: false },
+): UseTokenBalanceResult;
+export function useTokenBalance(
+  token: TokenI,
+  options?: { calculateUsdBalance?: boolean },
+): UseTokenBalanceResult | UseTokenBalanceWithUsdResult {
+  const processedAsset = useSelector((state: RootState) =>
+    selectAsset(state, {
+      address: toFormattedAddress(token.address),
+      chainId: token.chainId as Hex,
+      isStaked: Boolean(token.isStaked),
+    }),
+  );
+
+  const conversionRate = useSelector((state: RootState) =>
+    options?.calculateUsdBalance
+      ? selectCurrencyRateForChainId(state, token.chainId as Hex)
+      : undefined,
+  );
+  const usdConversionRate = useSelector((state: RootState) =>
+    options?.calculateUsdBalance
+      ? selectUSDConversionRateByChainId(state, token.chainId as Hex)
+      : undefined,
+  );
+
+  const isTronNative = isTronNativeToken(token);
+  const {
+    stakedTrxForEnergy,
+    stakedTrxForBandwidth,
+    trxInLockPeriod,
+    trxReadyForWithdrawal,
+  } =
+    useSelector((state: RootState) =>
+      isTronNative
+        ? selectTronSpecialAssetsBySelectedAccountGroup(state)
+        : undefined,
+    ) ?? {};
+
+  const totalStaked =
+    (Number(stakedTrxForEnergy?.balance) || 0) +
+    (Number(stakedTrxForBandwidth?.balance) || 0);
+
+  const stakedTrxAsset =
+    isTronNative && totalStaked > 0
+      ? createStakedTrxAsset(
+          token,
+          stakedTrxForEnergy?.balance,
+          stakedTrxForBandwidth?.balance,
+        )
+      : undefined;
+
+  const parsedInLockPeriod = trxInLockPeriod
+    ? parseFloat(trxInLockPeriod.balance)
+    : 0;
+  const inLockPeriodBalance =
+    isTronNative && parsedInLockPeriod > 0
+      ? formatWithThreshold(parsedInLockPeriod, 0.00001, I18n.locale, {
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 5,
+        }) || undefined
+      : undefined;
+
+  const parsedReadyForWithdrawal = trxReadyForWithdrawal
+    ? parseFloat(trxReadyForWithdrawal.balance)
+    : 0;
+  const readyForWithdrawalBalance =
+    isTronNative && parsedReadyForWithdrawal > 0
+      ? formatWithThreshold(parsedReadyForWithdrawal, 0.00001, I18n.locale, {
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 5,
+        }) || undefined
+      : undefined;
+
+  const balance = processedAsset?.balance;
+
+  const base: UseTokenBalanceResult = {
+    balance,
+    fiatBalance: processedAsset?.balanceFiat,
+    tokenFormattedBalance: balance
+      ? `${balance} ${processedAsset.symbol}`
+      : undefined,
+    isTronNative,
+    stakedTrxAsset,
+    inLockPeriodBalance,
+    readyForWithdrawalBalance,
+  };
+
+  if (!options?.calculateUsdBalance) {
+    return base;
+  }
+
+  const computedUsdBalance = (() => {
+    if (!conversionRate || !usdConversionRate || !processedAsset?.balanceFiat) {
+      return 0;
+    }
+    const fiatInSelectedCurrency = parseFloat(
+      processedAsset.balanceFiat.replace(/[^0-9.]/g, ''),
+    );
+    if (isNaN(fiatInSelectedCurrency)) return 0;
+    return (fiatInSelectedCurrency / conversionRate) * usdConversionRate;
+  })();
+
+  return { ...base, balanceFiatUsd: computedUsdBalance };
+}
+
+export default useTokenBalance;

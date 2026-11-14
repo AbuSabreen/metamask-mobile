@@ -7,6 +7,8 @@ import { Theme } from '../../../../util/theme/models';
 // Internal dependencies
 import { TextFieldStyleSheetVars } from './TextField.types';
 
+const BORDER_WIDTH = 1;
+
 /**
  * Style sheet function for TextField component.
  *
@@ -20,13 +22,13 @@ const styleSheet = (params: {
   vars: TextFieldStyleSheetVars;
 }) => {
   const { theme, vars } = params;
-  const { style, size, isError, isDisabled, isFocused } = vars;
-  let borderColor = theme.colors.border.default;
+  const { style, isError, isDisabled, isFocused } = vars;
+  let borderColor = theme.colors.border.muted;
+  if (isFocused) {
+    borderColor = theme.colors.border.default;
+  }
   if (isError) {
     borderColor = theme.colors.error.default;
-  }
-  if (isFocused) {
-    borderColor = theme.colors.primary.default;
   }
 
   return StyleSheet.create({
@@ -34,24 +36,31 @@ const styleSheet = (params: {
       {
         flexDirection: 'row',
         alignItems: 'center',
-        borderRadius: 8,
-        height: Number(size),
-        borderWidth: 1,
+        borderRadius: 12,
+        height: 48,
+        borderWidth: BORDER_WIDTH,
         borderColor,
-        opacity: isDisabled ? 0.5 : 1,
         paddingHorizontal: 16,
-        backgroundColor: theme.colors.background.default,
-      } as ViewStyle,
-      style,
+        opacity: isDisabled ? 0.5 : 1,
+        backgroundColor: theme.colors.background.muted,
+      },
+      StyleSheet.flatten(style),
     ) as ViewStyle,
     startAccessory: {
-      marginRight: 8,
+      marginRight: 12,
     },
-    input: {
+    inputContainer: {
       flex: 1,
     },
+    // This is needed to override the background color of the input and inherit configurable parent background color
+    // eslint-disable-next-line react-native/no-color-literals
+    input: {
+      backgroundColor: 'inherit',
+      // subtract border width from height so it won't overflow the container
+      height: 48 - BORDER_WIDTH * 2,
+    },
     endAccessory: {
-      marginLeft: 8,
+      marginLeft: 12,
     },
   });
 };

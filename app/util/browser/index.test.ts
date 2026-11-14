@@ -1,4 +1,5 @@
-import onUrlSubmit, {
+import { Linking } from 'react-native';
+import {
   isTLD,
   getAlertMessage,
   protocolAllowList,
@@ -6,8 +7,20 @@ import onUrlSubmit, {
   prefixUrlWithProtocol,
   getUrlObj,
   getHost,
+  appendURLParams,
+  processUrlForBrowser,
+  buildPortfolioUrl,
+  handlePaymentProtocolUrl,
+  shouldStartLoadWithRequest,
 } from '.';
 import { strings } from '../../../locales/i18n';
+
+jest.mock('react-native', () => ({
+  Linking: {
+    canOpenURL: jest.fn(),
+    openURL: jest.fn(),
+  },
+}));
 
 describe('Browser utils :: prefixUrlWithProtocol', () => {
   it('should prefix url with https: protocol', () => {
@@ -26,20 +39,44 @@ describe('Browser utils :: prefixUrlWithProtocol', () => {
   });
 });
 
+describe('Browser utils :: safeDecodeUrl', () => {
+  it('should handle URLs with URL-encoded characters', () => {
+    const input =
+      'https://portfolio.metamask.io/explore?MetaMaskEntry=mobile%2F&metricsEnabled=true';
+    const url = processUrlForBrowser(input, 'Google');
+    expect(url).toBe(input);
+  });
+
+  it('should handle URLs with encoded path segments', () => {
+    const input = 'https://example.com/path%2Fto%2Fresource';
+    const url = processUrlForBrowser(input, 'Google');
+    expect(url).toBe(input);
+  });
+
+  it('should gracefully handle invalid URL encoding', () => {
+    const input = 'https://example.com/path%GG';
+    const url = processUrlForBrowser(input, 'Google');
+    // Should fall back to treating it as a search query since invalid encoding
+    expect(url).toBe(
+      'https://www.google.com/search?q=' + encodeURIComponent(input),
+    );
+  });
+});
+
 describe('Browser utils :: onUrlSubmit', () => {
   it('should prefix url with https: protocol', () => {
-    const url = onUrlSubmit('test.com');
+    const url = processUrlForBrowser('test.com');
     expect(url).toBe('https://test.com');
   });
 
   it('should respect the default protocol', () => {
-    const url = onUrlSubmit('test.com', 'Google', 'http://');
-    expect(url).toBe('http://test.com');
+    const url = processUrlForBrowser('test.com', 'Google');
+    expect(url).toBe('https://test.com');
   });
 
   it('should generate a seach engine link if it we pass non url', () => {
     const keyword = 'test';
-    const url = onUrlSubmit(keyword, 'Google');
+    const url = processUrlForBrowser(keyword, 'Google');
     const expectedUrl =
       'https://www.google.com/search?q=' + encodeURIComponent(keyword);
     expect(url).toBe(expectedUrl);
@@ -47,15 +84,23 @@ describe('Browser utils :: onUrlSubmit', () => {
 
   it('should choose the search engine based on the params', () => {
     const keyword = 'test';
-    const url = onUrlSubmit(keyword, 'DuckDuckGo');
+    const url = processUrlForBrowser(keyword, 'DuckDuckGo');
     const expectedUrl =
       'https://duckduckgo.com/?q=' + encodeURIComponent(keyword);
     expect(url).toBe(expectedUrl);
   });
 
+  it('use Brave Search when Brave is selected', () => {
+    const keyword = 'test';
+    const url = processUrlForBrowser(keyword, 'Brave');
+    const expectedUrl =
+      'https://search.brave.com/search?q=' + encodeURIComponent(keyword);
+    expect(url).toBe(expectedUrl);
+  });
+
   it('should detect keywords with several words', () => {
     const keyword = 'what is a test';
-    const url = onUrlSubmit(keyword, 'DuckDuckGo');
+    const url = processUrlForBrowser(keyword, 'DuckDuckGo');
     const expectedUrl =
       'https://duckduckgo.com/?q=' + encodeURIComponent(keyword);
     expect(url).toBe(expectedUrl);
@@ -63,44 +108,57 @@ describe('Browser utils :: onUrlSubmit', () => {
 
   it('should detect urls without path', () => {
     const input = 'https://metamask.io';
-    const url = onUrlSubmit(input, 'DuckDuckGo');
+    const url = processUrlForBrowser(input, 'DuckDuckGo');
     expect(url).toBe(input);
   });
 
   it('should detect urls with empty path', () => {
     const input = 'https://metamask.io/';
-    const url = onUrlSubmit(input, 'DuckDuckGo');
+    const url = processUrlForBrowser(input, 'DuckDuckGo');
     expect(url).toBe(input);
   });
 
   it('should detect urls with path', () => {
     const input = 'https://metamask.io/about';
-    const url = onUrlSubmit(input, 'DuckDuckGo');
+    const url = processUrlForBrowser(input, 'DuckDuckGo');
     expect(url).toBe(input);
   });
 
   it('should detect urls with path and slash at the end', () => {
     const input = 'https://metamask.io/about';
-    const url = onUrlSubmit(input, 'DuckDuckGo');
+    const url = processUrlForBrowser(input, 'DuckDuckGo');
     expect(url).toBe(input);
   });
 
   it('should detect urls with path and querystring', () => {
     const input = 'https://metamask.io/about?utm_content=tests';
-    const url = onUrlSubmit(input, 'DuckDuckGo');
+    const url = processUrlForBrowser(input, 'DuckDuckGo');
     expect(url).toBe(input);
   });
 
   it('should detect urls with path and querystring with multiple params', () => {
     const input = 'https://metamask.io/about?utm_content=tests&utm_source=jest';
-    const url = onUrlSubmit(input, 'DuckDuckGo');
+    const url = processUrlForBrowser(input, 'DuckDuckGo');
     expect(url).toBe(input);
   });
 
   it('should detect urls with querystring params with escape characters', () => {
     const input = 'https://some.com/search?q=what+is+going&a=i+dont+know';
-    const url = onUrlSubmit(input, 'DuckDuckGo');
+    const url = processUrlForBrowser(input, 'DuckDuckGo');
     expect(url).toBe(input);
+  });
+
+  it('should treat domains containing RTL chars as search queries', () => {
+    // Given text with RTL characters that looks like a domain
+    const rtlDomain = 'سwallet.metamask.io';
+
+    // When processing without protocol
+    const url = processUrlForBrowser(rtlDomain);
+
+    // Then it should be treated as a search query using the default search engine (Brave)
+    expect(url).toBe(
+      `https://search.brave.com/search?q=${encodeURIComponent(rtlDomain)}`,
+    );
   });
 });
 
@@ -183,62 +241,334 @@ describe('Browser utils :: getAlertMessage', () => {
 });
 
 describe('Browser utils :: protocolWhitelist', () => {
-  it('should match about: protocol', () => {
+  it('about:', () => {
     const { protocol } = new URL('about:config');
 
     expect(protocolAllowList.includes(protocol)).toBeTruthy();
   });
-  it('should match http: protocol', () => {
+  it('http:', () => {
     const { protocol } = new URL('http://meta.io');
 
     expect(protocolAllowList.includes(protocol)).toBeTruthy();
   });
-  it('should match https: protocol', () => {
+  it('https:', () => {
     const { protocol } = new URL('https://meta.io');
 
     expect(protocolAllowList.includes(protocol)).toBeTruthy();
   });
+  it('file:', () => {
+    const { protocol } = new URL('file://meta.io');
+
+    expect(protocolAllowList.includes(protocol)).toBeTruthy();
+  });
+  it('wc:', () => {
+    const { protocol } = new URL('wc:f82jdjfjakjskdfj');
+
+    expect(protocolAllowList.includes(protocol)).toBeTruthy();
+  });
+  it('metamask:', () => {
+    const { protocol } = new URL('metamask://dapp/portfolio.metamask.io');
+
+    expect(protocolAllowList.includes(protocol)).toBeTruthy();
+  });
+  it('ethereum:', () => {
+    const { protocol } = new URL('ethereum://tx');
+
+    expect(protocolAllowList.includes(protocol)).toBeTruthy();
+  });
+  it('dapp:', () => {
+    const { protocol } = new URL('dapp://portfolio.metamask.io');
+
+    expect(protocolAllowList.includes(protocol)).toBeTruthy();
+  });
+  it('No javascript:', () => {
+    // eslint-disable-next-line no-script-url
+    const { protocol } = new URL('javascript://metamask.io');
+
+    expect(protocolAllowList.includes(protocol)).toBeFalsy();
+  });
 });
 
 describe('Browser utils :: trustedProtocolToDeeplink', () => {
-  it('should match wc: protocol', () => {
-    const { protocol } = new URL('wc:f82jdjfjakjskdfj');
+  it('market:', () => {
+    const { protocol } = new URL('market://portfolio.metamask.io');
 
     expect(trustedProtocolToDeeplink.includes(protocol)).toBeTruthy();
   });
-  it('should match metamask: protocol', () => {
-    const { protocol } = new URL('metamask://dapp/home.metamask.io');
+  it('itms-apps:', () => {
+    const { protocol } = new URL('itms-apps://portfolio.metamask.io');
 
     expect(trustedProtocolToDeeplink.includes(protocol)).toBeTruthy();
   });
-  it('should match ethereum: protocol', () => {
-    const { protocol } = new URL('ethereum://tx');
-
-    expect(trustedProtocolToDeeplink.includes(protocol)).toBeTruthy();
-  });
-  it('should match dapp: protocol', () => {
-    const { protocol } = new URL('dapp://home.metamask.io');
-
-    expect(trustedProtocolToDeeplink.includes(protocol)).toBeTruthy();
-  });
-  it('should not match eth: protocol', () => {
-    const { protocol } = new URL('eth://home.metamask.io');
+  it('No eth:', () => {
+    const { protocol } = new URL('eth://portfolio.metamask.io');
 
     expect(trustedProtocolToDeeplink.includes(protocol)).toBeFalsy();
   });
-  it('should not match tel: protocol', () => {
-    const { protocol } = new URL('tel://home.metamask.io');
+  it('No tel:', () => {
+    const { protocol } = new URL('tel://portfolio.metamask.io');
 
     expect(trustedProtocolToDeeplink.includes(protocol)).toBeFalsy();
   });
-  it('should not match mailto: protocol', () => {
-    const { protocol } = new URL('mailto://home.metamask.io');
+  it('No mailto:', () => {
+    const { protocol } = new URL('mailto://portfolio.metamask.io');
 
     expect(trustedProtocolToDeeplink.includes(protocol)).toBeFalsy();
   });
-  it('should not match ldap: protocol', () => {
-    const { protocol } = new URL('ldap://home.metamask.io');
+  it('No ldap:', () => {
+    const { protocol } = new URL('ldap://portfolio.metamask.io');
 
     expect(trustedProtocolToDeeplink.includes(protocol)).toBeFalsy();
+  });
+});
+
+describe('Browser utils :: appendURLParams', () => {
+  it('should append search parameters to a URL string', () => {
+    const baseUrl = 'https://metamask.io';
+    const params = {
+      utm_source: 'test',
+      utm_medium: 'unit',
+      active: true,
+      count: 42,
+    };
+
+    const result = appendURLParams(baseUrl, params);
+
+    expect(result.toString()).toBe(
+      'https://metamask.io/?utm_source=test&utm_medium=unit&active=true&count=42',
+    );
+  });
+
+  it('should append parameters to a URL with existing params', () => {
+    const baseUrl = 'https://metamask.io/?existing=param';
+    const params = {
+      new: 'parameter',
+    };
+
+    const result = appendURLParams(baseUrl, params);
+
+    expect(result.toString()).toBe(
+      'https://metamask.io/?existing=param&new=parameter',
+    );
+  });
+
+  it('should work with URL object input', () => {
+    const baseUrl = new URL('https://metamask.io');
+    const params = {
+      test: 'value',
+    };
+
+    const result = appendURLParams(baseUrl, params);
+
+    expect(result.toString()).toBe('https://metamask.io/?test=value');
+  });
+
+  it('should handle empty params object', () => {
+    const baseUrl = 'https://metamask.io';
+    const params = {};
+
+    const result = appendURLParams(baseUrl, params);
+
+    expect(result.toString()).toBe('https://metamask.io/');
+  });
+});
+
+describe('Browser utils :: buildPortfolioUrl', () => {
+  it('should build portfolio URL with metamaskEntry parameter', () => {
+    const baseUrl = 'https://portfolio.metamask.io';
+
+    const result = buildPortfolioUrl(baseUrl);
+
+    expect(result.toString()).toBe(
+      'https://portfolio.metamask.io/?metamaskEntry=mobile',
+    );
+  });
+
+  it('should build portfolio URL with additional parameters', () => {
+    const baseUrl = 'https://portfolio.metamask.io';
+    const additionalParams = {
+      marketingEnabled: true,
+      metricsEnabled: true,
+    };
+
+    const result = buildPortfolioUrl(baseUrl, additionalParams);
+
+    expect(result.toString()).toBe(
+      'https://portfolio.metamask.io/?metamaskEntry=mobile&marketingEnabled=true&metricsEnabled=true',
+    );
+  });
+
+  it('should build portfolio URL with metrics disabled', () => {
+    const baseUrl = 'https://portfolio.metamask.io';
+    const additionalParams = {
+      marketingEnabled: false,
+      metricsEnabled: false,
+    };
+
+    const result = buildPortfolioUrl(baseUrl, additionalParams);
+
+    expect(result.toString()).toBe(
+      'https://portfolio.metamask.io/?metamaskEntry=mobile&marketingEnabled=false&metricsEnabled=false',
+    );
+  });
+
+  it('should build portfolio URL with mixed parameters', () => {
+    const baseUrl = 'https://portfolio.metamask.io/bridge';
+    const additionalParams = {
+      marketingEnabled: true,
+      metricsEnabled: false,
+      srcChain: 1,
+      token: '0x123',
+    };
+
+    const result = buildPortfolioUrl(baseUrl, additionalParams);
+
+    expect(result.toString()).toBe(
+      'https://portfolio.metamask.io/bridge?metamaskEntry=mobile&marketingEnabled=true&metricsEnabled=false&srcChain=1&token=0x123',
+    );
+  });
+
+  it('should return URL object', () => {
+    const baseUrl = 'https://portfolio.metamask.io';
+
+    const result = buildPortfolioUrl(baseUrl);
+
+    expect(result).toBeInstanceOf(URL);
+  });
+});
+
+describe('Browser utils :: handlePaymentProtocolUrl', () => {
+  const mockLogger = {
+    log: jest.fn(),
+    error: jest.fn(),
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('opens URL when canOpenURL returns true', async () => {
+    (Linking.canOpenURL as jest.Mock).mockResolvedValueOnce(true);
+    (Linking.openURL as jest.Mock).mockResolvedValueOnce(undefined);
+
+    await handlePaymentProtocolUrl('upi://pay?pa=test@bank', mockLogger);
+
+    expect(Linking.canOpenURL).toHaveBeenCalledWith('upi://pay?pa=test@bank');
+    expect(Linking.openURL).toHaveBeenCalledWith('upi://pay?pa=test@bank');
+    expect(mockLogger.log).not.toHaveBeenCalled();
+    expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+
+  it('logs message when canOpenURL returns false', async () => {
+    (Linking.canOpenURL as jest.Mock).mockResolvedValueOnce(false);
+
+    await handlePaymentProtocolUrl('paytmmp://pay', mockLogger);
+
+    expect(Linking.canOpenURL).toHaveBeenCalledWith('paytmmp://pay');
+    expect(Linking.openURL).not.toHaveBeenCalled();
+    expect(mockLogger.log).toHaveBeenCalledWith(
+      'Cannot open URL: paytmmp://pay - payment app not installed',
+    );
+    expect(mockLogger.error).not.toHaveBeenCalled();
+  });
+
+  it('logs error when canOpenURL rejects', async () => {
+    const error = new Error('canOpenURL failed');
+    (Linking.canOpenURL as jest.Mock).mockRejectedValueOnce(error);
+
+    await handlePaymentProtocolUrl('phonepe://pay', mockLogger);
+
+    expect(Linking.canOpenURL).toHaveBeenCalledWith('phonepe://pay');
+    expect(Linking.openURL).not.toHaveBeenCalled();
+    expect(mockLogger.log).not.toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      error,
+      'Failed to open payment URL: phonepe://pay',
+    );
+  });
+
+  it('logs error when openURL rejects', async () => {
+    const error = new Error('openURL failed');
+    (Linking.canOpenURL as jest.Mock).mockResolvedValueOnce(true);
+    (Linking.openURL as jest.Mock).mockRejectedValueOnce(error);
+
+    await handlePaymentProtocolUrl('gpay://pay', mockLogger);
+
+    expect(Linking.canOpenURL).toHaveBeenCalledWith('gpay://pay');
+    expect(Linking.openURL).toHaveBeenCalledWith('gpay://pay');
+    expect(mockLogger.log).not.toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      error,
+      'Failed to open payment URL: gpay://pay',
+    );
+  });
+});
+
+describe('shouldStartLoadWithRequest', () => {
+  let mockLogger: {
+    log: jest.Mock;
+    error: jest.Mock;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLogger = {
+      log: jest.fn(),
+      error: jest.fn(),
+    };
+    (Linking.canOpenURL as jest.Mock).mockResolvedValue(true);
+    (Linking.openURL as jest.Mock).mockResolvedValue(undefined);
+  });
+
+  describe('when URL has payment protocol', () => {
+    it('returns false and calls handlePaymentProtocolUrl for upi:// protocol', () => {
+      const mockUrl = 'upi://pay?pa=test@paytm';
+      const result = shouldStartLoadWithRequest(mockUrl, mockLogger);
+
+      expect(result).toBe(false);
+      expect(Linking.canOpenURL).toHaveBeenCalledWith(mockUrl);
+    });
+
+    it('returns false and calls handlePaymentProtocolUrl for paytmmp:// protocol', () => {
+      const mockUrl = 'paytmmp://pay?pa=test@paytm';
+      const result = shouldStartLoadWithRequest(mockUrl, mockLogger);
+
+      expect(result).toBe(false);
+      expect(Linking.canOpenURL).toHaveBeenCalledWith(mockUrl);
+    });
+
+    it('returns false and calls handlePaymentProtocolUrl for phonepe:// protocol', () => {
+      const mockUrl = 'phonepe://pay?pa=test@phonepe';
+      const result = shouldStartLoadWithRequest(mockUrl, mockLogger);
+
+      expect(result).toBe(false);
+      expect(Linking.canOpenURL).toHaveBeenCalledWith(mockUrl);
+    });
+
+    it('returns false and calls handlePaymentProtocolUrl for gpay:// protocol', () => {
+      const mockUrl = 'gpay://upi/pay?pa=test@google';
+      const result = shouldStartLoadWithRequest(mockUrl, mockLogger);
+
+      expect(result).toBe(false);
+      expect(Linking.canOpenURL).toHaveBeenCalledWith(mockUrl);
+    });
+  });
+
+  describe('when URL has non-payment protocol', () => {
+    it('returns true for https:// protocol', () => {
+      const mockUrl = 'https://example.com';
+      const result = shouldStartLoadWithRequest(mockUrl, mockLogger);
+
+      expect(result).toBe(true);
+      expect(Linking.canOpenURL).not.toHaveBeenCalled();
+    });
+
+    it('returns true for http:// protocol', () => {
+      const mockUrl = 'http://example.com';
+      const result = shouldStartLoadWithRequest(mockUrl, mockLogger);
+
+      expect(result).toBe(true);
+      expect(Linking.canOpenURL).not.toHaveBeenCalled();
+    });
   });
 });

@@ -42,6 +42,134 @@ import migration38 from './038';
 import migration39 from './039';
 import migration40 from './040';
 import migration41 from './041';
+import migration42 from './042';
+import migration43 from './043';
+import migration44 from './044';
+import migration45 from './045';
+import migration46 from './046';
+import migration47 from './047';
+import migration48 from './048';
+import migration49 from './049';
+import migration50 from './050';
+import migration51 from './051';
+import migration52 from './052';
+import migration53 from './053';
+import migration54 from './054';
+import migration55 from './055';
+import migration56 from './056';
+import migration57 from './057';
+import migration58 from './058';
+import migration59 from './059';
+import migration60 from './060';
+import migration61 from './061';
+import migration62 from './062';
+import migration63 from './063';
+import migration64 from './064';
+import migration65 from './065';
+import migration66 from './066';
+import migration67 from './067';
+import migration68 from './068';
+import migration69 from './069';
+import migration70 from './070';
+import migration71 from './071';
+import migration72 from './072';
+import migration73 from './073';
+import migration74 from './074';
+import migration75 from './075';
+import migration76 from './076';
+import migration77 from './077';
+import migration78 from './078';
+import migration79 from './079';
+import migration80 from './080';
+import migration81 from './081';
+import migration82 from './082';
+import migration83 from './083';
+import migration84 from './084';
+import migration85 from './085';
+import migration86 from './086';
+import migration87 from './087';
+import migration88 from './088';
+import migration89 from './089';
+import migration90 from './090';
+import migration91 from './091';
+import migration92 from './092';
+import migration93 from './093';
+import migration94 from './094';
+import migration95 from './095';
+import migration96 from './096';
+import migration97 from './097';
+import migration98 from './098';
+import migration99 from './099';
+import migration100 from './100';
+import migration101 from './101';
+import migration102 from './102';
+import migration103 from './103';
+import migration104 from './104';
+import migration105 from './105';
+import migration106 from './106';
+import migration107 from './107';
+import migration108 from './108';
+import migration109 from './109';
+import migration110 from './110';
+import migration111 from './111';
+import migration112 from './112';
+import migration113 from './113';
+import migration114 from './114';
+import migration115 from './115';
+import migration116 from './116';
+import migration117 from './117';
+import migration118 from './118';
+import migration119 from './119';
+import migration120 from './120';
+import migration121 from './121';
+import migration122 from './122';
+import migration123 from './123';
+import migration124 from './124';
+import migration125 from './125';
+import migration126 from './126';
+import migration127 from './127';
+import migration128 from './128';
+import migration129 from './129';
+import migration130 from './130';
+import migration131 from './131';
+import migration132 from './132';
+import migration133 from './133';
+import migration134 from './134';
+import migration135 from './135';
+import migration136 from './136';
+import migration137 from './137';
+import migration138 from './138';
+import migration139 from './139';
+import migration140 from './140';
+import migration141 from './141';
+import migration142 from './142';
+import migration143 from './143';
+import migration144 from './144';
+import migration145 from './145';
+import migration146 from './146';
+import migration147 from './147';
+import migration148 from './148';
+import migration149 from './149';
+import migration150 from './150';
+import migration151 from './151';
+import migration152 from './152';
+import migration153 from './153';
+import migration154 from './154';
+import migration155 from './155';
+import migration156 from './156';
+import migration157 from './157';
+import migration158 from './158';
+import migration159 from './159';
+import migration160 from './160';
+import migration161 from './161';
+import migration162 from './162';
+
+// Add migrations above this line
+import { ControllerStorage } from '../persistConfig';
+import { captureException } from '@sentry/react-native';
+import FilesystemStorage from 'redux-persist-filesystem-storage';
+import Device from '../../util/device';
+import { MIGRATION_ERROR_HAPPENED } from '../../constants/storage';
 
 type MigrationFunction = (state: unknown) => unknown;
 type AsyncMigrationFunction = (state: unknown) => Promise<unknown>;
@@ -96,24 +224,300 @@ export const migrationList: MigrationsList = {
   39: migration39,
   40: migration40,
   41: migration41,
+  42: migration42,
+  43: migration43,
+  44: migration44,
+  45: migration45,
+  46: migration46,
+  47: migration47,
+  48: migration48,
+  49: migration49,
+  50: migration50,
+  51: migration51,
+  52: migration52,
+  53: migration53,
+  54: migration54,
+  55: migration55,
+  56: migration56,
+  57: migration57,
+  58: migration58,
+  59: migration59,
+  60: migration60,
+  61: migration61,
+  62: migration62,
+  63: migration63,
+  64: migration64,
+  65: migration65,
+  66: migration66,
+  67: migration67,
+  68: migration68,
+  69: migration69,
+  70: migration70,
+  71: migration71,
+  72: migration72,
+  73: migration73,
+  74: migration74,
+  75: migration75,
+  76: migration76,
+  77: migration77,
+  78: migration78,
+  79: migration79,
+  80: migration80,
+  81: migration81,
+  82: migration82,
+  83: migration83,
+  84: migration84,
+  85: migration85,
+  86: migration86,
+  87: migration87,
+  88: migration88,
+  89: migration89,
+  90: migration90,
+  91: migration91,
+  92: migration92,
+  93: migration93,
+  94: migration94,
+  95: migration95,
+  96: migration96,
+  97: migration97,
+  98: migration98,
+  99: migration99,
+  100: migration100,
+  101: migration101,
+  102: migration102,
+  103: migration103,
+  104: migration104,
+  105: migration105,
+  106: migration106,
+  107: migration107,
+  108: migration108,
+  109: migration109,
+  110: migration110,
+  111: migration111,
+  112: migration112,
+  113: migration113,
+  114: migration114,
+  115: migration115,
+  116: migration116,
+  117: migration117,
+  118: migration118,
+  119: migration119,
+  120: migration120,
+  121: migration121,
+  122: migration122,
+  123: migration123,
+  124: migration124,
+  125: migration125,
+  126: migration126,
+  127: migration127,
+  128: migration128,
+  129: migration129,
+  130: migration130,
+  131: migration131,
+  132: migration132,
+  133: migration133,
+  134: migration134,
+  135: migration135,
+  136: migration136,
+  137: migration137,
+  138: migration138,
+  139: migration139,
+  140: migration140,
+  141: migration141,
+  142: migration142,
+  143: migration143,
+  144: migration144,
+  145: migration145,
+  146: migration146,
+  147: migration147,
+  148: migration148,
+  149: migration149,
+  150: migration150,
+  151: migration151,
+  152: migration152,
+  153: migration153,
+  154: migration154,
+  155: migration155,
+  156: migration156,
+  157: migration157,
+  158: migration158,
+  159: migration159,
+  160: migration160,
+  161: migration161,
+  162: migration162,
 };
 
 // Enable both synchronous and asynchronous migrations
-export const asyncifyMigrations = (inputMigrations: MigrationsList) =>
-  Object.entries(inputMigrations).reduce(
+export const asyncifyMigrations = (inputMigrations: MigrationsList) => {
+  const lastVersion = Math.max(...Object.keys(inputMigrations).map(Number));
+  let didInflate = false;
+
+  type StateWithEngine = Record<string, unknown> & {
+    engine?: { backgroundState?: Record<string, unknown> };
+  };
+
+  /**
+   * Loads controller data from individual filesystem storage back into engine.backgroundState
+   * for migrations to process.
+   *
+   * - Migration 104 moved controller data from redux-persist to individual files
+   * - Migrations 105+ still expect to work with the old engine.backgroundState format
+   * - This function temporarily recreates the old format so migrations can run
+   * - "unpacking" distributed files back into a single object
+   *
+   * CRITICAL: Crashes if controller data cannot be loaded.
+   * This ensures migrations run with complete data and prevents silent data loss.
+   */
+  const inflateFromControllers = async (state: unknown) => {
+    try {
+      const fsState = (await ControllerStorage.getAllPersistedState()) as
+        | {
+            backgroundState?: Record<string, unknown>;
+          }
+        | undefined;
+
+      const s = state as StateWithEngine;
+      const fsControllers = fsState?.backgroundState || {};
+
+      if (Object.keys(fsControllers).length === 0) {
+        return state;
+      }
+
+      const inflated: StateWithEngine = {
+        ...(s as object),
+        engine: {
+          ...(s.engine || {}),
+          backgroundState: fsControllers,
+        },
+      } as StateWithEngine;
+      return inflated as unknown;
+    } catch (error) {
+      captureException(
+        new Error(
+          `inflateFromControllers: Critical error loading controller data: ${String(error)}`,
+        ),
+      );
+
+      throw new Error(
+        `Critical: Failed to load controller data for migration. ` +
+          `Cannot continue safely as migrations may corrupt data without complete state. ` +
+          `App will restart to attempt recovery. Error: ${String(error)}`,
+      );
+    }
+  };
+
+  /**
+   * Saves controller data from engine.backgroundState back to individual filesystem storage
+   * and removes the engine slice from redux state.
+   *
+   * - After migrations run, we need to save updated controller data back to individual files
+   * - The engine.backgroundState should not persist in redux (it's just temporary for migrations)
+   * - This function "redistributes" the single object back into individual controller files
+   * - Then strips engine.backgroundState from redux to maintain the new architecture
+   * - "repacking" the single object back into distributed files
+   *
+   * CRITICAL: Crashes immediately if ANY controller fails to save.
+   * This prevents partial migration state corruption and ensures clean recovery.
+   */
+  const deflateToControllersAndStrip = async (state: unknown) => {
+    try {
+      const s = state as StateWithEngine;
+      const migratedControllers = s.engine?.backgroundState || {};
+      const entries = Object.entries(migratedControllers) as [
+        string,
+        unknown,
+      ][];
+      await Promise.all(
+        entries.map(async ([controllerName, controllerState]) => {
+          try {
+            await ControllerStorage.setItem(
+              `persist:${controllerName}`,
+              JSON.stringify(controllerState),
+            );
+          } catch (error) {
+            captureException(
+              new Error(
+                `deflateToControllersAndStrip: Failed to save ${controllerName} to individual storage: ${String(
+                  error,
+                )}`,
+              ),
+            );
+
+            throw new Error(
+              `Critical: Migration failed for controller '${controllerName}'. ` +
+                `Cannot continue with partial migration as this would corrupt user data. ` +
+                `App will restart to attempt recovery. Error: ${String(error)}`,
+            );
+          }
+        }),
+      );
+
+      const { engine: _engine, ...rest } = s;
+      return rest as unknown;
+    } catch (error) {
+      captureException(
+        new Error(
+          `deflateToControllersAndStrip: Critical error during deflation: ${String(error)}`,
+        ),
+      );
+
+      throw new Error(
+        `Critical: deflateToControllersAndStrip failed completely. ` +
+          `Cannot continue safely as this indicates severe migration system failure. ` +
+          `App will restart to attempt recovery. Error: ${String(error)}`,
+      );
+    }
+  };
+
+  return Object.entries(inputMigrations).reduce(
     (newMigrations, [migrationNumber, migrationFunction]) => {
-      // Handle migrations as async
       const asyncMigration = async (
         incomingState: Promise<unknown> | unknown,
       ) => {
-        const state = await incomingState;
-        return migrationFunction(state);
+        try {
+          let state = await incomingState;
+
+          if (!didInflate && Number(migrationNumber) > 107) {
+            state = await inflateFromControllers(state);
+            didInflate = true;
+          }
+
+          const migratedState = await migrationFunction(state);
+          if (Number(migrationNumber) === lastVersion && lastVersion >= 107) {
+            const s2 = migratedState as StateWithEngine;
+            const hasControllers = Boolean(
+              s2.engine?.backgroundState &&
+                Object.keys(s2.engine.backgroundState).length > 0,
+            );
+            if (hasControllers) {
+              return await deflateToControllersAndStrip(migratedState);
+            }
+          }
+
+          return migratedState;
+        } catch (error) {
+          try {
+            // Use FilesystemStorage with isIos flag to exclude from iCloud backup
+            // This prevents the flag from persisting across app deletions on iOS
+            await FilesystemStorage.setItem(
+              MIGRATION_ERROR_HAPPENED,
+              'true',
+              Device.isIos(),
+            );
+          } catch (storageError) {
+            captureException(storageError as Error);
+          }
+
+          // Re-throw to let redux-persist handle it
+          throw error;
+        }
       };
       newMigrations[migrationNumber] = asyncMigration;
       return newMigrations;
     },
     {} as Record<string, AsyncMigrationFunction>,
   );
+};
 
 // Convert all migrations to async
 export const migrations = asyncifyMigrations(

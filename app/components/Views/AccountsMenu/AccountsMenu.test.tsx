@@ -1,0 +1,1178 @@
+import React from 'react';
+import { render, fireEvent, act } from '@testing-library/react-native';
+import { Alert } from 'react-native';
+import { BatchSellMetricsLocation } from '@metamask/bridge-controller';
+import AccountsMenu from './AccountsMenu';
+import { AccountsMenuSelectorsIDs } from './AccountsMenu.testIds';
+import { useSelector } from 'react-redux';
+import { Authentication } from '../../../core/';
+import Routes from '../../../constants/navigation/Routes';
+import { isNotificationsFeatureEnabled } from '../../../util/notifications';
+import { selectBatchSellEnabled } from '../../../selectors/featureFlagController/batchSell';
+import { selectSelectedInternalAccountAddress } from '../../../selectors/accountsController';
+import { selectIsSwapsEnabled } from '../../../core/redux/slices/bridge';
+import { isHardwareAccount } from '../../../util/address';
+import {
+  selectIsMetamaskNotificationsEnabled,
+  getMetamaskNotificationsUnreadCount,
+  getMetamaskNotificationsReadCount,
+} from '../../../selectors/notifications';
+import { selectIsBackupAndSyncEnabled } from '../../../selectors/identity';
+import { METAMASK_SUPPORT_URL } from '../../../constants/urls';
+import { useCardUkMigrationUpdateBadge } from '../../UI/Card/hooks/useCardUkMigrationUpdateBadge';
+import { useCardUkMigrationState } from '../../UI/Card/hooks/useCardUkMigrationState';
+import { selectCardActiveProviderId } from '../../../selectors/cardController';
+import { CardFlow } from '../../UI/Card/util/metrics';
+import { EVENT_NAME } from '../../../core/Analytics/MetaMetrics.events';
+import { ActivityScreenEntryPoint } from '../../../core/Analytics/events/activity';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { WalletViewSelectorsIDs } from '../Wallet/WalletView.testIds';
+import {
+  COMPONENT_NAMES,
+  MONEY_BUTTON_INTENTS,
+  MONEY_BUTTON_TYPES,
+  SCREEN_NAMES,
+} from '../../UI/Money/constants/moneyEvents';
+
+const mockNavigate = jest.fn();
+const mockGoBack = jest.fn();
+
+// Mock dependencies
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({
+    navigate: mockNavigate,
+    goBack: mockGoBack,
+  }),
+}));
+
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(),
+}));
+
+jest.mock('../../../util/theme', () => {
+  const { mockTheme } = jest.requireActual('../../../util/theme');
+  return {
+    useTheme: () => mockTheme,
+  };
+});
+
+const mockTrackEvent = jest.fn();
+const mockAddProperties = jest.fn().mockReturnThis();
+const mockCreateEventBuilder = jest.fn(() => ({
+  addProperties: mockAddProperties,
+  build: jest.fn(() => ({ name: 'test-event' })),
+}));
+
+jest.mock('../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => ({
+    trackEvent: mockTrackEvent,
+    createEventBuilder: mockCreateEventBuilder,
+  }),
+}));
+
+const mockOpenSupportWithConsent = jest.fn();
+jest.mock('../../hooks/useSupportConsent', () => ({
+  useSupportConsent: () => ({
+    openSupportWithConsent: mockOpenSupportWithConsent,
+  }),
+}));
+
+jest.mock('../../../core/', () => ({
+  Authentication: {
+    lockApp: jest.fn(),
+    importAccountFromPrivateKey: jest.fn().mockResolvedValue(true),
+  },
+}));
+
+jest.mock('../../../core/DeeplinkManager/DeeplinkManager', () => ({
+  parse: jest.fn(),
+}));
+
+jest.mock('../../../../locales/i18n', () => ({
+  strings: jest.fn((key: string) => key),
+}));
+
+const mockGoToBuy = jest.fn();
+jest.mock('../../UI/Ramp/hooks/useRampNavigation', () => ({
+  useRampNavigation: () => ({
+    goToBuy: mockGoToBuy,
+  }),
+}));
+
+jest.mock('../../UI/Ramp/hooks/useRampsButtonClickData', () => ({
+  useRampsButtonClickData: () => ({
+    is_authenticated: true,
+    preferred_provider: 'test_provider',
+    order_count: 5,
+  }),
+}));
+
+jest.mock('../../../reducers/fiatOrders', () => ({
+  getDetectedGeolocation: jest.fn(() => 'US'),
+}));
+
+jest.mock('../../../selectors/featureFlagController/batchSell', () => ({
+  selectBatchSellEnabled: jest.fn(),
+}));
+
+jest.mock('../../../core/redux/slices/bridge', () => ({
+  selectIsSwapsEnabled: jest.fn(() => true),
+}));
+
+jest.mock('../../../selectors/accountsController', () => ({
+  selectSelectedInternalAccountAddress: jest.fn(() => null),
+}));
+
+jest.mock('../../../util/address', () => {
+  const actual = jest.requireActual('../../../util/address');
+
+  return {
+    ...actual,
+    isHardwareAccount: jest.fn(),
+  };
+});
+
+jest.mock('../../../util/notifications', () => ({
+  isNotificationsFeatureEnabled: jest.fn(() => false),
+}));
+
+jest.mock('../../UI/Card/hooks/useCardUkMigrationUpdateBadge', () => ({
+  useCardUkMigrationUpdateBadge: jest.fn(() => null),
+}));
+
+jest.mock('../../UI/Card/hooks/useCardUkMigrationState', () => ({
+  useCardUkMigrationState: jest.fn(() => ({
+    state: {
+      phase: 'soft',
+      isActive: true,
+      deadline: new Date('2026-09-30T23:59:59.999Z'),
+    },
+    refresh: jest.fn(),
+  })),
+}));
+
+jest.mock('../../../selectors/cardController', () => ({
+  selectCardActiveProviderId: jest.fn(),
+}));
+
+jest.mock('../../../selectors/notifications', () => ({
+  selectIsMetamaskNotificationsEnabled: jest.fn(),
+  getMetamaskNotificationsUnreadCount: jest.fn(),
+  getMetamaskNotificationsReadCount: jest.fn(),
+}));
+
+jest.mock('../../../selectors/identity', () => ({
+  selectIsBackupAndSyncEnabled: jest.fn(),
+}));
+
+const mockUseProSubscriptionEnabled = jest.fn(() => ({
+  isProSubscriptionEnabled: false,
+}));
+jest.mock('../../../hooks/useProSubscriptionEnabled', () => ({
+  useProSubscriptionEnabled: () => mockUseProSubscriptionEnabled(),
+}));
+
+const mockUseHasProMembership = jest.fn(() => false);
+jest.mock('../../../hooks/useHasProMembership', () => ({
+  useHasProMembership: () => mockUseHasProMembership(),
+}));
+
+const mockTrackButtonClicked = jest.fn();
+jest.mock('../../UI/Money/hooks/useMoneyAnalytics', () => ({
+  useMoneyAnalytics: () => ({
+    trackButtonClicked: mockTrackButtonClicked,
+  }),
+}));
+
+// Mirrors the Rewards utils.ts mocking shape: mocking the helper lets Jest
+// exercise both the beta and consent branches.
+const mockGetBetaSupportUrl = jest.fn();
+jest.mock('./AccountsMenu.utils', () => ({
+  getBetaSupportUrl: () => mockGetBetaSupportUrl(),
+}));
+
+jest.mock('../../../util/environment', () => ({
+  ...jest.requireActual('../../../util/environment'),
+  isFlaskBuild: false,
+  isBetaBuild: false,
+}));
+const mockEnvironment = jest.requireMock('../../../util/environment') as {
+  isFlaskBuild: boolean;
+  isBetaBuild: boolean;
+};
+
+const mockUseCardUkMigrationUpdateBadge = jest.mocked(
+  useCardUkMigrationUpdateBadge,
+);
+const mockUseCardUkMigrationState = jest.mocked(useCardUkMigrationState);
+
+describe('AccountsMenu', () => {
+  let mockAlert: jest.SpyInstance;
+  let mockActiveProviderId: ReturnType<typeof selectCardActiveProviderId>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockEnvironment.isFlaskBuild = false;
+    mockEnvironment.isBetaBuild = false;
+    jest.mocked(selectBatchSellEnabled).mockReturnValue(false);
+    jest.mocked(selectIsSwapsEnabled).mockReturnValue(true);
+    jest
+      .mocked(selectSelectedInternalAccountAddress)
+      .mockReturnValue(undefined);
+    jest.mocked(isHardwareAccount).mockReturnValue(false);
+    mockUseProSubscriptionEnabled.mockReturnValue({
+      isProSubscriptionEnabled: false,
+    });
+    mockUseHasProMembership.mockReturnValue(false);
+    mockUseCardUkMigrationUpdateBadge.mockReturnValue(null);
+    mockActiveProviderId = 'baanx';
+    mockUseCardUkMigrationState.mockReturnValue({
+      state: {
+        phase: 'soft',
+        isActive: true,
+        deadline: new Date('2026-09-30T23:59:59.999Z'),
+      },
+      refresh: jest.fn(),
+    });
+    // Default to the beta branch so pre-existing tests that don't care about
+    // support consent keep their prior (beta) behavior; consent tests below
+    // override this to '' to exercise the non-beta branch.
+    mockGetBetaSupportUrl.mockReturnValue(
+      'https://intercom.help/internal-beta-testing/en/',
+    );
+    mockAlert = jest.spyOn(Alert, 'alert').mockImplementation(jest.fn());
+    // Setup useSelector to return different values based on the selector
+    (useSelector as jest.Mock).mockImplementation((selector) => {
+      if (selector === selectCardActiveProviderId) {
+        return mockActiveProviderId;
+      }
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            GeolocationController: { location: 'US' },
+          },
+        },
+      };
+
+      try {
+        const result = selector(mockState);
+        if (result === 'US') {
+          return 'US';
+        }
+        if (
+          selector === selectBatchSellEnabled ||
+          selector === selectSelectedInternalAccountAddress ||
+          selector.toString().includes('selectIsSwapsEnabled')
+        ) {
+          return result;
+        }
+      } catch {
+        // Selector might not work with our limited mock state
+      }
+
+      // Default: return false (for card button, etc.)
+      return false;
+    });
+  });
+
+  afterEach(() => {
+    mockAlert.mockRestore();
+  });
+
+  it('render correctly', () => {
+    const { getByTestId } = render(<AccountsMenu />);
+    expect(
+      getByTestId(AccountsMenuSelectorsIDs.ACCOUNTS_MENU_SCROLL_ID),
+    ).toBeOnTheScreen();
+  });
+
+  it('render MANAGE section header', () => {
+    const { getByText } = render(<AccountsMenu />);
+
+    expect(getByText('accounts_menu.manage')).toBeOnTheScreen();
+  });
+
+  it('render RESOURCES section header', () => {
+    const { getByText } = render(<AccountsMenu />);
+
+    expect(getByText('accounts_menu.resources')).toBeOnTheScreen();
+  });
+
+  describe('MetaMask Card Button', () => {
+    it('navigate to card and track analytics when MetaMask Card is pressed', () => {
+      const { getByTestId } = render(<AccountsMenu />);
+      const cardButton = getByTestId(AccountsMenuSelectorsIDs.MANAGE_CARD);
+
+      fireEvent.press(cardButton);
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        EVENT_NAME.CARD_HOME_CLICKED,
+      );
+      expect(mockAddProperties).toHaveBeenCalledWith({
+        provider: 'baanx',
+        update_label_visible: false,
+      });
+      expect(mockTrackEvent).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith('CardScreens');
+    });
+
+    it('includes migration props when Update badge is visible', () => {
+      mockUseCardUkMigrationUpdateBadge.mockReturnValue('warning');
+
+      const { getByTestId } = render(<AccountsMenu />);
+      fireEvent.press(getByTestId(AccountsMenuSelectorsIDs.MANAGE_CARD));
+
+      expect(mockAddProperties).toHaveBeenCalledWith({
+        provider: 'baanx',
+        update_label_visible: true,
+        flow: CardFlow.MIGRATION,
+        migration_phase: 'grace_window',
+      });
+    });
+
+    it('shows Update badge when user is UK migration eligible', () => {
+      mockUseCardUkMigrationUpdateBadge.mockReturnValueOnce('warning');
+
+      const { getByTestId } = render(<AccountsMenu />);
+
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.MANAGE_CARD_UPDATE_BADGE),
+      ).toBeOnTheScreen();
+    });
+
+    it('hides Update badge when user is not UK migration eligible', () => {
+      mockUseCardUkMigrationUpdateBadge.mockReturnValueOnce(null);
+
+      const { queryByTestId } = render(<AccountsMenu />);
+
+      expect(
+        queryByTestId(AccountsMenuSelectorsIDs.MANAGE_CARD_UPDATE_BADGE),
+      ).toBeNull();
+    });
+  });
+
+  describe('Buy Button', () => {
+    it('renders the Buy button when Batch sell is disabled', () => {
+      jest.mocked(selectBatchSellEnabled).mockReturnValue(false);
+
+      const { getByText, getByTestId } = render(<AccountsMenu />);
+
+      expect(getByText('accounts_menu.buy')).toBeOnTheScreen();
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.BUY_BUTTON),
+      ).toBeOnTheScreen();
+    });
+
+    it('navigate to buy flow and track analytics when Buy is pressed', () => {
+      // Clear previous calls
+      mockGoToBuy.mockClear();
+      mockTrackEvent.mockClear();
+
+      const { getByTestId } = render(<AccountsMenu />);
+      const buyButton = getByTestId(AccountsMenuSelectorsIDs.BUY_BUTTON);
+
+      fireEvent.press(buyButton);
+
+      // Verify goToBuy was called
+      expect(mockGoToBuy).toHaveBeenCalled();
+
+      // Verify analytics tracking
+      expect(mockTrackEvent).toHaveBeenCalled();
+      const trackEventCall = mockTrackEvent.mock.calls[0][0];
+      expect(trackEventCall).toBeDefined();
+    });
+
+    it('track RAMPS_BUTTON_CLICKED event with correct properties when Buy is pressed', () => {
+      mockCreateEventBuilder.mockClear();
+      mockTrackEvent.mockClear();
+
+      const mockAddProperties = jest.fn().mockReturnThis();
+      const mockBuild = jest.fn(() => ({
+        name: 'RAMPS_BUTTON_CLICKED',
+      }));
+
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+        build: mockBuild,
+      });
+
+      const { getByTestId } = render(<AccountsMenu />);
+      const buyButton = getByTestId(AccountsMenuSelectorsIDs.BUY_BUTTON);
+
+      fireEvent.press(buyButton);
+
+      // Verify event builder was called with correct event
+      expect(mockCreateEventBuilder).toHaveBeenCalled();
+
+      // Verify properties were added
+      expect(mockAddProperties).toHaveBeenCalledWith({
+        button_text: 'Buy',
+        location: 'AccountsMenu',
+        ramp_type: 'UNIFIED_BUY_2',
+        chain_id_destination: null,
+        region: 'US',
+        is_authenticated: true,
+        preferred_provider: 'test_provider',
+        order_count: 5,
+      });
+
+      // Verify build was called
+      expect(mockBuild).toHaveBeenCalled();
+
+      // Verify trackEvent was called with the built event
+      expect(mockTrackEvent).toHaveBeenCalled();
+    });
+  });
+
+  describe('Batch Sell Button', () => {
+    it('replaces the Buy button when enabled', () => {
+      jest.mocked(selectBatchSellEnabled).mockReturnValue(true);
+
+      const { getByTestId, queryByTestId } = render(<AccountsMenu />);
+
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.BATCH_SELL_BUTTON),
+      ).toBeOnTheScreen();
+      expect(
+        queryByTestId(AccountsMenuSelectorsIDs.BUY_BUTTON),
+      ).not.toBeOnTheScreen();
+    });
+
+    it('navigates to Batch sell token selection when pressed', () => {
+      jest.mocked(selectBatchSellEnabled).mockReturnValue(true);
+
+      const { getByTestId } = render(<AccountsMenu />);
+
+      fireEvent.press(getByTestId(AccountsMenuSelectorsIDs.BATCH_SELL_BUTTON));
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.BRIDGE.ROOT, {
+        screen: Routes.BRIDGE.BATCH_SELL_TOKEN_SELECT,
+        params: {
+          batchSellLocation: BatchSellMetricsLocation.Unknown,
+        },
+      });
+    });
+
+    it('renders the Buy button for hardware wallets', () => {
+      jest.mocked(selectBatchSellEnabled).mockReturnValue(true);
+      jest
+        .mocked(selectSelectedInternalAccountAddress)
+        .mockReturnValue('0x123');
+      jest.mocked(isHardwareAccount).mockReturnValue(true);
+
+      const { getByTestId, queryByTestId } = render(<AccountsMenu />);
+
+      expect(
+        queryByTestId(AccountsMenuSelectorsIDs.BATCH_SELL_BUTTON),
+      ).not.toBeOnTheScreen();
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.BUY_BUTTON),
+      ).toBeOnTheScreen();
+    });
+
+    it('disables Batch sell when swaps are disabled', () => {
+      jest.mocked(selectBatchSellEnabled).mockReturnValue(true);
+      jest.mocked(selectIsSwapsEnabled).mockReturnValue(false);
+
+      const { getByTestId } = render(<AccountsMenu />);
+      const batchSellButton = getByTestId(
+        AccountsMenuSelectorsIDs.BATCH_SELL_BUTTON,
+      );
+
+      expect(batchSellButton).toBeDisabled();
+
+      fireEvent.press(batchSellButton);
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.BRIDGE.ROOT,
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('Quick Actions', () => {
+    it('renders Activity, Scan and Batch sell in that order', () => {
+      jest.mocked(selectBatchSellEnabled).mockReturnValue(true);
+
+      const { getByTestId, getAllByTestId } = render(<AccountsMenu />);
+
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.ACTIVITY_BUTTON),
+      ).toBeOnTheScreen();
+      expect(
+        getByTestId(WalletViewSelectorsIDs.WALLET_SCAN_BUTTON),
+      ).toBeOnTheScreen();
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.BATCH_SELL_BUTTON),
+      ).toBeOnTheScreen();
+
+      // getAllByTestId returns matches in tree (render) order, so this
+      // assertion fails if the JSX order of the quick-action tiles changes.
+      const quickActionsInRenderOrder = getAllByTestId(
+        new RegExp(
+          `^(${AccountsMenuSelectorsIDs.ACTIVITY_BUTTON}|${WalletViewSelectorsIDs.WALLET_SCAN_BUTTON}|${AccountsMenuSelectorsIDs.BATCH_SELL_BUTTON})$`,
+        ),
+      ).map((node) => node.props.testID);
+
+      expect(quickActionsInRenderOrder).toEqual([
+        AccountsMenuSelectorsIDs.ACTIVITY_BUTTON,
+        WalletViewSelectorsIDs.WALLET_SCAN_BUTTON,
+        AccountsMenuSelectorsIDs.BATCH_SELL_BUTTON,
+      ]);
+    });
+  });
+
+  describe('Activity Button', () => {
+    it('navigates to the Activity screen and tracks the click when pressed', () => {
+      mockNavigate.mockClear();
+      mockTrackEvent.mockClear();
+
+      const { getByTestId } = render(<AccountsMenu />);
+      fireEvent.press(getByTestId(AccountsMenuSelectorsIDs.ACTIVITY_BUTTON));
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        EVENT_NAME.ACTIVITY_CLICKED,
+      );
+      expect(mockTrackEvent).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.TRANSACTIONS_VIEW, {
+        screen: Routes.TRANSACTIONS_VIEW,
+        params: { entryPoint: ActivityScreenEntryPoint.AccountsMenu },
+      });
+    });
+  });
+
+  describe('QR Scanner Button', () => {
+    it('render QR Scan button', () => {
+      const { getByText } = render(<AccountsMenu />);
+
+      expect(getByText('accounts_menu.scan')).toBeOnTheScreen();
+    });
+
+    it('navigate to QR scanner and track analytics when Scan is pressed', () => {
+      const { getByText } = render(<AccountsMenu />);
+      const scanButton = getByText('accounts_menu.scan');
+
+      fireEvent.press(scanButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.QR_TAB_SWITCHER,
+        expect.objectContaining({
+          onScanSuccess: expect.any(Function),
+        }),
+      );
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith('QR Scanner Opened');
+      expect(mockTrackEvent).toHaveBeenCalled();
+    });
+
+    it('show alert when private key is scanned', () => {
+      const { getByText } = render(<AccountsMenu />);
+      const scanButton = getByText('accounts_menu.scan');
+
+      // Clear previous calls
+      mockNavigate.mockClear();
+      mockAlert.mockClear();
+
+      fireEvent.press(scanButton);
+
+      // Get the onScanSuccess callback
+      const navigateCall = mockNavigate.mock.calls.find(
+        (call) => call[0] === Routes.QR_TAB_SWITCHER,
+      );
+
+      expect(navigateCall).toBeDefined();
+      const onScanSuccess = navigateCall?.[1]?.onScanSuccess;
+      expect(onScanSuccess).toBeDefined();
+
+      // Simulate scanning a private key
+      onScanSuccess({ private_key: '0x1234...' }, 'private_key_content');
+
+      expect(mockAlert).toHaveBeenCalledWith(
+        'wallet.private_key_detected',
+        'wallet.do_you_want_to_import_this_account',
+        expect.arrayContaining([
+          expect.objectContaining({ text: 'wallet.cancel' }),
+          expect.objectContaining({ text: 'wallet.yes' }),
+        ]),
+        { cancelable: false },
+      );
+    });
+
+    it('show alert when seed phrase is scanned', () => {
+      const { getByText } = render(<AccountsMenu />);
+      const scanButton = getByText('accounts_menu.scan');
+
+      // Clear previous calls
+      mockNavigate.mockClear();
+      mockAlert.mockClear();
+
+      fireEvent.press(scanButton);
+
+      // Get the onScanSuccess callback
+      const navigateCall = mockNavigate.mock.calls.find(
+        (call) => call[0] === Routes.QR_TAB_SWITCHER,
+      );
+
+      expect(navigateCall).toBeDefined();
+      const onScanSuccess = navigateCall?.[1]?.onScanSuccess;
+      expect(onScanSuccess).toBeDefined();
+
+      // Simulate scanning a seed phrase
+      onScanSuccess({ seed: 'word1 word2 ...' }, 'seed_content');
+
+      expect(mockAlert).toHaveBeenCalledWith(
+        'wallet.error',
+        'wallet.logout_to_import_seed',
+      );
+    });
+  });
+
+  describe('Notifications Button', () => {
+    const setupNotificationMocks = ({
+      notificationEnabled = false,
+      unreadCount = 0,
+      readCount = 0,
+    } = {}) => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        const mockState = {
+          engine: {
+            backgroundState: {
+              GeolocationController: { location: 'US' },
+            },
+          },
+        };
+
+        try {
+          const result = selector(mockState);
+          if (result === 'US') return 'US';
+        } catch {
+          // Selector might not work with our limited mock state
+        }
+
+        // Handle notification selectors
+        if (selector === selectIsMetamaskNotificationsEnabled)
+          return notificationEnabled;
+        if (selector === getMetamaskNotificationsUnreadCount)
+          return unreadCount;
+        if (selector === getMetamaskNotificationsReadCount) return readCount;
+
+        // Default: return false
+        return false;
+      });
+    };
+
+    beforeEach(() => {
+      jest.mocked(isNotificationsFeatureEnabled).mockReturnValue(false);
+      setupNotificationMocks();
+    });
+
+    it('render Notifications button when feature is enabled', () => {
+      jest.mocked(isNotificationsFeatureEnabled).mockReturnValue(true);
+
+      const { getByText } = render(<AccountsMenu />);
+
+      expect(getByText('accounts_menu.notifications')).toBeOnTheScreen();
+    });
+
+    it('does NOT render Notifications button when feature is disabled', () => {
+      jest.mocked(isNotificationsFeatureEnabled).mockReturnValue(false);
+
+      const { queryByText } = render(<AccountsMenu />);
+
+      expect(queryByText('accounts_menu.notifications')).not.toBeOnTheScreen();
+    });
+
+    it('navigate to notifications view when enabled and pressed', () => {
+      jest.mocked(isNotificationsFeatureEnabled).mockReturnValue(true);
+      setupNotificationMocks({ notificationEnabled: true, unreadCount: 5 });
+
+      mockNavigate.mockClear();
+      mockTrackEvent.mockClear();
+
+      const { getByText } = render(<AccountsMenu />);
+      const notificationsButton = getByText('accounts_menu.notifications');
+
+      fireEvent.press(notificationsButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.NOTIFICATIONS.VIEW);
+    });
+
+    it('navigates to notifications view when not enabled and pressed', () => {
+      jest.mocked(isNotificationsFeatureEnabled).mockReturnValue(true);
+      setupNotificationMocks({ notificationEnabled: false });
+
+      mockNavigate.mockClear();
+
+      const { getByText } = render(<AccountsMenu />);
+      const notificationsButton = getByText('accounts_menu.notifications');
+
+      fireEvent.press(notificationsButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.NOTIFICATIONS.VIEW);
+    });
+
+    it('display badge with count when notifications are enabled and unread count > 0', () => {
+      jest.mocked(isNotificationsFeatureEnabled).mockReturnValue(true);
+      setupNotificationMocks({ notificationEnabled: true, unreadCount: 5 });
+
+      const { getByText } = render(<AccountsMenu />);
+
+      expect(getByText('5')).toBeOnTheScreen();
+    });
+
+    it('display "99+" when unread count is over 99', () => {
+      jest.mocked(isNotificationsFeatureEnabled).mockReturnValue(true);
+      setupNotificationMocks({ notificationEnabled: true, unreadCount: 150 });
+
+      const { getByText } = render(<AccountsMenu />);
+
+      expect(getByText('99+')).toBeOnTheScreen();
+    });
+
+    it('does NOT display badge when unread count is 0', () => {
+      jest.mocked(isNotificationsFeatureEnabled).mockReturnValue(true);
+      setupNotificationMocks({ notificationEnabled: true, unreadCount: 0 });
+
+      const { queryByText } = render(<AccountsMenu />);
+
+      // Badge should not be visible
+      expect(queryByText('0')).not.toBeOnTheScreen();
+    });
+
+    it('track NOTIFICATIONS_MENU_OPENED event when enabled and pressed', () => {
+      jest.mocked(isNotificationsFeatureEnabled).mockReturnValue(true);
+      setupNotificationMocks({
+        notificationEnabled: true,
+        unreadCount: 5,
+        readCount: 3,
+      });
+
+      mockCreateEventBuilder.mockClear();
+      mockTrackEvent.mockClear();
+
+      const mockAddProperties = jest.fn().mockReturnThis();
+      const mockBuild = jest.fn(() => ({
+        name: 'NOTIFICATIONS_MENU_OPENED',
+      }));
+
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+        build: mockBuild,
+      });
+
+      const { getByText } = render(<AccountsMenu />);
+      const notificationsButton = getByText('accounts_menu.notifications');
+
+      fireEvent.press(notificationsButton);
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        'InApp Notifications Menu Opened',
+      );
+      expect(mockAddProperties).toHaveBeenCalledWith({
+        unread_count: 5,
+        read_count: 3,
+      });
+      expect(mockTrackEvent).toHaveBeenCalled();
+    });
+  });
+
+  describe('MetaMask Orange row', () => {
+    it('stays hidden while the Orange flow is off', () => {
+      const { queryByTestId } = render(<AccountsMenu />);
+
+      expect(
+        queryByTestId(AccountsMenuSelectorsIDs.METAMASK_ORANGE),
+      ).not.toBeOnTheScreen();
+    });
+
+    it('shows the join label while membership access is unresolved', () => {
+      mockUseProSubscriptionEnabled.mockReturnValue({
+        isProSubscriptionEnabled: true,
+      });
+      mockUseHasProMembership.mockReturnValue(false);
+
+      const { getByTestId } = render(<AccountsMenu />);
+
+      fireEvent.press(getByTestId(AccountsMenuSelectorsIDs.METAMASK_ORANGE));
+
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.METAMASK_ORANGE),
+      ).toHaveTextContent('accounts_menu.join_metamask_orange');
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.PRO_SUBSCRIPTION.ROOT, {
+        source: 'accounts_menu',
+      });
+    });
+
+    it('invites a non-member to join and opens the subscription flow', () => {
+      mockUseProSubscriptionEnabled.mockReturnValue({
+        isProSubscriptionEnabled: true,
+      });
+
+      const { getByTestId } = render(<AccountsMenu />);
+
+      fireEvent.press(getByTestId(AccountsMenuSelectorsIDs.METAMASK_ORANGE));
+
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.METAMASK_ORANGE),
+      ).toHaveTextContent('accounts_menu.join_metamask_orange');
+      expect(mockTrackButtonClicked).toHaveBeenCalledWith({
+        button_type: MONEY_BUTTON_TYPES.TEXT,
+        button_intent: MONEY_BUTTON_INTENTS.GET_PRO,
+        component_name: COMPONENT_NAMES.ACCOUNTS_MENU_ORANGE,
+        label_key: 'accounts_menu.join_metamask_orange',
+        redirect_target: SCREEN_NAMES.PRO_SUBSCRIPTION,
+      });
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.PRO_SUBSCRIPTION.ROOT, {
+        source: 'accounts_menu',
+      });
+    });
+
+    it('labels a member MetaMask Orange and opens the hub', () => {
+      mockUseProSubscriptionEnabled.mockReturnValue({
+        isProSubscriptionEnabled: true,
+      });
+      mockUseHasProMembership.mockReturnValue(true);
+
+      const { getByTestId } = render(<AccountsMenu />);
+
+      fireEvent.press(getByTestId(AccountsMenuSelectorsIDs.METAMASK_ORANGE));
+
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.METAMASK_ORANGE),
+      ).toHaveTextContent('accounts_menu.metamask_orange');
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.PRO_HUB.ROOT, {
+        source: 'accounts_menu',
+      });
+    });
+  });
+
+  describe('Permissions Row', () => {
+    it('render Permissions row', () => {
+      const { getByText, getByTestId } = render(<AccountsMenu />);
+
+      expect(getByText('accounts_menu.permissions')).toBeOnTheScreen();
+      expect(
+        getByTestId(AccountsMenuSelectorsIDs.PERMISSIONS),
+      ).toBeOnTheScreen();
+    });
+
+    it('navigate to SDKSessionsManager when Permissions is pressed', () => {
+      const { getByTestId } = render(<AccountsMenu />);
+      const permissionsButton = getByTestId(
+        AccountsMenuSelectorsIDs.PERMISSIONS,
+      );
+
+      fireEvent.press(permissionsButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.SETTINGS.SDK_SESSIONS_MANAGER,
+      );
+    });
+  });
+
+  describe('Networks Row', () => {
+    it('render Networks row', () => {
+      const { getByText, getByTestId } = render(<AccountsMenu />);
+
+      expect(getByText('accounts_menu.networks')).toBeOnTheScreen();
+      expect(getByTestId(AccountsMenuSelectorsIDs.NETWORKS)).toBeOnTheScreen();
+    });
+
+    it('navigate to NetworksManagement when Networks is pressed', () => {
+      const { getByTestId } = render(<AccountsMenu />);
+      const networksButton = getByTestId(AccountsMenuSelectorsIDs.NETWORKS);
+
+      fireEvent.press(networksButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.SETTINGS.NETWORKS_MANAGEMENT,
+      );
+    });
+  });
+
+  describe('RESOURCES Section', () => {
+    describe('About MetaMask Row', () => {
+      it('render About MetaMask row with the default (main) title', () => {
+        const { getByText, getByTestId } = render(<AccountsMenu />);
+
+        expect(getByText('app_settings.info_title')).toBeOnTheScreen();
+        expect(
+          getByTestId(AccountsMenuSelectorsIDs.ABOUT_METAMASK),
+        ).toBeOnTheScreen();
+      });
+
+      it('render the flask title on flask builds', () => {
+        mockEnvironment.isFlaskBuild = true;
+
+        const { getByText } = render(<AccountsMenu />);
+
+        expect(getByText('app_settings.info_title_flask')).toBeOnTheScreen();
+      });
+
+      it('render the beta title on beta builds', () => {
+        mockEnvironment.isBetaBuild = true;
+
+        const { getByText } = render(<AccountsMenu />);
+
+        expect(getByText('app_settings.info_title_beta')).toBeOnTheScreen();
+      });
+
+      it('navigate to CompanySettings when About MetaMask is pressed', () => {
+        const { getByTestId } = render(<AccountsMenu />);
+        const aboutButton = getByTestId(
+          AccountsMenuSelectorsIDs.ABOUT_METAMASK,
+        );
+
+        fireEvent.press(aboutButton);
+
+        expect(mockNavigate).toHaveBeenCalledWith(Routes.SETTINGS.COMPANY);
+      });
+    });
+
+    describe('Request a Feature Row', () => {
+      it('render Request a feature row', () => {
+        const { getByText, getByTestId } = render(<AccountsMenu />);
+
+        expect(getByText('app_settings.request_feature')).toBeOnTheScreen();
+        expect(
+          getByTestId(AccountsMenuSelectorsIDs.REQUEST_FEATURE),
+        ).toBeOnTheScreen();
+      });
+
+      it('navigate to webview when Request a feature is pressed', () => {
+        const { getByTestId } = render(<AccountsMenu />);
+        const requestFeatureButton = getByTestId(
+          AccountsMenuSelectorsIDs.REQUEST_FEATURE,
+        );
+
+        fireEvent.press(requestFeatureButton);
+
+        expect(mockNavigate).toHaveBeenCalledWith('Webview', {
+          screen: 'SimpleWebview',
+          params: {
+            url: 'https://community.metamask.io/c/feature-requests-ideas/',
+            title: 'app_settings.request_feature',
+          },
+        });
+      });
+    });
+
+    describe('Support Row', () => {
+      it('render Support row', () => {
+        const { getByText, getByTestId } = render(<AccountsMenu />);
+
+        expect(getByText('app_settings.contact_support')).toBeOnTheScreen();
+        expect(getByTestId(AccountsMenuSelectorsIDs.SUPPORT)).toBeOnTheScreen();
+      });
+
+      it('navigate to webview directly when beta support URL is set', () => {
+        const { getByTestId } = render(<AccountsMenu />);
+        const supportButton = getByTestId(AccountsMenuSelectorsIDs.SUPPORT);
+
+        fireEvent.press(supportButton);
+
+        expect(mockNavigate).toHaveBeenCalledWith('Webview', {
+          screen: 'SimpleWebview',
+          params: {
+            url: 'https://intercom.help/internal-beta-testing/en/',
+            title: 'app_settings.contact_support',
+          },
+        });
+        expect(mockCreateEventBuilder).toHaveBeenCalledWith('Get Help');
+        expect(mockTrackEvent).toHaveBeenCalled();
+        expect(mockOpenSupportWithConsent).not.toHaveBeenCalled();
+      });
+
+      describe('when no beta support URL is set', () => {
+        beforeEach(() => {
+          mockGetBetaSupportUrl.mockReturnValue('');
+        });
+
+        it('open the consent flow instead of navigating directly', () => {
+          const { getByTestId } = render(<AccountsMenu />);
+          const supportButton = getByTestId(AccountsMenuSelectorsIDs.SUPPORT);
+
+          fireEvent.press(supportButton);
+
+          expect(mockOpenSupportWithConsent).toHaveBeenCalledWith(
+            expect.any(Function),
+            METAMASK_SUPPORT_URL,
+            expect.any(Function),
+          );
+        });
+
+        it('defer NAVIGATION_TAPS_GET_HELP tracking until the consent callback runs', () => {
+          const { getByTestId } = render(<AccountsMenu />);
+          const supportButton = getByTestId(AccountsMenuSelectorsIDs.SUPPORT);
+
+          fireEvent.press(supportButton);
+
+          // Pressing Support only opens the consent sheet; tracking must wait
+          // until the user actually confirms/rejects and support opens.
+          expect(mockCreateEventBuilder).not.toHaveBeenCalledWith('Get Help');
+
+          const trackingCallback = mockOpenSupportWithConsent.mock.calls[0][2];
+          trackingCallback();
+
+          expect(mockCreateEventBuilder).toHaveBeenCalledWith('Get Help');
+          expect(mockTrackEvent).toHaveBeenCalled();
+        });
+
+        it('navigate to webview when the opener passed to the consent flow is invoked', () => {
+          const { getByTestId } = render(<AccountsMenu />);
+          const supportButton = getByTestId(AccountsMenuSelectorsIDs.SUPPORT);
+
+          fireEvent.press(supportButton);
+
+          const opener = mockOpenSupportWithConsent.mock.calls[0][0];
+          opener('https://support.metamask.io/enriched');
+
+          expect(mockNavigate).toHaveBeenCalledWith('Webview', {
+            screen: 'SimpleWebview',
+            params: {
+              url: 'https://support.metamask.io/enriched',
+              title: 'app_settings.contact_support',
+            },
+          });
+        });
+      });
+    });
+
+    describe('Log Out Row', () => {
+      it('render Log Out row', () => {
+        const { getByText, getByTestId } = render(<AccountsMenu />);
+
+        expect(getByText('accounts_menu.log_out')).toBeOnTheScreen();
+        expect(getByTestId(AccountsMenuSelectorsIDs.LOCK)).toBeOnTheScreen();
+      });
+
+      it('show confirmation alert when Log Out is pressed', () => {
+        const { getByTestId } = render(<AccountsMenu />);
+        const logOutButton = getByTestId(AccountsMenuSelectorsIDs.LOCK);
+
+        fireEvent.press(logOutButton);
+
+        expect(mockAlert).toHaveBeenCalledWith(
+          'drawer.lock_title',
+          '',
+          [
+            {
+              text: 'drawer.lock_cancel',
+              onPress: expect.any(Function),
+              style: 'cancel',
+            },
+            {
+              text: 'drawer.lock_ok',
+              onPress: expect.any(Function),
+            },
+          ],
+          { cancelable: false },
+        );
+      });
+
+      it('call Authentication.lockApp when confirmation is accepted', async () => {
+        const { getByTestId } = render(<AccountsMenu />);
+        const logOutButton = getByTestId(AccountsMenuSelectorsIDs.LOCK);
+
+        fireEvent.press(logOutButton);
+
+        // Get the onPress callback from the OK button
+        const alertCall = mockAlert.mock.calls[0];
+        const okButton = alertCall[2][1]; // Second button in the array
+        await act(async () => {
+          await okButton.onPress();
+        });
+
+        expect(Authentication.lockApp).toHaveBeenCalledWith({
+          reset: false,
+          locked: false,
+        });
+      });
+
+      it('track NAVIGATION_TAPS_LOGOUT event only when logout is confirmed', async () => {
+        const { getByTestId } = render(<AccountsMenu />);
+        const logOutButton = getByTestId(AccountsMenuSelectorsIDs.LOCK);
+
+        // Press the logout button
+        fireEvent.press(logOutButton);
+
+        // At this point, analytics NOT be tracked yet (just showing alert)
+        expect(mockCreateEventBuilder).not.toHaveBeenCalledWith('Logout');
+
+        // Get the onPress callback from the OK button and execute it
+        const alertCall = mockAlert.mock.calls[0];
+        const okButton = alertCall[2][1]; // Second button in the array
+        await act(async () => {
+          await okButton.onPress();
+        });
+
+        // Now analytics be tracked (user confirmed)
+        expect(mockCreateEventBuilder).toHaveBeenCalledWith('Logout');
+        expect(mockTrackEvent).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Analytics Tracking', () => {
+    it('track SETTINGS_VIEWED event when Settings is pressed', () => {
+      const { getByTestId } = render(<AccountsMenu />);
+      const settingsButton = getByTestId(AccountsMenuSelectorsIDs.SETTINGS);
+
+      fireEvent.press(settingsButton);
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith('Settings Viewed');
+      expect(mockTrackEvent).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.SETTINGS.ROOT);
+    });
+
+    it('track SETTINGS_ABOUT event when About MetaMask is pressed', () => {
+      const { getByTestId } = render(<AccountsMenu />);
+      const aboutButton = getByTestId(AccountsMenuSelectorsIDs.ABOUT_METAMASK);
+
+      fireEvent.press(aboutButton);
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith('About MetaMask');
+      expect(mockTrackEvent).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.SETTINGS.COMPANY);
+    });
+
+    it('track NAVIGATION_TAPS_SEND_FEEDBACK event when Request a feature is pressed', () => {
+      const { getByTestId } = render(<AccountsMenu />);
+      const requestFeatureButton = getByTestId(
+        AccountsMenuSelectorsIDs.REQUEST_FEATURE,
+      );
+
+      fireEvent.press(requestFeatureButton);
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith('Send Feedback');
+      expect(mockTrackEvent).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith('Webview', {
+        screen: 'SimpleWebview',
+        params: {
+          url: 'https://community.metamask.io/c/feature-requests-ideas/',
+          title: 'app_settings.request_feature',
+        },
+      });
+    });
+
+    // Covers the beta direct-open branch, which tracks inline on press. The
+    // consent branch (mockGetBetaSupportUrl returning '') defers tracking to
+    // the callback passed as openSupportWithConsent's 3rd arg — see the
+    // 'Support Row' > 'when no beta support URL is set' tests below.
+    it('track NAVIGATION_TAPS_GET_HELP event when Support is pressed', () => {
+      const { getByTestId } = render(<AccountsMenu />);
+      const supportButton = getByTestId(AccountsMenuSelectorsIDs.SUPPORT);
+
+      fireEvent.press(supportButton);
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith('Get Help');
+      expect(mockTrackEvent).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith('Webview', {
+        screen: 'SimpleWebview',
+        params: {
+          url: 'https://intercom.help/internal-beta-testing/en/',
+          title: 'app_settings.contact_support',
+        },
+      });
+    });
+  });
+});

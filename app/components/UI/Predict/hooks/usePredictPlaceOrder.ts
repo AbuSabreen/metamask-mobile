@@ -1,0 +1,361 @@
+import { useQueryClient } from '@tanstack/react-query';
+import { useCallback, useContext, useState } from 'react';
+import { strings } from '../../../../../locales/i18n';
+import { IconName } from '../../../../component-library/components/Icons/Icon';
+import {
+  ToastContext,
+  ToastVariants,
+} from '../../../../component-library/components/Toast';
+import { DevLogger } from '../../../../core/SDKConnect/utils/DevLogger';
+import { useTheme } from '../../../../util/theme';
+import {
+  endTrace,
+  trace,
+  TraceName,
+  TraceOperation,
+} from '../../../../util/trace';
+import { PREDICT_CONSTANTS } from '../constants/errors';
+import { PredictEventValues } from '../constants/eventNames';
+import { predictQueries } from '../queries';
+import {
+  PlaceOrderParams,
+  Side,
+  type OrderPreview,
+  type PredictRetryOrderState,
+  type Result,
+} from '../types';
+import { formatPrice } from '../utils/format';
+import {
+  getPredictBuyAllInCost,
+  getPredictSellNetProceeds,
+} from '../utils/orders';
+import { checkPlaceOrderError } from '../utils/predictErrorHandler';
+import { usePredictBalance } from './usePredictBalance';
+import { usePredictDeposit } from './usePredictDeposit';
+import { usePredictTrading } from './usePredictTrading';
+import {
+  type TransactionActiveAbTestEntry,
+  withPendingTransactionActiveAbTests,
+} from '../../../../util/transactions/transaction-active-ab-test-attribution-registry';
+
+interface UsePredictPlaceOrderOptions {
+  /**
+   * Callback when order is completed
+   */
+  onComplete?: (result: Result) => void;
+  /**
+   * Callback when an error occurs
+   */
+  onError?: (error: string) => void;
+  transactionActiveAbTests?: TransactionActiveAbTestEntry[];
+}
+
+interface UsePredictPlaceOrderReturn {
+  error?: string;
+  isLoading: boolean;
+  result: Result | null;
+  placeOrder: (params: PlaceOrderParams) => Promise<PlaceOrderOutcome>;
+  /**
+   * The preview behind the most recent submit attempt (original order or
+   * retry). The retry flow uses its price as the baseline for the 1-tick
+   * honesty rule: the last price the user actually confirmed.
+   */
+  lastSubmittedPreview: OrderPreview | null;
+  /** Retry-guard state derived from the submit lifecycle. */
+  retryOrderState: PredictRetryOrderState;
+  isOrderNotFilled: boolean;
+  resetOrderNotFilled: () => void;
+  showOrderPlacedToast: () => void;
+  invalidateOrderQueries: () => void;
+}
+
+export type PlaceOrderOutcome =
+  | {
+      status: 'success';
+      result: Result;
+    }
+  | {
+      status: 'deposit_required';
+    }
+  | {
+      status: 'deposit_in_progress';
+    }
+  | {
+      status: 'order_not_filled';
+    }
+  | {
+      status: 'error';
+      error: string;
+    };
+
+/**
+ * Authoritative order state for the retry guard, derived from this hook's
+ * submit lifecycle. A canceled order surfaces as a plain error here, never
+ * as not-filled, so the retry path is never entered for it.
+ */
+function getPlaceOrderRetryState({
+  isLoading,
+  result,
+}: {
+  isLoading: boolean;
+  result: Result | null;
+}): PredictRetryOrderState {
+  if (isLoading) {
+    return 'pending';
+  }
+  if (result?.success) {
+    return 'filled';
+  }
+  return 'unknown';
+}
+
+/**
+ * Hook for placing Predict orders with loading states and error handling
+ * @param options Configuration options for the hook
+ * @returns Order placement utilities and state
+ */
+export function usePredictPlaceOrder(
+  options: UsePredictPlaceOrderOptions = {},
+): UsePredictPlaceOrderReturn {
+  const { onError, onComplete, transactionActiveAbTests } = options;
+  const { placeOrder: controllerPlaceOrder } = usePredictTrading();
+
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string>();
+  const [result, setResult] = useState<Result | null>(null);
+  const [lastSubmittedPreview, setLastSubmittedPreview] =
+    useState<OrderPreview | null>(null);
+  const [isOrderNotFilled, setIsOrderNotFilled] = useState(false);
+  const { toastRef } = useContext(ToastContext);
+  const { colors } = useTheme();
+  const queryClient = useQueryClient();
+  const { data: balance = 0, refetch: refetchBalance } = usePredictBalance();
+  const { deposit, isDepositPending } = usePredictDeposit();
+
+  const showCashedOutToast = useCallback(
+    (amount: string) => {
+      // Track cashout confirmation toast display performance
+      const traceId = `cashout-toast-${Date.now()}`;
+      trace({
+        name: TraceName.PredictCashoutConfirmationToast,
+        op: TraceOperation.PredictOperation,
+        id: traceId,
+        tags: {
+          feature: PREDICT_CONSTANTS.FEATURE_NAME,
+        },
+      });
+
+      toastRef?.current?.showToast({
+        variant: ToastVariants.Icon,
+        iconName: IconName.Confirmation,
+        iconColor: colors.success.default,
+        labelOptions: [
+          { label: strings('predict.order.cashed_out'), isBold: true },
+          { label: '\n', isBold: false },
+          {
+            label: strings('predict.order.cashed_out_subtitle', {
+              amount,
+            }),
+            isBold: false,
+          },
+        ],
+        hasNoTimeout: false,
+      });
+
+      // End trace immediately after toast is shown
+      endTrace({
+        name: TraceName.PredictCashoutConfirmationToast,
+        id: traceId,
+        data: { success: true },
+      });
+    },
+    [colors.success.default, toastRef],
+  );
+
+  const showOrderPlacedToast = useCallback(() => {
+    // Track order confirmation toast display performance
+    const traceId = `order-toast-${Date.now()}`;
+    trace({
+      name: TraceName.PredictOrderConfirmationToast,
+      op: TraceOperation.PredictOperation,
+      id: traceId,
+      tags: {
+        feature: PREDICT_CONSTANTS.FEATURE_NAME,
+      },
+    });
+
+    toastRef?.current?.showToast({
+      variant: ToastVariants.Icon,
+      iconName: IconName.Confirmation,
+      iconColor: colors.success.default,
+      labelOptions: [
+        { label: strings('predict.order.prediction_placed'), isBold: true },
+      ],
+      hasNoTimeout: false,
+    });
+
+    // End trace immediately after toast is shown
+    endTrace({
+      name: TraceName.PredictOrderConfirmationToast,
+      id: traceId,
+      data: { success: true },
+    });
+  }, [colors.success.default, toastRef]);
+
+  const invalidateOrderQueries = useCallback(() => {
+    queryClient.invalidateQueries({
+      queryKey: predictQueries.balance.keys.all(),
+    });
+    queryClient.invalidateQueries({
+      queryKey: predictQueries.positions.keys.all(),
+    });
+    queryClient.invalidateQueries({
+      queryKey: predictQueries.activity.keys.all(),
+    });
+    queryClient.invalidateQueries({
+      queryKey: predictQueries.unrealizedPnL.keys.all(),
+    });
+  }, [queryClient]);
+
+  const placeOrder = useCallback(
+    async (orderParams: PlaceOrderParams): Promise<PlaceOrderOutcome> => {
+      // Disable the CTA before the pre-submit balance refresh.
+      setIsLoading(true);
+      setError(undefined);
+      setLastSubmittedPreview(orderParams.preview);
+
+      const { side } = orderParams.preview;
+
+      const buyTotalAmount =
+        side === Side.BUY ? getPredictBuyAllInCost(orderParams.preview) : 0;
+
+      let latestBalance = balance;
+
+      // Refresh balance before deciding whether to trigger a deposit.
+      // This avoids unnecessary extra deposits when the balance just changed.
+      if (side === Side.BUY) {
+        try {
+          const refreshedBalance = await refetchBalance?.();
+          if (typeof refreshedBalance?.data === 'number') {
+            latestBalance = refreshedBalance.data;
+          }
+        } catch {
+          // If balance refresh fails, fallback to cached value.
+        }
+      }
+
+      // Check if user has sufficient balance for the bet amount
+      if (side === Side.BUY && latestBalance < buyTotalAmount) {
+        setIsLoading(false);
+        if (isDepositPending) {
+          toastRef?.current?.showToast({
+            variant: ToastVariants.Icon,
+            iconName: IconName.Loading,
+            labelOptions: [
+              {
+                label: strings('predict.deposit.in_progress'),
+                isBold: true,
+              },
+              { label: '\n', isBold: false },
+              {
+                label: strings('predict.deposit.in_progress_description'),
+                isBold: false,
+              },
+            ],
+            hasNoTimeout: false,
+          });
+          return { status: 'deposit_in_progress' };
+        }
+
+        await withPendingTransactionActiveAbTests(
+          transactionActiveAbTests,
+          () =>
+            deposit({
+              amountUsd: buyTotalAmount,
+              analyticsProperties: {
+                ...orderParams.analyticsProperties,
+                marketId: orderParams.preview.marketId,
+                entryPoint: PredictEventValues.ENTRY_POINT.BUY_PREVIEW,
+              },
+            }),
+        );
+        return { status: 'deposit_required' };
+      }
+
+      try {
+        const orderResult = await withPendingTransactionActiveAbTests(
+          transactionActiveAbTests,
+          () =>
+            controllerPlaceOrder({
+              ...orderParams,
+              activeAbTests: transactionActiveAbTests,
+            }),
+        );
+
+        onComplete?.(orderResult);
+
+        setResult(orderResult);
+
+        invalidateOrderQueries();
+
+        if (side === Side.BUY) {
+          showOrderPlacedToast();
+        } else {
+          showCashedOutToast(
+            formatPrice(getPredictSellNetProceeds(orderParams.preview), {
+              maximumDecimals: 2,
+            }),
+          );
+        }
+
+        DevLogger.log('usePredictPlaceOrder: Order placed successfully');
+        return { status: 'success', result: orderResult };
+      } catch (err) {
+        const errorResult = checkPlaceOrderError({ error: err, orderParams });
+        if (errorResult.status === 'order_not_filled') {
+          setIsOrderNotFilled(true);
+        } else if (errorResult.status === 'error') {
+          setError(errorResult.error);
+          onError?.(errorResult.error);
+        }
+
+        return errorResult;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [
+      balance,
+      refetchBalance,
+      isDepositPending,
+      deposit,
+      toastRef,
+      controllerPlaceOrder,
+      onComplete,
+      invalidateOrderQueries,
+      showOrderPlacedToast,
+      showCashedOutToast,
+      onError,
+      transactionActiveAbTests,
+    ],
+  );
+
+  const resetOrderNotFilled = useCallback(() => {
+    setIsOrderNotFilled(false);
+    setError(undefined);
+    setLastSubmittedPreview(null);
+  }, []);
+
+  return {
+    error,
+    isLoading,
+    result,
+    placeOrder,
+    lastSubmittedPreview,
+    retryOrderState: getPlaceOrderRetryState({ isLoading, result }),
+    isOrderNotFilled,
+    resetOrderNotFilled,
+    showOrderPlacedToast,
+    invalidateOrderQueries,
+  };
+}

@@ -2,12 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
 	<string>MetaMask</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -18,15 +22,6 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
-	<key>CFBundleSignature</key>
-	<string>????</string>
-	<key>branch_universal_link_domains</key>
-	<array>
-		<string>metamask.app.link</string>
-		<string>metamask-alternate.app.link</string>
-		<string>metamask.test.app.link</string>
-		<string>metamask-alternate.test.app.link</string>
-	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -36,32 +31,35 @@
 				<string>metamask</string>
 				<string>dapp</string>
 				<string>wc</string>
+				<string>expo-metamask</string>
 			</array>
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>EXDefaultScreenOrientationMask</key>
+	<string>UIInterfaceOrientationMaskAllButUpsideDown</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>twitter</string>
 		<string>itms-apps</string>
+		<string>upi</string>
+		<string>paytmmp</string>
+		<string>phonepe</string>
+		<string>gpay</string>
 	</array>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0.0</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
+		<false/>
+		<key>NSAllowsLocalNetworking</key>
 		<true/>
-		<key>NSExceptionDomains</key>
-		<dict>
-			<key>localhost</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-		</dict>
 	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>MetaMask needs Bluetooth access to connect to external devices.</string>
@@ -72,13 +70,15 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>$(PRODUCT_NAME) needs to authenticate</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string></string>
+	<string>MetaMask needs location access to enable Bluetooth connectivity with hardware wallets.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>MetaMask needs microphone access to record audio</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Allow MetaMask to save an image to your Photo Library</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Allow MetaMask to access a images from your Photo Library</string>
+	<key>RCTNewArchEnabled</key>
+	<true/>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Entypo.ttf</string>
@@ -94,31 +94,16 @@
 		<string>SimpleLineIcons.ttf</string>
 		<string>Zocial.ttf</string>
 		<string>Metamask.ttf</string>
-		<string>Roboto-Black.ttf</string>
-		<string>Roboto-BlackItalic.ttf</string>
-		<string>Roboto-Bold.ttf</string>
-		<string>Roboto-BoldItalic.ttf</string>
-		<string>Roboto-Italic.ttf</string>
-		<string>Roboto-Light.ttf</string>
-		<string>Roboto-LightItalic.ttf</string>
-		<string>Roboto-Medium.ttf</string>
-		<string>Roboto-MediumItalic.ttf</string>
-		<string>Roboto-Regular.ttf</string>
-		<string>Roboto-Thin.ttf</string>
-		<string>Roboto-ThinItalic.ttf</string>
 		<string>FontAwesome5_Brands.ttf</string>
 		<string>FontAwesome5_Regular.ttf</string>
 		<string>FontAwesome5_Solid.ttf</string>
-		<string>EuclidCircularB-Bold.otf</string>
-		<string>EuclidCircularB-BoldItalic.otf</string>
-		<string>EuclidCircularB-Light.otf</string>
-		<string>EuclidCircularB-LightItalic.otf</string>
-		<string>EuclidCircularB-Medium.otf</string>
-		<string>EuclidCircularB-MediumItalic.otf</string>
-		<string>EuclidCircularB-Regular.otf</string>
-		<string>EuclidCircularB-RegularItalic.otf</string>
-		<string>EuclidCircularB-Semibold.otf</string>
-		<string>EuclidCircularB-SemiboldItalic.otf</string>
+		<string>GrotzecCond-Bold.otf</string>
+		<string>Inter-SemiBoldItalic.ttf</string>
+		<string>Inter-SemiBold.ttf</string>
+		<string>Inter-MediumItalic.ttf</string>
+		<string>Inter-Medium.ttf</string>
+		<string>Inter-RegularItalic.ttf</string>
+		<string>Inter-Regular.ttf</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>
@@ -126,14 +111,18 @@
 		<string>remote-notification</string>
 	</array>
 	<key>UILaunchStoryboardName</key>
-	<string>LaunchScreen</string>
+	<string>SplashScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
-		<string>armv7</string>
+		<string>arm64</string>
 	</array>
+	<key>UIStatusBarStyle</key>
+	<string>UIStatusBarStyleDefault</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
@@ -144,14 +133,24 @@
 		<key>test</key>
 		<string>$(MM_BRANCH_KEY_TEST)</string>
 	</dict>
-	<key>mixpanel_token</key>
-	<string>$(MM_MIXPANEL_TOKEN)</string>
+	<key>branch_universal_link_domains</key>
+	<array>
+		<string>metamask.app.link</string>
+		<string>link.metamask.io</string>
+		<string>link.metamask.com</string>
+		<string>link-test.metamask.io</string>
+		<string>link-test.metamask.com</string>
+		<string>metamask-alternate.app.link</string>
+		<string>metamask.test-app.link</string>
+		<string>metamask-alternate.test-app.link</string>
+	</array>
 	<key>fox_code</key>
 	<string>$(MM_FOX_CODE)</string>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>twitter</string>
-		<string>itms-apps</string>
-	</array>
+	<key>mixpanel_token</key>
+	<string>$(MM_MIXPANEL_TOKEN)</string>
+	<key>braze_api_key</key>
+	<string>$(MM_BRAZE_API_KEY_IOS)</string>
+	<key>braze_sdk_endpoint</key>
+	<string>$(MM_BRAZE_SDK_ENDPOINT)</string>
 </dict>
 </plist>

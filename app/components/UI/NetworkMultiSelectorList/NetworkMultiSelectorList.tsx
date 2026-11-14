@@ -1,0 +1,357 @@
+// Third party dependencies.
+import React, {
+  useCallback,
+  useMemo,
+  memo,
+  startTransition,
+  useEffect,
+} from 'react';
+import { useSelector } from 'react-redux';
+import { ImageSourcePropType, View } from 'react-native';
+import { Box, Text, TextVariant } from '@metamask/design-system-react-native';
+import { TextVariant as LegacyTextVariant } from '../../../component-library/components/Texts/Text';
+import {
+  parseCaipChainId,
+  CaipChainId,
+  KnownCaipNamespace,
+} from '@metamask/utils';
+import { toHex } from '@metamask/controller-utils';
+import { debounce } from 'lodash';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+
+// External dependencies.
+import { useStyles } from '../../../component-library/hooks/index.ts';
+import { AvatarVariant } from '../../../component-library/components/Avatars/Avatar/index.ts';
+import { IconName } from '../../../component-library/components/Icons/Icon/index.ts';
+import Cell, {
+  CellVariant,
+} from '../../../component-library/components/Cells/Cell/index.ts';
+import { isTestNet } from '../../../util/networks/index.js';
+import hideProtocolFromUrl from '../../../util/hideProtocolFromUrl';
+import hideKeyFromUrl from '../../../util/hideKeyFromUrl';
+
+// Internal dependencies.
+import {
+  NetworkMultiSelectorListProps,
+  Network,
+  NetworkListItem,
+  AdditionalNetworkSection,
+  NetworkListItemType,
+  SelectAllNetworksListItem,
+} from './NetworkMultiSelectorList.types.ts';
+import styleSheet from './NetworkMultiSelectorList.styles';
+import {
+  MAIN_CHAIN_IDS,
+  ADDITIONAL_NETWORK_SECTION_ID,
+  SELECT_ALL_NETWORKS_SECTION_ID,
+} from './NetworkMultiSelectorList.constants';
+import {
+  selectIsEvmNetworkSelected,
+  selectSelectedNonEvmNetworkChainId,
+} from '../../../selectors/multichainNetworkController';
+import { selectEvmChainId } from '../../../selectors/networkController';
+import { formatChainIdToCaip } from '@metamask/bridge-controller';
+import { NETWORK_MULTI_SELECTOR_TEST_IDS } from '../NetworkMultiSelector/NetworkMultiSelector.constants';
+import { getGasFeesSponsoredNetworkEnabled } from '../../../selectors/featureFlagController/gasFeesSponsored/index.ts';
+import { selectSelectedInternalAccountFormattedAddress } from '../../../selectors/accountsController';
+import { isHardwareAccount } from '../../../util/address';
+import { strings } from '../../../../locales/i18n';
+import TagColored, {
+  TagColor,
+} from '../../../component-library/components-temp/TagColored';
+
+const SELECTION_DEBOUNCE_DELAY = 150;
+
+interface ProcessedNetwork extends Network {
+  chainId: string;
+  namespace: string;
+  isMainChain: boolean;
+  isTestNetwork: boolean;
+}
+
+const NetworkMultiSelectList = ({
+  onSelectNetwork,
+  networks = [],
+  isLoading = false,
+  selectedChainIds,
+  renderRightAccessory,
+  isSelectionDisabled,
+  additionalNetworksComponent,
+  selectAllNetworksComponent,
+  openModal,
+  areAllNetworksSelected,
+  openRpcModal,
+}: NetworkMultiSelectorListProps) => {
+  const isEvmSelected = useSelector(selectIsEvmNetworkSelected);
+  const evmChainId = useSelector(selectEvmChainId);
+  const nonEvmChainId = useSelector(selectSelectedNonEvmNetworkChainId);
+  // Use the appropriate chain ID based on whether EVM is selected
+  // For EVM: convert hex chain ID to CAIP format (e.g., "0x1" -> "eip155:1")
+  // For non-EVM: use the already CAIP-formatted chain ID (e.g., "solana:mainnet")
+  // Fallback to EVM chain ID if non-EVM chain ID is undefined (prevents edit/delete
+  // options from incorrectly appearing on all networks)
+  const selectedChainIdCaip = isEvmSelected
+    ? formatChainIdToCaip(evmChainId)
+    : (nonEvmChainId ?? formatChainIdToCaip(evmChainId));
+  const isGasFeesSponsoredNetworkEnabled = useSelector(
+    getGasFeesSponsoredNetworkEnabled,
+  );
+  const selectedAddress = useSelector(
+    selectSelectedInternalAccountFormattedAddress,
+  );
+  const isHardwareWallet = Boolean(
+    selectedAddress && isHardwareAccount(selectedAddress),
+  );
+
+  const { styles } = useStyles(styleSheet, {});
+  const tw = useTailwind();
+
+  const processedNetworks = useMemo(
+    (): ProcessedNetwork[] =>
+      networks.map((network) => {
+        const parsedCaipChainId = parseCaipChainId(network.caipChainId);
+        const chainId =
+          parsedCaipChainId.namespace === KnownCaipNamespace.Eip155
+            ? toHex(parsedCaipChainId.reference)
+            : parsedCaipChainId.reference;
+
+        return {
+          ...network,
+          chainId,
+          namespace: parsedCaipChainId.namespace,
+          isMainChain: MAIN_CHAIN_IDS.has(chainId),
+          isTestNetwork: Boolean(chainId && isTestNet(chainId)),
+          isSelected: areAllNetworksSelected ? false : network.isSelected,
+        };
+      }),
+    [areAllNetworksSelected, networks],
+  );
+
+  const combinedData: NetworkListItem[] = useMemo(() => {
+    const data: NetworkListItem[] = [];
+    const filteredNetworks = processedNetworks.filter(
+      (network) => !network.isTestNetwork,
+    );
+
+    if (filteredNetworks.length > 0) {
+      data.push(...filteredNetworks);
+    }
+
+    if (selectAllNetworksComponent) {
+      data.unshift({
+        id: SELECT_ALL_NETWORKS_SECTION_ID,
+        type: NetworkListItemType.SelectAllNetworksListItem,
+        component: selectAllNetworksComponent,
+      } as SelectAllNetworksListItem);
+    }
+
+    if (additionalNetworksComponent) {
+      data.push({
+        id: ADDITIONAL_NETWORK_SECTION_ID,
+        type: NetworkListItemType.AdditionalNetworkSection,
+        component: additionalNetworksComponent,
+      } as AdditionalNetworkSection);
+    }
+
+    return data;
+  }, [
+    processedNetworks,
+    additionalNetworksComponent,
+    selectAllNetworksComponent,
+  ]);
+
+  const debouncedSelectNetwork = useMemo(
+    () =>
+      debounce(
+        (caipChainId: CaipChainId) => {
+          if (!onSelectNetwork) return;
+
+          startTransition(() => {
+            onSelectNetwork(caipChainId);
+          });
+        },
+        SELECTION_DEBOUNCE_DELAY,
+        {
+          leading: true,
+          trailing: false,
+        },
+      ),
+    [onSelectNetwork],
+  );
+
+  useEffect(
+    () => () => debouncedSelectNetwork.cancel(),
+    [debouncedSelectNetwork],
+  );
+
+  const getItemKey = (item: NetworkListItem): string => {
+    if (
+      'type' in item &&
+      item.type === NetworkListItemType.AdditionalNetworkSection
+    ) {
+      return ADDITIONAL_NETWORK_SECTION_ID;
+    }
+    return (item as ProcessedNetwork).id;
+  };
+
+  const isAdditionalNetworkSection = useCallback(
+    (item: NetworkListItem): item is AdditionalNetworkSection =>
+      'type' in item &&
+      item.type === NetworkListItemType.AdditionalNetworkSection,
+    [],
+  );
+
+  const isSelectAllNetworksSection = useCallback(
+    (item: NetworkListItem): item is SelectAllNetworksListItem =>
+      'type' in item &&
+      item.type === NetworkListItemType.SelectAllNetworksListItem,
+    [],
+  );
+
+  const createAvatarProps = useCallback(
+    (network: ProcessedNetwork) => ({
+      variant: AvatarVariant.Network as const,
+      name: network.name,
+      imageSource: network.imageSource as ImageSourcePropType,
+    }),
+    [],
+  );
+
+  const createButtonProps = useCallback(
+    (network: ProcessedNetwork) => ({
+      onButtonClick: () => {
+        openModal({
+          isVisible: true,
+          caipChainId: network.caipChainId,
+          displayEdit:
+            selectedChainIdCaip !== network.caipChainId && !network.isMainChain,
+          networkTypeOrRpcUrl: network.networkTypeOrRpcUrl || '',
+          isReadOnly: false,
+        });
+      },
+    }),
+    [openModal, selectedChainIdCaip],
+  );
+
+  const renderNetworkItem = useCallback(
+    ({ item }: { item: NetworkListItem }) => {
+      if (isAdditionalNetworkSection(item)) {
+        return <View>{item.component}</View>;
+      }
+
+      if (isSelectAllNetworksSection(item)) {
+        return <View>{item.component}</View>;
+      }
+
+      const network = item as ProcessedNetwork;
+      const {
+        caipChainId,
+        name,
+        isSelected,
+        networkTypeOrRpcUrl,
+        chainId,
+        hasMultipleRpcs,
+      } = network;
+
+      const isDisabled = isLoading || isSelectionDisabled;
+      const showButtonIcon = Boolean(networkTypeOrRpcUrl);
+
+      const isGasSponsored =
+        !isHardwareWallet && isGasFeesSponsoredNetworkEnabled(chainId);
+
+      return (
+        <View>
+          <Cell
+            variant={CellVariant.SelectWithMenu}
+            isSelected={isSelected}
+            title={
+              isGasSponsored ? (
+                <Box twClassName="flex-row items-center gap-1">
+                  <Text
+                    variant={TextVariant.BodyMd}
+                    numberOfLines={1}
+                    style={styles.networkNameText}
+                  >
+                    {name}
+                  </Text>
+                  <TagColored
+                    color={TagColor.Success}
+                    style={styles.noNetworkFeeContainer}
+                    labelProps={{
+                      variant: LegacyTextVariant.BodySM,
+                      style: {
+                        textTransform: 'none',
+                        textAlign: 'center',
+                        bottom: 1,
+                        fontWeight: 'normal',
+                      },
+                    }}
+                  >
+                    {strings('networks.no_network_fee')}
+                  </TagColored>
+                </Box>
+              ) : (
+                name
+              )
+            }
+            secondaryText={
+              networkTypeOrRpcUrl && hasMultipleRpcs
+                ? hideProtocolFromUrl(hideKeyFromUrl(networkTypeOrRpcUrl))
+                : undefined
+            }
+            onPress={() => debouncedSelectNetwork(caipChainId)}
+            onTextClick={() =>
+              openRpcModal && openRpcModal({ chainId, networkName: name })
+            }
+            avatarProps={createAvatarProps(network)}
+            buttonIcon={IconName.MoreVertical}
+            disabled={isDisabled}
+            showButtonIcon={showButtonIcon}
+            buttonProps={createButtonProps(network)}
+            style={tw.style('items-center')}
+            testID={NETWORK_MULTI_SELECTOR_TEST_IDS.NETWORK_LIST_ITEM(
+              caipChainId,
+              isSelected,
+            )}
+          >
+            {showButtonIcon ? (
+              renderRightAccessory?.(caipChainId, name)
+            ) : (
+              <Box paddingRight={8}>
+                {renderRightAccessory?.(caipChainId, name)}
+              </Box>
+            )}
+          </Cell>
+        </View>
+      );
+    },
+    [
+      isAdditionalNetworkSection,
+      isLoading,
+      isSelectionDisabled,
+      debouncedSelectNetwork,
+      renderRightAccessory,
+      createAvatarProps,
+      createButtonProps,
+      isSelectAllNetworksSection,
+      openRpcModal,
+      isGasFeesSponsoredNetworkEnabled,
+      isHardwareWallet,
+      styles.noNetworkFeeContainer,
+      tw,
+      styles.networkNameText,
+    ],
+  );
+
+  return (
+    <View style={styles.networkList}>
+      {combinedData.map((item) => (
+        <React.Fragment key={getItemKey(item)}>
+          {renderNetworkItem({ item })}
+        </React.Fragment>
+      ))}
+    </View>
+  );
+};
+
+export default memo(NetworkMultiSelectList);

@@ -4,6 +4,9 @@ import { ImageSourcePropType } from 'react-native';
 // External Dependencies.
 import { AvatarAccountType } from '../Avatars/Avatar/variants/AvatarAccount';
 import { ButtonProps } from '../Buttons/Button/Button.types';
+import { ButtonIconProps } from '../Buttons/ButtonIcon/ButtonIcon.types';
+import { IconName } from '../Icons/Icon';
+import { ReactElement } from 'react';
 
 /**
  * Toast variants.
@@ -12,6 +15,8 @@ export enum ToastVariants {
   Plain = 'Plain',
   Account = 'Account',
   Network = 'Network',
+  App = 'App',
+  Icon = 'Icon',
 }
 
 /**
@@ -21,6 +26,13 @@ export type ToastLabelOptions = {
   label: string;
   isBold?: boolean;
 }[];
+
+/**
+ * Options for the description text in the toast.
+ */
+export interface ToastDescriptionOptions {
+  description: string;
+}
 
 /**
  * Options for displaying a Link in the toast.
@@ -35,9 +47,32 @@ export interface ToastLinkButtonOptions {
  */
 interface BaseToastVariants {
   hasNoTimeout: boolean;
+  /**
+   * How long the toast stays visible before auto-dismiss, in milliseconds.
+   * Ignored when `hasNoTimeout` is true. Defaults to the shared toast duration.
+   */
+  timeoutMs?: number;
   labelOptions: ToastLabelOptions;
+  descriptionOptions?: ToastDescriptionOptions;
   linkButtonOptions?: ToastLinkButtonOptions;
-  closeButtonOptions?: ButtonProps;
+  closeButtonOptions?: ToastCloseButtonOptions;
+  startAccessory?: ReactElement;
+  /** Extra offset from the top of the screen (below the safe area). */
+  customTopOffset?: number;
+  /**
+   * @deprecated Use `customTopOffset`. Previously applied offset from the bottom;
+   * retained for backward compatibility during top-placement migration.
+   */
+  customBottomOffset?: number;
+  onPress?: () => void;
+}
+
+export type ToastCloseButtonOptions =
+  | ButtonProps
+  | (ButtonIconProps & { variant: ButtonIconVariant });
+
+export enum ButtonIconVariant {
+  Icon = 'Icon',
 }
 
 /**
@@ -66,12 +101,29 @@ interface NetworkToastOption extends BaseToastVariants {
 }
 
 /**
+ * App toast option.
+ */
+interface AppToastOption extends BaseToastVariants {
+  variant: ToastVariants.App;
+  appIconSource: ImageSourcePropType;
+}
+
+interface IconToastOption extends BaseToastVariants {
+  variant: ToastVariants.Icon;
+  iconName: IconName;
+  iconColor?: string;
+  backgroundColor?: string;
+}
+
+/**
  * Different toast options combined in a union type.
  */
 export type ToastOptions =
   | PlainToastOption
   | AccountToastOption
-  | NetworkToastOption;
+  | NetworkToastOption
+  | AppToastOption
+  | IconToastOption;
 
 /**
  * Toast component reference.
@@ -85,5 +137,5 @@ export interface ToastRef {
  * Toast context parameters.
  */
 export interface ToastContextParams {
-  toastRef: React.RefObject<ToastRef> | undefined;
+  toastRef: React.RefObject<ToastRef | null> | undefined;
 }

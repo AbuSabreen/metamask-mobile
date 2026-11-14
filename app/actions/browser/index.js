@@ -3,6 +3,7 @@
  */
 export const BrowserActionTypes = {
   ADD_TO_VIEWED_DAPP: 'ADD_TO_VIEWED_DAPP',
+  TOGGLE_FULLSCREEN: 'TOGGLE_FULLSCREEN',
 };
 
 /**
@@ -36,10 +37,12 @@ export function addToHistory({ url, name }) {
 /**
  * Clears the entire browser history
  */
-export function clearHistory() {
+export function clearHistory(metricsEnabled, marketingEnabled) {
   return {
     type: 'CLEAR_BROWSER_HISTORY',
     id: Date.now(),
+    metricsEnabled,
+    marketingEnabled,
   };
 }
 
@@ -68,11 +71,13 @@ export function closeAllTabs() {
  * Creates a new tab
  *
  * @param {string} url - The website's url
+ * @param {string} linkType - optional link type
  */
-export function createNewTab(url) {
+export function createNewTab(url, linkType) {
   return {
     type: 'CREATE_NEW_TAB',
     url,
+    linkType,
     id: Date.now(),
   };
 }
@@ -105,7 +110,7 @@ export function setActiveTab(id) {
  * Selects an exiting tab
  *
  * @param {number} id - The Tab ID
- * @param {string} url - The website's url
+ * @param {Object} data - { isArchived: boolean, url: string, image: string }
  */
 export function updateTab(id, data) {
   return {
@@ -127,5 +132,16 @@ export function storeFavicon({ origin, url }) {
     type: 'STORE_FAVICON_URL',
     origin,
     url,
+  };
+}
+
+/**
+ * Toggles fullscreen mode for the browser
+ * @returns {{type: string}}
+ */
+export function toggleFullscreen(isFullscreen) {
+  return {
+    type: BrowserActionTypes.TOGGLE_FULLSCREEN,
+    isFullscreen,
   };
 }

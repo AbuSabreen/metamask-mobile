@@ -1,0 +1,326 @@
+import { containsErrorMessage } from '../../util/errorHandling';
+import { UnlockWalletErrorType } from './types';
+import { MIN_PASSWORD_LENGTH, UNLOCK_WALLET_ERROR_MESSAGES } from './constants';
+import { SeedlessOnboardingControllerError } from '../Engine/controllers/seedless-onboarding-controller/error';
+import { AuthenticationType } from 'expo-local-authentication';
+import { Platform } from 'react-native';
+import AUTHENTICATION_TYPE from '../../constants/userProperties';
+import { IconName } from '@metamask/design-system-react-native';
+
+/**
+ * Matches errors from react-native-keychain on Android (`ResultHandlerInteractiveBiometric`):
+ * `CryptoFailedException("code: $errorCode, msg: $errString")`.
+ */
+const ANDROID_KEYCHAIN_BIOMETRIC_USER_CANCEL_REGEX =
+  /code:\s*(?:5|10|13)\s*,\s*msg:/i;
+
+const ANDROID_KEYCHAIN_BIOMETRIC_LOCKOUT_REGEX = /code:\s*7\s*,\s*msg:/i;
+
+/**
+ * @param error - Error thrown during biometric unlock (SecureKeychain / react-native-keychain).
+ * @returns Whether the error is an Android keychain-formatted user cancellation.
+ */
+export const isAndroidKeychainBiometricUserCancellation = (
+  error: Error,
+): boolean => {
+  const message = error.message || error.toString();
+  return ANDROID_KEYCHAIN_BIOMETRIC_USER_CANCEL_REGEX.test(message);
+};
+
+/**
+ * @param error - Error thrown during biometric unlock (SecureKeychain / react-native-keychain).
+ * @returns Whether the error is an Android keychain-formatted biometric lockout (too many attempts).
+ */
+export const isAndroidKeychainBiometricLockout = (error: Error): boolean => {
+  const message = error.message || error.toString();
+  return (
+    ANDROID_KEYCHAIN_BIOMETRIC_LOCKOUT_REGEX.test(message) ||
+    containsErrorMessage(
+      error,
+      UNLOCK_WALLET_ERROR_MESSAGES.ANDROID_BIOMETRIC_LOCKOUT,
+    )
+  );
+};
+
+/**
+ * iOS LocalAuthentication/expo-local-authentication user cancel.
+ */
+export const isIosUserCancelledBiometricUnlock = (error: Error): boolean =>
+  containsErrorMessage(
+    error,
+    UNLOCK_WALLET_ERROR_MESSAGES.IOS_USER_CANCELLED_BIOMETRICS,
+  );
+
+/**
+ * Android legacy cancel.
+ */
+export const isAndroidLegacyBiometricOrPinCancel = (error: Error): boolean =>
+  containsErrorMessage(error, UNLOCK_WALLET_ERROR_MESSAGES.ANDROID_PIN_DENIED);
+
+/**
+ * User dismissed the biometric/device-auth prompt on Android/iOS
+ */
+export const isBiometricUnlockCancelledByUser = (error: Error): boolean =>
+  isAndroidKeychainBiometricUserCancellation(error) ||
+  isIosUserCancelledBiometricUnlock(error) ||
+  isAndroidLegacyBiometricOrPinCancel(error);
+
+/**
+ * Classifies a password submission error into a verbose UnlockWalletErrorType,
+ * without throwing. Does not handle SeedlessOnboardingControllerError, which
+ * callers should check for separately since it propagates as-is.
+ *
+ * @param error - The error to classify.
+ * @returns The UnlockWalletErrorType bucket the error falls into.
+ */
+export const classifyUnlockError = (error: Error): UnlockWalletErrorType => {
+  if (
+    containsErrorMessage(error, UNLOCK_WALLET_ERROR_MESSAGES.WRONG_PASSWORD) ||
+    containsErrorMessage(
+      error,
+      UNLOCK_WALLET_ERROR_MESSAGES.ANDROID_WRONG_PASSWORD,
+    ) ||
+    containsErrorMessage(
+      error,
+      UNLOCK_WALLET_ERROR_MESSAGES.ANDROID_WRONG_PASSWORD_2,
+    )
+  ) {
+    // Invalid password.
+    return UnlockWalletErrorType.INVALID_PASSWORD;
+  } else if (
+    containsErrorMessage(error, UNLOCK_WALLET_ERROR_MESSAGES.PASSCODE_NOT_SET)
+  ) {
+    // Password is not set. Is this an empty password?
+    return UnlockWalletErrorType.PASSWORD_NOT_SET;
+  } else if (
+    containsErrorMessage(
+      error,
+      UNLOCK_WALLET_ERROR_MESSAGES.IOS_USER_CANCELLED_BIOMETRICS,
+    )
+  ) {
+    // User cancelled biometrics.
+    return UnlockWalletErrorType.IOS_USER_CANCELLED_BIOMETRICS;
+  } else if (
+    containsErrorMessage(error, UNLOCK_WALLET_ERROR_MESSAGES.ANDROID_PIN_DENIED)
+  ) {
+    // Pin code denied.
+    return UnlockWalletErrorType.ANDROID_PIN_DENIED;
+  } else if (
+    containsErrorMessage(
+      error,
+      UNLOCK_WALLET_ERROR_MESSAGES.PREVIOUS_VAULT_NOT_FOUND,
+    ) ||
+    containsErrorMessage(error, UNLOCK_WALLET_ERROR_MESSAGES.JSON_PARSE_ERROR)
+  ) {
+    // Vault corruption detected.
+    return UnlockWalletErrorType.VAULT_CORRUPTION;
+  } else if (
+    containsErrorMessage(
+      error,
+      UNLOCK_WALLET_ERROR_MESSAGES.USER_NOT_AUTHENTICATED,
+    )
+  ) {
+    // OS reports the stored biometric/keychain credential is no longer usable.
+    return UnlockWalletErrorType.USER_NOT_AUTHENTICATED;
+  }
+  // Other password submission errors.
+  return UnlockWalletErrorType.UNRECOGNIZED_ERROR;
+};
+
+/**
+ * Handles password submission errors by throwing the appropriate error.
+ *
+ * @param error - The error to handle.
+ * @returns - void
+ */
+export const handlePasswordSubmissionError = (error: Error) => {
+  const loginErrorMessage = error.message || error.toString();
+
+  if (error instanceof SeedlessOnboardingControllerError) {
+    // Detected seedless onboarding controller error. Propogate error.
+    throw error;
+  }
+
+  throw new Error(`${classifyUnlockError(error)}: ${loginErrorMessage}`);
+};
+
+/**
+ * Derives the auth type for keychain storage (what the system actually uses).
+ * Order: Remember Me > osAuthEnabled > legacy explicit choice > new tiered fallback (biometrics → passcode → password).
+ *
+ * @param params.allowLoginWithRememberMe - Legacy - Whether the user has enabled remember me
+ * @param params.osAuthEnabled - Whether the user has enabled os auth
+ * @param params.legacyUserChoseBiometrics - Legacy - Whether the user has chosen biometrics
+ * @param params.legacyUserChosePasscode - Legacy - Whether the user has chosen passcode
+ * @param params.isBiometricsAvailable - Whether the device has biometrics available
+ * @param params.passcodeAvailable - Whether the device has passcode available
+ * @returns The AUTHENTICATION_TYPE to use for keychain/auth
+ */
+export const getAuthType = ({
+  allowLoginWithRememberMe,
+  osAuthEnabled,
+  legacyUserChoseBiometrics,
+  legacyUserChosePasscode,
+  isBiometricsAvailable,
+  passcodeAvailable,
+}: {
+  allowLoginWithRememberMe: boolean;
+  osAuthEnabled: boolean;
+  legacyUserChoseBiometrics: boolean;
+  legacyUserChosePasscode: boolean;
+  isBiometricsAvailable: boolean;
+  passcodeAvailable: boolean;
+}): AUTHENTICATION_TYPE => {
+  // Legacy condition
+  if (allowLoginWithRememberMe) {
+    return AUTHENTICATION_TYPE.REMEMBER_ME;
+  }
+  if (!osAuthEnabled) {
+    return AUTHENTICATION_TYPE.PASSWORD;
+  }
+  // Legacy condition
+  if (legacyUserChoseBiometrics) {
+    return isBiometricsAvailable
+      ? AUTHENTICATION_TYPE.BIOMETRIC
+      : AUTHENTICATION_TYPE.PASSWORD;
+  }
+  // Legacy condition
+  if (legacyUserChosePasscode) {
+    return passcodeAvailable
+      ? AUTHENTICATION_TYPE.PASSCODE
+      : AUTHENTICATION_TYPE.PASSWORD;
+  }
+  if (isBiometricsAvailable) {
+    return AUTHENTICATION_TYPE.BIOMETRIC;
+  }
+  if (passcodeAvailable) {
+    return AUTHENTICATION_TYPE.PASSCODE;
+  }
+  return AUTHENTICATION_TYPE.PASSWORD;
+};
+
+/**
+ * Gets the i18n key for the authentication label based on supported biometric types.
+ *
+ * iOS: remember_me | face_id | touch_id | device_passcode | device_authentication | password
+ * Android: remember_me | device_authentication | password
+ *
+ * @param params.supportedBiometricTypes - The supported biometric types
+ * @param params.allowLoginWithRememberMe - Legacy - Whether the user has enabled remember me
+ * @param params.legacyUserChoseBiometrics - Legacy - Whether the user has chosen biometrics
+ * @param params.legacyUserChosePasscode - Legacy - Whether the user has chosen passcode
+ * @param params.isBiometricsAvailable - Whether the device has biometrics available
+ * @param params.passcodeAvailable - Whether the device has passcode available
+ * @returns The i18n key for the authentication type label
+ */
+export const getAuthLabel = ({
+  supportedBiometricTypes,
+  allowLoginWithRememberMe,
+  legacyUserChoseBiometrics,
+  legacyUserChosePasscode,
+  isBiometricsAvailable,
+  passcodeAvailable,
+}: {
+  supportedBiometricTypes: AuthenticationType[];
+  allowLoginWithRememberMe: boolean;
+  legacyUserChoseBiometrics: boolean;
+  legacyUserChosePasscode: boolean;
+  isBiometricsAvailable: boolean;
+  passcodeAvailable: boolean;
+}): string => {
+  if (allowLoginWithRememberMe) {
+    return 'authentication.labels.remember_me';
+  }
+  if (legacyUserChoseBiometrics) {
+    // Show explicit authentication type for legacy biometrics
+    if (Platform.OS === 'ios') {
+      if (
+        supportedBiometricTypes.includes(AuthenticationType.FACIAL_RECOGNITION)
+      ) {
+        return 'authentication.labels.face_id';
+      }
+      if (supportedBiometricTypes.includes(AuthenticationType.FINGERPRINT)) {
+        return 'authentication.labels.touch_id';
+      }
+    }
+    return 'authentication.labels.device_authentication';
+  }
+  if (legacyUserChosePasscode) {
+    // Show explicit authentication type for legacy passcode
+    return Platform.OS === 'ios'
+      ? 'authentication.labels.device_passcode'
+      : 'authentication.labels.device_authentication';
+  }
+  if (isBiometricsAvailable || passcodeAvailable) {
+    // Modernized authentication access allows for both biometrics and passcode
+    // Here we return the generic device authentication label since the system will handle access control
+    return 'authentication.labels.device_authentication';
+  }
+  return 'login.password';
+};
+
+/**
+ * Gets the icon name for the available device auth tier.
+ *
+ * @param params.supportedBiometricTypes - The supported biometric types
+ * @param params.legacyUserChoseBiometrics - Legacy - Whether the user has chosen biometrics
+ * @param params.legacyUserChosePasscode - Legacy - Whether the user has chosen passcode
+ * @param params.isBiometricsAvailable - Whether the device has biometrics available
+ * @param params.passcodeAvailable - Whether the device has passcode available
+ * @returns The icon name for the available device auth tier
+ */
+export const getAuthIcon = ({
+  supportedBiometricTypes,
+  legacyUserChoseBiometrics,
+  legacyUserChosePasscode,
+  isBiometricsAvailable,
+  passcodeAvailable,
+}: {
+  supportedBiometricTypes: AuthenticationType[];
+  legacyUserChoseBiometrics: boolean;
+  legacyUserChosePasscode: boolean;
+  isBiometricsAvailable: boolean;
+  passcodeAvailable: boolean;
+}): IconName => {
+  const getIosBiometricIcon = (): IconName => {
+    if (
+      supportedBiometricTypes.includes(AuthenticationType.FACIAL_RECOGNITION)
+    ) {
+      return IconName.FaceId;
+    }
+    if (supportedBiometricTypes.includes(AuthenticationType.FINGERPRINT)) {
+      return IconName.Fingerprint;
+    }
+    return IconName.Lock;
+  };
+
+  if (Platform.OS === 'ios') {
+    if (legacyUserChoseBiometrics) {
+      // Show explicit authentication type for legacy biometrics
+      return getIosBiometricIcon();
+    }
+    if (legacyUserChosePasscode) {
+      // Show explicit authentication type for legacy passcode
+      return IconName.Lock;
+    }
+    if (isBiometricsAvailable) {
+      // Modernized authentication access allows for both biometrics and passcode
+      return getIosBiometricIcon();
+    }
+    if (passcodeAvailable) {
+      return IconName.Lock;
+    }
+  }
+
+  // Android and iOS fallback shows "Lock" icon
+  return IconName.Lock;
+};
+
+/**
+ * Checks if the password meets the minimum length requirement
+ *
+ * @param password - The password to check
+ * @returns - boolean indicating if the password meets the requirements
+ */
+export const checkPasswordRequirement = (password: string) =>
+  password.length >= MIN_PASSWORD_LENGTH;

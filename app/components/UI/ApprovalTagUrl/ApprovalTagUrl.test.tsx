@@ -1,0 +1,57 @@
+import React from 'react';
+import renderWithProvider from '../../../util/test/renderWithProvider';
+import ApprovalTagUrl, { APPROVAL_TAG_URL_ORIGIN_PILL } from './ApprovalTagUrl';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { INTERNAL_ORIGINS } from '../../../constants/transaction';
+
+const DOMAIN_MOCK = 'metamask.github.io';
+
+const mockInitialState = {
+  settings: {},
+  engine: {
+    backgroundState: {
+      ...backgroundState,
+    },
+  },
+};
+
+describe('ApprovalTagUrl', () => {
+  it('renders correctly', () => {
+    const { getByTestId } = renderWithProvider(
+      <ApprovalTagUrl
+        origin={DOMAIN_MOCK}
+        url={`https://${DOMAIN_MOCK}/test-dapp/mock-url-query`}
+        sdkDappMetadata={{ url: '', icon: '' }}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(getByTestId(APPROVAL_TAG_URL_ORIGIN_PILL)).toBeDefined();
+  });
+
+  it('does not render when origin is an internal origin', () => {
+    const { queryByTestId } = renderWithProvider(
+      <ApprovalTagUrl
+        origin={INTERNAL_ORIGINS[0]}
+        url={`https://${INTERNAL_ORIGINS[0]}`}
+        sdkDappMetadata={{ url: '', icon: '' }}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(queryByTestId(APPROVAL_TAG_URL_ORIGIN_PILL)).toBeNull();
+  });
+
+  it('renders origin when only origin is provided', () => {
+    const { getByTestId } = renderWithProvider(
+      <ApprovalTagUrl
+        origin={DOMAIN_MOCK}
+        url=""
+        sdkDappMetadata={{ url: '', icon: '' }}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(getByTestId(APPROVAL_TAG_URL_ORIGIN_PILL)).toBeDefined();
+  });
+});

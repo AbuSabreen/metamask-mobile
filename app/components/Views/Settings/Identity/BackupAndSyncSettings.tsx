@@ -1,0 +1,57 @@
+import React, { useCallback } from 'react';
+
+import { ScrollView } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import { useTheme } from '../../../../util/theme';
+import { useStyles } from '../../../../component-library/hooks';
+import styleSheet from './BackupAndSyncSettings.styles';
+import BackupAndSyncToggle from '../../../UI/Identity/BackupAndSyncToggle/BackupAndSyncToggle';
+import BackupAndSyncFeaturesToggles from '../../../UI/Identity/BackupAndSyncFeaturesToggles/BackupAndSyncFeaturesToggles';
+import { strings } from '../../../../../locales/i18n';
+import { CommonSelectorsIDs } from '../../../../util/Common.testIds';
+import { BackupAndSyncSettingsSelectorsIDs } from './BackupAndSyncSettings.testIds';
+import { useSelector } from 'react-redux';
+import HeaderStandardGlass from '../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../selectors/featureFlagController/glassHeaders';
+
+const BackupAndSyncSettings = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const tw = useTailwind();
+  const navigation = useNavigation<AppNavigationProp>();
+  const theme = useTheme();
+  const { styles } = useStyles(styleSheet, { theme });
+
+  const handleBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  return (
+    <SafeAreaView
+      edges={{ bottom: 'additive' }}
+      style={tw.style('flex-1 bg-default')}
+      testID={BackupAndSyncSettingsSelectorsIDs.SAFE_AREA}
+    >
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        title={strings('backupAndSync.title')}
+        onBack={handleBack}
+        includesTopInset
+        testID={BackupAndSyncSettingsSelectorsIDs.HEADER}
+        backButtonProps={{
+          testID: CommonSelectorsIDs.BACK_ARROW_BUTTON,
+        }}
+      />
+      <ScrollView style={styles.wrapper}>
+        <BackupAndSyncToggle />
+        <BackupAndSyncFeaturesToggles />
+      </ScrollView>
+    </SafeAreaView>
+  );
+};
+
+export default BackupAndSyncSettings;

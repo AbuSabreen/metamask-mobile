@@ -1,0 +1,670 @@
+import Engine from '../Engine';
+import Logger from '../../util/Logger';
+import {
+  trace,
+  endTrace,
+  TraceName,
+  TraceOperation,
+  TraceContext,
+} from '../../util/trace';
+import { whenEngineReady } from '../../util/analytics/whenEngineReady';
+import { isE2EMockOAuth } from '../../util/environment';
+
+import {
+  HandleOAuthLoginResult,
+  AuthConnection,
+  AuthResponse,
+  OAuthLoginResultType,
+  LoginHandlerResult,
+} from './OAuthInterface';
+import { getSocialAccountType } from '../../constants/onboarding';
+import {
+  Web3AuthNetwork,
+  AuthConnection as SeedlessAuthConnection,
+} from '@metamask/seedless-onboarding-controller';
+import {
+  AuthConnectionConfig,
+  AuthServerUrl,
+  web3AuthNetwork as currentWeb3AuthNetwork,
+  SupportedPlatforms,
+  AUTH_SERVER_MARKETING_OPT_IN_PATH,
+  GoogleWebGID,
+} from './OAuthLoginHandlers/constants';
+import { QAMockOAuthService } from './QAMockOAuthService';
+import {
+  OAuthError,
+  OAuthErrorType,
+  isSocialLoginAuthSessionDismissed,
+} from './error';
+import { BaseLoginHandler } from './OAuthLoginHandlers/baseHandler';
+import { Platform } from 'react-native';
+import { signOut as acmSignOut } from '@metamask/react-native-acm';
+import {
+  SeedlessOnboardingControllerError,
+  SeedlessOnboardingControllerErrorType,
+} from '../Engine/controllers/seedless-onboarding-controller/error';
+import { analytics } from '../../util/analytics/analytics';
+import { AnalyticsEventBuilder } from '../../util/analytics/AnalyticsEventBuilder';
+import { MetaMetricsEvents } from '../Analytics/MetaMetrics.events';
+import {
+  shouldAttemptAndroidGoogleBrowserFallback,
+  trackSocialLoginFailed,
+} from './socialLoginAnalytics';
+import {
+  getOAuthBackgroundAnalyticsProperties,
+  OAUTH_RESUME_OUTCOME,
+} from './oauthLifecycleTracking';
+import ReduxService from '../redux';
+import { setSeedlessOnboarding } from '../../actions/onboarding';
+import Device from '../../util/device';
+
+export interface MarketingOptInRequest {
+  opt_in_status: boolean;
+}
+
+export interface MarketingOptInResponse {
+  is_opt_in: boolean;
+}
+
+export interface OAuthServiceConfig {
+  authConnectionConfig: {
+    [key in SupportedPlatforms]: {
+      [key1 in AuthConnection]: {
+        authConnectionId: string;
+        groupedAuthConnectionId?: string;
+      };
+    };
+  };
+  web3AuthNetwork: Web3AuthNetwork;
+  authServerUrl: string;
+}
+
+const getAuthConnectionIdFromClientId = (params: {
+  clientId: string;
+  authConnection: AuthConnection;
+  authConnectionConfig: OAuthServiceConfig['authConnectionConfig'];
+}): { authConnectionId: string; groupedAuthConnectionId?: string } => {
+  const { clientId, authConnection, authConnectionConfig } = params;
+
+  if (Device.isAndroid() || clientId === GoogleWebGID) {
+    return authConnectionConfig[SupportedPlatforms.Android][authConnection];
+  }
+  return authConnectionConfig[SupportedPlatforms.IOS][authConnection];
+};
+
+interface OAuthServiceLocalState {
+  userId?: string;
+  accountName?: string;
+  loginInProgress: boolean;
+  oauthLoginSuccess: boolean;
+  oauthLoginError: string | null;
+  userClickedRehydration?: boolean;
+}
+export class OAuthService {
+  public localState: OAuthServiceLocalState;
+
+  public config: OAuthServiceConfig;
+
+  constructor(config: OAuthServiceConfig) {
+    const { authServerUrl, web3AuthNetwork, authConnectionConfig } = config;
+    this.localState = {
+      loginInProgress: false,
+      userId: undefined,
+      accountName: undefined,
+      oauthLoginSuccess: false,
+      oauthLoginError: null,
+    };
+    this.config = {
+      authConnectionConfig,
+      web3AuthNetwork,
+      authServerUrl,
+    };
+  }
+
+  #dispatchLogin = () => {
+    this.resetOauthState();
+
+    this.updateLocalState({
+      loginInProgress: true,
+    });
+  };
+
+  #dispatchPostLogin = (result: HandleOAuthLoginResult) => {
+    const stateToUpdate: Partial<OAuthService['localState']> = {
+      loginInProgress: false,
+    };
+    if (result.type === OAuthLoginResultType.SUCCESS) {
+      stateToUpdate.oauthLoginSuccess = true;
+      stateToUpdate.oauthLoginError = null;
+    } else {
+      stateToUpdate.oauthLoginSuccess = false;
+      stateToUpdate.oauthLoginError = result.error;
+    }
+    this.updateLocalState(stateToUpdate);
+
+    // move dispatch loading false to onboarding view
+  };
+
+  handleSeedlessAuthenticate = async (
+    data: AuthResponse,
+    authConnection: AuthConnection,
+    clientId: string,
+  ): Promise<HandleOAuthLoginResult> => {
+    try {
+      const { userId, accountName } = this.localState;
+
+      if (!userId) {
+        throw new Error('No user id found');
+      }
+
+      const authConnectionConfig = getAuthConnectionIdFromClientId({
+        clientId,
+        authConnection,
+        authConnectionConfig: this.config.authConnectionConfig,
+      });
+
+      if (!authConnectionConfig) {
+        throw new SeedlessOnboardingControllerError(
+          SeedlessOnboardingControllerErrorType.AuthenticationError,
+          `No auth connection config found for ${authConnection}`,
+        );
+      }
+
+      const refreshToken = data.refresh_token;
+      const revokeToken = data.revoke_token;
+
+      if (!refreshToken) {
+        throw new SeedlessOnboardingControllerError(
+          SeedlessOnboardingControllerErrorType.AuthenticationError,
+          'No refresh token found',
+        );
+      }
+
+      if (!revokeToken) {
+        throw new SeedlessOnboardingControllerError(
+          SeedlessOnboardingControllerErrorType.AuthenticationError,
+          'No revoke token found',
+        );
+      }
+
+      await whenEngineReady();
+
+      const result =
+        await Engine.context.SeedlessOnboardingController.authenticate({
+          idTokens: [data.id_token],
+          authConnection: authConnection as unknown as SeedlessAuthConnection,
+          authConnectionId: authConnectionConfig.authConnectionId,
+          groupedAuthConnectionId: authConnectionConfig.groupedAuthConnectionId,
+          userId,
+          socialLoginEmail: accountName,
+          refreshToken,
+          revokeToken,
+          accessToken: data.access_token,
+          metadataAccessToken: data.metadata_access_token,
+        });
+      Logger.log(
+        'handleCodeFlow: success seedless authenticate. isNewUser',
+        result.isNewUser,
+      );
+      return {
+        type: OAuthLoginResultType.SUCCESS,
+        existingUser: !result.isNewUser,
+        accountName,
+      };
+    } catch (error) {
+      Logger.log(error as Error, {
+        message: 'handleCodeFlow',
+      });
+      throw error;
+    }
+  };
+
+  #handleMockOAuthLogin = async (
+    loginHandler: BaseLoginHandler,
+  ): Promise<HandleOAuthLoginResult> => {
+    const loginResult = await loginHandler.login();
+    const mockEmail = (loginResult as unknown as Record<string, unknown>)
+      ?.email as string | undefined;
+
+    const { data, userId, accountName } =
+      await QAMockOAuthService.exchangeTokens(
+        loginHandler,
+        global.fetch,
+        mockEmail,
+      );
+
+    this.updateLocalState({ userId, accountName });
+
+    const result = await this.handleSeedlessAuthenticate(
+      data,
+      loginHandler.authConnection,
+      loginHandler.options.clientId,
+    );
+
+    this.#dispatchPostLogin(result);
+
+    ReduxService.store.dispatch(
+      setSeedlessOnboarding({
+        clientId: loginHandler.options.clientId,
+        authConnection: loginHandler.authConnection,
+      }),
+    );
+
+    return result;
+  };
+
+  #handleOAuthLoginMockPath = async (
+    loginHandler: BaseLoginHandler,
+  ): Promise<HandleOAuthLoginResult> => {
+    try {
+      return await this.#handleMockOAuthLogin(loginHandler);
+    } catch (error) {
+      Logger.log(error as Error, {
+        message: 'handleOAuthLogin E2E_MOCK_OAUTH',
+      });
+      this.#dispatchPostLogin({
+        type: OAuthLoginResultType.ERROR,
+        existingUser: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      if (error instanceof OAuthError) {
+        throw error;
+      }
+      throw new OAuthError(
+        error instanceof Error ? error : 'Unknown error',
+        OAuthErrorType.LoginError,
+      );
+    }
+  };
+
+  #handleOAuthLoginProductionPath = async (
+    loginHandler: BaseLoginHandler,
+    web3AuthNetwork: Web3AuthNetwork,
+    parentTraceContext?: TraceContext,
+  ): Promise<HandleOAuthLoginResult> => {
+    try {
+      let data: AuthResponse, handleCodeFlowResult: HandleOAuthLoginResult;
+
+      // Node details are independent of the OAuth result and are required by
+      // SeedlessOnboardingController.authenticate(). Start loading them while
+      // the user completes provider login and the auth-token exchange.
+      const preloadToprfNodeDetailsPromise = whenEngineReady()
+        .then(() =>
+          Engine.context.SeedlessOnboardingController.preloadToprfNodeDetails(),
+        )
+        .catch((error) => {
+          Logger.log(error as Error, {
+            message: 'Failed to preload TOPRF node details',
+          });
+        });
+
+      const result = await this.#executeProviderLogin(
+        loginHandler,
+        parentTraceContext,
+      );
+      const authConnection = loginHandler.authConnection;
+
+      Logger.log('handleOAuthLogin: before getAuthToken');
+
+      if (result) {
+        let getAuthTokensSuccess = false;
+        try {
+          trace({
+            name: TraceName.OnboardingOAuthBYOAServerGetAuthTokens,
+            op: TraceOperation.OnboardingSecurityOp,
+            parentContext: parentTraceContext,
+          });
+          data = await loginHandler.getAuthTokens(
+            { ...result, web3AuthNetwork },
+            this.config.authServerUrl,
+          );
+          if (!data.id_token) {
+            throw new OAuthError('No token found', OAuthErrorType.LoginError);
+          }
+          getAuthTokensSuccess = true;
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Unknown error';
+
+          trace({
+            name: TraceName.OnboardingOAuthBYOAServerGetAuthTokensError,
+            op: TraceOperation.OnboardingError,
+            tags: { errorMessage },
+            parentContext: parentTraceContext,
+          });
+          endTrace({
+            name: TraceName.OnboardingOAuthBYOAServerGetAuthTokensError,
+          });
+
+          trackSocialLoginFailed({
+            authConnection,
+            isRehydration: this.localState.userClickedRehydration,
+            errorCategory: 'get_auth_tokens',
+            error,
+          });
+
+          throw error;
+        } finally {
+          endTrace({
+            name: TraceName.OnboardingOAuthBYOAServerGetAuthTokens,
+            data: { success: getAuthTokensSuccess },
+          });
+        }
+
+        const { userId, accountName } = loginHandler.getUserInfo(data);
+
+        this.updateLocalState({
+          userId,
+          accountName,
+        });
+
+        let seedlessAuthSuccess = false;
+        try {
+          // Wait for the original preload request before authenticating so a
+          // cold cache does not issue a duplicate node-details request.
+          await preloadToprfNodeDetailsPromise;
+
+          trace({
+            name: TraceName.OnboardingOAuthSeedlessAuthenticate,
+            op: TraceOperation.OnboardingSecurityOp,
+            parentContext: parentTraceContext,
+          });
+          handleCodeFlowResult = await this.handleSeedlessAuthenticate(
+            data,
+            authConnection,
+            result.clientId,
+          );
+          seedlessAuthSuccess = true;
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Unknown error';
+
+          trace({
+            name: TraceName.OnboardingOAuthSeedlessAuthenticateError,
+            op: TraceOperation.OnboardingError,
+            tags: { errorMessage },
+            parentContext: parentTraceContext,
+          });
+          endTrace({
+            name: TraceName.OnboardingOAuthSeedlessAuthenticateError,
+          });
+
+          trackSocialLoginFailed({
+            authConnection,
+            isRehydration: this.localState.userClickedRehydration,
+            errorCategory: 'seedless_auth',
+            error,
+          });
+
+          throw error;
+        } finally {
+          endTrace({
+            name: TraceName.OnboardingOAuthSeedlessAuthenticate,
+            data: { success: seedlessAuthSuccess },
+          });
+        }
+
+        this.#dispatchPostLogin(handleCodeFlowResult);
+
+        // store client id and auth connection in redux
+        ReduxService.store.dispatch(
+          setSeedlessOnboarding({
+            clientId: result.clientId,
+            authConnection: loginHandler.authConnection,
+          }),
+        );
+        return handleCodeFlowResult;
+      }
+      throw new OAuthError('No result', OAuthErrorType.LoginError);
+    } catch (error) {
+      Logger.log(error as Error, {
+        message: 'handleOAuthLogin',
+      });
+      this.#dispatchPostLogin({
+        type: OAuthLoginResultType.ERROR,
+        existingUser: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      if (error instanceof OAuthError) {
+        throw error;
+      }
+      throw new OAuthError(
+        error instanceof Error ? error : 'Unknown error',
+        OAuthErrorType.LoginError,
+      );
+    }
+  };
+
+  #trackSocialLoginAuthBrowserDismissed = ({
+    authConnection,
+    elapsedMs,
+  }: {
+    authConnection: AuthConnection;
+    elapsedMs: number;
+  }) => {
+    const isRehydration = this.localState.userClickedRehydration === true;
+    const properties = {
+      auth_connection: authConnection,
+      account_type: getSocialAccountType(authConnection, isRehydration),
+      surface: isRehydration ? 'rehydration' : 'onboarding',
+      elapsed_ms: elapsedMs,
+      ...getOAuthBackgroundAnalyticsProperties(OAUTH_RESUME_OUTCOME.DISMISSED),
+    };
+
+    analytics.trackEvent(
+      AnalyticsEventBuilder.createEventBuilder(
+        MetaMetricsEvents.SOCIAL_LOGIN_AUTH_BROWSER_DISMISSED,
+      )
+        .addProperties(properties)
+        .build(),
+    );
+  };
+
+  #executeProviderLogin = async (
+    loginHandler: BaseLoginHandler,
+    parentTraceContext?: TraceContext,
+  ): Promise<LoginHandlerResult> => {
+    let providerLoginSuccess = false;
+    const providerLoginStartedAt = Date.now();
+    try {
+      trace({
+        name: TraceName.OnboardingOAuthProviderLogin,
+        op: TraceOperation.OnboardingSecurityOp,
+        parentContext: parentTraceContext,
+      });
+      const loginResult = await loginHandler.login();
+      if (!loginResult) {
+        throw new OAuthError(
+          'Login handler return empty result',
+          OAuthErrorType.LoginError,
+        );
+      }
+      providerLoginSuccess = true;
+      return loginResult;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+
+      if (
+        !(
+          error instanceof OAuthError &&
+          (error.code === OAuthErrorType.UserCancelled ||
+            error.code === OAuthErrorType.UserDismissed)
+        )
+      ) {
+        trace({
+          name: TraceName.OnboardingOAuthProviderLoginError,
+          op: TraceOperation.OnboardingError,
+          tags: { errorMessage },
+          parentContext: parentTraceContext,
+        });
+        endTrace({ name: TraceName.OnboardingOAuthProviderLoginError });
+      }
+
+      if (isSocialLoginAuthSessionDismissed(error)) {
+        this.#trackSocialLoginAuthBrowserDismissed({
+          authConnection: loginHandler.authConnection,
+          elapsedMs: Date.now() - providerLoginStartedAt,
+        });
+      } else if (
+        !shouldAttemptAndroidGoogleBrowserFallback(
+          error,
+          loginHandler.authConnection,
+        )
+      ) {
+        // One Tap errors that retry in the browser must not emit Failed; the
+        // fallback attempt owns the terminal Completed / Failed / Dismissed.
+        trackSocialLoginFailed({
+          authConnection: loginHandler.authConnection,
+          isRehydration: this.localState.userClickedRehydration,
+          errorCategory: 'provider_login',
+          error,
+        });
+      }
+
+      throw error;
+    } finally {
+      endTrace({
+        name: TraceName.OnboardingOAuthProviderLogin,
+        data: { success: providerLoginSuccess },
+      });
+
+      if (
+        Platform.OS === 'android' &&
+        loginHandler.authConnection === AuthConnection.Google
+      ) {
+        acmSignOut().catch((e) =>
+          Logger.log(e, 'acmSignOut: failed to clear cached credential'),
+        );
+      }
+    }
+  };
+
+  handleOAuthLogin = async (
+    loginHandler: BaseLoginHandler,
+    userClickedRehydration: boolean,
+    // Optional onboarding trace context supplied by the UI. When present, the
+    // provider-login / get-auth-tokens / seedless-authenticate spans nest under
+    // it (the social-login attempt) instead of surfacing as disconnected root
+    // transactions in Sentry. Omitted by callers outside onboarding.
+    parentTraceContext?: TraceContext,
+  ): Promise<HandleOAuthLoginResult> => {
+    const web3AuthNetwork = this.config.web3AuthNetwork;
+
+    if (this.localState.loginInProgress) {
+      throw new OAuthError(
+        'Login already in progress',
+        OAuthErrorType.LoginInProgress,
+      );
+    }
+    this.updateLocalState({ userClickedRehydration });
+    this.#dispatchLogin();
+
+    if (isE2EMockOAuth()) {
+      return await this.#handleOAuthLoginMockPath(loginHandler);
+    }
+
+    return await this.#handleOAuthLoginProductionPath(
+      loginHandler,
+      web3AuthNetwork,
+      parentTraceContext,
+    );
+  };
+
+  updateLocalState = (newState: Partial<OAuthService['localState']>) => {
+    this.localState = {
+      ...this.localState,
+      ...newState,
+    };
+  };
+
+  getAuthDetails = () => ({
+    authConnectionConfig: this.config.authConnectionConfig,
+    userId: this.localState.userId,
+  });
+
+  clearAuthDetails = () => {
+    this.updateLocalState({
+      userId: undefined,
+      accountName: undefined,
+    });
+  };
+
+  resetOauthState = () => {
+    this.updateLocalState({
+      loginInProgress: false,
+      oauthLoginSuccess: false,
+      oauthLoginError: null,
+    });
+  };
+
+  private async getValidAccessToken(): Promise<string> {
+    await whenEngineReady();
+    const accessToken =
+      await Engine.context.SeedlessOnboardingController.getAccessToken();
+
+    if (!accessToken) {
+      throw new Error('No access token found. User must be authenticated.');
+    }
+
+    return accessToken;
+  }
+
+  updateMarketingOptInStatus = async (
+    marketingOptIn: boolean,
+  ): Promise<void> => {
+    const accessToken = await this.getValidAccessToken();
+    const requestBody: MarketingOptInRequest = {
+      opt_in_status: marketingOptIn,
+    };
+
+    const url = `${this.config.authServerUrl}${AUTH_SERVER_MARKETING_OPT_IN_PATH}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        `Failed to update marketing opt-in status: ${response.status} - ${
+          errorData.message || response.statusText
+        }`,
+      );
+    }
+  };
+
+  getMarketingOptInStatus = async (): Promise<MarketingOptInResponse> => {
+    const accessToken = await this.getValidAccessToken();
+    const url = `${this.config.authServerUrl}${AUTH_SERVER_MARKETING_OPT_IN_PATH}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        `Failed to get marketing opt-in status: ${response.status} - ${
+          errorData.message || response.statusText
+        }`,
+      );
+    }
+
+    const data: MarketingOptInResponse = await response.json();
+    return data;
+  };
+}
+
+export default new OAuthService({
+  web3AuthNetwork: currentWeb3AuthNetwork as Web3AuthNetwork,
+  authConnectionConfig: AuthConnectionConfig,
+  authServerUrl: AuthServerUrl,
+});

@@ -1,0 +1,294 @@
+import { getHostname } from 'tldts';
+import { SafeChain } from '../components/hooks/useSafeChains';
+import StorageWrapper from '../store/storage-wrapper';
+import Engine from '../core/Engine';
+import Logger from './Logger';
+
+// Cache for known domains
+let knownDomainsSet: Set<string> | null = null;
+let initPromise: Promise<void> | null = null;
+
+/**
+ * Get module state - encapsulates access to internal state
+ */
+export function getModuleState() {
+  return {
+    knownDomainsSet,
+    initPromise,
+    setKnownDomainsSet: (value: Set<string> | null) => {
+      knownDomainsSet = value;
+    },
+    setInitPromise: (value: Promise<void> | null) => {
+      initPromise = value;
+    },
+  };
+}
+
+const extractHostnames = (chains: SafeChain[]): Set<string> => {
+  const hostnames = new Set<string>();
+  for (const chain of chains) {
+    if (chain.rpc && Array.isArray(chain.rpc)) {
+      for (const rpcUrl of chain.rpc) {
+        const hostname = getHostname(rpcUrl);
+        if (hostname) {
+          hostnames.add(hostname);
+        }
+      }
+    }
+  }
+  return hostnames;
+};
+
+const RPC_DOMAINS_HOSTNAMES = {
+  key: 'RPC_DOMAINS_HOSTNAMES_CACHE',
+
+  set: async (hostnames: string[]): Promise<void> => {
+    await StorageWrapper.setItem(
+      RPC_DOMAINS_HOSTNAMES.key,
+      JSON.stringify(hostnames),
+    );
+  },
+
+  get: async (): Promise<string[] | null> => {
+    try {
+      const cachedHostnames = await StorageWrapper.getItem(
+        RPC_DOMAINS_HOSTNAMES.key,
+      );
+      if (!cachedHostnames) {
+        return null;
+      }
+      return JSON.parse(cachedHostnames) as string[];
+    } catch (error) {
+      Logger.log('Error parsing cached hostnames:', error);
+      return null;
+    }
+  },
+
+  computeAndSet: async (inputChains?: SafeChain[]): Promise<void> => {
+    try {
+      const chainsList =
+        inputChains ?? (await getSafeChainsListFromCacheOnly());
+      const hostnames = extractHostnames(chainsList);
+      const state = getModuleState();
+      state.setKnownDomainsSet(hostnames);
+      await RPC_DOMAINS_HOSTNAMES.set([...hostnames]);
+    } catch (error) {
+      Logger.log('Error computing and setting known domains:', error);
+    }
+  },
+
+  unsubscribeSafeChainsCache: null as (() => void) | null,
+  subscribeToSafeChainsCache(): void {
+    // Replace any previous subscriptions
+    RPC_DOMAINS_HOSTNAMES.unsubscribeSafeChainsCache?.();
+    RPC_DOMAINS_HOSTNAMES.unsubscribeSafeChainsCache =
+      StorageWrapper.onKeyChange('SAFE_CHAINS_CACHE', async (event) => {
+        try {
+          await RPC_DOMAINS_HOSTNAMES.computeAndSet(JSON.parse(event.value));
+        } catch (error) {
+          Logger.log('Error computing and setting known domains:', error);
+        }
+      });
+  },
+};
+
+/**
+ * Get the list of safe chains from cache only
+ * This allows us to use chain data without making network requests
+ */
+export async function getSafeChainsListFromCacheOnly(): Promise<SafeChain[]> {
+  try {
+    const cachedData = await StorageWrapper.getItem('SAFE_CHAINS_CACHE');
+    if (cachedData) {
+      try {
+        const parsed = JSON.parse(cachedData);
+        return parsed;
+      } catch (error) {
+        Logger.log('Error parsing cached chains data:', error);
+      }
+    }
+    return [];
+  } catch (error) {
+    Logger.log('Error retrieving chains list from cache:', error);
+    return [];
+  }
+}
+
+/**
+ * Initialize the set of known domains from the chains list
+ */
+export async function initializeRpcProviderDomains(): Promise<void> {
+  const state = getModuleState();
+  if (state.initPromise) {
+    return state.initPromise;
+  }
+  const promise = (async () => {
+    try {
+      // Hydrate from the persisted derived cache when possible
+      const persistedHostnames = await RPC_DOMAINS_HOSTNAMES.get();
+      if (persistedHostnames) {
+        state.setKnownDomainsSet(new Set<string>(persistedHostnames));
+      } else {
+        // Otherwise derive from the safe chains list now
+        await RPC_DOMAINS_HOSTNAMES.computeAndSet();
+      }
+    } catch (error) {
+      state.setKnownDomainsSet(new Set<string>());
+    } finally {
+      // Stay in sync whenever the safe chains list is refreshed, even
+      // when initialization failed (a later fetch heals the cache)
+      RPC_DOMAINS_HOSTNAMES.subscribeToSafeChainsCache();
+    }
+  })();
+
+  state.setInitPromise(promise);
+  return promise;
+}
+
+/**
+ * Get the current set of known domains
+ * @returns The set of known domains or null if not initialized
+ */
+export function getKnownDomains(): Set<string> | null {
+  return getModuleState().knownDomainsSet;
+}
+
+/**
+ * Check if a domain is in the known domains list
+ *
+ * @param domain - The domain to check
+ */
+export function isKnownDomain(domain: string): boolean {
+  const state = getModuleState();
+  return state.knownDomainsSet?.has(domain?.toLowerCase()) ?? false;
+}
+
+export const RpcDomainStatus = {
+  Invalid: 'invalid',
+  Private: 'private',
+  Unknown: 'unknown',
+} as const;
+
+export type RpcDomainStatus =
+  (typeof RpcDomainStatus)[keyof typeof RpcDomainStatus];
+
+/**
+ * Checks if an RPC endpoint URL has a valid public domain.
+ * Extracts the domain from the URL and verifies it's not private, invalid, or unknown.
+ *
+ * @param endpointUrl - The RPC endpoint URL to check
+ * @returns True if the URL has a valid public domain, false otherwise
+ */
+export function isPublicRpcDomain(endpointUrl: string): boolean {
+  const rpcDomain = extractRpcDomain(endpointUrl);
+  return !Object.values(RpcDomainStatus).includes(rpcDomain as RpcDomainStatus);
+}
+
+function parseDomain(url: string): string | null {
+  const normalizedUrl = url.includes('://') ? url : `https://${url}`;
+  return getHostname(normalizedUrl);
+}
+
+// Allowed provider domains for RPC endpoint validation
+const ALLOWED_PROVIDER_DOMAINS = new Set(['infura.io', 'alchemyapi.io']);
+
+/**
+ * Check if a hostname is an allowed provider domain or legitimate subdomain
+ * @param hostname - The hostname to check
+ * @returns True if the hostname is allowed, false otherwise
+ */
+function isAllowedProviderDomain(hostname: string): boolean {
+  // Check exact match first
+  if (ALLOWED_PROVIDER_DOMAINS.has(hostname)) {
+    return true;
+  }
+
+  // Check if it's a legitimate subdomain of any allowed domain
+  return [...ALLOWED_PROVIDER_DOMAINS].some((allowedDomain) =>
+    hostname.endsWith(`.${allowedDomain}`),
+  );
+}
+
+/**
+ * Extracts the domain from an RPC URL for analytics tracking
+ * @param rpcUrl - The RPC URL to extract domain from
+ * @returns The domain extracted from the URL, or "private" for non-known domains, or "invalid" for invalid URLs
+ */
+export function extractRpcDomain(rpcUrl: string): RpcDomainStatus | string {
+  const domain = parseDomain(rpcUrl);
+  if (!domain) {
+    return RpcDomainStatus.Invalid;
+  }
+
+  // Check if this is a known domain
+  if (isKnownDomain(domain)) {
+    return domain;
+  }
+
+  // Check if it's an allowed provider domain (Infura, Alchemy, etc.)
+  if (isAllowedProviderDomain(domain)) {
+    return domain;
+  }
+
+  // Special case for local/development nodes
+  if (domain === 'localhost' || domain === '127.0.0.1') {
+    return RpcDomainStatus.Private;
+  }
+
+  // For all other domains, return "private" for privacy
+  return RpcDomainStatus.Private;
+}
+
+/**
+ * Gets the RPC URL for a specific chain ID from the NetworkController
+ *
+ * @param chainId - The chain ID to get the RPC URL for
+ * @returns The RPC URL for the chain, or 'unknown' if not found
+ */
+export function getNetworkRpcUrl(chainId: string): string {
+  try {
+    const { NetworkController } = Engine.context;
+
+    // Find network clientID for chainID
+    const networkClientId = NetworkController.findNetworkClientIdByChainId(
+      chainId as `0x${string}`,
+    );
+    if (!networkClientId) {
+      return 'unknown';
+    }
+
+    // Get network config
+    const networkConfig =
+      NetworkController.getNetworkConfigurationByNetworkClientId(
+        networkClientId,
+      );
+    if (!networkConfig) {
+      return 'unknown';
+    }
+
+    // Check if there is a direct rpcUrl property (legacy format)
+    if ('rpcUrl' in networkConfig && networkConfig.rpcUrl) {
+      return typeof networkConfig.rpcUrl === 'string'
+        ? networkConfig.rpcUrl
+        : 'unknown';
+    }
+
+    // If we use rpcEndpoints array
+    if (networkConfig.rpcEndpoints?.length > 0) {
+      const defaultEndpointIndex = networkConfig.defaultRpcEndpointIndex || 0;
+      return (
+        networkConfig.rpcEndpoints[defaultEndpointIndex]?.url ||
+        networkConfig.rpcEndpoints[0]?.url ||
+        'unknown'
+      );
+    }
+    return 'unknown';
+  } catch (error: unknown) {
+    Logger.error(
+      error instanceof Error
+        ? error
+        : new Error(`Error getting RPC URL: ${String(error)}`),
+    );
+    return 'unknown';
+  }
+}

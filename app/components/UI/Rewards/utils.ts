@@ -1,0 +1,229 @@
+import {
+  CaipAccountId,
+  parseCaipChainId,
+  toCaipAccountId,
+} from '@metamask/utils';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import { InternalAccount } from '@metamask/keyring-internal-api';
+import Logger from '../../../util/Logger';
+import { strings } from '../../../../locales/i18n';
+import { isEvmAccountType } from '@metamask/keyring-api';
+import type {
+  NavigationProp,
+  NavigatorScreenParams,
+} from '@react-navigation/native';
+import {
+  isBtcAccount,
+  isSolanaAccount,
+  isTronAccount,
+} from '../../../core/Multichain/utils';
+import { getAddressAccountType } from '../../../util/address';
+import Routes from '../../../constants/navigation/Routes';
+import type { RewardsStackParamList } from './types/navigation';
+
+// Initialize dayjs with relativeTime plugin
+dayjs.extend(relativeTime);
+
+export const SOLANA_SIGNUP_NOT_SUPPORTED = strings(
+  'rewards.solana_signup_not_supported',
+);
+
+export const handleRewardsErrorMessage = (error: unknown) => {
+  if (typeof error !== 'object' || error === null) {
+    return strings('rewards.error_messages.something_went_wrong');
+  }
+
+  const errorObj = error as { data?: { message?: string }; message?: string };
+  const message = errorObj?.data?.message ?? errorObj?.message;
+  if (!message) {
+    return strings('rewards.error_messages.something_went_wrong');
+  }
+  if (message.includes('already registered')) {
+    return strings('rewards.error_messages.account_already_registered');
+  }
+
+  if (message.includes('rejected the request')) {
+    return strings('rewards.error_messages.request_rejected');
+  }
+
+  if (message.includes('No keyring found')) {
+    return SOLANA_SIGNUP_NOT_SUPPORTED;
+  }
+
+  if (message.includes('Failed to claim reward')) {
+    return strings('rewards.error_messages.failed_to_claim_reward');
+  }
+
+  if (
+    message.includes('not available') ||
+    message.includes('Network request failed')
+  ) {
+    return strings('rewards.error_messages.service_not_available');
+  }
+
+  // Referral code errors
+  if (message.toLowerCase().includes('invalid referral code')) {
+    return strings('rewards.error_messages.invalid_referral_code');
+  }
+
+  if (message.toLowerCase().includes('already referred')) {
+    return strings('rewards.error_messages.already_referred');
+  }
+
+  if (message.toLowerCase().includes('cannot use your own referral code')) {
+    return strings('rewards.error_messages.cannot_use_own_referral_code');
+  }
+
+  // Bonus code errors
+  if (message.toLowerCase().includes('invalid bonus code')) {
+    return strings('rewards.error_messages.invalid_bonus_code');
+  }
+  if (message.toLowerCase().includes('already redeemed')) {
+    return strings('rewards.error_messages.already_redeemed');
+  }
+  if (message.toLowerCase().includes('reached its maximum')) {
+    return strings('rewards.error_messages.reached_maximum');
+  }
+
+  return message;
+};
+
+export const convertInternalAccountToCaipAccountId = (
+  account: InternalAccount,
+): CaipAccountId | null => {
+  try {
+    const [scope] = account.scopes;
+    const { namespace, reference } = parseCaipChainId(scope);
+    return toCaipAccountId(namespace, reference, account.address);
+  } catch (error) {
+    Logger.log(
+      'RewardsUtils: Failed to convert address to CAIP-10 format:',
+      error,
+    );
+    return null;
+  }
+};
+
+// Metrics related utils
+export enum RewardsMetricsButtons {
+  WAYS_TO_EARN = 'ways_to_earn',
+  OPT_OUT = 'opt_out',
+  OPT_OUT_CANCEL = 'opt_out_cancel',
+  VISIT_APP_STORE = 'visit_app_store',
+  COPY_WINNER_VERIFICATION_CODE = 'copy_winner_verification_code',
+}
+
+export const deriveAccountMetricProps = (account?: InternalAccount) => {
+  if (!account) {
+    return {
+      scope: undefined,
+      account_type: undefined,
+    };
+  }
+
+  let scope: string = account.type;
+  if (isEvmAccountType(account.type)) {
+    scope = 'evm';
+  } else if (isSolanaAccount(account)) {
+    scope = 'solana';
+  } else if (isBtcAccount(account)) {
+    scope = 'bitcoin';
+  } else if (isTronAccount(account)) {
+    scope = 'tron';
+  }
+  let type = account.metadata?.keyring?.type;
+
+  try {
+    type = getAddressAccountType(account.address);
+  } catch (error) {
+    // If app goes to idle state, `getAddressAccountType` throws an error because app is locked
+    // To prevent that, we catch the error and let type be the one from metadata
+  }
+
+  return {
+    scope,
+    account_type: type,
+  };
+};
+
+interface NavigationRouteLike {
+  name?: string;
+  state?: NavigationStateLike;
+}
+
+export interface NavigationStateLike {
+  index?: number;
+  routes?: readonly NavigationRouteLike[];
+}
+
+export const getActiveRouteNameFromNavigationState = (
+  state?: NavigationStateLike,
+): string | undefined => {
+  const routeIndex = typeof state?.index === 'number' ? state.index : 0;
+  const route = state?.routes?.[routeIndex];
+
+  if (!route) {
+    return undefined;
+  }
+
+  return getActiveRouteNameFromNavigationState(route.state) ?? route.name;
+};
+
+/**
+ * Navigates into the rewards sub-pages stack (`RewardsNavigator`, registered at
+ * the root `MainNavigator` level under `Routes.REWARDS_FLOW`).
+ *
+ * The rewards dashboard lives in `RewardsHome` (`Routes.REWARDS_VIEW` on the
+ * root stack, and a Home tab only in the control nav arm), separate from
+ * `RewardsNavigator`. A plain `navigation.navigate(<subPage>)` from the dashboard
+ * cannot resolve those routes because they live in the not-yet-mounted
+ * `RewardsNavigator`, so this uses React Navigation nested navigation to target
+ * the flow explicitly. Safe to call from within `RewardsNavigator` too —
+ * React Navigation resolves `REWARDS_FLOW` to the already-active navigator and
+ * pushes the screen.
+ *
+ * @param navigation - The navigation object from `useNavigation()`.
+ * @param screen - The destination route name inside the rewards flow.
+ * @param params - Optional params forwarded to the destination screen.
+ */
+export const navigateToRewardsRoute = <S extends keyof RewardsStackParamList>(
+  navigation: Pick<NavigationProp<ReactNavigation.RootParamList>, 'navigate'>,
+  screen: S,
+  params?: RewardsStackParamList[S],
+): void => {
+  navigation.navigate(Routes.REWARDS_FLOW, {
+    screen,
+    params,
+  } as NavigatorScreenParams<RewardsStackParamList>);
+};
+
+type RewardsFlowExitNavigation = Pick<
+  NavigationProp<ReactNavigation.RootParamList>,
+  'navigate' | 'goBack' | 'canGoBack'
+>;
+
+/**
+ * Leaves the pushed `REWARDS_FLOW` stack and returns the user to Rewards home.
+ *
+ * VIP screens previously used `StackActions.replace(Routes.REWARDS_DASHBOARD)`,
+ * but that dashboard lives in `RewardsHome`, not inside `RewardsNavigator`, so
+ * that replace could not be handled. Pop the flow when something is under it.
+ * Otherwise open `Routes.REWARDS_VIEW` directly: the control nav arm still has
+ * a Rewards tab and handles that name, and the other arms only register it on
+ * the root stack.
+ *
+ * @param navigation - The navigation object from `useNavigation()`.
+ */
+export const exitRewardsFlow = (
+  navigation: RewardsFlowExitNavigation,
+): void => {
+  if (navigation.canGoBack()) {
+    navigation.goBack();
+    return;
+  }
+
+  navigation.navigate(Routes.REWARDS_VIEW);
+};
+
+export { getBetaSupportUrl } from '../../../util/support/betaSupportUrl';

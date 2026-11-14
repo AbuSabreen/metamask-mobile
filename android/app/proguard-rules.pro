@@ -17,12 +17,6 @@
 #}
 -dontwarn io.branch.**
 
-
-# react native keychain https://github.com/oblador/react-native-keychain#proguard-rules
--keep class com.facebook.crypto.** {
-   *;
-}
-
 # react-native-svg https://github.com/react-native-svg/react-native-svg#problems-with-proguard
 -keep public class com.horcrux.svg.** {*;}
 
@@ -48,3 +42,21 @@
   -keep class kotlin.** { *; }
 
   -keep class kotlin.Metadata { *; }
+
+-dontwarn kotlinx.serialization.SerialName
+-dontwarn kotlinx.serialization.Serializable
+
+
+# Ignore missing Java desktop classes referenced by JNA
+-dontwarn java.awt.**
+-dontwarn javax.swing.**
+-dontwarn java.lang.instrument.**
+-dontwarn sun.misc.**
+-dontwarn edu.umd.cs.findbugs.**
+-dontwarn com.huawei.hms.ads.**
+-dontwarn com.google.common.util.concurrent.**
+-dontwarn org.objectweb.asm.**
+-dontwarn net.bytebuddy.**
+
+
+-dontwarn com.facebook.react.bridge.JavaOnlyMap$Companion

@@ -1,0 +1,1573 @@
+import { act, renderHook } from '@testing-library/react-hooks';
+import { useSelector } from 'react-redux';
+import {
+  sortMarkets,
+  type Order,
+  type OrderFill,
+  type PerpsMarketData,
+  type Position,
+  type SortField,
+} from '@metamask/perps-controller';
+import type { PerpsTransaction } from '../types/transactionHistory';
+import { FillType } from '../components/PerpsTransactionItem/PerpsTransactionItem';
+
+// Type for markets with volumeNumber (returned by usePerpsMarkets)
+type PerpsMarketDataWithVolumeNumber = PerpsMarketData & {
+  volumeNumber: number;
+};
+import {
+  usePerpsLiveFills,
+  usePerpsLiveOrders,
+  usePerpsLivePositions,
+} from './stream';
+import { usePerpsHomeData } from './usePerpsHomeData';
+import { usePerpsMarkets } from './usePerpsMarkets';
+import { usePerpsTransactionHistory } from './usePerpsTransactionHistory';
+import {
+  selectPerpsWatchlistMarkets,
+  selectPerpsMarketFilterPreferences,
+} from '../selectors/perpsController';
+import { usePerpsConnection } from './usePerpsConnection';
+import Engine from '../../../../core/Engine';
+
+// Mock dependencies
+jest.mock('./stream');
+jest.mock('./usePerpsMarkets');
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: jest.fn(),
+}));
+jest.mock('@metamask/perps-controller', () => ({
+  ...jest.requireActual('@metamask/perps-controller'),
+  sortMarkets: jest.fn(),
+}));
+jest.mock('react-redux');
+jest.mock('../selectors/perpsController');
+jest.mock('./usePerpsConnection', () => ({
+  usePerpsConnection: jest.fn(() => ({
+    isConnected: true,
+    isInitialized: true,
+    isConnecting: false,
+    error: null,
+    connect: jest.fn(),
+    disconnect: jest.fn(),
+    resetError: jest.fn(),
+  })),
+}));
+jest.mock('./usePerpsTransactionHistory');
+jest.mock('../../../../core/Engine', () => ({
+  context: {
+    PerpsController: {
+      getActiveProvider: jest.fn(),
+      getActiveProviderOrNull: jest.fn(),
+      getOrderFills: jest.fn().mockResolvedValue([]),
+    },
+  },
+}));
+
+// Type mock functions
+const mockUsePerpsLivePositions = usePerpsLivePositions as jest.MockedFunction<
+  typeof usePerpsLivePositions
+>;
+const mockUsePerpsLiveOrders = usePerpsLiveOrders as jest.MockedFunction<
+  typeof usePerpsLiveOrders
+>;
+const mockUsePerpsLiveFills = usePerpsLiveFills as jest.MockedFunction<
+  typeof usePerpsLiveFills
+>;
+const mockUsePerpsMarkets = usePerpsMarkets as jest.MockedFunction<
+  typeof usePerpsMarkets
+>;
+const mockUsePerpsTransactionHistory =
+  usePerpsTransactionHistory as jest.MockedFunction<
+    typeof usePerpsTransactionHistory
+  >;
+const mockSortMarkets = sortMarkets as jest.MockedFunction<typeof sortMarkets>;
+const mockUseSelector = useSelector as jest.MockedFunction<typeof useSelector>;
+const mockSelectPerpsWatchlistMarkets =
+  selectPerpsWatchlistMarkets as jest.MockedFunction<
+    typeof selectPerpsWatchlistMarkets
+  >;
+const mockSelectPerpsMarketFilterPreferences =
+  selectPerpsMarketFilterPreferences as jest.MockedFunction<
+    typeof selectPerpsMarketFilterPreferences
+  >;
+const mockUsePerpsConnection = usePerpsConnection as jest.MockedFunction<
+  typeof usePerpsConnection
+>;
+
+// Test data helper functions
+const createMockPosition = (overrides: Partial<Position> = {}): Position => ({
+  symbol: 'BTC',
+  size: '0.5',
+  entryPrice: '45000',
+  positionValue: '22500',
+  unrealizedPnl: '250',
+  returnOnEquity: '0.05',
+  leverage: {
+    type: 'cross',
+    value: 2,
+    rawUsd: '3000',
+  },
+  liquidationPrice: '40000',
+  marginUsed: '1500',
+  maxLeverage: 100,
+  cumulativeFunding: {
+    allTime: '50',
+    sinceOpen: '10',
+    sinceChange: '5',
+  },
+  takeProfitCount: 0,
+  stopLossCount: 0,
+  ...overrides,
+});
+
+const createMockOrder = (overrides: Partial<Order> = {}): Order => ({
+  orderId: '12345',
+  symbol: 'BTC',
+  side: 'buy',
+  orderType: 'limit',
+  size: '0.1',
+  originalSize: '0.1',
+  price: '46000',
+  filledSize: '0',
+  remainingSize: '0.1',
+  status: 'open',
+  timestamp: 1234567890,
+  ...overrides,
+});
+
+const createMockOrderFill = (
+  overrides: Partial<OrderFill> = {},
+): OrderFill => ({
+  orderId: 'fill-123',
+  symbol: 'ETH',
+  side: 'buy',
+  price: '3000',
+  size: '1.0',
+  pnl: '0',
+  direction: 'Open Long', // Format expected by transformFillsToTransactions
+  timestamp: 1234567890,
+  fee: '10',
+  feeToken: 'USDC',
+  ...overrides,
+});
+
+const createMockMarket = (
+  overrides: Partial<PerpsMarketDataWithVolumeNumber> = {},
+): PerpsMarketDataWithVolumeNumber => ({
+  symbol: 'BTC',
+  name: 'Bitcoin',
+  maxLeverage: '40x',
+  price: '$50,000.00',
+  change24h: '+2.5%',
+  change24hPercent: '2.5',
+  volume: '$1.2B',
+  volumeNumber: 1200000000,
+  ...overrides,
+});
+
+describe('usePerpsHomeData', () => {
+  let mockPositions: Position[];
+  let mockOrders: Order[];
+  let mockFills: OrderFill[];
+  let mockTransactions: PerpsTransaction[];
+  let mockMarkets: PerpsMarketDataWithVolumeNumber[];
+  let mockRefreshMarkets: jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    // Create mock data
+    mockPositions = [
+      createMockPosition({ symbol: 'BTC' }),
+      createMockPosition({ symbol: 'ETH' }),
+    ];
+
+    mockOrders = [
+      createMockOrder({ symbol: 'BTC' }),
+      createMockOrder({ symbol: 'SOL' }),
+    ];
+
+    // Create mock fills that will be transformed to transactions
+    // Note: orderId is used as the transaction id, and timestamp must differ for sorting
+    mockFills = [
+      createMockOrderFill({
+        orderId: 'fill-eth-1',
+        symbol: 'ETH',
+        timestamp: 1234567890,
+      }),
+      createMockOrderFill({
+        orderId: 'fill-btc-1',
+        symbol: 'BTC',
+        timestamp: 1234567891,
+      }),
+    ];
+
+    // Create expected mock transactions that match transformFillsToTransactions output
+    // These are used for assertions in tests that still check mockTransactions
+    mockTransactions = [
+      {
+        id: 'fill-btc-1', // Sorted by timestamp desc, so BTC (newer) comes first
+        type: 'trade' as const,
+        category: 'position_open' as const,
+        title: 'Opened long',
+        subtitle: '1.0 BTC',
+        timestamp: 1234567891,
+        asset: 'BTC',
+        fill: {
+          shortTitle: 'Opened long',
+          amount: '-$10.00',
+          amountNumber: -10,
+          isPositive: false,
+          size: '1.0',
+          entryPrice: '3000',
+          pnl: '0',
+          fee: '10',
+          points: '0',
+          feeToken: 'USDC',
+          action: 'Opened',
+          fillType: FillType.Standard,
+        },
+      },
+      {
+        id: 'fill-eth-1',
+        type: 'trade' as const,
+        category: 'position_open' as const,
+        title: 'Opened long',
+        subtitle: '1.0 ETH',
+        timestamp: 1234567890,
+        asset: 'ETH',
+        fill: {
+          shortTitle: 'Opened long',
+          amount: '-$10.00',
+          amountNumber: -10,
+          isPositive: false,
+          size: '1.0',
+          entryPrice: '3000',
+          pnl: '0',
+          fee: '10',
+          points: '0',
+          feeToken: 'USDC',
+          action: 'Opened',
+          fillType: FillType.Standard,
+        },
+      },
+    ];
+
+    mockMarkets = [
+      createMockMarket({
+        symbol: 'BTC',
+        name: 'Bitcoin',
+        volume: '$1.2B',
+        volumeNumber: 1200000000,
+      }),
+      createMockMarket({
+        symbol: 'ETH',
+        name: 'Ethereum',
+        volume: '$900M',
+        volumeNumber: 900000000,
+      }),
+      createMockMarket({
+        symbol: 'SOL',
+        name: 'Solana',
+        volume: '$500M',
+        volumeNumber: 500000000,
+      }),
+    ];
+
+    mockRefreshMarkets = jest.fn().mockResolvedValue(undefined);
+
+    // Setup default mock implementations
+    mockUsePerpsLivePositions.mockReturnValue({
+      positions: mockPositions,
+      isInitialLoading: false,
+    });
+
+    mockUsePerpsLiveOrders.mockReturnValue({
+      retry: jest.fn(),
+      orders: mockOrders,
+      isInitialLoading: false,
+    });
+
+    mockUsePerpsLiveFills.mockReturnValue({
+      retry: jest.fn(),
+      fills: mockFills,
+      isInitialLoading: false,
+    });
+
+    mockUsePerpsMarkets.mockReturnValue({
+      markets: mockMarkets,
+      isLoading: false,
+      isRefreshing: false,
+      error: null,
+      refresh: mockRefreshMarkets,
+    });
+
+    mockUsePerpsTransactionHistory.mockReturnValue({
+      transactions: mockTransactions,
+      isLoading: false,
+      error: null,
+      refetch: jest.fn().mockResolvedValue(undefined),
+      loadMoreFunding: jest.fn().mockResolvedValue(undefined),
+      hasFundingMore: true,
+      isFetchingMoreFunding: false,
+    });
+
+    // Mock sortMarkets to return markets as-is by default
+    mockSortMarkets.mockImplementation(({ markets }) => markets);
+
+    // Mock Redux selectors - call the appropriate mocked selector based on which selector is passed
+    mockUseSelector.mockImplementation((selector) => {
+      if (selector === selectPerpsWatchlistMarkets) {
+        return mockSelectPerpsWatchlistMarkets({} as never);
+      }
+      if (selector === selectPerpsMarketFilterPreferences) {
+        return mockSelectPerpsMarketFilterPreferences({} as never);
+      }
+      throw new Error(`Unmocked selector called: ${selector.name || selector}`);
+    });
+
+    // Set default return values for the selectors
+    mockSelectPerpsWatchlistMarkets.mockReturnValue(['BTC', 'ETH']);
+    mockSelectPerpsMarketFilterPreferences.mockReturnValue({
+      optionId: 'volume',
+      direction: 'desc',
+    });
+  });
+
+  describe('Initial state and data loading', () => {
+    it('returns initial data from all sources', () => {
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.positions).toEqual(mockPositions);
+      expect(result.current.orders).toEqual(mockOrders);
+      // recentActivity now comes from WebSocket fills (transformed to transactions)
+      expect(result.current.recentActivity).toHaveLength(mockFills.length);
+      expect(
+        result.current.recentActivity.every((tx) => tx.type === 'trade'),
+      ).toBe(true);
+      expect(result.current.perpsMarkets).toEqual(mockMarkets);
+      expect(result.current.watchlistMarkets).toEqual([
+        mockMarkets[0],
+        mockMarkets[1],
+      ]);
+    });
+
+    it('leaves positions and orders uncapped while limiting recent activity', () => {
+      const manyPositions = Array.from({ length: 10 }, (_, i) =>
+        createMockPosition({ symbol: `COIN${i}` }),
+      );
+      const manyOrders = Array.from({ length: 10 }, (_, i) =>
+        createMockOrder({ symbol: `COIN${i}` }),
+      );
+      const manyFills = Array.from({ length: 20 }, (_, i) =>
+        createMockOrderFill({ symbol: `COIN${i}` }),
+      );
+
+      mockUsePerpsLivePositions.mockReturnValue({
+        positions: manyPositions,
+        isInitialLoading: false,
+      });
+      mockUsePerpsLiveOrders.mockReturnValue({
+        retry: jest.fn(),
+        orders: manyOrders,
+        isInitialLoading: false,
+      });
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: manyFills,
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      // Positions and orders are intentionally uncapped on the home screen.
+      expect(result.current.positions).toHaveLength(10);
+      expect(result.current.orders).toHaveLength(10);
+      // Recent activity keeps its dedicated limit from HOME_SCREEN_CONFIG.
+      expect(result.current.recentActivity.length).toBeLessThanOrEqual(3);
+    });
+
+    it('displays every open position when more than ten are open', () => {
+      const twelvePositions = Array.from({ length: 12 }, (_, i) =>
+        createMockPosition({ symbol: `COIN${i}` }),
+      );
+
+      mockUsePerpsLivePositions.mockReturnValue({
+        positions: twelvePositions,
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.positions).toHaveLength(12);
+    });
+
+    it('displays every open order when more than ten are open', () => {
+      const twelveOrders = Array.from({ length: 12 }, (_, i) =>
+        createMockOrder({ symbol: `COIN${i}`, orderId: `order-${i}` }),
+      );
+
+      mockUsePerpsLiveOrders.mockReturnValue({
+        retry: jest.fn(),
+        orders: twelveOrders,
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.orders).toHaveLength(12);
+    });
+
+    it('respects custom limits from parameters', () => {
+      const manyPositions = Array.from({ length: 10 }, (_, i) =>
+        createMockPosition({ symbol: `COIN${i}` }),
+      );
+
+      mockUsePerpsLivePositions.mockReturnValue({
+        positions: manyPositions,
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ positionsLimit: 3 }),
+      );
+
+      expect(result.current.positions).toHaveLength(3);
+    });
+
+    it('passes throttleMs to live data hooks', () => {
+      renderHook(() => usePerpsHomeData());
+
+      expect(mockUsePerpsLivePositions).toHaveBeenCalledWith(
+        expect.objectContaining({ throttleMs: 1000 }),
+      );
+      expect(mockUsePerpsLiveOrders).toHaveBeenCalledWith(
+        expect.objectContaining({ throttleMs: 1000 }),
+      );
+    });
+
+    it('hides TP/SL orders but shows reduce-only orders (e.g. limit closes) on home screen', () => {
+      renderHook(() => usePerpsHomeData());
+
+      expect(mockUsePerpsLiveOrders).toHaveBeenCalledWith(
+        expect.objectContaining({ hideTpSl: true }),
+      );
+      expect(mockUsePerpsLiveOrders).not.toHaveBeenCalledWith(
+        expect.objectContaining({ hideReduceOnly: true }),
+      );
+    });
+
+    it('fetches markets with skipInitialFetch false', () => {
+      renderHook(() => usePerpsHomeData());
+
+      expect(mockUsePerpsMarkets).toHaveBeenCalledWith(
+        expect.objectContaining({ skipInitialFetch: false }),
+      );
+    });
+  });
+
+  describe('Loading states', () => {
+    it('returns loading state for positions', () => {
+      mockUsePerpsLivePositions.mockReturnValue({
+        positions: [],
+        isInitialLoading: true,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.isLoading.positions).toBe(true);
+    });
+
+    it('returns loading state for markets', () => {
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: [],
+        isLoading: true,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.isLoading.markets).toBe(true);
+    });
+
+    it('returns false when all data is loaded', () => {
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.isLoading.positions).toBe(false);
+      expect(result.current.isLoading.markets).toBe(false);
+    });
+
+    it('keeps recent activity loading while reconnecting', () => {
+      mockUsePerpsConnection.mockReturnValue({
+        isConnected: true,
+        isInitialized: true,
+        isConnecting: true,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      } as never);
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.isLoading.activity).toBe(true);
+      expect(result.current.recentActivity).toEqual([]);
+    });
+  });
+
+  describe('Watchlist filtering', () => {
+    it('filters markets by watchlist symbols', () => {
+      // Mock selector to return only BTC in watchlist
+      mockSelectPerpsWatchlistMarkets.mockReturnValue(['BTC']);
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.watchlistMarkets).toHaveLength(1);
+      expect(result.current.watchlistMarkets[0].symbol).toBe('BTC');
+    });
+
+    it('returns empty array when watchlist is empty', () => {
+      mockSelectPerpsWatchlistMarkets.mockReturnValue([]);
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.watchlistMarkets).toEqual([]);
+    });
+
+    it('returns all watchlist markets regardless of watchlistMarketsLimit', () => {
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.watchlistMarkets).toHaveLength(2);
+      expect(result.current.watchlistMarkets.map((m) => m.symbol)).toEqual([
+        'BTC',
+        'ETH',
+      ]);
+    });
+  });
+
+  describe('Market type filtering', () => {
+    it('excludes HIP-3 markets from crypto (perpsMarkets) section', () => {
+      const marketsWithHip3 = [
+        ...mockMarkets,
+        createMockMarket({
+          symbol: 'xyz:BRENTOIL',
+          name: 'Brent Oil',
+          isHip3: true,
+          isNewMarket: true,
+        }),
+        createMockMarket({
+          symbol: 'xyz:GOLD',
+          name: 'Gold',
+          marketType: 'commodity',
+          isHip3: true,
+        }),
+      ];
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: marketsWithHip3,
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      mockSortMarkets.mockImplementation(({ markets }) => markets);
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      // Only non-HIP3 crypto markets should be in perpsMarkets
+      expect(result.current.perpsMarkets).toHaveLength(3);
+      expect(result.current.perpsMarkets.every((m) => !m.isHip3)).toBe(true);
+      // BRENTOIL (unmapped HIP-3) must not appear in crypto
+      expect(
+        result.current.perpsMarkets.find((m) => m.symbol === 'xyz:BRENTOIL'),
+      ).toBeUndefined();
+    });
+
+    it('includes HIP-3 commodity markets in commoditiesMarkets', () => {
+      const marketsWithCommodity = [
+        ...mockMarkets,
+        createMockMarket({
+          symbol: 'xyz:BRENTOIL',
+          name: 'Brent Oil',
+          marketType: 'commodity',
+          isHip3: true,
+        }),
+      ];
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: marketsWithCommodity,
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      mockSortMarkets.mockImplementation(({ markets }) => markets);
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.commoditiesMarkets).toHaveLength(1);
+      expect(result.current.commoditiesMarkets[0].symbol).toBe('xyz:BRENTOIL');
+    });
+
+    it('excludes unmapped HIP-3 markets from search crypto results', () => {
+      const marketsWithHip3 = [
+        ...mockMarkets,
+        createMockMarket({
+          symbol: 'xyz:BRENTOIL',
+          name: 'Brent Oil',
+          isHip3: true,
+          isNewMarket: true,
+        }),
+      ];
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: marketsWithHip3,
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'BRENT' }),
+      );
+
+      // BRENTOIL should not appear in perpsMarkets (crypto) during search
+      expect(
+        result.current.perpsMarkets.find((m) => m.symbol === 'xyz:BRENTOIL'),
+      ).toBeUndefined();
+    });
+
+    it('keeps crypto markets tagged with an explicit crypto marketType in perpsMarkets', () => {
+      // Arrange - the Terminal backend tags every market, crypto included
+      const taggedCryptoMarkets = [
+        createMockMarket({ symbol: 'BTC', marketType: 'crypto' }),
+        createMockMarket({ symbol: 'ETH', marketType: 'crypto' }),
+        createMockMarket({
+          symbol: 'xyz:GOLD',
+          marketType: 'commodity',
+          isHip3: true,
+        }),
+      ];
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: taggedCryptoMarkets,
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+      mockSortMarkets.mockImplementation(({ markets }) => markets);
+
+      // Act
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      // Assert
+      expect(result.current.perpsMarkets.map((m) => m.symbol)).toEqual([
+        'BTC',
+        'ETH',
+      ]);
+    });
+
+    it('keeps crypto markets tagged with an explicit crypto marketType in search results', () => {
+      // Arrange
+      const taggedCryptoMarkets = [
+        createMockMarket({
+          symbol: 'BTC',
+          name: 'Bitcoin',
+          marketType: 'crypto',
+        }),
+        createMockMarket({
+          symbol: 'xyz:GOLD',
+          name: 'Gold',
+          marketType: 'commodity',
+          isHip3: true,
+        }),
+      ];
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: taggedCryptoMarkets,
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+      mockSortMarkets.mockImplementation(({ markets }) => markets);
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'BTC' }),
+      );
+
+      // Assert
+      expect(result.current.perpsMarkets.map((m) => m.symbol)).toEqual(['BTC']);
+    });
+  });
+
+  describe('Trending markets sorting', () => {
+    it('sorts markets using saved sort preference', () => {
+      renderHook(() => usePerpsHomeData());
+
+      expect(mockSortMarkets).toHaveBeenCalledWith(
+        expect.objectContaining({
+          markets: mockMarkets,
+          sortBy: 'volume',
+          direction: 'desc',
+        }),
+      );
+    });
+
+    it('applies trendingLimit to sorted markets', () => {
+      const manyMarkets = Array.from({ length: 10 }, (_, i) =>
+        createMockMarket({ symbol: `COIN${i}` }),
+      );
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: manyMarkets,
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      mockSortMarkets.mockImplementation(({ markets }) => markets);
+
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ trendingLimit: 3 }),
+      );
+
+      expect(result.current.perpsMarkets).toHaveLength(3);
+    });
+
+    it('uses default direction when sort option not found', () => {
+      mockSelectPerpsMarketFilterPreferences.mockReturnValue({
+        optionId: 'unknown-sort-option' as never,
+        direction: 'desc',
+      });
+
+      renderHook(() => usePerpsHomeData());
+
+      expect(mockSortMarkets).toHaveBeenCalledWith(
+        expect.objectContaining({
+          direction: 'desc',
+        }),
+      );
+    });
+
+    it('returns sort field from hook', () => {
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.sortBy).toBe('volume' as SortField);
+    });
+  });
+
+  describe('Search filtering', () => {
+    it('filters positions by symbol field', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'BTC' }),
+      );
+
+      expect(result.current.positions).toHaveLength(1);
+      expect(result.current.positions[0].symbol).toBe('BTC');
+    });
+
+    it('filters orders by symbol field', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'SOL' }),
+      );
+
+      expect(result.current.orders).toHaveLength(1);
+      expect(result.current.orders[0].symbol).toBe('SOL');
+    });
+
+    it('filters transactions by asset field', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'ETH' }),
+      );
+
+      expect(result.current.recentActivity).toHaveLength(1);
+      expect(result.current.recentActivity[0].asset).toBe('ETH');
+    });
+
+    it('filters watchlist markets by symbol or name', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'Bit' }),
+      );
+
+      expect(result.current.watchlistMarkets).toHaveLength(1);
+      expect(result.current.watchlistMarkets[0].symbol).toBe('BTC');
+    });
+
+    it('searches all markets when search query present', () => {
+      const allMarkets = [
+        ...mockMarkets,
+        createMockMarket({ symbol: 'DOGE', name: 'Dogecoin' }),
+      ];
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: allMarkets,
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'DOGE' }),
+      );
+
+      expect(result.current.perpsMarkets).toHaveLength(1);
+      expect(result.current.perpsMarkets[0].symbol).toBe('DOGE');
+    });
+
+    it('shows top trending markets when search query is empty', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: '', trendingLimit: 2 }),
+      );
+
+      expect(result.current.perpsMarkets).toHaveLength(2);
+    });
+
+    it('performs case-insensitive search', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'btc' }),
+      );
+
+      expect(result.current.positions.length).toBeGreaterThan(0);
+      expect(result.current.positions[0].symbol).toBe('BTC');
+    });
+
+    it('trims whitespace from search query', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: '  BTC  ' }),
+      );
+
+      expect(result.current.positions).toHaveLength(1);
+      expect(result.current.positions[0].symbol).toBe('BTC');
+    });
+
+    it('returns all data when search query is empty', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: '' }),
+      );
+
+      expect(result.current.positions).toEqual(mockPositions);
+      expect(result.current.orders).toEqual(mockOrders);
+      // recentActivity now comes from WebSocket fills (transformed to transactions)
+      expect(result.current.recentActivity).toHaveLength(mockFills.length);
+    });
+
+    it('returns all data when search query is only whitespace', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: '   ' }),
+      );
+
+      expect(result.current.positions).toEqual(mockPositions);
+      expect(result.current.orders).toEqual(mockOrders);
+    });
+
+    it('handles undefined fields gracefully', () => {
+      const positionWithoutCoin = createMockPosition({ symbol: undefined });
+      mockUsePerpsLivePositions.mockReturnValue({
+        positions: [positionWithoutCoin],
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'BTC' }),
+      );
+
+      expect(result.current.positions).toEqual([]);
+    });
+  });
+
+  describe('Refresh functionality', () => {
+    it('calls refresh on markets', async () => {
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      await act(async () => {
+        await result.current.refresh();
+      });
+
+      expect(mockRefreshMarkets).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns refresh function', () => {
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(typeof result.current.refresh).toBe('function');
+    });
+
+    it('handles refresh errors gracefully', async () => {
+      mockRefreshMarkets.mockRejectedValue(new Error('Refresh failed'));
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      await act(async () => {
+        await expect(result.current.refresh()).rejects.toThrow(
+          'Refresh failed',
+        );
+      });
+    });
+
+    it('does not refresh WebSocket data', async () => {
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      const positionsBeforeRefresh = result.current.positions;
+
+      await act(async () => {
+        await result.current.refresh();
+      });
+
+      expect(result.current.positions).toBe(positionsBeforeRefresh);
+    });
+  });
+
+  describe('Edge cases', () => {
+    it('handles empty positions array', () => {
+      mockUsePerpsLivePositions.mockReturnValue({
+        positions: [],
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.positions).toEqual([]);
+    });
+
+    it('handles empty orders array', () => {
+      mockUsePerpsLiveOrders.mockReturnValue({
+        retry: jest.fn(),
+        orders: [],
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.orders).toEqual([]);
+    });
+
+    it('handles empty fills array', () => {
+      // Activity now comes from WebSocket fills, not usePerpsTransactionHistory
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.recentActivity).toEqual([]);
+    });
+
+    it('handles empty markets array', () => {
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: [],
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.perpsMarkets).toEqual([]);
+      expect(result.current.watchlistMarkets).toEqual([]);
+    });
+
+    it('handles all empty data sources', () => {
+      mockUsePerpsLivePositions.mockReturnValue({
+        positions: [],
+        isInitialLoading: false,
+      });
+      mockUsePerpsLiveOrders.mockReturnValue({
+        retry: jest.fn(),
+        orders: [],
+        isInitialLoading: false,
+      });
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: [],
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+      mockUsePerpsTransactionHistory.mockReturnValue({
+        transactions: [],
+        isLoading: false,
+        error: null,
+        refetch: jest.fn().mockResolvedValue(undefined),
+        loadMoreFunding: jest.fn().mockResolvedValue(undefined),
+        hasFundingMore: true,
+        isFetchingMoreFunding: false,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.positions).toEqual([]);
+      expect(result.current.orders).toEqual([]);
+      expect(result.current.recentActivity).toEqual([]);
+      expect(result.current.perpsMarkets).toEqual([]);
+      expect(result.current.watchlistMarkets).toEqual([]);
+    });
+
+    it('handles zero limits', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({
+          positionsLimit: 0,
+          ordersLimit: 0,
+          trendingLimit: 0,
+          activityLimit: 0,
+        }),
+      );
+
+      expect(result.current.positions).toEqual([]);
+      expect(result.current.orders).toEqual([]);
+      expect(result.current.perpsMarkets).toEqual([]);
+      expect(result.current.recentActivity).toEqual([]);
+    });
+
+    it('handles very large limits', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({
+          positionsLimit: 1000,
+          ordersLimit: 1000,
+          trendingLimit: 1000,
+          activityLimit: 1000,
+        }),
+      );
+
+      expect(result.current.positions).toEqual(mockPositions);
+      expect(result.current.orders).toEqual(mockOrders);
+      expect(result.current.perpsMarkets).toEqual(mockMarkets);
+      // recentActivity now comes from WebSocket fills (transformed to transactions)
+      expect(result.current.recentActivity).toHaveLength(mockFills.length);
+    });
+
+    it('skips REST fills fetch when not connected or not initialized', () => {
+      mockUsePerpsConnection.mockReturnValue({
+        isConnected: false,
+        isInitialized: false,
+        isConnecting: false,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      } as never);
+
+      renderHook(() => usePerpsHomeData());
+
+      // getActiveProviderOrNull should NOT be called when not connected
+      expect(
+        Engine.context.PerpsController.getActiveProviderOrNull,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('fetches REST fills when connected and initialized', async () => {
+      const mockFillsFromRest = [
+        createMockOrderFill({
+          orderId: 'rest-fill-1',
+          symbol: 'BTC',
+          timestamp: 1234567800,
+        }),
+      ];
+      const mockGetOrderFills = jest.fn().mockResolvedValue(mockFillsFromRest);
+      (
+        Engine.context.PerpsController.getActiveProviderOrNull as jest.Mock
+      ).mockReturnValue({
+        getOrderFills: mockGetOrderFills,
+      });
+      (
+        Engine.context.PerpsController.getOrderFills as jest.Mock
+      ).mockImplementation(mockGetOrderFills);
+
+      mockUsePerpsConnection.mockReturnValue({
+        isConnected: true,
+        isInitialized: true,
+        isConnecting: false,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      } as never);
+
+      await act(async () => {
+        renderHook(() => usePerpsHomeData());
+      });
+
+      expect(
+        Engine.context.PerpsController.getActiveProviderOrNull,
+      ).toHaveBeenCalled();
+      expect(mockGetOrderFills).toHaveBeenCalledWith({
+        aggregateByTime: false,
+      });
+    });
+
+    it('clears stale REST fills when the connection starts reconnecting', async () => {
+      const restFill = createMockOrderFill({
+        orderId: 'rest-fill-stale',
+        symbol: 'BTC',
+        timestamp: 1234567800,
+      });
+      const mockGetOrderFills = jest.fn().mockResolvedValue([restFill]);
+      (
+        Engine.context.PerpsController.getActiveProviderOrNull as jest.Mock
+      ).mockReturnValue({
+        getOrderFills: mockGetOrderFills,
+      });
+      (
+        Engine.context.PerpsController.getOrderFills as jest.Mock
+      ).mockImplementation(mockGetOrderFills);
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      let connectionState = {
+        isConnected: true,
+        isInitialized: true,
+        isConnecting: false,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      };
+      mockUsePerpsConnection.mockImplementation(() => connectionState as never);
+
+      const { result, rerender } = renderHook(() => usePerpsHomeData());
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.recentActivity).toHaveLength(1);
+
+      connectionState = {
+        ...connectionState,
+        isConnecting: true,
+      };
+
+      await act(async () => {
+        rerender();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(result.current.isLoading.activity).toBe(true);
+      expect(result.current.recentActivity).toEqual([]);
+    });
+
+    it('preserves multi-fill trades with same orderId and timestamp but different size/price', async () => {
+      // Simulate a SL execution split across multiple fills (same orderId + timestamp)
+      const multiFill1 = createMockOrderFill({
+        orderId: 'sl-order-1',
+        symbol: 'ETH',
+        timestamp: 1234567890,
+        size: '0.3',
+        price: '49000',
+        pnl: '-15.00',
+        direction: 'Close Long',
+      });
+      const multiFill2 = createMockOrderFill({
+        orderId: 'sl-order-1',
+        symbol: 'ETH',
+        timestamp: 1234567890,
+        size: '0.2',
+        price: '49000',
+        pnl: '-10.00',
+        direction: 'Close Long',
+      });
+
+      // REST fills return both fills
+      const mockGetOrderFills = jest
+        .fn()
+        .mockResolvedValue([multiFill1, multiFill2]);
+      (
+        Engine.context.PerpsController.getActiveProviderOrNull as jest.Mock
+      ).mockReturnValue({
+        getOrderFills: mockGetOrderFills,
+      });
+      (
+        Engine.context.PerpsController.getOrderFills as jest.Mock
+      ).mockImplementation(mockGetOrderFills);
+
+      mockUsePerpsConnection.mockReturnValue({
+        isConnected: true,
+        isInitialized: true,
+        isConnecting: false,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      } as never);
+
+      // WebSocket returns same fills
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [multiFill1, multiFill2],
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ activityLimit: 10 }),
+      );
+
+      await act(async () => {
+        // Wait for REST fills useEffect to run
+      });
+
+      // Both fills are preserved in mergedFills, then aggregated by
+      // transformFillsToTransactions into 1 transaction with combined size.
+      // With the old dedup key (orderId-timestamp), one fill was lost,
+      // resulting in wrong PnL and size.
+      const activity = result.current.recentActivity;
+      expect(activity.length).toBeGreaterThan(0);
+      // The aggregated transaction should reflect the combined 0.5 total size
+      expect(activity[0].fill?.size).toBe('0.5');
+    });
+
+    it('preserves detailedOrderType from REST fill when WS fill lacks it', async () => {
+      // Arrange — REST fill has enriched detailedOrderType
+      const restFill = createMockOrderFill({
+        orderId: 'fill-tp-1',
+        symbol: 'BTC',
+        timestamp: 1234567800,
+        detailedOrderType: 'Take Profit Limit',
+      });
+      const mockGetOrderFills = jest.fn().mockResolvedValue([restFill]);
+      (
+        Engine.context.PerpsController.getActiveProviderOrNull as jest.Mock
+      ).mockReturnValue({
+        getOrderFills: mockGetOrderFills,
+      });
+      (
+        Engine.context.PerpsController.getOrderFills as jest.Mock
+      ).mockImplementation(mockGetOrderFills);
+
+      // WS fill with same key but no detailedOrderType
+      const wsFill = createMockOrderFill({
+        orderId: 'fill-tp-1',
+        symbol: 'BTC',
+        timestamp: 1234567800,
+      });
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [wsFill],
+        isInitialLoading: false,
+      });
+
+      mockUsePerpsConnection.mockReturnValue({
+        isConnected: true,
+        isInitialized: true,
+        isConnecting: false,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      } as never);
+
+      // Act
+      const { result } = renderHook(() => usePerpsHomeData());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // Assert — recentActivity contains the merged fill with preserved detailedOrderType
+      // The detailedOrderType from REST is preserved during merge, then
+      // transformFillsToTransactions converts it to FillType.TakeProfit
+      expect(result.current.recentActivity).toHaveLength(1);
+      expect(result.current.recentActivity[0].fill?.fillType).toBe(
+        FillType.TakeProfit,
+      );
+    });
+
+    it('handles special characters in search query', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: '$BTC*' }),
+      );
+
+      expect(result.current.positions).toEqual([]);
+    });
+  });
+
+  describe('Data reactivity', () => {
+    it('updates when positions change', () => {
+      const { result, rerender } = renderHook(() => usePerpsHomeData());
+
+      const initialPositions = result.current.positions;
+
+      const newPositions = [createMockPosition({ symbol: 'SOL' })];
+      mockUsePerpsLivePositions.mockReturnValue({
+        positions: newPositions,
+        isInitialLoading: false,
+      });
+
+      rerender();
+
+      expect(result.current.positions).not.toBe(initialPositions);
+      expect(result.current.positions).toEqual(newPositions);
+    });
+
+    it('updates when orders change', () => {
+      const { result, rerender } = renderHook(() => usePerpsHomeData());
+
+      const newOrders = [createMockOrder({ symbol: 'DOGE' })];
+      mockUsePerpsLiveOrders.mockReturnValue({
+        retry: jest.fn(),
+        orders: newOrders,
+        isInitialLoading: false,
+      });
+
+      rerender();
+
+      expect(result.current.orders).toEqual(newOrders);
+    });
+
+    it('updates when markets change', () => {
+      const { result, rerender } = renderHook(() => usePerpsHomeData());
+
+      const newMarkets = [createMockMarket({ symbol: 'AVAX' })];
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: newMarkets,
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      rerender();
+
+      expect(result.current.perpsMarkets).toEqual(newMarkets);
+    });
+
+    it('updates when watchlist changes', () => {
+      const { result, rerender } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.watchlistMarkets).toHaveLength(2);
+
+      mockSelectPerpsWatchlistMarkets.mockReturnValue(['SOL']);
+
+      rerender();
+
+      expect(result.current.watchlistMarkets).toHaveLength(1);
+      expect(result.current.watchlistMarkets[0].symbol).toBe('SOL');
+    });
+
+    it('updates when search query changes', () => {
+      const { result, rerender } = renderHook(
+        ({ searchQuery }) => usePerpsHomeData({ searchQuery }),
+        { initialProps: { searchQuery: '' } },
+      );
+
+      expect(result.current.positions).toHaveLength(2);
+
+      rerender({ searchQuery: 'BTC' });
+
+      expect(result.current.positions).toHaveLength(1);
+      expect(result.current.positions[0].symbol).toBe('BTC');
+    });
+  });
+
+  describe('recentlyAddedMarkets', () => {
+    const NOW = 1_750_000_000_000;
+    const DAYS = (n: number) => n * 24 * 60 * 60 * 1000;
+
+    beforeEach(() => {
+      jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('includes markets listed within the last 30 days', () => {
+      const recentMarket = createMockMarket({
+        symbol: 'NEWCOIN',
+        listedAt: NOW - DAYS(5),
+      });
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: [...mockMarkets, recentMarket],
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.recentlyAddedMarkets).toHaveLength(1);
+      expect(result.current.recentlyAddedMarkets[0].symbol).toBe('NEWCOIN');
+    });
+
+    it('excludes markets listed more than 30 days ago', () => {
+      const staleMarket = createMockMarket({
+        symbol: 'OLDCOIN',
+        listedAt: NOW - DAYS(31),
+      });
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: [...mockMarkets, staleMarket],
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(
+        result.current.recentlyAddedMarkets.find((m) => m.symbol === 'OLDCOIN'),
+      ).toBeUndefined();
+    });
+
+    it('excludes markets without a listedAt timestamp', () => {
+      // mockMarkets (BTC, ETH, SOL) have no listedAt set
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.recentlyAddedMarkets).toHaveLength(0);
+    });
+
+    it('sorts markets newest first (largest listedAt first)', () => {
+      const oldest = createMockMarket({
+        symbol: 'COIN_A',
+        listedAt: NOW - DAYS(10),
+      });
+      const newest = createMockMarket({
+        symbol: 'COIN_B',
+        listedAt: NOW - DAYS(2),
+      });
+      const middle = createMockMarket({
+        symbol: 'COIN_C',
+        listedAt: NOW - DAYS(6),
+      });
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: [oldest, newest, middle],
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      mockSortMarkets.mockImplementation(({ markets }) => markets);
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      const symbols = result.current.recentlyAddedMarkets.map((m) => m.symbol);
+      expect(symbols).toEqual(['COIN_B', 'COIN_C', 'COIN_A']);
+    });
+
+    it('returns empty array when no markets qualify', () => {
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.recentlyAddedMarkets).toEqual([]);
+    });
+
+    it('includes a market listed exactly at the 30-day boundary minus 1 ms', () => {
+      const edgeMarket = createMockMarket({
+        symbol: 'EDGE',
+        listedAt: NOW - DAYS(30) + 1,
+      });
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: [edgeMarket],
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.recentlyAddedMarkets).toHaveLength(1);
+    });
+
+    it('excludes a market listed at exactly 30 days ago', () => {
+      const boundaryMarket = createMockMarket({
+        symbol: 'BOUNDARY',
+        listedAt: NOW - DAYS(30),
+      });
+
+      mockUsePerpsMarkets.mockReturnValue({
+        markets: [boundaryMarket],
+        isLoading: false,
+        isRefreshing: false,
+        error: null,
+        refresh: mockRefreshMarkets,
+      });
+
+      const { result } = renderHook(() => usePerpsHomeData());
+
+      expect(result.current.recentlyAddedMarkets).toHaveLength(0);
+    });
+  });
+
+  describe('Combined scenarios', () => {
+    it('applies search and limits together', () => {
+      const manyPositions = [
+        createMockPosition({ symbol: 'BTC' }),
+        createMockPosition({ symbol: 'BTC' }),
+        createMockPosition({ symbol: 'BTC' }),
+        createMockPosition({ symbol: 'ETH' }),
+      ];
+
+      mockUsePerpsLivePositions.mockReturnValue({
+        positions: manyPositions,
+        isInitialLoading: false,
+      });
+
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'BTC', positionsLimit: 2 }),
+      );
+
+      expect(result.current.positions).toHaveLength(2);
+      expect(result.current.positions.every((p) => p.symbol === 'BTC')).toBe(
+        true,
+      );
+    });
+
+    it('combines search with watchlist filtering', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({ searchQuery: 'BTC' }),
+      );
+
+      const watchlistSymbols = result.current.watchlistMarkets.map(
+        (m) => m.symbol,
+      );
+
+      expect(watchlistSymbols).toContain('BTC');
+      expect(watchlistSymbols).not.toContain('SOL');
+    });
+
+    it('handles all parameters together', () => {
+      const { result } = renderHook(() =>
+        usePerpsHomeData({
+          positionsLimit: 1,
+          ordersLimit: 1,
+          trendingLimit: 1,
+          activityLimit: 1,
+          searchQuery: 'BTC',
+        }),
+      );
+
+      expect(result.current.positions.length).toBeLessThanOrEqual(1);
+      expect(result.current.orders.length).toBeLessThanOrEqual(1);
+      expect(result.current.perpsMarkets.length).toBeLessThanOrEqual(1);
+      expect(result.current.recentActivity.length).toBeLessThanOrEqual(1);
+    });
+  });
+});

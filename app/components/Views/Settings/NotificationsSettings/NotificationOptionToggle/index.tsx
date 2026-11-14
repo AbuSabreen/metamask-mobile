@@ -1,33 +1,28 @@
 import React, { useCallback } from 'react';
-import { Platform, Switch, View } from 'react-native';
+import { Switch, View } from 'react-native';
 import { createStyles } from './styles';
-import generateTestId from '../../../../../../wdio/utils/generateTestId';
-import Text, {
-  TextColor,
-  TextVariant,
-} from '../../../../../component-library/components/Texts/Text';
 import { useTheme } from '../../../../../util/theme';
-import { NotificationsToggleTypes } from '../NotificationsSettings.constants';
-import {
-  AvatarSize,
-  AvatarVariant,
-} from '../../../../../component-library/components/Avatars/Avatar/Avatar.types';
-import Avatar from '../../../../../component-library/components/Avatars/Avatar';
-import { formatAddress } from '../../../../../util/address';
-import Icon, {
-  IconColor,
-  IconSize,
-} from '../../../../../component-library/components/Icons/Icon';
+import { AvatarAccountType } from '../../../../../component-library/components/Avatars/Avatar';
+import { AccountGroupObject } from '@metamask/account-tree-controller';
+import AccountCell from '../../../../../component-library/components-temp/MultichainAccounts/AccountCell';
+
+const NOTIFICATION_OPTIONS_TOGGLE_SWITCH_TEST_ID =
+  'notification_options_toggle_switch';
+export const NOTIFICATION_OPTIONS_TOGGLE_CONTAINER_TEST_ID = (
+  testID = NOTIFICATION_OPTIONS_TOGGLE_SWITCH_TEST_ID,
+) => `${testID}:notification_options_toggle--container`;
+export const NOTIFICATION_OPTIONS_TOGGLE_LOADING_TEST_ID = (
+  testID = NOTIFICATION_OPTIONS_TOGGLE_SWITCH_TEST_ID,
+) => `${testID}:notification_options_toggle--loading`;
 
 interface NotificationOptionsToggleProps {
-  icon?: any;
-  title: string;
-  description?: string;
-  value?: boolean;
-  onOptionUpdated?: (enabled: boolean) => void;
+  item: AccountGroupObject;
+  icon: AvatarAccountType;
   testId?: string;
-  disabled?: boolean;
-  type?: string;
+  disabledSwitch?: boolean;
+  isEnabled: boolean;
+  onToggle: (nextValue: boolean) => void;
+  testID: string;
 }
 
 /**
@@ -35,71 +30,45 @@ interface NotificationOptionsToggleProps {
  * This component assumes that the parent will manage the state of the toggle. This is because most of the state is global.
  */
 const NotificationOptionToggle = ({
+  item,
   icon,
-  title,
-  description,
-  value,
-  testId,
-  onOptionUpdated,
-  disabled,
-  type,
+  isEnabled,
+  disabledSwitch,
+  onToggle,
+  testID,
 }: NotificationOptionsToggleProps) => {
   const theme = useTheme();
   const { colors } = theme;
   const styles = createStyles();
 
-  const handleOnValueChange = useCallback(
-    (newValue: boolean) => {
-      onOptionUpdated?.(newValue);
+  const handleToggleAccountNotifications = useCallback(
+    (nextValue: boolean) => {
+      onToggle(nextValue);
     },
-    [onOptionUpdated],
+    [onToggle],
   );
 
   return (
-    <View style={styles.container}>
-      {type === NotificationsToggleTypes.ACTIONS ? (
-        <Icon
-          name={icon}
-          style={styles.icon}
-          color={IconColor.Default}
-          size={icon === 'Received' ? IconSize.Md : IconSize.Lg}
-        />
-      ) : (
-        <Avatar
-          variant={AvatarVariant.Account}
-          type={icon}
-          accountAddress={description}
-          size={AvatarSize.Md}
-          style={styles.accountAvatar}
-        />
-      )}
-      <View style={styles.titleContainer}>
-        <Text variant={TextVariant.BodyLGMedium} style={styles.title}>
-          {title}
-        </Text>
-        {description ? (
-          <Text variant={TextVariant.BodyMD} color={TextColor.Alternative}>
-            {type === NotificationsToggleTypes.ACTIONS
-              ? description
-              : formatAddress(description, 'short')}
-          </Text>
-        ) : null}
-      </View>
-      <View style={styles.switchElement}>
-        <Switch
-          value={value}
-          onValueChange={(newValue: boolean) => handleOnValueChange(newValue)}
-          trackColor={{
-            true: colors.primary.default,
-            false: colors.border.muted,
-          }}
-          thumbColor={theme.brandColors.white000}
-          style={styles.switch}
-          ios_backgroundColor={colors.border.muted}
-          disabled={disabled}
-          {...generateTestId(Platform, testId)}
-        />
-      </View>
+    <View testID={NOTIFICATION_OPTIONS_TOGGLE_CONTAINER_TEST_ID(testID)}>
+      <AccountCell
+        accountGroup={item}
+        avatarAccountType={icon}
+        endContainer={
+          <Switch
+            style={styles.switch}
+            value={isEnabled}
+            onValueChange={handleToggleAccountNotifications}
+            trackColor={{
+              true: colors.primary.default,
+              false: colors.border.muted,
+            }}
+            thumbColor={theme.brandColors.white}
+            disabled={disabledSwitch}
+            ios_backgroundColor={colors.border.muted}
+            testID={testID}
+          />
+        }
+      />
     </View>
   );
 };

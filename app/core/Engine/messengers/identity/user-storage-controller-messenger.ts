@@ -1,0 +1,83 @@
+import {
+  Messenger,
+  MessengerActions,
+  MessengerEvents,
+} from '@metamask/messenger';
+import { UserStorageControllerMessenger } from '@metamask/profile-sync-controller/user-storage';
+import { RootMessenger } from '../../types';
+import { AnalyticsControllerActions } from '@metamask/analytics-controller';
+
+/**
+ * Get a messenger for the user storage controller. This is scoped to the
+ * user storage controller is allowed to handle.
+ *
+ * @param rootMessenger - The root messenger.
+ * @returns The UserStorageControllerMessenger.
+ */
+export function getUserStorageControllerMessenger(
+  rootMessenger: RootMessenger<
+    MessengerActions<UserStorageControllerMessenger>,
+    MessengerEvents<UserStorageControllerMessenger>
+  >,
+): UserStorageControllerMessenger {
+  const messenger: UserStorageControllerMessenger = new Messenger({
+    namespace: 'UserStorageController',
+    parent: rootMessenger,
+  });
+  rootMessenger.delegate({
+    actions: [
+      'KeyringController:getState',
+      'KeyringController:withKeyringV2Unsafe',
+      'AuthenticationController:getBearerToken',
+      'AuthenticationController:getSessionProfile',
+      'AuthenticationController:isSignedIn',
+      'AuthenticationController:performSignIn',
+      'AddressBookController:list',
+      'AddressBookController:set',
+      'AddressBookController:delete',
+    ],
+    events: [
+      'KeyringController:lock',
+      'KeyringController:unlock',
+      'AddressBookController:contactUpdated',
+      'AddressBookController:contactDeleted',
+    ],
+    messenger,
+  });
+  return messenger;
+}
+
+type UserStorageControllerInitMessengerActions = AnalyticsControllerActions;
+
+/**
+ * Get the UserStorageControllerInitMessenger for the UserStorageController.
+ * This messenger is used during controller initialization to call other controllers.
+ *
+ * @param rootMessenger - The root messenger.
+ * @returns The UserStorageControllerInitMessenger.
+ */
+export type UserStorageControllerInitMessenger = Messenger<
+  'UserStorageControllerInit',
+  UserStorageControllerInitMessengerActions,
+  never
+>;
+
+export function getUserStorageControllerInitMessenger(
+  rootMessenger: RootMessenger<
+    MessengerActions<UserStorageControllerInitMessenger>,
+    MessengerEvents<UserStorageControllerInitMessenger>
+  >,
+): UserStorageControllerInitMessenger {
+  const messenger: UserStorageControllerInitMessenger = new Messenger({
+    namespace: 'UserStorageControllerInit',
+    parent: rootMessenger,
+  });
+
+  rootMessenger.delegate({
+    actions: ['AnalyticsController:trackEvent'],
+    events: [],
+    messenger,
+  });
+
+  return messenger;
+}

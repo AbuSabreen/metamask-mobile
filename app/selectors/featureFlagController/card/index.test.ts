@@ -1,0 +1,1165 @@
+import { Platform } from 'react-native';
+import {
+  CardFeatureFlag,
+  SupportedChain,
+  SupportedToken,
+  DEFAULT_APPLE_PAY_LEARN_MORE_URL,
+  selectApplePayLearnMoreUrl,
+  selectCardFeatureFlag,
+  selectMetalCardCheckoutFeatureFlag,
+  selectPushProvisioningEnabled,
+  selectCardForgotPasswordFeatureEnabled,
+  selectCardBaanxPasswordlessLoginEnabled,
+  selectImmersveOnboardingEnabled,
+  selectCardTransactionHistoryEnabled,
+  selectCardImmersveMfaEnabled,
+  selectCardIntercomSupportEnabled,
+} from '.';
+import mockedEngine from '../../../core/__mocks__/MockedEngine';
+import { mockedEmptyFlagsState, mockedUndefinedFlagsState } from '../mocks';
+import { validatedVersionGatedFeatureFlag } from '../../../util/remoteFeatureFlag';
+
+jest.mock('../../../core/Engine', () => ({
+  init: () => mockedEngine.init(),
+}));
+
+jest.mock('../../../util/remoteFeatureFlag', () => ({
+  validatedVersionGatedFeatureFlag: jest.fn(),
+}));
+
+jest.mock(
+  '../../../core/Engine/controllers/remote-feature-flag-controller',
+  () => ({
+    isRemoteFeatureFlagOverrideActivated: false,
+  }),
+);
+
+const originalEnv = process.env;
+
+beforeEach(() => {
+  jest.resetModules();
+  process.env = { ...originalEnv };
+  jest.clearAllMocks();
+});
+
+afterEach(() => {
+  process.env = originalEnv;
+  jest.clearAllMocks();
+});
+
+const mockedSupportedToken: SupportedToken = {
+  address: '0x1234567890123456789012345678901234567890',
+  decimals: 18,
+  enabled: true,
+  name: 'Test Token',
+  symbol: 'TEST',
+};
+
+const mockedSupportedChain: SupportedChain = {
+  enabled: true,
+  balanceScannerAddress: '0xabc',
+  foxConnectAddresses: {
+    global: '0xdef',
+    us: '0xghi',
+  },
+  tokens: [mockedSupportedToken],
+};
+
+const mockedCardFeatureFlag: CardFeatureFlag = {
+  constants: {
+    onRampApiUrl: 'https://api.onramp.metamask.io',
+    accountsApiUrl: 'https://api.accounts.metamask.io',
+  },
+  chains: {
+    '1': mockedSupportedChain,
+    '137': {
+      enabled: false,
+      tokens: null,
+    },
+  },
+};
+
+const mockedStateWithCardFeatureFlag = {
+  engine: {
+    backgroundState: {
+      RemoteFeatureFlagController: {
+        remoteFeatureFlags: {
+          cardFeature: mockedCardFeatureFlag,
+        },
+        cacheTimestamp: 0,
+      },
+    },
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any;
+
+const mockedStateWithPartialCardFeatureFlag = {
+  engine: {
+    backgroundState: {
+      RemoteFeatureFlagController: {
+        remoteFeatureFlags: {
+          cardFeature: {
+            constants: {},
+            chains: {
+              '1': {
+                enabled: true,
+                // tokens is undefined
+              },
+              '137': {
+                // enabled is undefined
+                tokens: [],
+              },
+            },
+          },
+        },
+        cacheTimestamp: 0,
+      },
+    },
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any;
+
+describe('selectCardFeatureFlag', () => {
+  it('returns default card feature flag when feature flag state is empty', () => {
+    const result = selectCardFeatureFlag(
+      mockedEmptyFlagsState,
+    ) as CardFeatureFlag;
+
+    expect(result).toBeDefined();
+    expect(result.constants).toBeDefined();
+    expect(result.chains).toBeDefined();
+  });
+
+  it('returns default card feature flag when RemoteFeatureFlagController state is undefined', () => {
+    const result = selectCardFeatureFlag(
+      mockedUndefinedFlagsState,
+    ) as CardFeatureFlag;
+
+    expect(result).toBeDefined();
+    expect(result.constants).toBeDefined();
+    expect(result.chains).toBeDefined();
+  });
+
+  it('returns default card feature flag when cardFeature is null', () => {
+    const stateWithNullCardFlag = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardFeature: null,
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+    };
+
+    const result = selectCardFeatureFlag(
+      stateWithNullCardFlag,
+    ) as CardFeatureFlag;
+
+    expect(result).toBeDefined();
+    expect(result.constants).toBeDefined();
+    expect(result.chains).toBeDefined();
+  });
+
+  it('returns default card feature flag when cardFeature is empty object', () => {
+    const stateWithEmptyCardFlag = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardFeature: {},
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectCardFeatureFlag(
+      stateWithEmptyCardFlag,
+    ) as CardFeatureFlag;
+
+    expect(result).toBeDefined();
+    expect(result.constants).toBeDefined();
+    expect(result.chains).toBeDefined();
+  });
+
+  it('returns card feature flag when properly configured', () => {
+    const result = selectCardFeatureFlag(mockedStateWithCardFeatureFlag);
+
+    expect(result).toEqual(mockedCardFeatureFlag);
+  });
+
+  it('handles partial configuration correctly', () => {
+    const result = selectCardFeatureFlag(mockedStateWithPartialCardFeatureFlag);
+
+    expect(result).toEqual({
+      constants: {},
+      chains: {
+        '1': {
+          enabled: true,
+          tokens: undefined,
+        },
+        '137': {
+          enabled: undefined,
+          tokens: [],
+        },
+      },
+    });
+  });
+
+  it('preserves chain structure with undefined values', () => {
+    const stateWithUndefinedChain = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardFeature: {
+                constants: {},
+                chains: {
+                  '1': undefined,
+                  '137': {
+                    enabled: true,
+                    tokens: [mockedSupportedToken],
+                  },
+                },
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectCardFeatureFlag(stateWithUndefinedChain);
+
+    expect(result).toEqual({
+      constants: {},
+      chains: {
+        '1': undefined,
+        '137': {
+          enabled: true,
+          tokens: [mockedSupportedToken],
+        },
+      },
+    });
+  });
+
+  it('handles tokens array correctly', () => {
+    const stateWithMultipleTokens = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardFeature: {
+                chains: {
+                  '1': {
+                    enabled: true,
+                    tokens: [
+                      mockedSupportedToken,
+                      {
+                        address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+                        decimals: 6,
+                        enabled: false,
+                        name: 'Another Token',
+                        symbol: 'ANOTHER',
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectCardFeatureFlag(
+      stateWithMultipleTokens,
+    ) as CardFeatureFlag;
+
+    expect(result.chains?.['1']?.tokens).toHaveLength(2);
+    expect(result.chains?.['1']?.tokens?.[0]).toEqual(mockedSupportedToken);
+    expect(result.chains?.['1']?.tokens?.[1]).toEqual({
+      address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+      decimals: 6,
+      enabled: false,
+      name: 'Another Token',
+      symbol: 'ANOTHER',
+    });
+  });
+
+  it('handles disabled chain correctly', () => {
+    const stateWithDisabledChain = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardFeature: {
+                chains: {
+                  '1': {
+                    enabled: false,
+                    tokens: null,
+                  },
+                },
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectCardFeatureFlag(
+      stateWithDisabledChain,
+    ) as CardFeatureFlag;
+
+    expect(result.chains?.['1']?.enabled).toBe(false);
+    expect(result.chains?.['1']?.tokens).toBeNull();
+  });
+});
+
+describe('selectMetalCardCheckoutFeatureFlag', () => {
+  const mockedValidatedVersionGatedFeatureFlag =
+    validatedVersionGatedFeatureFlag as jest.MockedFunction<
+      typeof validatedVersionGatedFeatureFlag
+    >;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns false when feature flag state is empty', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    const result = selectMetalCardCheckoutFeatureFlag(mockedEmptyFlagsState);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when RemoteFeatureFlagController state is undefined', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    const result = selectMetalCardCheckoutFeatureFlag(
+      mockedUndefinedFlagsState,
+    );
+
+    expect(result).toBe(false);
+  });
+
+  it('returns true when feature flag is enabled and version requirement is met', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(true);
+
+    const stateWithMetalCardCheckout = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              metalCardCheckoutEnabled: {
+                enabled: true,
+                minimumVersion: '7.0.0',
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectMetalCardCheckoutFeatureFlag(
+      stateWithMetalCardCheckout,
+    );
+
+    expect(result).toBe(true);
+    expect(mockedValidatedVersionGatedFeatureFlag).toHaveBeenCalledWith({
+      enabled: true,
+      minimumVersion: '7.0.0',
+    });
+  });
+
+  it('returns false when feature flag is disabled', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(false);
+
+    const stateWithDisabledFlag = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              metalCardCheckoutEnabled: {
+                enabled: false,
+                minimumVersion: '7.0.0',
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectMetalCardCheckoutFeatureFlag(stateWithDisabledFlag);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when version requirement is not met', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(false);
+
+    const stateWithVersionGate = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              metalCardCheckoutEnabled: {
+                enabled: true,
+                minimumVersion: '99.0.0',
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectMetalCardCheckoutFeatureFlag(stateWithVersionGate);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when validatedVersionGatedFeatureFlag returns undefined', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    const stateWithMalformedFlag = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              metalCardCheckoutEnabled: {
+                enabled: 'true', // Invalid type
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectMetalCardCheckoutFeatureFlag(stateWithMalformedFlag);
+
+    expect(result).toBe(false);
+  });
+});
+
+describe('selectCardForgotPasswordFeatureEnabled', () => {
+  const mockedValidatedVersionGatedFeatureFlag =
+    validatedVersionGatedFeatureFlag as jest.MockedFunction<
+      typeof validatedVersionGatedFeatureFlag
+    >;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns false when feature flag state is empty', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    const result = selectCardForgotPasswordFeatureEnabled(
+      mockedEmptyFlagsState,
+    );
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when RemoteFeatureFlagController state is undefined', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    const result = selectCardForgotPasswordFeatureEnabled(
+      mockedUndefinedFlagsState,
+    );
+
+    expect(result).toBe(false);
+  });
+
+  it('returns true when feature flag is enabled and version requirement is met', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(true);
+
+    const stateWithForgotPassword = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardForgotPasswordFeature: {
+                enabled: true,
+                minimumVersion: '7.0.0',
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectCardForgotPasswordFeatureEnabled(
+      stateWithForgotPassword,
+    );
+
+    expect(result).toBe(true);
+    expect(mockedValidatedVersionGatedFeatureFlag).toHaveBeenCalledWith({
+      enabled: true,
+      minimumVersion: '7.0.0',
+    });
+  });
+
+  it('returns false when feature flag is disabled', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(false);
+
+    const stateWithDisabledFlag = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardForgotPasswordFeature: {
+                enabled: false,
+                minimumVersion: '7.0.0',
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectCardForgotPasswordFeatureEnabled(
+      stateWithDisabledFlag,
+    );
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when version requirement is not met', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(false);
+
+    const stateWithVersionGate = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardForgotPasswordFeature: {
+                enabled: true,
+                minimumVersion: '99.0.0',
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectCardForgotPasswordFeatureEnabled(stateWithVersionGate);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when validatedVersionGatedFeatureFlag returns undefined', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    const stateWithMalformedFlag = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardForgotPasswordFeature: {
+                enabled: 'true', // Invalid type
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const result = selectCardForgotPasswordFeatureEnabled(
+      stateWithMalformedFlag,
+    );
+
+    expect(result).toBe(false);
+  });
+});
+
+describe('selectCardBaanxPasswordlessLoginEnabled', () => {
+  const mockedValidatedVersionGatedFeatureFlag =
+    validatedVersionGatedFeatureFlag as jest.MockedFunction<
+      typeof validatedVersionGatedFeatureFlag
+    >;
+
+  const stateWithFlags = (remoteFeatureFlags: Record<string, unknown>) =>
+    ({
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags,
+            cacheTimestamp: 0,
+          },
+        },
+      },
+    }) as never;
+
+  beforeEach(() => {
+    delete process.env.MM_CARD_BAANX_PASSWORDLESS_LOGIN_ENABLED;
+  });
+
+  it('returns true when the remote flag is enabled', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(true);
+
+    expect(
+      selectCardBaanxPasswordlessLoginEnabled(
+        stateWithFlags({
+          cardBaanxPasswordlessLogin: {
+            enabled: true,
+            minimumVersion: '8.0.0',
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(mockedValidatedVersionGatedFeatureFlag).toHaveBeenCalledWith({
+      enabled: true,
+      minimumVersion: '8.0.0',
+    });
+  });
+
+  it('returns false when the remote flag is disabled', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(false);
+
+    expect(
+      selectCardBaanxPasswordlessLoginEnabled(
+        stateWithFlags({
+          cardBaanxPasswordlessLogin: {
+            enabled: false,
+            minimumVersion: '8.0.0',
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('returns false when the remote flag is absent', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    expect(selectCardBaanxPasswordlessLoginEnabled(mockedEmptyFlagsState)).toBe(
+      false,
+    );
+  });
+
+  it('falls back to env when the remote flag is absent', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+    process.env.MM_CARD_BAANX_PASSWORDLESS_LOGIN_ENABLED = 'true';
+
+    expect(selectCardBaanxPasswordlessLoginEnabled.resultFunc({})).toBe(true);
+  });
+});
+
+describe('selectImmersveOnboardingEnabled', () => {
+  const stateWithFlags = (remoteFeatureFlags: Record<string, unknown>) =>
+    ({
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags,
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+
+  it('returns true when the cardImmersve switch is on', () => {
+    (validatedVersionGatedFeatureFlag as jest.Mock).mockReturnValue(true);
+
+    expect(
+      selectImmersveOnboardingEnabled(
+        stateWithFlags({
+          cardImmersve: { enabled: true, minimumVersion: '0.0.0' },
+        }),
+      ),
+    ).toBe(true);
+    expect(validatedVersionGatedFeatureFlag).toHaveBeenCalledWith({
+      enabled: true,
+      minimumVersion: '0.0.0',
+    });
+  });
+
+  it('returns false when the cardImmersve switch is off', () => {
+    (validatedVersionGatedFeatureFlag as jest.Mock).mockReturnValue(false);
+
+    expect(
+      selectImmersveOnboardingEnabled(
+        stateWithFlags({
+          cardImmersve: { enabled: false, minimumVersion: '0.0.0' },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('returns false when no switch is configured', () => {
+    (validatedVersionGatedFeatureFlag as jest.Mock).mockReturnValue(undefined);
+
+    expect(selectImmersveOnboardingEnabled(mockedEmptyFlagsState)).toBe(false);
+  });
+
+  it('ignores the legacy cardFeature.immersve block', () => {
+    (validatedVersionGatedFeatureFlag as jest.Mock).mockReturnValue(undefined);
+
+    expect(
+      selectImmersveOnboardingEnabled(
+        stateWithFlags({ cardFeature: { immersve: { enabled: true } } }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('selectCardTransactionHistoryEnabled', () => {
+  const mockedValidatedVersionGatedFeatureFlag =
+    validatedVersionGatedFeatureFlag as jest.MockedFunction<
+      typeof validatedVersionGatedFeatureFlag
+    >;
+
+  const stateWithFlags = (remoteFeatureFlags: Record<string, unknown>) =>
+    ({
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags,
+            cacheTimestamp: 0,
+          },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete process.env.MM_CARD_TRANSACTION_HISTORY_ENABLED;
+  });
+
+  it('returns false when feature flag state is empty and env is unset', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    const result = selectCardTransactionHistoryEnabled(mockedEmptyFlagsState);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns true when feature flag is enabled and version requirement is met', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(true);
+
+    const result = selectCardTransactionHistoryEnabled(
+      stateWithFlags({
+        cardTransactionHistory: {
+          enabled: true,
+          minimumVersion: '7.0.0',
+        },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockedValidatedVersionGatedFeatureFlag).toHaveBeenCalledWith({
+      enabled: true,
+      minimumVersion: '7.0.0',
+    });
+  });
+
+  it('returns false when feature flag is disabled', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(false);
+
+    expect(
+      selectCardTransactionHistoryEnabled(
+        stateWithFlags({
+          cardTransactionHistory: {
+            enabled: false,
+            minimumVersion: '7.0.0',
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('falls back to env when remote flag is absent', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+    process.env.MM_CARD_TRANSACTION_HISTORY_ENABLED = 'true';
+
+    // resultFunc bypasses createSelector memoization after env changes.
+    expect(selectCardTransactionHistoryEnabled.resultFunc({})).toBe(true);
+  });
+});
+
+describe('selectCardImmersveMfaEnabled', () => {
+  const mockedValidatedVersionGatedFeatureFlag =
+    validatedVersionGatedFeatureFlag as jest.MockedFunction<
+      typeof validatedVersionGatedFeatureFlag
+    >;
+
+  const stateWithFlags = (remoteFeatureFlags: Record<string, unknown>) =>
+    ({
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags,
+            cacheTimestamp: 0,
+          },
+        },
+      },
+    }) as Parameters<typeof selectCardImmersveMfaEnabled>[0];
+
+  beforeEach(() => {
+    delete process.env.MM_CARD_IMMERSVE_MFA_ENABLED;
+  });
+
+  it('returns true when the flag is enabled and the version requirement is met', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(true);
+
+    expect(
+      selectCardImmersveMfaEnabled(
+        stateWithFlags({
+          cardImmersveMfa: { enabled: true, minimumVersion: '7.0.0' },
+        }),
+      ),
+    ).toBe(true);
+    expect(mockedValidatedVersionGatedFeatureFlag).toHaveBeenCalledWith({
+      enabled: true,
+      minimumVersion: '7.0.0',
+    });
+  });
+
+  it('returns false when the flag is disabled', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(false);
+
+    expect(
+      selectCardImmersveMfaEnabled(
+        stateWithFlags({
+          cardImmersveMfa: { enabled: false, minimumVersion: '7.0.0' },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('returns false when the flag is absent and env is unset', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    expect(selectCardImmersveMfaEnabled(mockedEmptyFlagsState)).toBe(false);
+  });
+
+  it('falls back to env when the remote flag is absent', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+    process.env.MM_CARD_IMMERSVE_MFA_ENABLED = 'true';
+
+    expect(selectCardImmersveMfaEnabled.resultFunc({})).toBe(true);
+  });
+});
+
+describe('selectCardIntercomSupportEnabled', () => {
+  const mockedValidatedVersionGatedFeatureFlag =
+    validatedVersionGatedFeatureFlag as jest.MockedFunction<
+      typeof validatedVersionGatedFeatureFlag
+    >;
+
+  const stateWithFlags = (remoteFeatureFlags: Record<string, unknown>) =>
+    ({
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags,
+            cacheTimestamp: 0,
+          },
+        },
+      },
+    }) as Parameters<typeof selectCardIntercomSupportEnabled>[0];
+
+  beforeEach(() => {
+    delete process.env.MM_CARD_INTERCOM_SUPPORT_ENABLED;
+  });
+
+  it('returns true when the flag is enabled and the version requirement is met', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(true);
+
+    const result = selectCardIntercomSupportEnabled(
+      stateWithFlags({
+        cardIntercomSupport: { enabled: true, minimumVersion: '7.0.0' },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockedValidatedVersionGatedFeatureFlag).toHaveBeenCalledWith({
+      enabled: true,
+      minimumVersion: '7.0.0',
+    });
+  });
+
+  it('returns false when the flag is disabled, routing support back to email', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(false);
+
+    expect(
+      selectCardIntercomSupportEnabled(
+        stateWithFlags({
+          cardIntercomSupport: { enabled: false, minimumVersion: '7.0.0' },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('returns false when the flag is absent and env is unset', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+
+    expect(selectCardIntercomSupportEnabled(mockedEmptyFlagsState)).toBe(false);
+  });
+
+  it('falls back to env when the remote flag is absent', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(undefined);
+    process.env.MM_CARD_INTERCOM_SUPPORT_ENABLED = 'true';
+
+    expect(selectCardIntercomSupportEnabled.resultFunc({})).toBe(true);
+  });
+
+  it('lets the remote flag win over the env override', () => {
+    mockedValidatedVersionGatedFeatureFlag.mockReturnValue(false);
+    process.env.MM_CARD_INTERCOM_SUPPORT_ENABLED = 'true';
+
+    expect(
+      selectCardIntercomSupportEnabled.resultFunc({
+        cardIntercomSupport: { enabled: false, minimumVersion: '7.0.0' },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('selectPushProvisioningEnabled', () => {
+  const mockedValidatedVersionGatedFeatureFlag =
+    validatedVersionGatedFeatureFlag as jest.MockedFunction<
+      typeof validatedVersionGatedFeatureFlag
+    >;
+
+  const stateWithFlags = (remoteFeatureFlags: Record<string, unknown>) =>
+    ({
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags,
+            cacheTimestamp: 0,
+          },
+        },
+      },
+    }) as never;
+
+  beforeEach(() => {
+    mockedValidatedVersionGatedFeatureFlag.mockImplementation((flag) => {
+      const enabled = (flag as { enabled?: boolean } | undefined)?.enabled;
+      return enabled === true;
+    });
+  });
+
+  const usFacts = { countryCode: 'US', cardProcessor: 'galileo' };
+
+  const withPlatform = (os: string, run: () => void) => {
+    const originalPlatform = Platform.OS;
+    Object.defineProperty(Platform, 'OS', { value: os, writable: true });
+    try {
+      run();
+    } finally {
+      Object.defineProperty(Platform, 'OS', {
+        value: originalPlatform,
+        writable: true,
+      });
+    }
+  };
+
+  it('follows the Baanx flag for Apple Wallet', () => {
+    const state = stateWithFlags({
+      cardBaanxProvisioning: {
+        enabled: true,
+        minimumVersion: '0.0.0',
+        countries: {
+          US: {
+            enabled: true,
+            ios: {
+              apple_wallet: { enabled: true, minimumVersion: '0.0.0' },
+            },
+          },
+        },
+      },
+    });
+
+    withPlatform('ios', () => {
+      expect(
+        selectPushProvisioningEnabled(state, 'baanx', 'apple_wallet', usFacts),
+      ).toBe(true);
+    });
+  });
+
+  it('follows the Baanx flag for Google Wallet', () => {
+    const state = stateWithFlags({
+      cardBaanxProvisioning: {
+        enabled: true,
+        minimumVersion: '0.0.0',
+        countries: {
+          US: {
+            enabled: true,
+            android: {
+              google_wallet: { enabled: true, minimumVersion: '0.0.0' },
+            },
+          },
+        },
+      },
+    });
+
+    withPlatform('android', () => {
+      expect(
+        selectPushProvisioningEnabled(state, 'baanx', 'google_wallet', usFacts),
+      ).toBe(true);
+    });
+  });
+
+  it('follows the Immersve flag for Apple Wallet and stays off for Google Wallet', () => {
+    const state = stateWithFlags({
+      cardImmersveProvisioning: {
+        enabled: true,
+        minimumVersion: '0.0.0',
+        countries: {
+          NZ: {
+            enabled: true,
+            ios: {
+              apple_wallet: { enabled: true, minimumVersion: '0.0.0' },
+            },
+          },
+        },
+      },
+    });
+
+    withPlatform('ios', () => {
+      expect(
+        selectPushProvisioningEnabled(state, 'immersve', 'apple_wallet', {
+          countryCode: 'NZ',
+        }),
+      ).toBe(true);
+      expect(
+        selectPushProvisioningEnabled(state, 'immersve', 'google_wallet', {
+          countryCode: 'NZ',
+        }),
+      ).toBe(false);
+    });
+  });
+
+  it('returns false when the provider has no provisioning flag', () => {
+    const state = stateWithFlags({});
+
+    withPlatform('ios', () => {
+      expect(
+        selectPushProvisioningEnabled(state, null, 'apple_wallet', usFacts),
+      ).toBe(false);
+      expect(
+        selectPushProvisioningEnabled(state, 'baanx', 'apple_wallet', usFacts),
+      ).toBe(false);
+    });
+  });
+
+  it('returns false when the provisioning flag is not a valid shape', () => {
+    const state = stateWithFlags({
+      cardImmersveProvisioning: { enabled: 'yes' },
+    });
+
+    withPlatform('ios', () => {
+      expect(
+        selectPushProvisioningEnabled(state, 'immersve', 'apple_wallet', {
+          countryCode: 'NZ',
+        }),
+      ).toBe(false);
+    });
+  });
+
+  it('returns false when the old wallet flags are the only keys present', () => {
+    const state = stateWithFlags({
+      galileoAppleWalletInAppProvisioningEnabled: {
+        enabled: true,
+        minimumVersion: '7.0.0',
+      },
+    });
+
+    withPlatform('ios', () => {
+      expect(
+        selectPushProvisioningEnabled(state, 'baanx', 'apple_wallet', usFacts),
+      ).toBe(false);
+      expect(
+        selectPushProvisioningEnabled(state, 'baanx', 'apple_wallet', {
+          countryCode: 'US',
+          cardProcessor: 'monavate',
+        }),
+      ).toBe(false);
+    });
+  });
+});
+
+describe('selectApplePayLearnMoreUrl', () => {
+  it('returns the built-in URL when cardFeature does not set one', () => {
+    expect(selectApplePayLearnMoreUrl(mockedEmptyFlagsState)).toBe(
+      DEFAULT_APPLE_PAY_LEARN_MORE_URL,
+    );
+  });
+
+  it('returns the cardFeature constant when it is set', () => {
+    const state = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardFeature: {
+                constants: {
+                  applePayLearnMoreUrl: 'https://example.com/apple-pay',
+                },
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+    };
+
+    expect(selectApplePayLearnMoreUrl(state as never)).toBe(
+      'https://example.com/apple-pay',
+    );
+  });
+
+  it('returns the built-in URL when the constant is blank', () => {
+    const state = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              cardFeature: {
+                constants: {
+                  applePayLearnMoreUrl: '   ',
+                },
+              },
+            },
+            cacheTimestamp: 0,
+          },
+        },
+      },
+    };
+
+    expect(selectApplePayLearnMoreUrl(state as never)).toBe(
+      DEFAULT_APPLE_PAY_LEARN_MORE_URL,
+    );
+  });
+});

@@ -1,0 +1,84 @@
+import { test as perfTest } from '../../../framework/fixtures/playwright';
+import TimerHelper from '../../../framework/TimerHelper';
+import { AppiumAssertions, AppiumGestures } from '../../../framework';
+import { loginToAppPlaywright } from '../../../flows/wallet.flow';
+import { getPasswordForScenario } from '../../../framework/utils/TestConstants.js';
+import LoginView from '../../../page-objects/wallet/LoginView';
+import WalletView from '../../../page-objects/wallet/WalletView';
+import {
+  Performance,
+  PerformanceLogin,
+  PerformanceLaunch,
+} from '../../../tags.performance.js';
+import { enableHermesAppProfiling } from '../../helpers/appProfiling';
+
+/*
+ * Scenario: Warm Start Login to Wallet Performance Test
+ *
+ * This test measures how long it takes to unlock the wallet
+ * after the app is backgrounded and foregrounded back to the login screen.
+ *
+ * Test Setup:
+ * - Existing wallet already unlocked once in the session
+ *
+ * The test measures:
+ * 1. Time to tap Unlock and display the wallet screen again
+ */
+perfTest.describe(
+  `${Performance} ${PerformanceLogin} ${PerformanceLaunch}`,
+  () => {
+    perfTest(
+      'Measure Warm Start: Login To Wallet Screen',
+      { tag: '@metamask-mobile-platform' },
+      async (
+        { currentDeviceDetails, driver, performanceTracker },
+        testInfo,
+      ) => {
+        await loginToAppPlaywright();
+        await AppiumAssertions.expectElementToBeVisible(
+          WalletView.totalBalance,
+          {
+            description:
+              'Wallet account icon should be visible before warm start',
+          },
+        );
+
+        await enableHermesAppProfiling();
+        await AppiumGestures.backgroundApp(35);
+        await AppiumGestures.activateApp(currentDeviceDetails);
+        await AppiumAssertions.expectElementToBeVisible(
+          LoginView.passwordInput,
+          {
+            description: 'Login title should be visible',
+          },
+        );
+        const loginPassword = getPasswordForScenario('login');
+        await LoginView.enterPassword(loginPassword);
+
+        const timer1 = new TimerHelper(
+          'Time since the user clicks on unlock button, until the app unlocks',
+          { ios: 2500, android: 3000 },
+          currentDeviceDetails.platform,
+        );
+
+        await LoginView.tapLoginButton();
+        await timer1.measure(async () => {
+          await AppiumAssertions.expectElementToBeVisible(
+            WalletView.accountIcon,
+            {
+              description: 'Wallet balance should be visible',
+              timeout: 30 * 1000, // 30 seconds
+            },
+          );
+          // await WalletView.waitForBalanceToStabilize();
+        });
+
+        performanceTracker.addTimers(timer1);
+
+        console.log('Warm Start Login to Wallet Performance Test completed');
+        console.log(`Warm Start Login to Wallet: ${timer1.getDuration()}ms`);
+        console.log(`Total Time: ${timer1.getDuration() ?? 0}ms`);
+      },
+    );
+  },
+);

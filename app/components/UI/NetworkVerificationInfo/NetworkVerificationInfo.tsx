@@ -1,14 +1,16 @@
 /* eslint-disable react/prop-types */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Linking } from 'react-native';
+import React, { useCallback, useEffect, useMemo } from 'react';
+import { View, Linking, TouchableOpacity } from 'react-native';
 import { strings } from '../../../../locales/i18n';
-import { CommonSelectorsIDs } from '../../../../e2e/selectors/Common.selectors';
-import Text, {
-  TextVariant,
-} from '../../../component-library/components/Texts/Text';
-
+import { CommonSelectorsIDs } from '../../../util/Common.testIds';
+import TagColored from '../../../component-library/components-temp/TagColored/TagColored';
+import { TagColor } from '../../../component-library/components-temp/TagColored/TagColored.types';
 import PickerNetwork from '../../../component-library/components/Pickers/PickerNetwork';
-import Accordion from '../../../component-library/components/Accordions/Accordion';
+import Icon, {
+  IconName,
+  IconSize,
+  IconColor,
+} from '../../../component-library/components/Icons/Icon';
 import Banner, {
   BannerAlertSeverity,
   BannerVariant,
@@ -17,9 +19,9 @@ import { useStyles } from '../../../component-library/hooks';
 import styleSheet from './NetworkVerificationInfo.styles';
 import { CustomNetworkInformation } from './NetworkVerificationInfo.types';
 import { ScrollView } from 'react-native-gesture-handler';
-import { ADD_CUSTOM_NETWORK_ARTCILE } from '../../../constants/urls';
 import { useSelector } from 'react-redux';
 import { selectUseSafeChainsListValidation } from '../../../selectors/preferencesController';
+import { ADD_CUSTOM_NETWORK_ARTCILE } from '../../../constants/urls';
 import {
   ButtonSize,
   ButtonVariants,
@@ -28,13 +30,20 @@ import BottomSheetFooter, {
   ButtonsAlignment,
 } from '../../../component-library/components/BottomSheets/BottomSheetFooter';
 import BottomSheetHeader from '../../../component-library/components/BottomSheets/BottomSheetHeader';
-import {
-  getNetworkImageSource,
-  toggleUseSafeChainsListValidation,
-} from '../../../util/networks';
-import { NetworkApprovalModalSelectorsIDs } from '../../../../e2e/selectors/Modals/NetworkApprovalModal.selectors';
+import { getNetworkImageSource } from '../../../util/networks';
+import { toggleUseSafeChainsListValidation } from '../../../util/networks/engineNetworkUtils';
+import { NetworkApprovalBottomSheetSelectorsIDs } from '../NetworkModal/NetworkApprovalBottomSheet.testIds';
 import hideKeyFromUrl from '../../../util/hideKeyFromUrl';
 import { convertHexToDecimal } from '@metamask/controller-utils';
+import { isValidASCIIURL, toPunycodeURL } from '../../../util/url';
+import { PopularList } from '../../../util/networks/customNetworks';
+import { MISSMATCH_RPC_URL_TEST_ID } from './NetworkVerificationInfo.constants';
+import {
+  Text,
+  TextVariant,
+  TextColor,
+  FontWeight,
+} from '@metamask/design-system-react-native';
 
 interface Alert {
   alertError: string;
@@ -50,90 +59,165 @@ const NetworkVerificationInfo = ({
   onReject,
   onConfirm,
   isCustomNetwork = false,
+  isNetworkRpcUpdate = false,
 }: {
   customNetworkInformation: CustomNetworkInformation;
   onReject: () => void;
   onConfirm: () => void;
   isCustomNetwork?: boolean;
+  isNetworkRpcUpdate?: boolean;
 }) => {
-  const [networkInfoMaxHeight, setNetworkInfoMaxHeight] = useState<
-    number | null
-  >(null);
-  const [networkDetailsExpanded, setNetworkDetailsExpanded] = useState(false);
   const { styles } = useStyles(styleSheet, {});
   const safeChainsListValidationEnabled = useSelector(
     selectUseSafeChainsListValidation,
   );
   const [showCheckNetwork, setShowCheckNetwork] = React.useState(false);
+  const [showReviewDefaultRpcUrlChanges, setShowReviewDefaultRpcUrlChanges] =
+    React.useState(false);
   const { alerts: alertsFromProps } = customNetworkInformation;
   const [alerts, setAlerts] = React.useState<Alert[]>([]);
-
   const showCheckNetworkModal = () => setShowCheckNetwork(!showCheckNetwork);
+  const showReviewDefaultRpcUrlChangesModal = () =>
+    setShowReviewDefaultRpcUrlChanges(!showReviewDefaultRpcUrlChanges);
+
+  const customRpcUrl = customNetworkInformation.rpcUrl;
+
+  const isDappRequest = useMemo(
+    // @ts-expect-error - The CustomNetworkInformation type is missing the pageMeta property
+    () => Boolean(customNetworkInformation.pageMeta?.url),
+    [customNetworkInformation],
+  );
+
+  const matchingPopularNetwork = useMemo(() => {
+    if (!isDappRequest) return null;
+    return PopularList.find(
+      (network) => network.chainId === customNetworkInformation.chainId,
+    );
+  }, [isDappRequest, customNetworkInformation.chainId]);
+
+  const hasRpcMismatch = useMemo(() => {
+    if (!matchingPopularNetwork) return false;
+    return matchingPopularNetwork.rpcUrl !== customNetworkInformation.rpcUrl;
+  }, [matchingPopularNetwork, customNetworkInformation.rpcUrl]);
+
+  const goToLearnMore = () => {
+    Linking.openURL(ADD_CUSTOM_NETWORK_ARTCILE);
+  };
 
   useEffect(() => setAlerts(alertsFromProps), [alertsFromProps]);
 
   const networkImageSource = useMemo(
     () =>
-      //@ts-expect-error - The utils/network file is still JS and this function expects a networkType, and should be optional
       getNetworkImageSource({
         chainId: customNetworkInformation.chainId,
       }),
     [customNetworkInformation],
   );
 
-  const renderNetworkInfo = () => (
-    <ScrollView
-      nestedScrollEnabled
-      style={[
-        styles.accountCardWrapper,
-        networkInfoMaxHeight ? { maxHeight: networkInfoMaxHeight } : undefined,
-      ]}
-      onLayout={(event) => {
-        if (!networkInfoMaxHeight) {
-          setNetworkInfoMaxHeight(event.nativeEvent.layout.height);
-        }
-      }}
-      contentContainerStyle={
-        networkDetailsExpanded ? styles.nestedScrollContent : undefined
+  const dappOrigin = useMemo(() => {
+    // @ts-expect-error - The CustomNetworkInformation type is missing the pageMeta property
+    const customNetworkUrl = customNetworkInformation.pageMeta?.url;
+    const url = customNetworkUrl ? new URL(customNetworkUrl) : null;
+    if (url) {
+      try {
+        return url.hostname;
+      } catch (error) {
+        console.error('Invalid URL:', error);
       }
-    >
-      <Text variant={TextVariant.BodyMDBold}>
-        {strings('add_custom_network.display_name')}
-      </Text>
-      <Text style={styles.textSection}>
-        {customNetworkInformation.chainName}
-      </Text>
+    }
+    return undefined;
+  }, [customNetworkInformation]);
 
-      <Text variant={TextVariant.BodyMDBold}>
+  const renderCurrencySymbol = () => (
+    <>
+      <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
+        {strings('add_custom_network.currency_symbol')}
+      </Text>
+      <Text style={styles.textSection}>{customNetworkInformation.ticker}</Text>
+    </>
+  );
+
+  const renderChainId = () => (
+    <>
+      <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
         {strings('add_custom_network.chain_id')}
       </Text>
       <Text style={styles.textSection}>
         {convertHexToDecimal(customNetworkInformation.chainId)}
       </Text>
+    </>
+  );
 
-      <Text variant={TextVariant.BodyMDBold}>
-        {strings('add_custom_network.network_url')}
+  const renderNetworkDisplayName = () => (
+    <>
+      <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
+        {strings('add_custom_network.display_name')}
       </Text>
+      <Text style={styles.textSection}>
+        {customNetworkInformation.chainName}
+      </Text>
+    </>
+  );
+
+  const renderNetworkRpcUrlLabel = () => (
+    <View style={styles.networkUrlLabelRow}>
+      <Text
+        color={
+          hasRpcMismatch ? TextColor.PrimaryDefault : TextColor.TextDefault
+        }
+        variant={TextVariant.BodyMd}
+        fontWeight={FontWeight.Medium}
+      >
+        {strings('networks.network_rpc_url_label')}
+      </Text>
+      {hasRpcMismatch && (
+        <TouchableOpacity
+          onPress={() => {
+            showReviewDefaultRpcUrlChangesModal();
+          }}
+        >
+          <TagColored style={styles.tag} color={TagColor.Info}>
+            <View style={styles.tagContent} testID={MISSMATCH_RPC_URL_TEST_ID}>
+              <Icon
+                size={IconSize.Sm}
+                name={IconName.Info}
+                color={IconColor.Primary}
+              />
+              <Text
+                variant={TextVariant.BodySm}
+                color={TextColor.PrimaryDefault}
+              >
+                {strings('networks.review')}
+              </Text>
+              <Icon
+                size={IconSize.Xs}
+                name={IconName.ArrowRight}
+                color={IconColor.Primary}
+              />
+            </View>
+          </TagColored>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+
+  const renderNetworkInfo = () => (
+    <ScrollView
+      nestedScrollEnabled
+      style={styles.accountCardWrapper}
+      contentContainerStyle={styles.nestedScrollContent}
+    >
+      {renderCurrencySymbol()}
+      {renderNetworkRpcUrlLabel()}
       <Text style={styles.textSection}>
         {hideKeyFromUrl(customNetworkInformation.rpcUrl)}
       </Text>
-
-      <Accordion
-        title={strings('spend_limit_edition.view_details')}
-        onPress={() => setNetworkDetailsExpanded(!networkDetailsExpanded)}
-      >
-        <Text variant={TextVariant.BodyMDBold}>
-          {strings('add_custom_network.currency_symbol')}
-        </Text>
-        <Text style={styles.textSection}>
-          {customNetworkInformation.ticker}
-        </Text>
-
-        <Text variant={TextVariant.BodyMDBold}>
-          {strings('add_custom_network.block_explorer_url')}
-        </Text>
-        <Text>{customNetworkInformation.blockExplorerUrl}</Text>
-      </Accordion>
+      {renderChainId()}
+      {renderNetworkDisplayName()}
+      <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
+        {strings('add_custom_network.block_explorer_url')}
+      </Text>
+      <Text>{customNetworkInformation.blockExplorerUrl}</Text>
     </ScrollView>
   );
 
@@ -163,6 +247,84 @@ const NetworkVerificationInfo = ({
     }
     return null;
   };
+
+  const renderBannerNetworkUrlNonAsciiDetected = () => {
+    if (!customRpcUrl || isValidASCIIURL(customRpcUrl)) {
+      return null;
+    }
+    const punycodeUrl = toPunycodeURL(customRpcUrl);
+
+    return (
+      <View style={styles.alertBar}>
+        <Banner
+          severity={BannerAlertSeverity.Warning}
+          variant={BannerVariant.Alert}
+          description={
+            strings('networks.network_rpc_url_warning_punycode') +
+            '\n' +
+            punycodeUrl
+          }
+        />
+      </View>
+    );
+  };
+
+  const renderCustomNetworkBanner = () => (
+    <View style={styles.alertBar}>
+      <Banner
+        severity={BannerAlertSeverity.Warning}
+        variant={BannerVariant.Alert}
+        description={strings('wallet.cant_verify_custom_network_warning')}
+        actionButtonProps={{
+          variant: ButtonVariants.Link,
+          label: strings('wallet.learn_more'),
+          onPress: goToLearnMore,
+        }}
+      />
+    </View>
+  );
+
+  const renderReviewDefaultNetworkRpcUrlChange = () => (
+    <View>
+      <BottomSheetHeader
+        style={styles.headerStyle}
+        onBack={() => {
+          showReviewDefaultRpcUrlChangesModal();
+        }}
+      >
+        <Icon
+          size={IconSize.Xl}
+          name={IconName.Info}
+          color={IconColor.Primary}
+        />
+      </BottomSheetHeader>
+
+      <View style={styles.defautlUrlChangedContainer}>
+        <View style={styles.titleDefaultUrl}>
+          <Text variant={TextVariant.HeadingMd}>
+            {strings('networks.new_default_network_url')}
+          </Text>
+        </View>
+        <View style={styles.networkUrlMissmatchDetails}>
+          <Text style={styles.textSection}>
+            {strings('switch_custom_network.request_update_network_url', {
+              dapp_origin: dappOrigin,
+            })}
+          </Text>
+          <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Bold}>
+            {strings('networks.current_label')}
+          </Text>
+          <Text style={styles.textSection}>
+            {hideKeyFromUrl(matchingPopularNetwork?.rpcUrl)}
+          </Text>
+          <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Bold}>
+            {strings('networks.new_label')}
+          </Text>
+          <Text style={styles.textSection}>{hideKeyFromUrl(customRpcUrl)}</Text>
+        </View>
+      </View>
+    </View>
+  );
 
   const renderAlerts = useCallback(() => {
     if (!safeChainsListValidationEnabled) return null;
@@ -194,7 +356,9 @@ const NetworkVerificationInfo = ({
     );
   }, [alerts, styles.textSection, safeChainsListValidationEnabled]);
 
-  return showCheckNetwork ? (
+  return showReviewDefaultRpcUrlChanges ? (
+    renderReviewDefaultNetworkRpcUrlChange()
+  ) : showCheckNetwork ? (
     <View>
       <View style={styles.textContainer}>
         <Text style={styles.title}>
@@ -215,6 +379,7 @@ const NetworkVerificationInfo = ({
       </View>
 
       <BottomSheetFooter
+        style={styles.footerPadding}
         buttonPropsArray={[
           {
             onPress: showCheckNetworkModal,
@@ -238,12 +403,19 @@ const NetworkVerificationInfo = ({
       />
     </View>
   ) : (
-    <View testID={NetworkApprovalModalSelectorsIDs.CONTAINER}>
+    <View testID={NetworkApprovalBottomSheetSelectorsIDs.CONTAINER}>
       <BottomSheetHeader>
-        <Text variant={TextVariant.HeadingMD}>
+        <Text variant={TextVariant.HeadingMd}>
           {isCustomNetwork
             ? strings('networks.add_custom_network')
-            : strings('app_settings.network_add_network')}
+            : strings(
+                isNetworkRpcUpdate
+                  ? 'networks.update_network'
+                  : 'networks.add_specific_network',
+                {
+                  network_name: customNetworkInformation.chainName,
+                },
+              )}
         </Text>
       </BottomSheetHeader>
       <ScrollView style={styles.root}>
@@ -255,29 +427,47 @@ const NetworkVerificationInfo = ({
         />
         {renderAlerts()}
         {renderBanner()}
+        {renderBannerNetworkUrlNonAsciiDetected()}
+        {isCustomNetwork && renderCustomNetworkBanner()}
         <Text style={styles.textCentred}>
-          {strings('add_custom_network.warning_subtext_new.1')}{' '}
-          <Text onPress={openHowToUseCustomNetworks}>
-            {strings('add_custom_network.warning_subtext_new.2')}
-          </Text>
+          {dappOrigin !== undefined ? (
+            <Text>
+              {strings(
+                isNetworkRpcUpdate
+                  ? 'switch_custom_network.update_network_and_give_dapp_permission_warning'
+                  : 'switch_custom_network.add_network_and_give_dapp_permission_warning',
+                {
+                  dapp_origin: dappOrigin,
+                },
+              )}
+            </Text>
+          ) : (
+            <>
+              {strings('add_custom_network.warning_subtext_new.1')}{' '}
+              <Text onPress={openHowToUseCustomNetworks}>
+                {strings('add_custom_network.warning_subtext_new.2')}
+              </Text>
+            </>
+          )}
         </Text>
         {renderNetworkInfo()}
       </ScrollView>
       <BottomSheetFooter
+        style={styles.footerPadding}
         buttonPropsArray={[
           {
             onPress: onReject,
             label: strings('confirmation_modal.cancel_cta'),
             variant: ButtonVariants.Secondary,
             size: ButtonSize.Lg,
-            testID: NetworkApprovalModalSelectorsIDs.CANCEL_BUTTON,
+            testID: NetworkApprovalBottomSheetSelectorsIDs.CANCEL_BUTTON,
           },
           {
             onPress: onConfirm,
             label: strings('confirmation_modal.confirm_cta'),
             variant: ButtonVariants.Primary,
             size: ButtonSize.Lg,
-            testID: NetworkApprovalModalSelectorsIDs.APPROVE_BUTTON,
+            testID: NetworkApprovalBottomSheetSelectorsIDs.APPROVE_BUTTON,
           },
         ]}
         buttonsAlignment={ButtonsAlignment.Horizontal}

@@ -11,12 +11,13 @@ import CellBase from '../../foundation/CellBase';
 // Internal dependencies.
 import styleSheet from './CellSelect.styles';
 import { CellSelectProps } from './CellSelect.types';
-import { CellModalSelectorsIDs } from '../../../../../../../e2e/selectors/Modals/CellModal.selectors';
+import { CellComponentSelectorsIDs } from '../../CellComponent.testIds';
 
 const CellSelect = ({
   style,
   avatarProps,
   title,
+  titleProps,
   secondaryText,
   tertiaryText,
   tagLabel,
@@ -30,12 +31,13 @@ const CellSelect = ({
     <ListItemSelect
       isSelected={isSelected}
       style={styles.base}
-      testID={CellModalSelectorsIDs.SELECT}
+      testID={CellComponentSelectorsIDs.SELECT}
       {...props}
     >
       <CellBase
         avatarProps={avatarProps}
         title={title}
+        titleProps={titleProps}
         secondaryText={secondaryText}
         tertiaryText={tertiaryText}
         tagLabel={tagLabel}

@@ -1,4 +1,3 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
 import React from 'react';
 import { View } from 'react-native';
 import Cell, {
@@ -14,14 +13,16 @@ import stylesheet from './SnapElement.styles';
 import { useStyles } from '../../../../../component-library/hooks';
 import SNAP_ElEMENT from './SnapElement.constants';
 import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { navigateWithDetails } from '../../../../../util/navigation/navUtils';
 import { createSnapSettingsNavDetails } from '../../SnapSettings/SnapSettings';
 
 const SnapElement = (snap: Snap) => {
   const { styles } = useStyles(stylesheet, {});
-  const { navigate } = useNavigation();
+  const navigation = useNavigation<AppNavigationProp>();
 
   const onPress = () => {
-    navigate(...createSnapSettingsNavDetails({ snap }));
+    navigateWithDetails(navigation, createSnapSettingsNavDetails({ snap }));
   };
 
   return (
@@ -45,4 +46,3 @@ const SnapElement = (snap: Snap) => {
 };
 
 export default SnapElement;
-///: END:ONLY_INCLUDE_IF

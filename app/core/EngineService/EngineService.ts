@@ -1,149 +1,372 @@
+import { unstable_batchedUpdates as batchFunc } from 'react-native';
+import { KeyringControllerState } from '@metamask/keyring-controller';
 import UntypedEngine from '../Engine';
-import AppConstants from '../AppConstants';
+import { Engine as TypedEngine } from '../Engine/Engine';
+import Batcher from '../Batcher';
 import { getVaultFromBackup } from '../BackupVault';
-import { isBlockaidFeatureEnabled } from '../../util/blockaid';
-import { store as importedStore } from '../../store';
 import Logger from '../../util/Logger';
+import {
+  ControllerStorage,
+  createPersistController,
+} from '../../store/persistConfig';
+import { BACKGROUND_STATE_CHANGE_EVENT_NAMES } from '../Engine/constants';
+import { getPersistentState } from '../../store/getPersistentState/getPersistentState';
 import {
   NO_VAULT_IN_BACKUP_ERROR,
   VAULT_CREATION_ERROR,
 } from '../../constants/error';
+import { getTraceTags } from '../../util/sentry/tags';
+import { trace, endTrace, TraceName, TraceOperation } from '../../util/trace';
+import getUIStartupSpan from '../Performance/UIStartup';
 
-interface InitializeEngineResult {
-  success: boolean;
-  error?: string;
-}
+import ReduxService from '../redux';
+import {
+  FirstQuoteFlushVariant,
+  selectFirstQuoteFlushVariant,
+} from '../../components/UI/Bridge/utils/firstQuoteFlushAbTestConfig';
+import NavigationService from '../NavigationService';
+import Routes from '../../constants/navigation/Routes';
+import { VaultBackupResult } from './types';
+import { hasTestOverrides } from '../../util/test/utils';
+import { trackVaultCorruption } from '../../util/analytics/vaultCorruptionTracking';
+import { getAnalyticsId } from '../../util/analytics/analyticsId';
+import { INIT_BG_STATE_KEY, LOG_TAG, UPDATE_BG_STATE_KEY } from './constants';
+import { StateConstraint } from '@metamask/base-controller';
+import { hasPersistedState } from './utils/persistence-utils';
+import { setExistingUser } from '../../actions/user';
+import { hydrateSocialFollowing } from '../Engine/controllers/social-controller-hydration';
 
-const UPDATE_BG_STATE_KEY = 'UPDATE_BG_STATE';
-const INIT_BG_STATE_KEY = 'INIT_BG_STATE';
-class EngineService {
+/**
+ * Reads the AnalyticsController's own persisted copy of the analytics identity.
+ * Used to recover the identity when MMKV has lost it — see `getAnalyticsId`.
+ */
+const getPersistedAnalyticsId = (state: unknown): unknown =>
+  (state as { AnalyticsController?: { analyticsId?: unknown } })
+    ?.AnalyticsController?.analyticsId;
+
+const isFirstQuoteFlushTreatment = (): boolean =>
+  selectFirstQuoteFlushVariant(ReduxService.store.getState()) ===
+  FirstQuoteFlushVariant.Treatment;
+
+export class EngineService {
   private engineInitialized = false;
 
-  /**
-   * Initializer for the EngineService
-   *
-   * @param store - Redux store
-   */
-
-  initalizeEngine = (store: any) => {
-    const reduxState = store.getState?.();
-    const state = reduxState?.engine?.backgroundState || {};
-    const Engine = UntypedEngine as any;
-    Engine.init(state);
-    this.updateControllers(store, Engine);
-  };
-
-  private updateControllers = (store: any, engine: any) => {
-    const controllers = [
-      { name: 'AddressBookController' },
-      { name: 'AssetsContractController' },
-      { name: 'NftController' },
-      {
-        name: 'TokensController',
-      },
-      {
-        name: 'TokenDetectionController',
-        key: `${engine.context.TokenDetectionController.name}:stateChange`,
-      },
-      { name: 'NftDetectionController' },
-      {
-        name: 'KeyringController',
-        key: `${engine.context.KeyringController.name}:stateChange`,
-      },
-      { name: 'AccountTrackerController' },
-      {
-        name: 'NetworkController',
-        key: AppConstants.NETWORK_STATE_CHANGE_EVENT,
-      },
-      {
-        name: 'PhishingController',
-        key: `${engine.context.PhishingController.name}:maybeUpdateState`,
-      },
-      {
-        name: 'PreferencesController',
-        key: `${engine.context.PreferencesController.name}:stateChange`,
-      },
-      {
-        name: 'TokenBalancesController',
-        key: `${engine.context.TokenBalancesController.name}:stateChange`,
-      },
-      { name: 'TokenRatesController' },
-      { name: 'TransactionController' },
-      { name: 'SmartTransactionsController' },
-      { name: 'SwapsController' },
-      {
-        name: 'TokenListController',
-        key: `${engine.context.TokenListController.name}:stateChange`,
-      },
-      {
-        name: 'CurrencyRateController',
-        key: `${engine.context.CurrencyRateController.name}:stateChange`,
-      },
-      {
-        name: 'GasFeeController',
-        key: `${engine.context.GasFeeController.name}:stateChange`,
-      },
-      {
-        name: 'ApprovalController',
-        key: `${engine.context.ApprovalController.name}:stateChange`,
-      },
-      ///: BEGIN:ONLY_INCLUDE_IF(snaps)
-      {
-        name: 'SnapController',
-        key: `${engine.context.SnapController.name}:stateChange`,
-      },
-      {
-        name: 'subjectMetadataController',
-        key: `${engine.context.SubjectMetadataController.name}:stateChange`,
-      },
-      ///: END:ONLY_INCLUDE_IF
-      {
-        name: 'PermissionController',
-        key: `${engine.context.PermissionController.name}:stateChange`,
-      },
-      {
-        name: 'LoggingController',
-        key: `${engine.context.LoggingController.name}:stateChange`,
-      },
-      {
-        name: 'AccountsController',
-        key: `${engine.context.AccountsController.name}:stateChange`,
-      },
-    ];
-
-    if (isBlockaidFeatureEnabled()) {
-      controllers.push({
-        name: 'PPOMController',
-        key: `${engine.context.PPOMController.name}:stateChange`,
+  private updateBatcher = new Batcher<string>((keys) =>
+    batchFunc(() => {
+      keys.forEach((key) => {
+        if (key === INIT_BG_STATE_KEY) {
+          // first-time init action
+          ReduxService.store.dispatch({ type: INIT_BG_STATE_KEY });
+        } else {
+          // incremental update action
+          ReduxService.store.dispatch({
+            type: UPDATE_BG_STATE_KEY,
+            payload: { key },
+          });
+        }
       });
+    }),
+  );
+
+  /**
+   * Initializes controller subscriptions for Redux updates and filesystem persistence.
+   *
+   * @param engine - The initialized Engine instance
+   * @param initialState - Optional initial state loaded from persistence. If provided, controllers whose state changed during Engine.init() will be persisted.
+   */
+  private initializeControllers = (
+    engine: TypedEngine,
+    initialState?: Record<string, unknown>,
+  ) => {
+    // coordination mechanism to prevent race conditions between engine initialization and UI rendering
+    if (!engine.context) {
+      Logger.error(
+        new Error(
+          'Engine context does not exists. Redux will not be updated from controller state updates!',
+        ),
+      );
+      return;
     }
 
-    engine?.datamodel?.subscribe?.(() => {
-      if (!engine.context.KeyringController.vault) {
-        Logger.message('keyringController vault missing for INIT_BG_STATE_KEY');
+    if (!this.engineInitialized) {
+      if (!engine.context.KeyringController.metadata?.vault) {
+        Logger.log('keyringController vault missing for INIT_BG_STATE_KEY');
       }
-      if (!this.engineInitialized) {
-        store.dispatch({ type: INIT_BG_STATE_KEY });
-        this.engineInitialized = true;
+      this.updateBatcher.add(INIT_BG_STATE_KEY);
+      // immediately flush the redux action
+      // so that the initial state is available to the redux store
+      this.updateBatcher.flush();
+      this.engineInitialized = true;
+    }
+
+    // Set up immediate Redux updates for all controller state changes
+    // This ensures Redux is updated right away when controllers change
+    const update_bg_state_cb = (controllerName: string) => {
+      if (!engine.context.KeyringController.metadata?.vault) {
+        Logger.log('keyringController vault missing for UPDATE_BG_STATE_KEY');
       }
+      this.updateBatcher.add(controllerName);
+
+      // Each quote stream replaces the list with its first quote, which the
+      // user is waiting on. Later quotes stay batched.
+      const isFirstBridgeQuote =
+        controllerName === 'BridgeController' &&
+        engine.context.BridgeController.state.quotes.length === 1;
+
+      if (
+        controllerName === 'ApprovalController' ||
+        (isFirstBridgeQuote && isFirstQuoteFlushTreatment())
+      ) {
+        this.updateBatcher.flush();
+      }
+    };
+
+    BACKGROUND_STATE_CHANGE_EVENT_NAMES.forEach((eventName) => {
+      const controllerName = eventName.split(':')[0];
+
+      // Skip CronjobController state change events
+      // as they are handled separately in the CronjobControllerStorageManager.
+      // This prevents duplicate updates to the Redux store.
+      if (eventName === 'CronjobController:stateChange') {
+        return;
+      }
+
+      engine.controllerMessenger.subscribe(eventName, () =>
+        update_bg_state_cb(controllerName),
+      );
     });
 
-    controllers.forEach((controller) => {
-      const { name, key = undefined } = controller;
-      const update_bg_state_cb = () => {
-        if (!engine.context.KeyringController.vault) {
-          Logger.message(
-            'keyringController vault missing for UPDATE_BG_STATE_KEY',
-          );
-        }
-        store.dispatch({ type: UPDATE_BG_STATE_KEY, payload: { key: name } });
-      };
-      if (key) {
-        engine.controllerMessenger.subscribe(key, update_bg_state_cb);
-      } else {
-        engine.context[name].subscribe(update_bg_state_cb);
-      }
+    // CRITICAL: Set up filesystem persistence for all controllers
+    // This is called automatically after Redux subscriptions to ensure
+    // both Redux and filesystem are kept in sync when controller state changes
+    // Pass initialState to detect and persist any state changes that occurred during Engine.init()
+    this.setupEnginePersistence(initialState);
+  };
+
+  /**
+   * Starts the Engine and subscribes to the controller state changes
+   *
+   * EngineService.start() with SES/lockdown:
+   * Requires ethjs nested patches (lib->src)
+   * - ethjs/ethjs-query
+   * - ethjs/ethjs-contract
+   * Otherwise causing the following errors:
+   * - TypeError: Cannot assign to read only property 'constructor' of object '[object Object]'
+   * - Error: Requiring module "node_modules/ethjs/node_modules/ethjs-query/lib/index.js", which threw an exception: TypeError:
+   * -  V8: Cannot assign to read only property 'constructor' of object '[object Object]'
+   * -  JSC: Attempted to assign to readonly property
+   * - node_modules/babel-runtime/node_modules/regenerator-runtime/runtime.js
+   * - V8: TypeError: _$$_REQUIRE(...) is not a constructor
+   * - TypeError: undefined is not an object (evaluating 'TokenListController.tokenList')
+   * - V8: SES_UNHANDLED_REJECTION
+   */
+  start = async () => {
+    const reduxState = ReduxService.store.getState();
+    const persistedState = await ControllerStorage.getAllPersistedState();
+
+    if (reduxState?.user?.existingUser) {
+      Logger.log(
+        'EngineService: Is vault defined at KeyringController before Enging init: ',
+        !!reduxState?.engine?.backgroundState?.KeyringController?.vault,
+      );
+    }
+    trace({
+      name: TraceName.EngineInitialization,
+      op: TraceOperation.EngineInitialization,
+      parentContext: getUIStartupSpan(),
+      tags: getTraceTags(reduxState),
     });
+
+    const state =
+      (hasTestOverrides
+        ? reduxState?.engine?.backgroundState
+        : persistedState?.backgroundState) ?? {};
+
+    const Engine = UntypedEngine;
+    try {
+      Logger.log(`${LOG_TAG}: Initializing Engine:`, {
+        hasState: Object.keys(state).length > 0,
+      });
+
+      // Note on why Engine.init() requires analyticsId:
+      // `analyticsId` is not persisted in state to prevent losing it in case of corruption.
+      // It is also used as a random source for other controllers like RemoteFeatureFlagController.
+      // Passing it to engine ensures all controllers are initialized with the same analyticsId.
+      // The persisted controller copy is passed as a recovery source for MMKV loss.
+      const analyticsId = await getAnalyticsId(getPersistedAnalyticsId(state));
+      Engine.init(analyticsId, state);
+      // `Engine.init()` call mutates `typeof UntypedEngine` to `TypedEngine`
+      // Pass state to detect controllers that changed during init
+      this.initializeControllers(
+        Engine as unknown as TypedEngine,
+        state as Record<string, unknown>,
+      );
+
+      // Fire-and-forget: refresh social following state from the server.
+      // Non-blocking — persisted state covers the UI until this resolves.
+      // Skipped while the wallet is locked or not signed in.
+      hydrateSocialFollowing();
+    } catch (error) {
+      trackVaultCorruption((error as Error).message, {
+        error_type: 'engine_initialization_failure',
+        context: 'engine_service_startup',
+        has_existing_state: Object.keys(state).length > 0,
+      });
+
+      Logger.error(
+        error as Error,
+        'Failed to initialize Engine! Falling back to vault recovery.',
+      );
+
+      // Give the navigation stack a chance to load
+      // This can be removed if the vault recovery flow is moved higher up in the stack
+      setTimeout(() => {
+        NavigationService.navigation.reset({
+          routes: [{ name: Routes.VAULT_RECOVERY.RESTORE_WALLET }],
+        });
+      }, 150);
+    }
+    endTrace({ name: TraceName.EngineInitialization });
+  };
+
+  /**
+   * Flush any pending controller state updates.
+   * Only necessary in rare cases where immediate state consistency is required.
+   */
+  flushState() {
+    this.updateBatcher.flush();
+  }
+
+  /**
+   * Sets up persistence subscriptions for all engine controllers.
+   *
+   * This method subscribes to each controller's state change events and automatically
+   * persists the state to individual filesystem storage files.
+   *
+   * The persistence is debounced in createPersistController to prevent excessive disk writes during rapid state changes.
+   * Controllers with no persistent state are skipped to avoid storing empty objects.
+   *
+   * @param initialState - Optional initial state to compare against. If provided, controllers whose state changed during Engine.init() will be persisted immediately. This catches state changes that occur before subscriptions are set up.
+   */
+  private setupEnginePersistence = (initialState?: Record<string, unknown>) => {
+    try {
+      if (UntypedEngine.controllerMessenger) {
+        BACKGROUND_STATE_CHANGE_EVENT_NAMES.forEach((eventName) => {
+          const controllerName = eventName.split(':')[0];
+
+          // Check if controller has any persistent state before setting up persistence
+          const controllerMetadata =
+            // @ts-expect-error - Engine context has stateless controllers, so metadata may not be available
+            UntypedEngine.context[controllerName]?.metadata;
+          if (!hasPersistedState(controllerMetadata)) {
+            Logger.log(
+              `Skipping persistence setup for ${controllerName}, no persistent state`,
+            );
+            return;
+          }
+
+          // Create debounced persist function (reused for both initial and ongoing persistence)
+          const persistController = createPersistController(200);
+
+          // Check if state changed during Engine.init()
+          // Compare 1 level deep - check if any property of the filtered state differs
+          // from the initial state. Controllers preserve referential equality for unchanged properties.
+          // If initialControllerState is undefined (new install or new controller), always persist.
+          // @ts-expect-error - Engine context has stateless controllers
+          const currentState = UntypedEngine.context[controllerName]?.state;
+
+          // Only check for init-time state changes if controller has state
+          // (stateless controllers will have undefined state)
+          if (currentState) {
+            try {
+              const initialControllerState = initialState?.[controllerName] as
+                | Record<string, unknown>
+                | undefined;
+              const filteredState = getPersistentState(
+                currentState,
+                controllerMetadata,
+              );
+
+              // Check if any property at the first level has changed
+              // Only persist if there's state to persist AND either:
+              // 1. No initial state existed but now there is state (new install/new controller)
+              // 2. Initial state existed and has changed (added, modified, or removed properties)
+              const filteredStateKeys = Object.keys(filteredState);
+              const initialStateKeys = initialControllerState
+                ? Object.keys(initialControllerState)
+                : [];
+              const hasStateToSave = filteredStateKeys.length > 0;
+
+              // Check for changes: different key count, or any value differs
+              const hasKeyCountChanged =
+                filteredStateKeys.length !== initialStateKeys.length;
+              const hasValueChanged = filteredStateKeys.some(
+                (key) =>
+                  !initialControllerState ||
+                  filteredState[key] !== initialControllerState[key],
+              );
+
+              const hasChanged =
+                hasStateToSave && (hasKeyCountChanged || hasValueChanged);
+
+              if (hasChanged) {
+                // Reuse the same debounced function for consistency
+                persistController(filteredState, controllerName);
+                Logger.log(
+                  `${LOG_TAG}: ${controllerName} state changed during init, queued for persist`,
+                );
+              }
+            } catch (error) {
+              // Log error but don't crash - init-time persistence is best-effort
+              Logger.error(
+                error as Error,
+                `Failed to check/persist ${controllerName} state during init`,
+              );
+            }
+          }
+
+          // Set up subscription for future state changes (always, even for stateless controllers)
+          UntypedEngine.controllerMessenger.subscribe(
+            eventName,
+            async (controllerState: StateConstraint) => {
+              try {
+                const filteredState = getPersistentState(
+                  controllerState,
+                  // @ts-expect-error - Engine context has stateless controllers, so metadata may not be available
+                  UntypedEngine.context[controllerName]?.metadata,
+                );
+
+                await persistController(filteredState, controllerName);
+              } catch (error) {
+                // Log and track persistence failures but don't crash
+                // Expected failures (low disk space, I/O errors) shouldn't crash the app
+                // The error is already logged in createPersistController, this provides additional context
+                Logger.error(
+                  error as Error,
+                  `Failed to persist ${controllerName} state during state change`,
+                );
+                // Continue running - graceful degradation is better than crashing for expected failures
+              }
+            },
+          );
+        });
+        Logger.log(
+          'Individual controller persistence subscriptions set up successfully',
+        );
+      }
+    } catch (error) {
+      Logger.error(
+        error as Error,
+        'Failed to set up Engine persistence subscription',
+      );
+      // This is a critical failure, if we can't set up persistence,
+      // the wallet shouldn't continue as users will lose all data
+      throw new Error(
+        `Critical: Engine persistence setup failed. Cannot continue safely. ${
+          (error as Error).message
+        }`,
+      );
+    }
   };
 
   /**
@@ -155,22 +378,33 @@ class EngineService {
         error?: string;
       }
    */
-  async initializeVaultFromBackup(): Promise<InitializeEngineResult> {
-    const keyringState = await getVaultFromBackup();
-    const reduxState = importedStore.getState?.();
-    const state = reduxState?.engine?.backgroundState || {};
-    const Engine = UntypedEngine as any;
-    // This ensures we create an entirely new engine
+  async initializeVaultFromBackup(): Promise<VaultBackupResult> {
+    const vaultBackupResult = await getVaultFromBackup();
+    const persistedState = await ControllerStorage.getAllPersistedState();
+    const state = persistedState?.backgroundState ?? {};
+    const Engine = UntypedEngine;
     await Engine.destroyEngine();
     this.engineInitialized = false;
-    if (keyringState) {
-      const newKeyringState = {
+    if (vaultBackupResult.success) {
+      const newKeyringState: KeyringControllerState = {
         keyrings: [],
-        vault: keyringState.vault,
+        vault: vaultBackupResult.vault,
+        isUnlocked: false,
       };
-      const instance = Engine.init(state, newKeyringState);
+
+      Logger.log(`${LOG_TAG}: Initializing Engine from backup:`, {
+        hasState: Object.keys(state).length > 0,
+      });
+
+      const analyticsId = await getAnalyticsId(getPersistedAnalyticsId(state));
+      const instance = Engine.init(analyticsId, state, newKeyringState);
       if (instance) {
-        this.updateControllers(importedStore, instance);
+        // Pass state to detect controllers that changed during init
+        this.initializeControllers(instance, state as Record<string, unknown>);
+        // CRITICAL: Set existingUser = true after successful vault unlock from recovery
+        // This prevents the vault recovery screen from appearing again on app restart
+        // Only set after successful unlock to ensure vault is unlocked and credentials are stored
+        ReduxService.store.dispatch(setExistingUser(true));
         // this is a hack to give the engine time to reinitialize
         await new Promise((resolve) => setTimeout(resolve, 2000));
         return {

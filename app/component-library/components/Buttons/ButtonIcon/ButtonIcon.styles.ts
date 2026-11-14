@@ -27,9 +27,9 @@ const styleSheet = (params: {
         justifyContent: 'center',
         height: Number(size),
         width: Number(size),
-        borderRadius: 8,
+        borderRadius: 9999,
         ...(pressed && {
-          backgroundColor: theme.colors.background.defaultPressed,
+          backgroundColor: theme.colors.background.pressed,
         }),
         opacity: isDisabled ? 0.5 : 1,
       } as ViewStyle,

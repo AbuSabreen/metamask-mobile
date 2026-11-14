@@ -4,7 +4,13 @@ import { ApprovalTypes } from '../../../core/RPCMethods/RPCMethodMiddleware';
 import ApprovalModal from '../ApprovalModal';
 import SwitchCustomNetwork from '../../UI/SwitchCustomNetwork';
 import { networkSwitched } from '../../../actions/onboardNetwork';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
+import {
+  Caip25CaveatType,
+  Caip25EndowmentPermissionName,
+  getPermittedEthChainIds,
+} from '@metamask/chain-agnostic-permission';
+import { selectEvmNetworkConfigurationsByChainId } from '../../../selectors/networkController';
 
 const SwitchChainApproval = () => {
   const {
@@ -16,31 +22,57 @@ const SwitchChainApproval = () => {
 
   const dispatch = useDispatch();
 
+  const evmNetworkConfigurations = useSelector(
+    selectEvmNetworkConfigurationsByChainId,
+  );
+
+  const caip25CaveatValue =
+    approvalRequest?.requestData?.diff?.permissionDiffMap?.[
+      Caip25EndowmentPermissionName
+    ]?.[Caip25CaveatType];
+
+  const permittedEthChainIds = caip25CaveatValue
+    ? getPermittedEthChainIds(caip25CaveatValue)
+    : [];
+
+  // This approval view only handles one chainId added to permissions at a time, and the permissionDiffMap should only contain one chainId
+  const chainId = permittedEthChainIds[0];
+
   const onConfirm = useCallback(() => {
     defaultOnConfirm();
 
     dispatch(
       networkSwitched({
-        networkUrl: approvalRequest?.requestData?.rpcUrl,
+        networkUrl: approvalRequest?.requestData?.metadata?.rpcUrl,
         networkStatus: true,
       }),
     );
   }, [approvalRequest, defaultOnConfirm, dispatch]);
 
-  if (approvalRequest?.type !== ApprovalTypes.SWITCH_ETHEREUM_CHAIN)
-    return null;
+  if (
+    approvalRequest?.requestData?.diff?.permissionDiffMap?.[
+      Caip25EndowmentPermissionName
+    ] ||
+    // TODO: Revisit removing this when we DRY the addEthereumChain and switchEthereumChain handlers into core
+    approvalRequest?.type === ApprovalTypes.SWITCH_ETHEREUM_CHAIN
+  ) {
+    const customNetworkInformation = {
+      chainId,
+      chainName: evmNetworkConfigurations[chainId]?.name,
+    };
 
-  return (
-    <ApprovalModal isVisible onCancel={onReject}>
-      <SwitchCustomNetwork
-        onCancel={onReject}
-        onConfirm={onConfirm}
-        currentPageInformation={pageMeta}
-        customNetworkInformation={approvalRequest?.requestData}
-        type={approvalRequest?.requestData?.type}
-      />
-    </ApprovalModal>
-  );
+    return (
+      <ApprovalModal isVisible onCancel={onReject}>
+        <SwitchCustomNetwork
+          onCancel={onReject}
+          onConfirm={onConfirm}
+          currentPageInformation={pageMeta}
+          customNetworkInformation={customNetworkInformation}
+        />
+      </ApprovalModal>
+    );
+  }
+  return null;
 };
 
 export default SwitchChainApproval;

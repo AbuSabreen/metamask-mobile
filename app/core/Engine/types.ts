@@ -1,0 +1,1382 @@
+// The `SamplePetnamesController` is only registered when
+// `INCLUDE_SAMPLE_FEATURE=true` (see Engine.ts and messengers/index.ts), so
+// this import must stay `import type` to avoid pulling the runtime module
+// into production bundles.
+import type {
+  SamplePetnamesController,
+  SamplePetnamesControllerState,
+  SamplePetnamesControllerActions,
+  SamplePetnamesControllerEvents,
+} from '@metamask/sample-controllers';
+import { ExtendedMessenger } from '../ExtendedMessenger';
+import {
+  NftController,
+  NftControllerState,
+  NftControllerActions,
+  NftControllerEvents,
+  NftDetectionController,
+  TokenListService,
+  TokensController,
+  TokensControllerActions,
+  TokensControllerEvents,
+  TokensControllerState,
+  AssetsContractController,
+  AssetsContractControllerActions,
+  DeFiPositionsController,
+  DeFiPositionsControllerState,
+  DeFiPositionsControllerEvents,
+  DeFiPositionsControllerActions,
+  DeFiPositionsControllerV2,
+  DeFiPositionsControllerV2State,
+  DeFiPositionsControllerV2Events,
+  DeFiPositionsControllerV2Actions,
+  TokenSearchDiscoveryDataController,
+  TokenSearchDiscoveryDataControllerState,
+  TokenSearchDiscoveryDataControllerActions,
+  TokenSearchDiscoveryDataControllerEvents,
+  CodefiTokenPricesServiceV2,
+  // Legacy asset controller actions still referenced by external messenger
+  // types. Only CurrencyRate and MultichainAssets have handlers
+  // (`legacy-asset-state-compat.ts`).
+  type AccountTrackerControllerGetStateAction,
+  // TransactionControllerInitMessenger uses the full actions union.
+  type CurrencyRateControllerActions,
+  type MultichainAssetsControllerGetStateAction,
+  type NftDetectionControllerDetectNftsAction,
+} from '@metamask/assets-controllers';
+import {
+  AssetsController,
+  AssetsControllerActions,
+  AssetsControllerEvents,
+  AssetsControllerState,
+} from '@metamask/assets-controller';
+import {
+  MultichainTransactionsController,
+  MultichainTransactionsControllerState,
+} from '@metamask/multichain-transactions-controller';
+import {
+  MultichainTransactionsControllerEvents,
+  MultichainTransactionsControllerActions,
+} from './messengers/multichain-transactions-controller-messenger/types';
+import {
+  AddressBookController,
+  AddressBookControllerActions,
+  AddressBookControllerEvents,
+  AddressBookControllerState,
+} from '@metamask/address-book-controller';
+import type {
+  NetworkConnectionBannerController,
+  NetworkConnectionBannerControllerState,
+  NetworkConnectionBannerControllerActions,
+  NetworkConnectionBannerControllerEvents,
+} from '@metamask/network-connection-banner-controller';
+import {
+  ConnectivityController,
+  ConnectivityControllerActions,
+  ConnectivityControllerEvents,
+  ConnectivityControllerState,
+} from '@metamask/connectivity-controller';
+import {
+  ConfigRegistryController,
+  type ConfigRegistryControllerState,
+  type ConfigRegistryControllerEvents,
+  ConfigRegistryControllerActions,
+  ConfigRegistryApiServiceActions,
+  ConfigRegistryApiService,
+} from '@metamask/config-registry-controller';
+import {
+  KeyringController,
+  KeyringControllerActions,
+  KeyringControllerEvents,
+  KeyringControllerState,
+} from '@metamask/keyring-controller';
+import {
+  NetworkController,
+  NetworkControllerActions,
+  NetworkControllerEvents,
+  NetworkState,
+} from '@metamask/network-controller';
+import {
+  NetworkEnablementController,
+  NetworkEnablementControllerActions,
+  NetworkEnablementControllerEvents,
+  NetworkEnablementControllerState,
+} from '@metamask/network-enablement-controller';
+import {
+  PhishingController,
+  PhishingControllerActions,
+  PhishingControllerEvents,
+  PhishingControllerState,
+} from '@metamask/phishing-controller';
+import {
+  PreferencesControllerActions,
+  PreferencesControllerEvents,
+} from '@metamask/preferences-controller';
+import type {
+  PreferencesControllerWithSavedGasFees,
+  PreferencesStateWithSavedGasFees,
+} from './controllers/preferences-controller-types';
+import {
+  RampsController,
+  RampsControllerState,
+  RampsControllerActions,
+  RampsControllerEvents,
+  RampsService,
+  RampsServiceActions,
+  TransakService,
+  TransakServiceActions,
+  NeoBankService,
+  NeoBankServiceActions,
+} from '@metamask/ramps-controller';
+import {
+  TransactionController,
+  TransactionControllerActions,
+  TransactionControllerEvents,
+  TransactionControllerState,
+} from '@metamask/transaction-controller';
+import {
+  GasFeeController,
+  GasFeeState,
+  GasFeeControllerActions,
+  GasFeeControllerEvents,
+} from '@metamask/gas-fee-controller';
+import {
+  ApprovalController,
+  ApprovalControllerActions,
+  ApprovalControllerEvents,
+  ApprovalControllerState,
+} from '@metamask/approval-controller';
+import {
+  SelectedNetworkController,
+  SelectedNetworkControllerEvents,
+  SelectedNetworkControllerActions,
+  SelectedNetworkControllerState,
+} from '@metamask/selected-network-controller';
+import {
+  PermissionController,
+  PermissionControllerActions,
+  PermissionControllerEvents,
+  PermissionControllerState,
+  SubjectMetadataController,
+  SubjectMetadataControllerActions,
+  SubjectMetadataControllerEvents,
+  SubjectMetadataControllerState,
+} from '@metamask/permission-controller';
+import {
+  SnapController,
+  ExecutionService,
+  PersistedSnapControllerState,
+  SnapControllerEvents,
+  SnapControllerActions,
+  SnapRegistryController,
+  SnapRegistryControllerState,
+  SnapInterfaceControllerState,
+  SnapInterfaceControllerEvents,
+  SnapInterfaceControllerActions,
+  SnapInterfaceController,
+  SnapRegistryControllerActions,
+  SnapRegistryControllerEvents,
+  CronjobControllerState,
+  CronjobControllerEvents,
+  CronjobControllerActions,
+  CronjobController,
+  MultichainRoutingServiceActions,
+  WebSocketService,
+  WebSocketServiceActions,
+  MultichainRoutingService,
+  ExecutionServiceActions,
+  ExecutionServiceEvents,
+} from '@metamask/snaps-controllers';
+import {
+  LoggingController,
+  LoggingControllerActions,
+  LoggingControllerEvents,
+  LoggingControllerState,
+} from '@metamask/logging-controller';
+import {
+  AnalyticsController,
+  AnalyticsControllerActions,
+  AnalyticsControllerEvents,
+  AnalyticsControllerState,
+} from '@metamask/analytics-controller';
+import {
+  SignatureController,
+  SignatureControllerActions,
+  SignatureControllerEvents,
+  SignatureControllerState,
+} from '@metamask/signature-controller';
+import {
+  SmartTransactionsController,
+  type SmartTransactionsControllerActions,
+  type SmartTransactionsControllerEvents,
+  SmartTransactionsControllerState,
+} from '@metamask/smart-transactions-controller';
+import {
+  AuthenticationController,
+  UserStorageController,
+} from '@metamask/profile-sync-controller';
+import type {
+  Controller as NotificationServicesController,
+  Actions as NotificationServicesControllerMessengerActions,
+  Events as NotificationServicesControllerMessengerEvents,
+  NotificationServicesControllerState,
+} from '@metamask/notification-services-controller/notification-services';
+import type {
+  Controller as NotificationServicesPushController,
+  Actions as NotificationServicesPushControllerActions,
+  Events as NotificationServicesPushControllerEvents,
+  NotificationServicesPushControllerState,
+} from '@metamask/notification-services-controller/push-services';
+
+import {
+  BackendWebSocketService,
+  BackendWebSocketServiceActions,
+  BackendWebSocketServiceEvents,
+  AccountActivityService,
+  AccountActivityServiceEvents,
+  OHLCVService,
+  OHLCVServiceActions,
+  OHLCVServiceEvents,
+} from '@metamask/core-backend';
+import {
+  AccountsController,
+  AccountsControllerActions,
+  AccountsControllerEvents,
+  AccountsControllerState,
+} from '@metamask/accounts-controller';
+import { getPermissionSpecifications } from '../Permissions/specifications.js';
+import { STATELESS_NON_CONTROLLER_NAMES } from './constants';
+import {
+  RemoteFeatureFlagController,
+  RemoteFeatureFlagControllerState,
+  RemoteFeatureFlagControllerActions,
+  RemoteFeatureFlagControllerEvents,
+} from '@metamask/remote-feature-flag-controller';
+import {
+  Messenger,
+  ActionConstraint,
+  EventConstraint,
+} from '@metamask/messenger';
+import { SnapKeyringEvents } from '@metamask/eth-snap-keyring';
+import {
+  MultichainNetworkController,
+  MultichainNetworkControllerActions,
+  MultichainNetworkControllerState,
+  MultichainNetworkControllerEvents,
+} from '@metamask/multichain-network-controller';
+import {
+  BridgeController,
+  BridgeControllerActions,
+  type BridgeControllerEvents,
+  type BridgeControllerState,
+} from '@metamask/bridge-controller';
+import type {
+  BridgeStatusController,
+  BridgeStatusControllerActions,
+  BridgeStatusControllerEvents,
+  BridgeStatusControllerState,
+} from '@metamask/bridge-status-controller';
+import {
+  EarnController,
+  EarnControllerActions,
+  EarnControllerEvents,
+  EarnControllerState,
+} from '@metamask/earn-controller';
+import {
+  MoneyAccountController,
+  MoneyAccountControllerActions,
+  MoneyAccountControllerEvents,
+  MoneyAccountControllerState,
+} from '@metamask/money-account-controller';
+import {
+  MoneyAccountBalanceService,
+  MoneyAccountBalanceServiceActions,
+  MoneyAccountBalanceServiceEvents,
+} from '@metamask/money-account-balance-service';
+import {
+  MoneyAccountApiDataService,
+  type MoneyAccountApiDataServiceActions,
+  type MoneyAccountApiDataServiceEvents,
+} from '@metamask/money-account-api-data-service';
+import {
+  GeolocationController,
+  GeolocationControllerState,
+  GeolocationControllerActions,
+  GeolocationControllerEvents,
+  GeolocationApiService,
+  GeolocationApiServiceActions,
+} from '@metamask/geolocation-controller';
+import {
+  PerpsController,
+  PerpsControllerState,
+  PerpsControllerActions,
+  PerpsControllerEvents,
+} from '@metamask/perps-controller';
+import { RewardsController } from './controllers/rewards-controller/RewardsController';
+import {
+  RewardsDataService,
+  RewardsDataServiceActions,
+} from './controllers/rewards-controller/services/rewards-data-service';
+import type {
+  RewardsControllerState,
+  RewardsControllerEvents,
+  RewardsControllerActions,
+} from './controllers/rewards-controller/types';
+import { RewardsMoneyController } from './controllers/rewards-money-controller/RewardsMoneyController';
+import {
+  RewardsMoneyDataService,
+  RewardsMoneyDataServiceActions,
+} from './controllers/rewards-money-controller/services/rewards-money-data-service';
+import type {
+  RewardsMoneyControllerState,
+  RewardsMoneyControllerEvents,
+  RewardsMoneyControllerActions,
+} from './controllers/rewards-money-controller/types';
+import {
+  PredictController,
+  PredictControllerState,
+  PredictControllerActions,
+  PredictControllerEvents,
+} from '../../components/UI/Predict/controllers/PredictController';
+import { CardController } from './controllers/card-controller/CardController';
+import { UiSlotsController } from './controllers/ui-slots-controller/UiSlotsController';
+import type {
+  UiSlotsControllerActions,
+  UiSlotsControllerEvents,
+  UiSlotsControllerState,
+} from './controllers/ui-slots-controller/types';
+import type {
+  PredictLiveDataService,
+  PredictLiveDataServiceActions,
+  PredictLiveDataServiceEvents,
+} from '../../components/UI/PredictNext/services/PredictLiveDataService';
+import {
+  PredictMarketDataService,
+  type PredictMarketDataServiceActions,
+  type PredictMarketDataServiceEvents,
+} from '../../components/UI/PredictNext/services/PredictMarketDataService';
+import {
+  PredictPortfolioService,
+  type PredictPortfolioServiceActions,
+  type PredictPortfolioServiceEvents,
+} from '../../components/UI/PredictNext/services/PredictPortfolioService';
+import {
+  PredictOrderService,
+  type PredictOrderServiceActions,
+  type PredictOrderServiceEvents,
+} from '../../components/UI/PredictNext/services/PredictOrderService';
+import {
+  PredictDeviceAuthService,
+  type PredictDeviceAuthServiceActions,
+} from '../../components/UI/PredictNext/services/PredictDeviceAuthService';
+import {
+  PredictVenueController,
+  type PredictVenueControllerActions,
+  type PredictVenueControllerEvents,
+  type PredictVenueControllerState,
+} from '../../components/UI/PredictNext/implementation/PredictVenueController';
+import {
+  RecurringOrdersDataService,
+  type RecurringOrdersDataServiceActions,
+  type RecurringOrdersDataServiceEvents,
+} from '../../components/UI/Bridge/services/RecurringOrdersDataService';
+import {
+  LimitOrdersDataService,
+  type LimitOrdersDataServiceActions,
+  type LimitOrdersDataServiceEvents,
+} from '../../components/UI/Bridge/services/LimitOrdersDataService';
+import {
+  SentinelFeeTokensDataService,
+  type SentinelFeeTokensDataServiceActions,
+  type SentinelFeeTokensDataServiceEvents,
+} from '../../components/UI/Bridge/services/SentinelFeeTokensDataService';
+import type {
+  CardControllerState,
+  CardControllerActions,
+  CardControllerEvents,
+} from './controllers/card-controller/types';
+import { QrSyncController } from '../QrSync/QrSyncController';
+import type {
+  QrSyncControllerState,
+  QrSyncControllerActions,
+  QrSyncControllerEvents,
+} from '../QrSync/controller-types';
+import {
+  QrSyncProvisioningService,
+  type QrSyncProvisioningServiceActions,
+} from '../QrSync/services/qr-sync-provisioning-service';
+import {
+  SeedlessOnboardingController,
+  SeedlessOnboardingControllerState,
+  SeedlessOnboardingControllerEvents,
+  SeedlessOnboardingControllerActions,
+} from '@metamask/seedless-onboarding-controller';
+import { EncryptionKey } from '../Encryptor/types';
+
+import { Hex } from '@metamask/utils';
+
+import { MESSENGER_FACTORIES } from './messengers';
+import type { RootState } from '../../reducers';
+import {
+  AppMetadataController,
+  AppMetadataControllerActions,
+  AppMetadataControllerEvents,
+  AppMetadataControllerState,
+} from '@metamask/app-metadata-controller';
+import type {
+  StorageService,
+  StorageServiceActions,
+  StorageServiceEvents,
+} from '@metamask/storage-service';
+import {
+  SubscriptionController,
+  type SubscriptionControllerActions,
+  type SubscriptionControllerEvents,
+  type SubscriptionControllerState,
+  type SubscriptionDelegationServiceActions,
+  SubscriptionDelegationService,
+  SubscriptionService,
+  type SubscriptionServiceActions,
+  type SubscriptionServiceEvents,
+} from '@metamask/subscription-controller';
+import {
+  ShieldController,
+  type ShieldControllerActions,
+  type ShieldControllerEvents,
+  type ShieldControllerState,
+  ShieldApiService,
+  type ShieldApiServiceActions,
+  type ShieldApiServiceEvents,
+} from '@metamask/shield-controller';
+import {
+  ClaimsController,
+  type ClaimsControllerActions,
+  type ClaimsControllerStateChangeEvent,
+  type ClaimsControllerState,
+  ClaimsService,
+  type ClaimsServiceActions,
+  type ClaimsServiceEvents,
+} from '@metamask/claims-controller';
+import {
+  AccountTreeController,
+  AccountTreeControllerState,
+  AccountTreeControllerActions,
+  AccountTreeControllerEvents,
+} from '@metamask/account-tree-controller';
+import {
+  MultichainAccountService,
+  MultichainAccountServiceActions,
+  MultichainAccountServiceEvents,
+} from '@metamask/multichain-account-service';
+import type {
+  SnapAccountService,
+  SnapAccountServiceActions,
+  SnapAccountServiceEvents,
+} from '@metamask/snap-account-service';
+import {
+  GatorPermissionsController,
+  GatorPermissionsControllerActions,
+  GatorPermissionsControllerEvents,
+  GatorPermissionsControllerState,
+} from '@metamask/gator-permissions-controller';
+import type {
+  DelegationController,
+  DelegationControllerActions,
+  DelegationControllerEvents,
+} from '@metamask/delegation-controller';
+type DelegationControllerState = DelegationController['state'];
+import { ControllerGetStateAction } from '@metamask/base-controller';
+import {
+  ProfileMetricsController,
+  ProfileMetricsControllerActions,
+  ProfileMetricsControllerEvents,
+  ProfileMetricsControllerState,
+  ProfileMetricsService,
+  ProfileMetricsServiceActions,
+  ProofOfOwnershipService,
+  ProofOfOwnershipServiceActions,
+} from '@metamask/profile-metrics-controller';
+
+type NftDetectionControllerActions =
+  | ControllerGetStateAction<
+      'NftDetectionController',
+      NftDetectionController['state']
+    >
+  | NftDetectionControllerDetectNftsAction;
+
+/** Immer patch shape, inlined so this file does not depend on `immer`. */
+interface StateChangePatch {
+  op: 'replace' | 'remove' | 'add';
+  path: (string | number)[];
+  value?: unknown;
+}
+
+interface NftDetectionControllerEvents {
+  type: 'NftDetectionController:stateChange';
+  payload: [NftDetectionController['state'], StateChangePatch[]];
+}
+import {
+  TransactionPayController,
+  TransactionPayControllerActions,
+  TransactionPayControllerEvents,
+  TransactionPayControllerState,
+} from '@metamask/transaction-pay-controller';
+import {
+  SentinelApiService,
+  type SentinelApiServiceActions,
+  type SentinelApiServiceEvents,
+} from '@metamask/sentinel-api-service';
+import {
+  AiDigestController,
+  AiDigestControllerActions,
+  AiDigestControllerEvents,
+  AiDigestControllerState,
+} from '@metamask/ai-controllers';
+import {
+  ClientController,
+  ClientControllerActions,
+  ClientControllerEvents,
+  ClientControllerState,
+} from '@metamask/client-controller';
+import {
+  SocialController,
+  SocialRealtimeService,
+  SocialService,
+  type SocialControllerActions,
+  type SocialControllerEvents,
+  type SocialControllerState,
+  type SocialServiceActions,
+  type SocialServiceEvents,
+} from '@metamask/social-controllers';
+import {
+  ProfileController,
+  ProfileService,
+  type ProfileControllerActions,
+  type ProfileControllerEvents,
+  type ProfileControllerState,
+  type ProfileServiceActions,
+  type ProfileServiceEvents,
+} from '@metamask/profile-controller';
+import {
+  AuthenticatedUserStorageService,
+  type AuthenticatedUserStorageActions,
+  type AuthenticatedUserStorageEvents,
+} from '@metamask/authenticated-user-storage';
+import {
+  ComplianceController,
+  ComplianceControllerActions,
+  ComplianceControllerEvents,
+  ComplianceControllerState,
+  ComplianceService,
+  ComplianceServiceActions,
+} from '@metamask/compliance-controller';
+import {
+  KycController,
+  KycControllerActions,
+  KycControllerEvents,
+  KycControllerState,
+  KycService,
+  KycServiceActions,
+  KycServiceEvents,
+} from '@metamask/kyc-controller';
+import {
+  ChompApiService,
+  ChompApiServiceActions,
+  type ChompApiServiceEvents,
+} from '@metamask/chomp-api-service';
+import {
+  MoneyAccountUpgradeController,
+  MoneyAccountUpgradeControllerActions,
+  MoneyAccountUpgradeControllerEvents,
+  MoneyAccountUpgradeControllerState,
+} from '@metamask/money-account-upgrade-controller';
+import { captureException } from '@sentry/react-native';
+import { Wallet } from '@metamask/wallet';
+
+/**
+ * Controllers that are always instantiated
+ */
+type RequiredControllers = Omit<
+  MessengerClients,
+  | 'GeolocationApiService'
+  | 'MultichainRoutingService'
+  | 'RewardsDataService'
+  | 'RewardsMoneyDataService'
+  | 'StorageService'
+  | 'SubscriptionService'
+  | 'ShieldApiService'
+  | 'ClaimsService'
+  | 'ComplianceService'
+  | 'KycService'
+  | 'ChompApiService'
+>;
+
+/**
+ * Controllers that are sometimes not instantiated
+ */
+type OptionalControllers = Pick<
+  MessengerClients,
+  | 'GeolocationApiService'
+  | 'MultichainRoutingService'
+  | 'RewardsDataService'
+  | 'RewardsMoneyDataService'
+  | 'StorageService'
+  | 'SubscriptionService'
+  | 'ShieldApiService'
+  | 'ClaimsService'
+  | 'ComplianceService'
+  | 'KycService'
+  | 'ChompApiService'
+>;
+
+type PermissionsByRpcMethod = ReturnType<typeof getPermissionSpecifications>;
+type Permissions = PermissionsByRpcMethod[keyof PermissionsByRpcMethod];
+
+/**
+ * Declared structurally to match `PerpsControllerAllowedActions`, which lists
+ * this action so clients that do expose it can serve it. Our
+ * `SubscriptionController` does not, so nothing delegates it and
+ * `RewardsIntegrationService` keeps using its injected `subscription`
+ * dependency. Remove once `@metamask/subscription-controller` exposes the
+ * action itself.
+ */
+interface SubscriptionControllerRegisterAddressAction {
+  type: `SubscriptionController:registerAddress`;
+  handler: (caipAccountId: string) => Promise<void>;
+}
+
+// TODO: Abstract this into controller utils for SnapsController
+type SnapsGlobalActions =
+  | SnapControllerActions
+  | SnapRegistryControllerActions
+  | SubjectMetadataControllerActions
+  | PhishingControllerActions;
+
+type SnapsGlobalEvents =
+  | SnapControllerEvents
+  | SnapRegistryControllerEvents
+  | SubjectMetadataControllerEvents
+  | PhishingControllerEvents;
+
+export type GlobalActions =
+  | SamplePetnamesControllerActions
+  | AssetsControllerActions
+  | AccountTrackerControllerGetStateAction
+  | CurrencyRateControllerActions
+  | MultichainAssetsControllerGetStateAction
+  | NftControllerActions
+  | TokensControllerActions
+  | AddressBookControllerActions
+  | ApprovalControllerActions
+  | ConnectivityControllerActions
+  | GasFeeControllerActions
+  | GatorPermissionsControllerActions
+  | KeyringControllerActions
+  | NetworkControllerActions
+  | NetworkEnablementControllerActions
+  | NetworkConnectionBannerControllerActions
+  | PermissionControllerActions
+  | SignatureControllerActions
+  | LoggingControllerActions
+  | AnalyticsControllerActions
+  | SnapsGlobalActions
+  | SnapInterfaceControllerActions
+  | AuthenticationController.Actions
+  | UserStorageController.Actions
+  | NotificationServicesControllerMessengerActions
+  | NotificationServicesPushControllerActions
+  | CronjobControllerActions
+  | WebSocketServiceActions
+  | ExecutionServiceActions
+  | BackendWebSocketServiceActions
+  | OHLCVServiceActions
+  | MultichainTransactionsControllerActions
+  | MultichainAccountServiceActions
+  | SnapAccountServiceActions
+  | AccountsControllerActions
+  | AccountTreeControllerActions
+  | PreferencesControllerActions
+  | TransactionControllerActions
+  | TransactionPayControllerActions
+  | SelectedNetworkControllerActions
+  | SmartTransactionsControllerActions
+  | AssetsContractControllerActions
+  | RemoteFeatureFlagControllerActions
+  | TokenSearchDiscoveryDataControllerActions
+  | MultichainNetworkControllerActions
+  | BridgeControllerActions
+  | BridgeStatusControllerActions
+  | EarnControllerActions
+  | MoneyAccountControllerActions
+  | MoneyAccountBalanceServiceActions
+  | MoneyAccountApiDataServiceActions
+  | GeolocationControllerActions
+  | GeolocationApiServiceActions
+  | PerpsControllerActions
+  | PredictControllerActions
+  | PredictMarketDataServiceActions
+  | PredictLiveDataServiceActions
+  | PredictPortfolioServiceActions
+  | PredictOrderServiceActions
+  | PredictDeviceAuthServiceActions
+  | PredictVenueControllerActions
+  | RecurringOrdersDataServiceActions
+  | LimitOrdersDataServiceActions
+  | SentinelFeeTokensDataServiceActions
+  | CardControllerActions
+  | UiSlotsControllerActions
+  | QrSyncControllerActions
+  | QrSyncProvisioningServiceActions
+  | ClientControllerActions
+  | RewardsControllerActions
+  | RewardsDataServiceActions
+  | RewardsMoneyControllerActions
+  | RewardsMoneyDataServiceActions
+  | AppMetadataControllerActions
+  | MultichainRoutingServiceActions
+  | DeFiPositionsControllerActions
+  | DeFiPositionsControllerV2Actions
+  | StorageServiceActions
+  | SubscriptionControllerActions
+  | SubscriptionDelegationServiceActions
+  | SubscriptionControllerRegisterAddressAction
+  | SubscriptionServiceActions
+  | ShieldControllerActions
+  | ShieldApiServiceActions
+  | ClaimsControllerActions
+  | ClaimsServiceActions
+  | DelegationControllerActions
+  | SeedlessOnboardingControllerActions
+  | NftDetectionControllerActions
+  | ProfileMetricsControllerActions
+  | ProfileMetricsServiceActions
+  | ProofOfOwnershipServiceActions
+  | RampsControllerActions
+  | RampsServiceActions
+  | AiDigestControllerActions
+  | SocialControllerActions
+  | SocialServiceActions
+  | ProfileControllerActions
+  | ProfileServiceActions
+  | AuthenticatedUserStorageActions
+  | ComplianceControllerActions
+  | ComplianceServiceActions
+  | KycControllerActions
+  | KycServiceActions
+  | TransakServiceActions
+  | NeoBankServiceActions
+  | ConfigRegistryControllerActions
+  | ConfigRegistryApiServiceActions
+  | ChompApiServiceActions
+  | MoneyAccountUpgradeControllerActions
+  | SentinelApiServiceActions;
+
+export type GlobalEvents =
+  | SamplePetnamesControllerEvents
+  | AssetsControllerEvents
+  | NftControllerEvents
+  | TokensControllerEvents
+  | AddressBookControllerEvents
+  | ApprovalControllerEvents
+  | ConnectivityControllerEvents
+  | ConfigRegistryControllerEvents
+  | GasFeeControllerEvents
+  | GatorPermissionsControllerEvents
+  | KeyringControllerEvents
+  | NetworkControllerEvents
+  | NetworkEnablementControllerEvents
+  | NetworkConnectionBannerControllerEvents
+  | PermissionControllerEvents
+  | SnapsGlobalEvents
+  | SnapInterfaceControllerEvents
+  | AuthenticationController.Events
+  | UserStorageController.Events
+  | NotificationServicesControllerMessengerEvents
+  | NotificationServicesPushControllerEvents
+  | CronjobControllerEvents
+  | ExecutionServiceEvents
+  | BackendWebSocketServiceEvents
+  | AccountActivityServiceEvents
+  | OHLCVServiceEvents
+  | MultichainTransactionsControllerEvents
+  | MultichainAccountServiceEvents
+  | SnapAccountServiceEvents
+  | SignatureControllerEvents
+  | LoggingControllerEvents
+  | AnalyticsControllerEvents
+  | StorageServiceEvents
+  | SubscriptionControllerEvents
+  | SubscriptionServiceEvents
+  | ShieldControllerEvents
+  | ShieldApiServiceEvents
+  | ClaimsControllerStateChangeEvent
+  | ClaimsServiceEvents
+  | AccountsControllerEvents
+  | PreferencesControllerEvents
+  | TransactionControllerEvents
+  | TransactionPayControllerEvents
+  | SelectedNetworkControllerEvents
+  | SmartTransactionsControllerEvents
+  | RemoteFeatureFlagControllerEvents
+  | TokenSearchDiscoveryDataControllerEvents
+  | SnapKeyringEvents
+  | MultichainNetworkControllerEvents
+  | BridgeControllerEvents
+  | BridgeStatusControllerEvents
+  | EarnControllerEvents
+  | MoneyAccountControllerEvents
+  | MoneyAccountBalanceServiceEvents
+  | MoneyAccountApiDataServiceEvents
+  | GeolocationControllerEvents
+  | PerpsControllerEvents
+  | PredictControllerEvents
+  | PredictMarketDataServiceEvents
+  | PredictLiveDataServiceEvents
+  | PredictPortfolioServiceEvents
+  | PredictOrderServiceEvents
+  | PredictVenueControllerEvents
+  | RecurringOrdersDataServiceEvents
+  | LimitOrdersDataServiceEvents
+  | SentinelFeeTokensDataServiceEvents
+  | CardControllerEvents
+  | UiSlotsControllerEvents
+  | QrSyncControllerEvents
+  | ClientControllerEvents
+  | RewardsControllerEvents
+  | RewardsMoneyControllerEvents
+  | AppMetadataControllerEvents
+  | SeedlessOnboardingControllerEvents
+  | DeFiPositionsControllerEvents
+  | DeFiPositionsControllerV2Events
+  | AccountTreeControllerEvents
+  | DelegationControllerEvents
+  | NftDetectionControllerEvents
+  | ProfileMetricsControllerEvents
+  | RampsControllerEvents
+  | AiDigestControllerEvents
+  | SocialControllerEvents
+  | SocialServiceEvents
+  | ProfileControllerEvents
+  | ProfileServiceEvents
+  | AuthenticatedUserStorageEvents
+  | ComplianceControllerEvents
+  | KycControllerEvents
+  | KycServiceEvents
+  | ChompApiServiceEvents
+  | MoneyAccountUpgradeControllerEvents
+  | SentinelApiServiceEvents;
+
+/**
+ * Type definition for the messenger used in the Engine.
+ * It extends the base Messenger with global actions and events.
+ */
+export type RootExtendedMessenger = ExtendedMessenger<
+  'Root',
+  GlobalActions,
+  GlobalEvents
+>;
+
+export const getRootExtendedMessenger = (): RootExtendedMessenger =>
+  new ExtendedMessenger<'Root', GlobalActions, GlobalEvents>({
+    namespace: 'Root',
+    captureException,
+  });
+
+/**
+ * Type definition for the root messenger used in the Engine.
+ * It extends the root messenger with global actions and events.
+ */
+export type RootMessenger<
+  AllowedActions extends GlobalActions = GlobalActions,
+  AllowedEvents extends GlobalEvents = GlobalEvents,
+> = Messenger<'Root', AllowedActions, AllowedEvents>;
+
+export const getRootMessenger = (): RootMessenger =>
+  new Messenger<'Root', GlobalActions, GlobalEvents>({
+    namespace: 'Root',
+    captureException,
+  });
+
+/**
+ * All mobile controllers, keyed by name
+ */
+// Interfaces are incompatible with our controllers and state types by default.
+// Adding an index signature fixes this, but at the cost of widening the type unnecessarily.
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MessengerClients = {
+  // Only registered when INCLUDE_SAMPLE_FEATURE=true.
+  SamplePetnamesController?: SamplePetnamesController;
+  AccountsController: AccountsController;
+  AccountTreeController: AccountTreeController;
+  AddressBookController: AddressBookController;
+  AppMetadataController: AppMetadataController;
+  ConnectivityController: ConnectivityController;
+  NetworkConnectionBannerController: NetworkConnectionBannerController;
+  ConfigRegistryController: ConfigRegistryController;
+  ConfigRegistryApiService: ConfigRegistryApiService;
+  SentinelApiService: SentinelApiService;
+  ApprovalController: ApprovalController;
+  AssetsContractController: AssetsContractController;
+  AssetsController: AssetsController;
+  GasFeeController: GasFeeController;
+  KeyringController: KeyringController;
+  LoggingController: LoggingController;
+  AnalyticsController: AnalyticsController;
+  NetworkController: NetworkController;
+  NetworkEnablementController: NetworkEnablementController;
+  NftController: NftController;
+  TokensController: TokensController;
+  NftDetectionController: NftDetectionController;
+  // TODO: Fix permission types
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  PermissionController: PermissionController<any, any>;
+  SelectedNetworkController: SelectedNetworkController;
+  PhishingController: PhishingController;
+  PreferencesController: PreferencesControllerWithSavedGasFees;
+  RampsController: RampsController;
+  RemoteFeatureFlagController: RemoteFeatureFlagController;
+  DeFiPositionsController: DeFiPositionsController;
+  DeFiPositionsControllerV2: DeFiPositionsControllerV2;
+  TransactionController: TransactionController;
+  TransactionPayController: TransactionPayController;
+  SmartTransactionsController: SmartTransactionsController;
+  SignatureController: SignatureController;
+  StorageService: StorageService;
+  SubscriptionController: SubscriptionController;
+  SubscriptionDelegationService: SubscriptionDelegationService;
+  SubscriptionService: SubscriptionService;
+  ShieldController: ShieldController;
+  ShieldApiService: ShieldApiService;
+  ClaimsController: ClaimsController;
+  ClaimsService: ClaimsService;
+  ExecutionService: ExecutionService;
+  SnapController: SnapController;
+  SnapRegistryController: SnapRegistryController;
+  SubjectMetadataController: SubjectMetadataController;
+  AuthenticationController: AuthenticationController.Controller;
+  UserStorageController: UserStorageController.Controller;
+  NotificationServicesController: NotificationServicesController;
+  NotificationServicesPushController: NotificationServicesPushController;
+  SnapInterfaceController: SnapInterfaceController;
+  CronjobController: CronjobController;
+  WebSocketService: WebSocketService;
+  BackendWebSocketService: BackendWebSocketService;
+  AccountActivityService: AccountActivityService;
+  OHLCVService: OHLCVService;
+  MultichainRoutingService: MultichainRoutingService;
+  MultichainTransactionsController: MultichainTransactionsController;
+  MultichainAccountService: MultichainAccountService;
+  SnapAccountService: SnapAccountService;
+  TokenSearchDiscoveryDataController: TokenSearchDiscoveryDataController;
+  MultichainNetworkController: MultichainNetworkController;
+  BridgeController: BridgeController;
+  BridgeStatusController: BridgeStatusController;
+  EarnController: EarnController;
+  MoneyAccountController: MoneyAccountController;
+  MoneyAccountBalanceService: MoneyAccountBalanceService;
+  MoneyAccountApiDataService: MoneyAccountApiDataService;
+  GeolocationController: GeolocationController;
+  GeolocationApiService: GeolocationApiService;
+  PerpsController: PerpsController;
+  PredictController: PredictController;
+  PredictMarketDataService: PredictMarketDataService;
+  PredictLiveDataService: PredictLiveDataService;
+  PredictPortfolioService: PredictPortfolioService;
+  PredictOrderService: PredictOrderService;
+  PredictDeviceAuthService: PredictDeviceAuthService;
+  PredictVenueController: PredictVenueController;
+  RecurringOrdersDataService: RecurringOrdersDataService;
+  LimitOrdersDataService: LimitOrdersDataService;
+  SentinelFeeTokensDataService: SentinelFeeTokensDataService;
+  CardController: CardController;
+  UiSlotsController: UiSlotsController;
+  QrSyncController: QrSyncController;
+  QrSyncProvisioningService: QrSyncProvisioningService;
+  ClientController: ClientController;
+  RewardsController: RewardsController;
+  RewardsDataService: RewardsDataService;
+  RewardsMoneyController: RewardsMoneyController;
+  RewardsMoneyDataService: RewardsMoneyDataService;
+  SeedlessOnboardingController: SeedlessOnboardingController<EncryptionKey>;
+  GatorPermissionsController: GatorPermissionsController;
+  DelegationController: DelegationController;
+  ProfileMetricsController: ProfileMetricsController;
+  ProfileMetricsService: ProfileMetricsService;
+  ProofOfOwnershipService: ProofOfOwnershipService;
+  RampsService: RampsService;
+  AiDigestController: AiDigestController;
+  SocialController: SocialController;
+  SocialService: SocialService;
+  SocialRealtimeService: SocialRealtimeService;
+  ProfileController: ProfileController;
+  ProfileService: ProfileService;
+  AuthenticatedUserStorageService: AuthenticatedUserStorageService;
+  ComplianceService: ComplianceService;
+  ComplianceController: ComplianceController;
+  KycService: KycService;
+  KycController: KycController;
+  TransakService: TransakService;
+  NeoBankService: NeoBankService;
+  ChompApiService: ChompApiService;
+  MoneyAccountUpgradeController: MoneyAccountUpgradeController;
+};
+
+/**
+ * Combines required and optional controllers for the Engine context type.
+ */
+export type EngineContext = RequiredControllers & Partial<OptionalControllers>;
+
+/**
+ * All engine state, keyed by controller name
+ */
+// Interfaces are incompatible with our controllers and state types by default.
+// Adding an index signature fixes this, but at the cost of widening the type unnecessarily.
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type EngineState = {
+  AddressBookController: AddressBookControllerState;
+  AssetsController: AssetsControllerState;
+  AppMetadataController: AppMetadataControllerState;
+  ConnectivityController: ConnectivityControllerState;
+  NetworkConnectionBannerController: NetworkConnectionBannerControllerState;
+  ConfigRegistryController: ConfigRegistryControllerState;
+  NftController: NftControllerState;
+  KeyringController: KeyringControllerState;
+  NetworkController: NetworkState;
+  NetworkEnablementController: NetworkEnablementControllerState;
+  PreferencesController: PreferencesStateWithSavedGasFees;
+  RemoteFeatureFlagController: RemoteFeatureFlagControllerState;
+  RampsController: RampsControllerState;
+  PhishingController: PhishingControllerState;
+  TransactionController: TransactionControllerState;
+  TransactionPayController: TransactionPayControllerState;
+  SmartTransactionsController: SmartTransactionsControllerState;
+  GasFeeController: GasFeeState;
+  TokensController: TokensControllerState;
+  SubscriptionController: SubscriptionControllerState;
+  ShieldController: ShieldControllerState;
+  ClaimsController: ClaimsControllerState;
+  DeFiPositionsController: DeFiPositionsControllerState;
+  DeFiPositionsControllerV2: DeFiPositionsControllerV2State;
+  SnapController: PersistedSnapControllerState;
+  SnapRegistryController: SnapRegistryControllerState;
+  SubjectMetadataController: SubjectMetadataControllerState;
+  AuthenticationController: AuthenticationController.AuthenticationControllerState;
+  UserStorageController: UserStorageController.UserStorageControllerState;
+  NotificationServicesController: NotificationServicesControllerState;
+  NotificationServicesPushController: NotificationServicesPushControllerState;
+  SnapInterfaceController: SnapInterfaceControllerState;
+  CronjobController: CronjobControllerState;
+  PermissionController: PermissionControllerState<Permissions>;
+  ApprovalController: ApprovalControllerState;
+  LoggingController: LoggingControllerState;
+  AnalyticsController: AnalyticsControllerState;
+  AccountsController: AccountsControllerState;
+  AccountTreeController: AccountTreeControllerState;
+  SelectedNetworkController: SelectedNetworkControllerState;
+  SignatureController: SignatureControllerState;
+  MultichainTransactionsController: MultichainTransactionsControllerState;
+  TokenSearchDiscoveryDataController: TokenSearchDiscoveryDataControllerState;
+  MultichainNetworkController: MultichainNetworkControllerState;
+  BridgeController: BridgeControllerState;
+  BridgeStatusController: BridgeStatusControllerState;
+  EarnController: EarnControllerState;
+  MoneyAccountController: MoneyAccountControllerState;
+  GeolocationController: GeolocationControllerState;
+  PerpsController: PerpsControllerState;
+  PredictController: PredictControllerState;
+  PredictVenueController: PredictVenueControllerState;
+  CardController: CardControllerState;
+  UiSlotsController: UiSlotsControllerState;
+  QrSyncController: QrSyncControllerState;
+  ClientController: ClientControllerState;
+  RewardsController: RewardsControllerState;
+  RewardsMoneyController: RewardsMoneyControllerState;
+  SeedlessOnboardingController: SeedlessOnboardingControllerState;
+  // Only registered when INCLUDE_SAMPLE_FEATURE=true.
+  SamplePetnamesController?: SamplePetnamesControllerState;
+  GatorPermissionsController: GatorPermissionsControllerState;
+  DelegationController: DelegationControllerState;
+  ProfileMetricsController: ProfileMetricsControllerState;
+  AiDigestController: AiDigestControllerState;
+  SocialController: SocialControllerState;
+  ProfileController: ProfileControllerState;
+  ComplianceController: ComplianceControllerState;
+  KycController: KycControllerState;
+  MoneyAccountUpgradeController: MoneyAccountUpgradeControllerState;
+};
+
+/** Messenger client names */
+export type MessengerClientName = keyof MessengerClients;
+
+/**
+ * Messenger client type
+ */
+export type MessengerClient = MessengerClients[MessengerClientName];
+
+/** Map of messenger clients by name. */
+export type MessengerClientsByName = {
+  [Name in MessengerClientName]: MessengerClients[Name];
+};
+
+/**
+ * A messenger for the controller
+ */
+export type ControllerMessenger = Messenger<
+  string,
+  ActionConstraint,
+  EventConstraint
+>;
+
+/**
+ * Specify messenger clients to initialize.
+ */
+export type MessengerClientsToInitialize =
+  | 'SamplePetnamesController'
+  | 'AssetsContractController'
+  | 'AssetsController'
+  | 'NetworkConnectionBannerController'
+  | 'SentinelApiService'
+  | 'AuthenticationController'
+  | 'CronjobController'
+  | 'ExecutionService'
+  | 'SnapController'
+  | 'SnapInterfaceController'
+  | 'SnapRegistryController'
+  | 'WebSocketService'
+  | 'NotificationServicesController'
+  | 'NotificationServicesPushController'
+  | 'AppMetadataController'
+  | 'UserStorageController'
+  | 'BackendWebSocketService'
+  | 'AccountActivityService'
+  | 'OHLCVService'
+  | 'MultichainRoutingService'
+  | 'MultichainTransactionsController'
+  | 'MultichainAccountService'
+  | 'SnapAccountService'
+  | 'EarnController'
+  | 'MoneyAccountController'
+  | 'MoneyAccountBalanceService'
+  | 'MoneyAccountApiDataService'
+  | 'AccountTreeController'
+  | 'DeFiPositionsController'
+  | 'DeFiPositionsControllerV2'
+  | 'MultichainNetworkController'
+  | 'NftController'
+  | 'TokensController'
+  | 'NftDetectionController'
+  | 'PhishingController'
+  | 'SignatureController'
+  | 'SmartTransactionsController'
+  | 'TokenSearchDiscoveryDataController'
+  | 'TransactionPayController'
+  | 'PerpsController'
+  | 'PredictController'
+  | 'PredictMarketDataService'
+  | 'PredictLiveDataService'
+  | 'PredictPortfolioService'
+  | 'PredictOrderService'
+  | 'PredictDeviceAuthService'
+  | 'PredictVenueController'
+  | 'RecurringOrdersDataService'
+  | 'LimitOrdersDataService'
+  | 'SentinelFeeTokensDataService'
+  | 'CardController'
+  | 'UiSlotsController'
+  | 'QrSyncController'
+  | 'QrSyncProvisioningService'
+  | 'PreferencesController'
+  | 'BridgeController'
+  | 'BridgeStatusController'
+  | 'RewardsController'
+  | 'RewardsDataService'
+  | 'RewardsMoneyController'
+  | 'RewardsMoneyDataService'
+  | 'RampsController'
+  | 'RampsService'
+  | 'TransakService'
+  | 'NeoBankService'
+  | 'GatorPermissionsController'
+  | 'DelegationController'
+  | 'ProfileMetricsController'
+  | 'ProfileMetricsService'
+  | 'ProofOfOwnershipService'
+  | 'AiDigestController'
+  | 'SocialService'
+  | 'SocialRealtimeService'
+  | 'SocialController'
+  | 'ProfileService'
+  | 'ProfileController'
+  | 'AuthenticatedUserStorageService'
+  | 'ComplianceService'
+  | 'ComplianceController'
+  | 'KycService'
+  | 'KycController'
+  | 'ChompApiService'
+  | 'MoneyAccountUpgradeController';
+
+/**
+ * Callback that returns a controller messenger for a specific controller.
+ */
+export type ControllerMessengerCallback = (
+  baseControllerMessenger: RootExtendedMessenger,
+) => ControllerMessenger;
+
+/**
+ * Persisted state for all messenger clients.
+ * e.g. `{ TransactionController: { transactions: [] } }`.
+ */
+type MessengerClientPersistedState = Partial<{
+  [Name in Exclude<
+    MessengerClientName,
+    (typeof STATELESS_NON_CONTROLLER_NAMES)[number]
+  >]: Partial<NonNullable<MessengerClientsByName[Name]>['state']>;
+}>;
+
+/**
+ * Map of messenger client messengers by name.
+ */
+export type MessengerClientMessengersByName = typeof MESSENGER_FACTORIES;
+
+/**
+ * Request to initialize and return a messenger client instance.
+ * Includes standard data and methods not coupled to any specific messenger client.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MessengerClientInitRequest<
+  ControllerMessengerType extends ControllerMessenger,
+  InitMessengerType extends void | ControllerMessenger = void,
+> = {
+  /**
+   * The token API service instance.
+   */
+  codefiTokenApiV2: CodefiTokenPricesServiceV2;
+
+  /**
+   * Shared token list service instance.
+   * Owns a TanStack Query cache (4-hour stale time) so that both
+   * TokenDetectionController and TokensController share the same in-memory
+   * cache without redundant network requests.
+   */
+  tokenListService: TokenListService;
+
+  /**
+   * Controller messenger for the client.
+   * Used to generate controller for each controller.
+   */
+  controllerMessenger: ControllerMessengerType;
+
+  /**
+   * Retrieve a controller instance by name.
+   * Throws an error if the messenger client is not yet initialized.
+   *
+   * @param name - The name of the messenger client to retrieve.
+   */
+  getMessengerClient<Name extends MessengerClientName>(
+    name: Name,
+  ): MessengerClientsByName[Name];
+
+  /**
+   * Retrieve the chain ID of the globally selected network.
+   *
+   * @deprecated Will be removed in the future pending multi-chain support.
+   */
+  getGlobalChainId: () => Hex;
+
+  /**
+   * Get the UI state of the app, returning the current Redux state including transient UI data,
+   * whereas `persistedState` contains only the subset of state persisted across sessions.
+   * For example: `{ settings, user, engine: { backgroundState: EngineState } }`.
+   */
+  getState: () => RootState;
+
+  /**
+   * The analytics ID to use for tracking.
+   * This is always provided at runtime and should not be undefined.
+   */
+  analyticsId: string;
+
+  /**
+   * Remove an account from all controllers that manage accounts.
+   *
+   * @param address - The address of the account to remove.
+   */
+  removeAccount(address: string): Promise<void>;
+
+  /**
+   * The initial state of the keyring controller, if applicable.
+   */
+  initialKeyringState?: KeyringControllerState | null;
+
+  /**
+   * Required initialization messenger instance.
+   * Generated using the callback specified in `getInitMessenger`.
+   */
+  initMessenger: InitMessengerType;
+
+  /**
+   * The full persisted state for all controllers.
+   * Includes controller name properties.
+   * e.g. `{ TransactionController: { transactions: [] } }`.
+   */
+  persistedState: MessengerClientPersistedState;
+};
+
+/**
+ * Function to initialize a controller instance and return associated data.
+ */
+export type MessengerClientInitFunction<
+  MessengerClientType extends MessengerClient,
+  ControllerMessengerType extends ControllerMessenger,
+  InitMessengerType extends void | ControllerMessenger = void,
+> = (
+  request: MessengerClientInitRequest<
+    ControllerMessengerType,
+    InitMessengerType
+  >,
+) => {
+  controller: MessengerClientType;
+};
+
+/**
+ * Map of messenger client init functions by messenger client name.
+ */
+export type MessengerClientInitFunctionsByMessengerClientName = {
+  [Name in MessengerClientsToInitialize]: MessengerClientInitFunction<
+    MessengerClientsByName[Name],
+    ReturnType<(typeof MESSENGER_FACTORIES)[Name]['getMessenger']>,
+    ReturnType<(typeof MESSENGER_FACTORIES)[Name]['getInitMessenger']>
+  >;
+};
+
+export interface InitMessengerClientsFunctionRequest {
+  wallet: Wallet;
+  baseControllerMessenger: RootExtendedMessenger;
+  initFunctions: MessengerClientInitFunctionsByMessengerClientName;
+  getGlobalChainId: () => Hex;
+  getState: () => RootState;
+  analyticsId: string;
+  codefiTokenApiV2: CodefiTokenPricesServiceV2;
+  tokenListService: TokenListService;
+  removeAccount: (address: string) => Promise<void>;
+  persistedState: MessengerClientPersistedState;
+}
+
+/**
+ * Map of only the messenger clients that `initMessengerClients` constructs.
+ * Wallet-owned controllers (e.g. `AccountsController`) are intentionally absent;
+ * resolve those via `wallet.getInstance(...)`, not this map.
+ */
+export type InitializedMessengerClientsByName = {
+  [Name in MessengerClientsToInitialize]: MessengerClientsByName[Name];
+};
+
+/**
+ * Function to initialize the messenger clients in the engine.
+ */
+export type InitMessengerClientsFunction = (
+  request: InitMessengerClientsFunctionRequest,
+) => {
+  messengerClientsByName: InitializedMessengerClientsByName;
+};

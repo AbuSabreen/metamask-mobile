@@ -1,0 +1,421 @@
+import React from 'react';
+import { render, screen, act } from '@testing-library/react-native';
+import {
+  NavigationContainer,
+  NavigationContainerRef,
+} from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import Routes from '../../../../constants/navigation/Routes';
+import PredictScreenStack, { PredictModalStack } from './index';
+
+let mockPayWithAnyTokenEnabled = false;
+let mockPredictPortfolioEnabled = true;
+let mockPredictHomeRedesignEnabled = false;
+const mockPredictConfig = {
+  enabled: false,
+  venues: {
+    polymarket: { enabled: true },
+    kalshi: { enabled: false },
+  },
+  venueSelection: { enabled: false },
+};
+
+const mockSelectPredictWithAnyTokenEnabledFlag = jest.fn(
+  () => mockPayWithAnyTokenEnabled,
+);
+const mockSelectPredictPortfolioEnabledFlag = jest.fn(
+  () => mockPredictPortfolioEnabled,
+);
+const mockSelectPredictHomeRedesignEnabledFlag = jest.fn(
+  () => mockPredictHomeRedesignEnabled,
+);
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: jest.fn((selector: (state: unknown) => unknown) => selector({})),
+}));
+
+jest.mock('../selectors/featureFlags', () => ({
+  ...jest.requireActual('../selectors/featureFlags'),
+  selectPredictWithAnyTokenEnabledFlag: () =>
+    mockSelectPredictWithAnyTokenEnabledFlag(),
+  selectPredictPortfolioEnabledFlag: () =>
+    mockSelectPredictPortfolioEnabledFlag(),
+  selectPredictHomeRedesignEnabledFlag: () =>
+    mockSelectPredictHomeRedesignEnabledFlag(),
+}));
+
+jest.mock('../../PredictNext/selectors/predictConfig', () => ({
+  selectPredictConfig: () => mockPredictConfig,
+}));
+
+jest.mock('../contexts', () => {
+  const { View } = jest.requireActual('react-native');
+  return {
+    PredictPreviewSheetProvider: ({
+      children,
+    }: {
+      children: React.ReactNode;
+    }) => <View testID="preview-sheet-provider">{children}</View>,
+  };
+});
+
+jest.mock('../views/PredictFeed', () => {
+  const { View, Text } = jest.requireActual('react-native');
+  return () => (
+    <View testID="predict-feed">
+      <Text>PredictFeed</Text>
+    </View>
+  );
+});
+
+jest.mock('../views/PredictHome', () => {
+  const { View, Text } = jest.requireActual('react-native');
+  return () => (
+    <View testID="predict-home">
+      <Text>PredictHome</Text>
+    </View>
+  );
+});
+
+jest.mock('../views/PredictFeedView', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-feed-view" />;
+});
+
+jest.mock('../views/PredictMarketDetails', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-market-details" />;
+});
+
+jest.mock('../views/PredictPositionsView', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-positions-view" />;
+});
+
+jest.mock('../views/PredictBuyPreview/PredictBuyPreview', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-buy-preview" />;
+});
+
+jest.mock('../views/PredictBuyWithAnyToken', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-buy-with-any-token" />;
+});
+
+jest.mock('../views/PredictSellPreview/PredictSellPreview', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-sell-preview" />;
+});
+
+jest.mock('../views/PredictUnavailableModal', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-unavailable-modal" />;
+});
+
+jest.mock('../views/PredictMarketUnavailableModal', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-market-unavailable-modal" />;
+});
+
+jest.mock('../views/PredictAddFundsModal/PredictAddFundsModal', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-add-funds-modal" />;
+});
+
+jest.mock('../components/PredictActivityDetail/PredictActivityDetail', () => {
+  const { View } = jest.requireActual('react-native');
+  return () => <View testID="predict-activity-detail" />;
+});
+
+jest.mock('../../../Views/confirmations/components/confirm', () => ({
+  Confirm: () => {
+    const { View } = jest.requireActual('react-native');
+    return <View testID="confirm-component" />;
+  },
+}));
+
+jest.mock(
+  '../../../../constants/navigation/clearStackNavigatorOptions',
+  () => ({
+    clearNativeStackNavigatorOptions: {},
+    transparentModalScreenOptions: {},
+  }),
+);
+
+jest.mock(
+  '../../../Views/confirmations/hooks/ui/useEmptyNavHeaderForConfirmations',
+  () => ({
+    useEmptyNavHeaderForConfirmations: () => ({ headerShown: false }),
+  }),
+);
+
+let navigationRef: React.RefObject<NavigationContainerRef<
+  Record<string, unknown>
+> | null>;
+
+const renderWithNavigation = (component: React.ReactElement) =>
+  render(
+    <NavigationContainer ref={navigationRef}>{component}</NavigationContainer>,
+  );
+
+/**
+ * Mounts the modal stack the way `MainNavigator` registers it: as the
+ * `PredictModals` screen of a parent stack, so it receives the params a
+ * caller navigates with.
+ */
+const renderModalStackInApp = () => {
+  const ParentStack = createNativeStackNavigator();
+  const Home = () => null;
+
+  return renderWithNavigation(
+    <ParentStack.Navigator>
+      <ParentStack.Screen name="Home" component={Home} />
+      <ParentStack.Screen
+        name={Routes.PREDICT.MODALS.ROOT}
+        component={PredictModalStack}
+      />
+    </ParentStack.Navigator>,
+  );
+};
+
+describe('PredictScreenStack', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPayWithAnyTokenEnabled = false;
+    mockPredictPortfolioEnabled = true;
+    mockPredictHomeRedesignEnabled = false;
+    navigationRef = React.createRef();
+  });
+
+  it('wraps content in PredictPreviewSheetProvider', () => {
+    renderWithNavigation(<PredictScreenStack />);
+
+    expect(screen.getByTestId('preview-sheet-provider')).toBeOnTheScreen();
+  });
+
+  it('renders PredictFeed at market list when home redesign flag is disabled', () => {
+    mockPredictHomeRedesignEnabled = false;
+    renderWithNavigation(<PredictScreenStack />);
+
+    expect(screen.getByTestId('predict-feed')).toBeOnTheScreen();
+    expect(screen.queryByTestId('predict-home')).toBeNull();
+  });
+
+  it('renders PredictHome at market list when home redesign flag is enabled', () => {
+    mockPredictHomeRedesignEnabled = true;
+    renderWithNavigation(<PredictScreenStack />);
+
+    expect(screen.getByTestId('predict-home')).toBeOnTheScreen();
+    expect(screen.queryByTestId('predict-feed')).toBeNull();
+  });
+
+  it('navigates to MARKET_DETAILS screen', async () => {
+    renderWithNavigation(<PredictScreenStack />);
+
+    await act(async () => {
+      navigationRef.current?.navigate(Routes.PREDICT.MARKET_DETAILS);
+    });
+
+    expect(screen.getByTestId('predict-market-details')).toBeOnTheScreen();
+  });
+
+  it('navigates to FEED screen', async () => {
+    renderWithNavigation(<PredictScreenStack />);
+
+    await act(async () => {
+      navigationRef.current?.navigate(Routes.PREDICT.FEED, {
+        feedId: 'sports',
+      });
+    });
+
+    expect(screen.getByTestId('predict-feed-view')).toBeOnTheScreen();
+  });
+
+  it('navigates to POSITIONS screen when portfolio flag is enabled', async () => {
+    mockPredictPortfolioEnabled = true;
+    renderWithNavigation(<PredictScreenStack />);
+
+    await act(async () => {
+      navigationRef.current?.navigate(Routes.PREDICT.POSITIONS);
+    });
+
+    expect(screen.getByTestId('predict-positions-view')).toBeOnTheScreen();
+  });
+
+  it('navigates to POSITIONS screen when portfolio flag is disabled', async () => {
+    mockPredictPortfolioEnabled = false;
+    renderWithNavigation(<PredictScreenStack />);
+
+    await act(async () => {
+      navigationRef.current?.navigate(Routes.PREDICT.POSITIONS);
+    });
+
+    expect(screen.getByTestId('predict-positions-view')).toBeOnTheScreen();
+  });
+
+  it('navigates to BUY_PREVIEW with PredictBuyPreview when payWithAnyToken is off', async () => {
+    mockPayWithAnyTokenEnabled = false;
+
+    renderWithNavigation(<PredictScreenStack />);
+
+    await act(async () => {
+      navigationRef.current?.navigate(Routes.PREDICT.MODALS.BUY_PREVIEW);
+    });
+
+    expect(screen.getByTestId('predict-buy-preview')).toBeOnTheScreen();
+  });
+
+  it('navigates to BUY_PREVIEW with PredictBuyWithAnyToken when payWithAnyToken is on', async () => {
+    mockPayWithAnyTokenEnabled = true;
+
+    renderWithNavigation(<PredictScreenStack />);
+
+    await act(async () => {
+      navigationRef.current?.navigate(Routes.PREDICT.MODALS.BUY_PREVIEW);
+    });
+
+    expect(screen.getByTestId('predict-buy-with-any-token')).toBeOnTheScreen();
+  });
+
+  it('navigates to SELL_PREVIEW screen', async () => {
+    renderWithNavigation(<PredictScreenStack />);
+
+    await act(async () => {
+      navigationRef.current?.navigate(Routes.PREDICT.MODALS.SELL_PREVIEW);
+    });
+
+    expect(screen.getByTestId('predict-sell-preview')).toBeOnTheScreen();
+  });
+
+  it('navigates to redesigned confirmation screen', async () => {
+    renderWithNavigation(<PredictScreenStack />);
+
+    await act(async () => {
+      navigationRef.current?.navigate(
+        Routes.FULL_SCREEN_CONFIRMATIONS.REDESIGNED_CONFIRMATIONS,
+      );
+    });
+
+    expect(screen.getByTestId('confirm-component')).toBeOnTheScreen();
+  });
+
+  it('navigates to no-header confirmation screen', async () => {
+    renderWithNavigation(<PredictScreenStack />);
+
+    await act(async () => {
+      navigationRef.current?.navigate(
+        Routes.FULL_SCREEN_CONFIRMATIONS.NO_HEADER,
+      );
+    });
+
+    expect(screen.getByTestId('confirm-component')).toBeOnTheScreen();
+  });
+});
+
+describe('PredictModalStack', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPayWithAnyTokenEnabled = false;
+    mockPredictPortfolioEnabled = true;
+    mockPredictHomeRedesignEnabled = false;
+    navigationRef = React.createRef();
+  });
+
+  /** Opens the modal stack from the app navigator, as every caller does. */
+  const openModalStack = async (params?: Record<string, unknown>) => {
+    await act(async () => {
+      navigationRef.current?.navigate(Routes.PREDICT.MODALS.ROOT, params);
+    });
+  };
+
+  it('opens UNAVAILABLE when the caller names no screen', async () => {
+    renderModalStackInApp();
+
+    await openModalStack();
+
+    expect(screen.getByTestId('predict-unavailable-modal')).toBeOnTheScreen();
+  });
+
+  /** Opens the stack on `namedScreen`, then dismisses it. */
+  const visitAndDismiss = async (
+    params: Record<string, unknown>,
+    testId: string,
+  ) => {
+    await openModalStack(params);
+
+    expect(screen.getByTestId(testId)).toBeOnTheScreen();
+    expect(screen.queryByTestId('predict-unavailable-modal')).toBeNull();
+
+    await act(async () => {
+      navigationRef.current?.goBack();
+    });
+  };
+
+  it.each([
+    [
+      Routes.PREDICT.MODALS.MARKET_UNAVAILABLE,
+      'predict-market-unavailable-modal',
+    ],
+    [Routes.PREDICT.MODALS.ADD_FUNDS_SHEET, 'predict-add-funds-modal'],
+  ])(
+    'opens %s on every presentation, not only the first',
+    async (namedScreen, testId) => {
+      renderModalStackInApp();
+
+      /** One params object, as `PREDICT_LINK_NOT_FOUND.params` is per link. */
+      const params = { screen: namedScreen };
+
+      await visitAndDismiss(params, testId);
+      await visitAndDismiss(params, testId);
+    },
+  );
+
+  it('navigates to MARKET_UNAVAILABLE', async () => {
+    renderModalStackInApp();
+
+    await openModalStack({ screen: Routes.PREDICT.MODALS.MARKET_UNAVAILABLE });
+
+    expect(
+      screen.getByTestId('predict-market-unavailable-modal'),
+    ).toBeOnTheScreen();
+  });
+
+  it('navigates to ADD_FUNDS_SHEET', async () => {
+    renderModalStackInApp();
+
+    await openModalStack({ screen: Routes.PREDICT.MODALS.ADD_FUNDS_SHEET });
+
+    expect(screen.getByTestId('predict-add-funds-modal')).toBeOnTheScreen();
+  });
+
+  it('navigates to ACTIVITY_DETAIL', async () => {
+    renderModalStackInApp();
+
+    await openModalStack({
+      screen: Routes.PREDICT.ACTIVITY_DETAIL,
+      params: { activity: { type: 'buy' } },
+    });
+
+    expect(screen.getByTestId('predict-activity-detail')).toBeOnTheScreen();
+  });
+
+  it('navigates to redesigned confirmation in modal stack', async () => {
+    renderModalStackInApp();
+
+    await openModalStack({
+      screen: Routes.FULL_SCREEN_CONFIRMATIONS.REDESIGNED_CONFIRMATIONS,
+    });
+
+    expect(screen.getByTestId('confirm-component')).toBeOnTheScreen();
+  });
+
+  it('navigates to no-header confirmation in modal stack', async () => {
+    renderModalStackInApp();
+
+    await openModalStack({
+      screen: Routes.FULL_SCREEN_CONFIRMATIONS.NO_HEADER,
+    });
+
+    expect(screen.getByTestId('confirm-component')).toBeOnTheScreen();
+  });
+});

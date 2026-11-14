@@ -1,0 +1,157 @@
+import React from 'react';
+import { ButtonType, UserInputEventType } from '@metamask/snaps-sdk';
+import { render, screen, fireEvent } from '@testing-library/react-native';
+import { ButtonVariant } from '@metamask/design-system-react-native';
+import { SnapUIFooterButton } from './SnapUIFooterButton';
+import { ActivityIndicator } from 'react-native';
+
+const mockHandleEvent = jest.fn();
+jest.mock('../SnapInterfaceContext', () => ({
+  useSnapInterfaceContext: () => ({
+    snapId: 'mock-snap-id',
+    handleEvent: mockHandleEvent,
+  }),
+}));
+
+const mockUseSelector = jest.fn();
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  useSelector: (selector: any) => mockUseSelector(selector),
+}));
+
+describe('SnapUIFooterButton', () => {
+  beforeEach(() => {
+    mockHandleEvent.mockClear();
+    mockUseSelector.mockReturnValue({
+      'mock-snap-id': {
+        id: 'mock-snap-id',
+        hideSnapBranding: false,
+      },
+    });
+  });
+
+  const defaultProps = {
+    children: 'Test Button',
+    type: ButtonType.Submit,
+    snapVariant: 'primary' as const,
+    onPress: jest.fn(),
+    variant: ButtonVariant.Primary,
+    accessibilityLabel: 'Test Button',
+  };
+
+  it('renders button with snap branding when isSnapAction is true', () => {
+    render(<SnapUIFooterButton {...defaultProps} isSnapAction />);
+    expect(screen.getByText('Test Button')).toBeTruthy();
+    expect(screen.getByText('?')).toBeTruthy();
+  });
+
+  it('renders button without snap branding when hideSnapBranding is true', () => {
+    mockUseSelector.mockReturnValue({
+      'mock-snap-id': {
+        id: 'mock-snap-id',
+        hideSnapBranding: true,
+      },
+    });
+    render(<SnapUIFooterButton {...defaultProps} isSnapAction />);
+    expect(screen.getByText('Test Button')).toBeTruthy();
+    expect(screen.queryByText('?')).toBeNull();
+  });
+
+  it('shows loading state', () => {
+    const { UNSAFE_getByType } = render(
+      <SnapUIFooterButton {...defaultProps} loading />,
+    );
+    expect(UNSAFE_getByType(ActivityIndicator)).toBeTruthy();
+  });
+
+  it('applies correct variant based on disabled state', () => {
+    render(<SnapUIFooterButton {...defaultProps} disabled />);
+    const button = screen.getByRole('button', { name: 'Test Button' });
+    expect(button).toBeDisabled();
+  });
+
+  it('fires ButtonClickEvent and FormSubmitEvent when snap action button with Submit type is pressed', () => {
+    render(
+      <SnapUIFooterButton
+        {...defaultProps}
+        isSnapAction
+        name="confirm"
+        type={ButtonType.Submit}
+        form="my-form"
+      />,
+    );
+    fireEvent.press(screen.getByTestId('confirm-snap-footer-button'));
+    expect(mockHandleEvent).toHaveBeenCalledWith({
+      event: UserInputEventType.ButtonClickEvent,
+      name: 'confirm',
+    });
+    expect(mockHandleEvent).toHaveBeenCalledWith({
+      event: UserInputEventType.FormSubmitEvent,
+      name: 'my-form',
+    });
+  });
+
+  it('fires only ButtonClickEvent when snap action button type is Button', () => {
+    render(
+      <SnapUIFooterButton
+        {...defaultProps}
+        isSnapAction
+        name="action"
+        type={ButtonType.Button}
+      />,
+    );
+    fireEvent.press(screen.getByTestId('action-snap-footer-button'));
+    expect(mockHandleEvent).toHaveBeenCalledTimes(1);
+    expect(mockHandleEvent).toHaveBeenCalledWith({
+      event: UserInputEventType.ButtonClickEvent,
+      name: 'action',
+    });
+  });
+
+  it('calls onCancel when non-snap action button is pressed', () => {
+    const onCancel = jest.fn();
+    render(
+      <SnapUIFooterButton
+        {...defaultProps}
+        onCancel={onCancel}
+        name="cancel"
+      />,
+    );
+    fireEvent.press(screen.getByTestId('cancel-snap-footer-button'));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(mockHandleEvent).not.toHaveBeenCalled();
+  });
+
+  it('renders with destructive snapVariant', () => {
+    render(
+      <SnapUIFooterButton
+        {...defaultProps}
+        isSnapAction
+        snapVariant="destructive"
+      />,
+    );
+    expect(screen.getByText('Test Button')).toBeTruthy();
+  });
+
+  it('renders plain text label for non-snap-action with Secondary variant', () => {
+    render(
+      <SnapUIFooterButton
+        {...defaultProps}
+        variant={ButtonVariant.Secondary}
+        onCancel={jest.fn()}
+      />,
+    );
+    expect(screen.getByText('Test Button')).toBeTruthy();
+  });
+
+  it('uses custom testID when provided', () => {
+    render(<SnapUIFooterButton {...defaultProps} testID="custom-test-id" />);
+    expect(screen.getByTestId('custom-test-id')).toBeTruthy();
+  });
+
+  it('generates default testID from name when testID is not provided', () => {
+    render(<SnapUIFooterButton {...defaultProps} name="my-button" />);
+    expect(screen.getByTestId('my-button-snap-footer-button')).toBeTruthy();
+  });
+});

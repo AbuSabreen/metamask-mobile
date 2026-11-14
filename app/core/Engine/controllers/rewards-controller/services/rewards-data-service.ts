@@ -1,0 +1,2439 @@
+import type { Messenger } from '@metamask/messenger';
+import type { AuthenticationController } from '@metamask/profile-sync-controller';
+import { getVersion } from 'react-native-device-info';
+import type {
+  LoginResponseDto,
+  EstimatePointsDto,
+  EstimatedPointsDto,
+  SubscriptionReferralDetailsDto,
+  PaginatedPointsEventsDto,
+  GetPointsEventsDto,
+  MobileLoginDto,
+  SubscriptionDto,
+  OptInStatusInputDto,
+  OptInStatusDto,
+  OptOutDto,
+  PointsBoostEnvelopeDto,
+  RewardDto,
+  ClaimRewardDto,
+  GetPointsEventsLastUpdatedDto,
+  MobileOptinDto,
+  DiscoverSeasonsDto,
+  SeasonMetadataDto,
+  SeasonStateDto,
+  SubscriptionBenefitDto,
+  LineaTokenRewardDto,
+  ApplyBonusCodeDto,
+  CampaignDto,
+  CampaignParticipantStatusDto,
+  ClientVersionRequirementDto,
+  CampaignLeaderboardDto,
+  CampaignLeaderboardPositionDto,
+  OndoGmPortfolioDto,
+  PaginatedOndoGmActivityDto,
+  OndoGmCampaignDepositsDto,
+  OndoGmCampaignParticipantOutcomeDto,
+  PerpsTradingCampaignLeaderboardDto,
+  PerpsTradingCampaignLeaderboardPositionDto,
+  PerpsTradingCampaignVolumeDto,
+  PerpsTradingCampaignPrizePoolDto,
+  PerpsTradingCampaignParticipantOutcomeDto,
+  PredictThePitchLeaderboardDto,
+  PredictThePitchLeaderboardPositionDto,
+  PredictThePitchPositionsDto,
+  PredictThePitchCampaignParticipantOutcomeDto,
+  PredictThePitchPrizePoolDto,
+  MoneyAccountSweepstakesStatsMeDto,
+  MoneyAccountSweepstakesPrizePoolDto,
+  MoneyAccountSweepstakesVolumeStatsDto,
+  MoneyAccountSweepstakesDrawProofDto,
+  MoneyAccountSweepstakesOutcomeDto,
+  VipDashboardDto,
+  VipEquityMultiplierDto,
+  VipRefereeMeDto,
+  VipFeesResponseDto,
+  VipTransactionDto,
+  VipTransactionType,
+  PaginatedVipTransactionsDto,
+  VipTransactionsLastUpdatedDto,
+  TradingFeeGrantResponseDto,
+} from '../types';
+import { getSubscriptionToken } from '../utils/multi-subscription-token-vault';
+import Logger from '../../../../../util/Logger';
+import {
+  canChangeRewardsEnvUrl,
+  getDefaultRewardsApiBaseUrlForMetaMaskEnv,
+} from '../utils/rewards-api-url';
+
+/**
+ * Custom error for invalid timestamps
+ */
+export class InvalidTimestampError extends Error {
+  timestamp: number;
+
+  constructor(message: string, timestamp: number) {
+    super(message);
+    this.name = 'InvalidTimestampError';
+    this.timestamp = timestamp;
+  }
+}
+
+/**
+ * Custom error for authorization failures
+ */
+export class AuthorizationFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthorizationFailedError';
+  }
+}
+
+/**
+ * Custom error for season not found
+ */
+export class SeasonNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SeasonNotFoundError';
+  }
+}
+
+/**
+ * Custom error for account already registered (409 conflict)
+ */
+export class AccountAlreadyRegisteredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AccountAlreadyRegisteredError';
+  }
+}
+
+const SERVICE_NAME = 'RewardsDataService';
+
+// Default timeout for all API requests (10 seconds)
+const DEFAULT_REQUEST_TIMEOUT_MS = 10000;
+const TRADING_FEE_GRANT_REQUEST_TIMEOUT_MS = 2000;
+
+export const MAX_PERPS_TRADING_FEE_GRANT_BIPS = 999.99;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isTradingFeeGrantResponse(
+  value: unknown,
+): value is TradingFeeGrantResponseDto {
+  if (!isRecord(value) || !Object.hasOwn(value, 'grant')) {
+    return false;
+  }
+  if (value.grant === null) {
+    return true;
+  }
+  if (
+    !isRecord(value.grant) ||
+    typeof value.grant.programId !== 'string' ||
+    typeof value.grant.expiresAt !== 'string' ||
+    !Number.isFinite(Date.parse(value.grant.expiresAt)) ||
+    !isRecord(value.grant.hyperliquid) ||
+    typeof value.grant.hyperliquid.builderCode !== 'string' ||
+    typeof value.grant.hyperliquid.builderFeeBips !== 'string'
+  ) {
+    return false;
+  }
+
+  const feeString = value.grant.hyperliquid.builderFeeBips;
+  const fee = Number(feeString);
+  return (
+    /^(?:0|[1-9]\d{0,2})(?:\.\d{1,2})?$/u.test(feeString) &&
+    Number.isFinite(fee) &&
+    fee >= 0 &&
+    fee <= MAX_PERPS_TRADING_FEE_GRANT_BIPS
+  );
+}
+
+// Auth endpoint action types
+
+export interface RewardsDataServiceLoginAction {
+  type: `${typeof SERVICE_NAME}:login`;
+  handler: RewardsDataService['login'];
+}
+
+export interface RewardsDataServiceGetPointsEventsAction {
+  type: `${typeof SERVICE_NAME}:getPointsEvents`;
+  handler: RewardsDataService['getPointsEvents'];
+}
+
+export interface RewardsDataServiceGetPointsEventsLastUpdatedAction {
+  type: `${typeof SERVICE_NAME}:getPointsEventsLastUpdated`;
+  handler: RewardsDataService['getPointsEventsLastUpdated'];
+}
+
+export interface RewardsDataServiceEstimatePointsAction {
+  type: `${typeof SERVICE_NAME}:estimatePoints`;
+  handler: RewardsDataService['estimatePoints'];
+}
+
+export interface RewardsDataServiceMobileOptinAction {
+  type: `${typeof SERVICE_NAME}:mobileOptin`;
+  handler: RewardsDataService['mobileOptin'];
+}
+
+export interface RewardsDataServiceLogoutAction {
+  type: `${typeof SERVICE_NAME}:logout`;
+  handler: RewardsDataService['logout'];
+}
+
+export interface RewardsDataServiceGetSeasonStatusAction {
+  type: `${typeof SERVICE_NAME}:getSeasonStatus`;
+  handler: RewardsDataService['getSeasonStatus'];
+}
+
+export interface RewardsDataServiceGetReferralDetailsAction {
+  type: `${typeof SERVICE_NAME}:getReferralDetails`;
+  handler: RewardsDataService['getReferralDetails'];
+}
+
+export interface RewardsDataServiceMobileJoinAction {
+  type: `${typeof SERVICE_NAME}:mobileJoin`;
+  handler: RewardsDataService['mobileJoin'];
+}
+
+export interface RewardsDataServiceGetOptInStatusAction {
+  type: `${typeof SERVICE_NAME}:getOptInStatus`;
+  handler: RewardsDataService['getOptInStatus'];
+}
+
+export interface RewardsDataServiceOptOutAction {
+  type: `${typeof SERVICE_NAME}:optOut`;
+  handler: RewardsDataService['optOut'];
+}
+
+export interface RewardsDataServiceGetActivePointsBoostsAction {
+  type: `${typeof SERVICE_NAME}:getActivePointsBoosts`;
+  handler: RewardsDataService['getActivePointsBoosts'];
+}
+
+export interface RewardsDataServiceGetUnlockedRewardsAction {
+  type: `${typeof SERVICE_NAME}:getUnlockedRewards`;
+  handler: RewardsDataService['getUnlockedRewards'];
+}
+
+export interface RewardsDataServiceClaimRewardAction {
+  type: `${typeof SERVICE_NAME}:claimReward`;
+  handler: RewardsDataService['claimReward'];
+}
+
+export interface RewardsDataServiceGetDiscoverSeasonsAction {
+  type: `${typeof SERVICE_NAME}:getDiscoverSeasons`;
+  handler: RewardsDataService['getDiscoverSeasons'];
+}
+
+export interface RewardsDataServiceGetSeasonMetadataAction {
+  type: `${typeof SERVICE_NAME}:getSeasonMetadata`;
+  handler: RewardsDataService['getSeasonMetadata'];
+}
+
+export interface RewardsDataServiceGetSeasonOneLineaRewardTokensAction {
+  type: `${typeof SERVICE_NAME}:getSeasonOneLineaRewardTokens`;
+  handler: RewardsDataService['getSeasonOneLineaRewardTokens'];
+}
+
+export interface RewardsDataServiceValidateBonusCodeAction {
+  type: `${typeof SERVICE_NAME}:validateBonusCode`;
+  handler: RewardsDataService['validateBonusCode'];
+}
+
+export interface RewardsDataServiceApplyBonusCodeAction {
+  type: `${typeof SERVICE_NAME}:applyBonusCode`;
+  handler: RewardsDataService['applyBonusCode'];
+}
+
+export interface RewardsDataServiceGetSubscriptionAccountsAction {
+  type: `${typeof SERVICE_NAME}:getSubscriptionAccounts`;
+  handler: RewardsDataService['getSubscriptionAccounts'];
+}
+
+export interface RewardsDataServiceGetCampaignsAction {
+  type: `${typeof SERVICE_NAME}:getCampaigns`;
+  handler: RewardsDataService['getCampaigns'];
+}
+
+export interface RewardsDataServiceOptInToCampaignAction {
+  type: `${typeof SERVICE_NAME}:optInToCampaign`;
+  handler: RewardsDataService['optInToCampaign'];
+}
+
+export interface RewardsDataServiceGetCampaignParticipantStatusAction {
+  type: `${typeof SERVICE_NAME}:getCampaignParticipantStatus`;
+  handler: RewardsDataService['getCampaignParticipantStatus'];
+}
+
+export interface RewardsDataServiceGetClientVersionRequirementsAction {
+  type: `${typeof SERVICE_NAME}:getClientVersionRequirements`;
+  handler: RewardsDataService['getClientVersionRequirements'];
+}
+
+export interface RewardsDataServiceGetOndoCampaignLeaderboardAction {
+  type: `${typeof SERVICE_NAME}:getOndoCampaignLeaderboard`;
+  handler: RewardsDataService['getOndoCampaignLeaderboard'];
+}
+
+export interface RewardsDataServiceGetOndoCampaignLeaderboardPositionAction {
+  type: `${typeof SERVICE_NAME}:getOndoCampaignLeaderboardPosition`;
+  handler: RewardsDataService['getOndoCampaignLeaderboardPosition'];
+}
+
+export interface RewardsDataServiceGetOndoCampaignPortfolioPositionAction {
+  type: `${typeof SERVICE_NAME}:getOndoCampaignPortfolioPosition`;
+  handler: RewardsDataService['getOndoCampaignPortfolioPosition'];
+}
+
+export interface RewardsDataServiceGetOndoCampaignActivityAction {
+  type: `${typeof SERVICE_NAME}:getOndoCampaignActivity`;
+  handler: RewardsDataService['getOndoCampaignActivity'];
+}
+
+export interface RewardsDataServiceGetOndoCampaignActivityLastUpdatedAction {
+  type: `${typeof SERVICE_NAME}:getOndoCampaignActivityLastUpdated`;
+  handler: RewardsDataService['getOndoCampaignActivityLastUpdated'];
+}
+
+export interface RewardsDataServiceGetOndoCampaignDepositsAction {
+  type: `${typeof SERVICE_NAME}:getOndoCampaignDeposits`;
+  handler: RewardsDataService['getOndoCampaignDeposits'];
+}
+
+export interface RewardsDataServiceGetOndoCampaignParticipantOutcomeAction {
+  type: `${typeof SERVICE_NAME}:getOndoCampaignParticipantOutcome`;
+  handler: RewardsDataService['getOndoCampaignParticipantOutcome'];
+}
+
+export interface RewardsDataServiceGetPerpsTradingCampaignLeaderboardAction {
+  type: `${typeof SERVICE_NAME}:getPerpsTradingCampaignLeaderboard`;
+  handler: RewardsDataService['getPerpsTradingCampaignLeaderboard'];
+}
+
+export interface RewardsDataServiceGetPerpsTradingCampaignLeaderboardPositionAction {
+  type: `${typeof SERVICE_NAME}:getPerpsTradingCampaignLeaderboardPosition`;
+  handler: RewardsDataService['getPerpsTradingCampaignLeaderboardPosition'];
+}
+
+export interface RewardsDataServiceGetPerpsTradingCampaignVolumeAction {
+  type: `${typeof SERVICE_NAME}:getPerpsTradingCampaignVolume`;
+  handler: RewardsDataService['getPerpsTradingCampaignVolume'];
+}
+
+export interface RewardsDataServiceGetPerpsTradingCampaignPrizePoolAction {
+  type: `${typeof SERVICE_NAME}:getPerpsTradingCampaignPrizePool`;
+  handler: RewardsDataService['getPerpsTradingCampaignPrizePool'];
+}
+export interface RewardsDataServiceGetPerpsTradingCampaignParticipantOutcomeAction {
+  type: `${typeof SERVICE_NAME}:getPerpsTradingCampaignParticipantOutcome`;
+  handler: RewardsDataService['getPerpsTradingCampaignParticipantOutcome'];
+}
+
+export interface RewardsDataServiceGetPredictThePitchLeaderboardAction {
+  type: `${typeof SERVICE_NAME}:getPredictThePitchLeaderboard`;
+  handler: RewardsDataService['getPredictThePitchLeaderboard'];
+}
+
+export interface RewardsDataServiceGetPredictThePitchLeaderboardPositionAction {
+  type: `${typeof SERVICE_NAME}:getPredictThePitchLeaderboardPosition`;
+  handler: RewardsDataService['getPredictThePitchLeaderboardPosition'];
+}
+
+export interface RewardsDataServiceGetPredictThePitchPositionsAction {
+  type: `${typeof SERVICE_NAME}:getPredictThePitchPositions`;
+  handler: RewardsDataService['getPredictThePitchPositions'];
+}
+
+export interface RewardsDataServiceGetPredictThePitchParticipantOutcomeAction {
+  type: `${typeof SERVICE_NAME}:getPredictThePitchParticipantOutcome`;
+  handler: RewardsDataService['getPredictThePitchParticipantOutcome'];
+}
+
+export interface RewardsDataServiceGetPredictThePitchPrizePoolAction {
+  type: `${typeof SERVICE_NAME}:getPredictThePitchPrizePool`;
+  handler: RewardsDataService['getPredictThePitchPrizePool'];
+}
+
+export interface RewardsDataServiceGetMoneyAccountSweepstakesStatsMeAction {
+  type: `${typeof SERVICE_NAME}:getMoneyAccountSweepstakesStatsMe`;
+  handler: RewardsDataService['getMoneyAccountSweepstakesStatsMe'];
+}
+
+export interface RewardsDataServiceGetMoneyAccountSweepstakesPrizePoolAction {
+  type: `${typeof SERVICE_NAME}:getMoneyAccountSweepstakesPrizePool`;
+  handler: RewardsDataService['getMoneyAccountSweepstakesPrizePool'];
+}
+
+export interface RewardsDataServiceGetMoneyAccountSweepstakesVolumeStatsAction {
+  type: `${typeof SERVICE_NAME}:getMoneyAccountSweepstakesVolumeStats`;
+  handler: RewardsDataService['getMoneyAccountSweepstakesVolumeStats'];
+}
+
+export interface RewardsDataServiceGetMoneyAccountSweepstakesDrawProofAction {
+  type: `${typeof SERVICE_NAME}:getMoneyAccountSweepstakesDrawProof`;
+  handler: RewardsDataService['getMoneyAccountSweepstakesDrawProof'];
+}
+
+export interface RewardsDataServiceGetMoneyAccountSweepstakesParticipantOutcomeAction {
+  type: `${typeof SERVICE_NAME}:getMoneyAccountSweepstakesParticipantOutcome`;
+  handler: RewardsDataService['getMoneyAccountSweepstakesParticipantOutcome'];
+}
+
+export interface RewardsDataServiceRegisterMoneyAccountBindingAction {
+  type: `${typeof SERVICE_NAME}:registerMoneyAccountBinding`;
+  handler: RewardsDataService['registerMoneyAccountBinding'];
+}
+
+export interface RewardsDataServiceGetRewardsEnvUrlAction {
+  type: `${typeof SERVICE_NAME}:getRewardsEnvUrl`;
+  handler: RewardsDataService['getRewardsEnvUrl'];
+}
+
+export interface RewardsDataServiceCanChangeRewardsEnvUrlAction {
+  type: `${typeof SERVICE_NAME}:canChangeRewardsEnvUrl`;
+  handler: RewardsDataService['canChangeRewardsEnvUrl'];
+}
+
+export interface RewardsDataServiceSetRewardsEnvUrlAction {
+  type: `${typeof SERVICE_NAME}:setRewardsEnvUrl`;
+  handler: RewardsDataService['setRewardsEnvUrl'];
+}
+
+export interface RewardsDataServiceGetDefaultRewardsEnvUrlAction {
+  type: `${typeof SERVICE_NAME}:getDefaultRewardsEnvUrl`;
+  handler: RewardsDataService['getDefaultRewardsEnvUrl'];
+}
+
+export interface RewardsDataServiceGetBenefitsAction {
+  type: `${typeof SERVICE_NAME}:getBenefits`;
+  handler: RewardsDataService['getBenefits'];
+}
+
+export interface RewardsDataServiceGetVIPDashboardAction {
+  type: `${typeof SERVICE_NAME}:getVIPDashboard`;
+  handler: RewardsDataService['getVIPDashboard'];
+}
+
+export interface RewardsDataServiceGetVipEquityMultiplierAction {
+  type: `${typeof SERVICE_NAME}:getVipEquityMultiplier`;
+  handler: RewardsDataService['getVipEquityMultiplier'];
+}
+
+export interface RewardsDataServiceGetVipRefereeDashboardAction {
+  type: `${typeof SERVICE_NAME}:getVipRefereeDashboard`;
+  handler: RewardsDataService['getVipRefereeDashboard'];
+}
+
+export interface RewardsDataServiceGetVipFeesAction {
+  type: `${typeof SERVICE_NAME}:getVipFees`;
+  handler: RewardsDataService['getVipFees'];
+}
+
+export interface RewardsDataServiceGetTradingFeeGrantsAction {
+  type: `${typeof SERVICE_NAME}:getTradingFeeGrants`;
+  handler: RewardsDataService['getTradingFeeGrants'];
+}
+
+export interface RewardsDataServiceGetVipTransactionsAction {
+  type: `${typeof SERVICE_NAME}:getVipTransactions`;
+  handler: RewardsDataService['getVipTransactions'];
+}
+
+export interface RewardsDataServiceLookupVipTransactionAction {
+  type: `${typeof SERVICE_NAME}:lookupVipTransaction`;
+  handler: RewardsDataService['lookupVipTransaction'];
+}
+
+export interface RewardsDataServiceGetVipTransactionsLastUpdatedAction {
+  type: `${typeof SERVICE_NAME}:getVipTransactionsLastUpdated`;
+  handler: RewardsDataService['getVipTransactionsLastUpdated'];
+}
+
+export interface RewardsDataServicePostBenefitImpressionAction {
+  type: `${typeof SERVICE_NAME}:postBenefitImpression`;
+  handler: RewardsDataService['postBenefitImpression'];
+}
+
+export type RewardsDataServiceActions =
+  | RewardsDataServiceLoginAction
+  | RewardsDataServiceGetPointsEventsAction
+  | RewardsDataServiceGetPointsEventsLastUpdatedAction
+  | RewardsDataServiceGetSubscriptionAccountsAction
+  | RewardsDataServiceEstimatePointsAction
+  | RewardsDataServiceGetSeasonStatusAction
+  | RewardsDataServiceGetReferralDetailsAction
+  | RewardsDataServiceMobileOptinAction
+  | RewardsDataServiceLogoutAction
+  | RewardsDataServiceMobileJoinAction
+  | RewardsDataServiceGetOptInStatusAction
+  | RewardsDataServiceOptOutAction
+  | RewardsDataServiceGetActivePointsBoostsAction
+  | RewardsDataServiceGetUnlockedRewardsAction
+  | RewardsDataServiceClaimRewardAction
+  | RewardsDataServiceGetDiscoverSeasonsAction
+  | RewardsDataServiceGetSeasonMetadataAction
+  | RewardsDataServiceGetSeasonOneLineaRewardTokensAction
+  | RewardsDataServiceGetRewardsEnvUrlAction
+  | RewardsDataServiceCanChangeRewardsEnvUrlAction
+  | RewardsDataServiceSetRewardsEnvUrlAction
+  | RewardsDataServiceGetDefaultRewardsEnvUrlAction
+  | RewardsDataServiceValidateBonusCodeAction
+  | RewardsDataServiceApplyBonusCodeAction
+  | RewardsDataServiceGetSubscriptionAccountsAction
+  | RewardsDataServiceGetCampaignsAction
+  | RewardsDataServiceOptInToCampaignAction
+  | RewardsDataServiceGetBenefitsAction
+  | RewardsDataServiceGetVIPDashboardAction
+  | RewardsDataServiceGetVipEquityMultiplierAction
+  | RewardsDataServiceGetVipRefereeDashboardAction
+  | RewardsDataServiceGetTradingFeeGrantsAction
+  | RewardsDataServiceGetVipFeesAction
+  | RewardsDataServiceGetVipTransactionsAction
+  | RewardsDataServiceLookupVipTransactionAction
+  | RewardsDataServiceGetVipTransactionsLastUpdatedAction
+  | RewardsDataServicePostBenefitImpressionAction
+  | RewardsDataServiceGetCampaignParticipantStatusAction
+  | RewardsDataServiceGetClientVersionRequirementsAction
+  | RewardsDataServiceGetOndoCampaignLeaderboardAction
+  | RewardsDataServiceGetOndoCampaignLeaderboardPositionAction
+  | RewardsDataServiceGetOndoCampaignPortfolioPositionAction
+  | RewardsDataServiceGetOndoCampaignActivityAction
+  | RewardsDataServiceGetOndoCampaignActivityLastUpdatedAction
+  | RewardsDataServiceGetOndoCampaignDepositsAction
+  | RewardsDataServiceGetOndoCampaignParticipantOutcomeAction
+  | RewardsDataServiceGetPerpsTradingCampaignLeaderboardAction
+  | RewardsDataServiceGetPerpsTradingCampaignLeaderboardPositionAction
+  | RewardsDataServiceGetPerpsTradingCampaignVolumeAction
+  | RewardsDataServiceGetPerpsTradingCampaignPrizePoolAction
+  | RewardsDataServiceGetPerpsTradingCampaignParticipantOutcomeAction
+  | RewardsDataServiceGetPredictThePitchLeaderboardAction
+  | RewardsDataServiceGetPredictThePitchLeaderboardPositionAction
+  | RewardsDataServiceGetPredictThePitchPositionsAction
+  | RewardsDataServiceGetPredictThePitchParticipantOutcomeAction
+  | RewardsDataServiceGetPredictThePitchPrizePoolAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesStatsMeAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesPrizePoolAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesVolumeStatsAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesDrawProofAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesParticipantOutcomeAction
+  | RewardsDataServiceRegisterMoneyAccountBindingAction;
+
+type AllowedActions =
+  AuthenticationController.AuthenticationControllerGetBearerTokenAction;
+
+export type RewardsDataServiceMessenger = Messenger<
+  typeof SERVICE_NAME,
+  RewardsDataServiceActions | AllowedActions,
+  never
+>;
+
+/**
+ * Data service for rewards API endpoints
+ */
+export class RewardsDataService {
+  readonly name: typeof SERVICE_NAME = SERVICE_NAME;
+
+  readonly state: null = null;
+
+  readonly #messenger: RewardsDataServiceMessenger;
+
+  readonly #fetch: typeof fetch;
+
+  readonly #appType: 'mobile' | 'extension';
+
+  readonly #locale: string;
+
+  /** Explicit API URL override; null means use the build-default mapping */
+  #rewardsApiUrl: string | null = null;
+
+  constructor({
+    messenger,
+    fetch: fetchFunction,
+    appType = 'mobile',
+    locale = 'en-US',
+  }: {
+    messenger: RewardsDataServiceMessenger;
+    fetch: typeof fetch;
+    appType?: 'mobile' | 'extension';
+    locale?: string;
+  }) {
+    this.#messenger = messenger;
+    this.#fetch = fetchFunction;
+    this.#appType = appType;
+    this.#locale = locale;
+    // Register all action handlers
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:login`,
+      this.login.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPointsEvents`,
+      this.getPointsEvents.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPointsEventsLastUpdated`,
+      this.getPointsEventsLastUpdated.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:estimatePoints`,
+      this.estimatePoints.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:mobileOptin`,
+      this.mobileOptin.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:logout`,
+      this.logout.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getSeasonStatus`,
+      this.getSeasonStatus.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getReferralDetails`,
+      this.getReferralDetails.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:mobileJoin`,
+      this.mobileJoin.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getOptInStatus`,
+      this.getOptInStatus.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:optOut`,
+      this.optOut.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getActivePointsBoosts`,
+      this.getActivePointsBoosts.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getUnlockedRewards`,
+      this.getUnlockedRewards.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:claimReward`,
+      this.claimReward.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getDiscoverSeasons`,
+      this.getDiscoverSeasons.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getSeasonMetadata`,
+      this.getSeasonMetadata.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getSeasonOneLineaRewardTokens`,
+      this.getSeasonOneLineaRewardTokens.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:validateBonusCode`,
+      this.validateBonusCode.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:applyBonusCode`,
+      this.applyBonusCode.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getSubscriptionAccounts`,
+      this.getSubscriptionAccounts.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getCampaigns`,
+      this.getCampaigns.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:optInToCampaign`,
+      this.optInToCampaign.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getCampaignParticipantStatus`,
+      this.getCampaignParticipantStatus.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getOndoCampaignLeaderboard`,
+      this.getOndoCampaignLeaderboard.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getOndoCampaignLeaderboardPosition`,
+      this.getOndoCampaignLeaderboardPosition.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getOndoCampaignPortfolioPosition`,
+      this.getOndoCampaignPortfolioPosition.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getOndoCampaignActivity`,
+      this.getOndoCampaignActivity.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getOndoCampaignActivityLastUpdated`,
+      this.getOndoCampaignActivityLastUpdated.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getOndoCampaignDeposits`,
+      this.getOndoCampaignDeposits.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getOndoCampaignParticipantOutcome`,
+      this.getOndoCampaignParticipantOutcome.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPerpsTradingCampaignLeaderboard`,
+      this.getPerpsTradingCampaignLeaderboard.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPerpsTradingCampaignLeaderboardPosition`,
+      this.getPerpsTradingCampaignLeaderboardPosition.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPerpsTradingCampaignVolume`,
+      this.getPerpsTradingCampaignVolume.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPerpsTradingCampaignPrizePool`,
+      this.getPerpsTradingCampaignPrizePool.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPerpsTradingCampaignParticipantOutcome`,
+      this.getPerpsTradingCampaignParticipantOutcome.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPredictThePitchLeaderboard`,
+      this.getPredictThePitchLeaderboard.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPredictThePitchLeaderboardPosition`,
+      this.getPredictThePitchLeaderboardPosition.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPredictThePitchPositions`,
+      this.getPredictThePitchPositions.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPredictThePitchParticipantOutcome`,
+      this.getPredictThePitchParticipantOutcome.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getPredictThePitchPrizePool`,
+      this.getPredictThePitchPrizePool.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getMoneyAccountSweepstakesStatsMe`,
+      this.getMoneyAccountSweepstakesStatsMe.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getMoneyAccountSweepstakesPrizePool`,
+      this.getMoneyAccountSweepstakesPrizePool.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getMoneyAccountSweepstakesVolumeStats`,
+      this.getMoneyAccountSweepstakesVolumeStats.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getMoneyAccountSweepstakesDrawProof`,
+      this.getMoneyAccountSweepstakesDrawProof.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getMoneyAccountSweepstakesParticipantOutcome`,
+      this.getMoneyAccountSweepstakesParticipantOutcome.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:registerMoneyAccountBinding`,
+      this.registerMoneyAccountBinding.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getRewardsEnvUrl`,
+      this.getRewardsEnvUrl.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:canChangeRewardsEnvUrl`,
+      this.canChangeRewardsEnvUrl.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:setRewardsEnvUrl`,
+      this.setRewardsEnvUrl.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getDefaultRewardsEnvUrl`,
+      this.getDefaultRewardsEnvUrl.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getBenefits`,
+      this.getBenefits.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getVIPDashboard`,
+      this.getVIPDashboard.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getVipEquityMultiplier`,
+      this.getVipEquityMultiplier.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getVipRefereeDashboard`,
+      this.getVipRefereeDashboard.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getVipFees`,
+      this.getVipFees.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getTradingFeeGrants`,
+      this.getTradingFeeGrants.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getVipTransactions`,
+      this.getVipTransactions.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:lookupVipTransaction`,
+      this.lookupVipTransaction.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getVipTransactionsLastUpdated`,
+      this.getVipTransactionsLastUpdated.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:postBenefitImpression`,
+      this.postBenefitImpression.bind(this),
+    );
+    this.#messenger.registerActionHandler(
+      `${SERVICE_NAME}:getClientVersionRequirements`,
+      this.getClientVersionRequirements.bind(this),
+    );
+  }
+
+  /**
+   * Returns the rewards API base URL the data service is currently targeting.
+   */
+  getRewardsEnvUrl(): string {
+    const [defaultUrl, canChange] = getDefaultRewardsApiBaseUrlForMetaMaskEnv(
+      process.env.METAMASK_ENVIRONMENT,
+    );
+    // PRD builds are locked — never allow an override to take effect.
+    if (!canChange) return defaultUrl;
+    return this.#rewardsApiUrl ?? defaultUrl;
+  }
+
+  /**
+   * Returns whether the current MetaMask build allows manually switching the
+   * rewards API environment (true for non-RC / non-production builds).
+   */
+  canChangeRewardsEnvUrl(): boolean {
+    return canChangeRewardsEnvUrl(process.env.METAMASK_ENVIRONMENT);
+  }
+
+  /**
+   * Overrides the active rewards API base URL.
+   * Callers should reset all cached controller state after calling this.
+   */
+  setRewardsEnvUrl(url: string): void {
+    if (this.canChangeRewardsEnvUrl()) {
+      this.#rewardsApiUrl = url;
+      Logger.log(`RewardsDataService: env switched to ${url}`);
+    } else {
+      this.#rewardsApiUrl = null;
+    }
+  }
+
+  /**
+   * Returns the default rewards API base URL for the current MetaMask
+   * environment, ignoring any manual override.
+   */
+  getDefaultRewardsEnvUrl(): string {
+    const [defaultUrl] = getDefaultRewardsApiBaseUrlForMetaMaskEnv(
+      process.env.METAMASK_ENVIRONMENT,
+    );
+    return defaultUrl;
+  }
+
+  /**
+   * Fetch the minimum client version requirements from the public API.
+   * @returns The client version requirements DTO.
+   */
+  async getClientVersionRequirements(): Promise<ClientVersionRequirementDto> {
+    const response = await this.makeRequest(
+      '/public/client-version-requirements',
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get client version requirements failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as ClientVersionRequirementDto;
+  }
+
+  /**
+   * Make a request to the rewards API
+   * @param endpoint - The endpoint to request
+   * @param options - The options for the request
+   * @param subscriptionId - The subscription ID to use for the request, used for authenticated requests
+   * @param timeoutMs - Custom timeout in milliseconds, defaults to DEFAULT_REQUEST_TIMEOUT_MS
+   * @returns The response from the request
+   */
+  private async makeRequest(
+    endpoint: string,
+    options: RequestInit = {},
+    subscriptionId?: string,
+    timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+  ): Promise<Response> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    // Add client identification header (matches web3_clientVersion format)
+    try {
+      const appVersion = getVersion();
+      headers['rewards-client-id'] = `${this.#appType}-${appVersion}`;
+    } catch (error) {
+      // Continue without client header if version retrieval fails
+      console.warn('Failed to retrieve app version for client header:', error);
+    }
+
+    // Add bearer token for authenticated requests
+    try {
+      if (subscriptionId) {
+        const tokenResult = await getSubscriptionToken(subscriptionId);
+        if (tokenResult.success && tokenResult.token) {
+          headers['rewards-access-token'] = tokenResult.token;
+        }
+      }
+    } catch (error) {
+      // Continue without bearer token if retrieval fails
+      console.warn('Failed to retrieve bearer token:', error);
+    }
+
+    // Add locale header for internationalization
+    if (this.#locale) {
+      headers['Accept-Language'] = this.#locale;
+    }
+
+    const envBaseUrl = this.getRewardsEnvUrl();
+    const url = `${envBaseUrl}${endpoint}`;
+
+    // Create AbortController for timeout handling
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const response = await this.#fetch(url, {
+        credentials: 'omit',
+        ...options,
+        headers: {
+          ...headers,
+          ...options.headers,
+        },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.status === 403 && subscriptionId) {
+        throw new AuthorizationFailedError(
+          `Authorization failed: ${response.status}`,
+        );
+      }
+
+      return response;
+    } catch (error) {
+      clearTimeout(timeoutId);
+
+      // Check if the error is due to timeout
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Request timeout after ${timeoutMs}ms`);
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Check if the error response is a 409 conflict with "already registered" message
+   * and throw AccountAlreadyRegisteredError if so.
+   * @param response - The HTTP response object
+   * @param errorData - The parsed error data from the response
+   * @private
+   */
+  private checkForAccountAlreadyRegisteredError(
+    response: Response,
+    errorData: { message?: string },
+  ): void {
+    if (
+      response.status === 409 &&
+      errorData?.message?.toLowerCase().includes('already registered')
+    ) {
+      throw new AccountAlreadyRegisteredError(
+        errorData.message || 'Account is already registered',
+      );
+    }
+  }
+
+  /**
+   * Perform login via signature for the current account.
+   * @param body - The login request body containing account, timestamp, and signature.
+   * @returns The login response DTO.
+   */
+  async login(body: {
+    account: string;
+    timestamp: number;
+    signature: string;
+  }): Promise<LoginResponseDto> {
+    // For now, we're using the mobile-login endpoint for these types of login requests.
+    // Our previous login endpoint had a slightly different flow as it was not based around silent auth.
+    const response = await this.makeRequest('/auth/mobile-login', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+
+      if (errorData?.message?.includes('Invalid timestamp')) {
+        // Retry signing with a new timestamp
+        throw new InvalidTimestampError(
+          'Invalid timestamp. Please try again with a new timestamp.',
+          Math.floor(Number(errorData.serverTimestamp) / 1000),
+        );
+      }
+
+      this.checkForAccountAlreadyRegisteredError(response, errorData);
+
+      throw new Error(`Login failed: ${response.status}`);
+    }
+
+    return (await response.json()) as LoginResponseDto;
+  }
+
+  /**
+   * Get a list of points events for the season
+   * @param params - The request parameters containing
+   * @returns The list of points events DTO.
+   */
+  async getPointsEvents(
+    params: GetPointsEventsDto,
+  ): Promise<PaginatedPointsEventsDto> {
+    const { seasonId, subscriptionId, cursor, type } = params;
+
+    const queryParams: string[] = [];
+    if (cursor) queryParams.push(`cursor=${encodeURIComponent(cursor)}`);
+    if (type) queryParams.push(`type=${encodeURIComponent(type)}`);
+
+    let url = `/seasons/${seasonId}/points-events`;
+    if (queryParams.length > 0) url += `?${queryParams.join('&')}`;
+
+    const response = await this.makeRequest(
+      url,
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get points events failed: ${response.status}`);
+    }
+
+    return (await response.json()) as PaginatedPointsEventsDto;
+  }
+
+  async getPointsEventsLastUpdated(
+    params: GetPointsEventsLastUpdatedDto,
+  ): Promise<Date | null> {
+    const { seasonId, subscriptionId } = params;
+    const response = await this.makeRequest(
+      `/seasons/${seasonId}/points-events/last-updated`,
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get points events last update failed: ${response.status}`,
+      );
+    }
+    const result = await response.json();
+    return result?.lastUpdated ? new Date(result.lastUpdated) : null;
+  }
+
+  /**
+   * Estimate points for a given activity.
+   * @param body - The estimate points request body.
+   * @returns The estimated points response DTO.
+   */
+  async estimatePoints(body: EstimatePointsDto): Promise<EstimatedPointsDto> {
+    const response = await this.makeRequest('/points-estimation', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Points estimation failed: ${response.status}`);
+    }
+
+    return (await response.json()) as EstimatedPointsDto;
+  }
+
+  /**
+   * Perform optin via signature for the current account.
+   * @param body - The login request body containing account, timestamp and signature.
+   * @returns The login response DTO.
+   */
+  async mobileOptin(body: MobileOptinDto): Promise<LoginResponseDto> {
+    const response = await this.makeRequest('/auth/mobile-optin', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      Logger.log('RewardsDataService: mobileOptin errorData', errorData);
+
+      if (errorData?.message?.includes('Invalid timestamp')) {
+        // Retry signing with a new timestamp
+        throw new InvalidTimestampError(
+          'Invalid timestamp. Please try again with a new timestamp.',
+          Math.floor(Number(errorData.serverTimestamp) / 1000),
+        );
+      }
+
+      this.checkForAccountAlreadyRegisteredError(response, errorData);
+
+      throw new Error(`Optin failed: ${response.status}`);
+    }
+
+    return (await response.json()) as LoginResponseDto;
+  }
+
+  /**
+   * Perform logout for the current authenticated session.
+   * @param subscriptionId - The subscription ID to use for the authenticated request.
+   * @returns Promise that resolves when logout is complete.
+   */
+  async logout(subscriptionId?: string): Promise<void> {
+    const response = await this.makeRequest(
+      '/auth/logout',
+      {
+        method: 'POST',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Logout failed: ${response.status}`);
+    }
+  }
+
+  /**
+   * Get season state for a specific season.
+   * @param seasonId - The ID of the season to get state for.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The season state DTO.
+   */
+  async getSeasonStatus(
+    seasonId: string,
+    subscriptionId: string,
+  ): Promise<SeasonStateDto> {
+    const response = await this.makeRequest(
+      `/seasons/${seasonId}/state`,
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json();
+
+      if (errorData?.message?.includes('Season not found')) {
+        throw new SeasonNotFoundError(
+          'Season not found. Please try again with a different season.',
+        );
+      }
+
+      throw new Error(`Get season state failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Convert date strings to Date objects
+    if (data.updatedAt) {
+      data.updatedAt = new Date(data.updatedAt);
+    }
+
+    return data as SeasonStateDto;
+  }
+
+  /**
+   * Get referral details for the current subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The referral details DTO.
+   */
+  async getReferralDetails(
+    subscriptionId: string,
+  ): Promise<SubscriptionReferralDetailsDto> {
+    const response = await this.makeRequest(
+      `/subscriptions/referral-details`,
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get referral details failed: ${response.status}`);
+    }
+    const data = await response.json();
+    return data as SubscriptionReferralDetailsDto;
+  }
+
+  /**
+   * Validate a bonus code.
+   * @param code - The bonus code to validate.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns Promise<{valid: boolean}> - Object indicating if the code is valid.
+   */
+  async validateBonusCode(
+    code: string,
+    subscriptionId: string,
+  ): Promise<{ valid: boolean }> {
+    const response = await this.makeRequest(
+      `/subscriptions/bonus-code?code=${encodeURIComponent(code)}`,
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to validate bonus code. Please try again shortly.`,
+      );
+    }
+
+    return (await response.json()) as { valid: boolean };
+  }
+
+  /**
+   * Join an account to a subscription via mobile login.
+   * @param body - The mobile login request body containing account, timestamp, and signature.
+   * @param subscriptionId - The subscription ID to join the account to.
+   * @returns Promise<SubscriptionDto> - The updated subscription information.
+   */
+  async mobileJoin(
+    body: MobileLoginDto,
+    subscriptionId: string,
+  ): Promise<SubscriptionDto> {
+    const response = await this.makeRequest(
+      '/wr/subscriptions/mobile-join',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      Logger.log('RewardsDataService: mobileJoin errorData', errorData);
+
+      if (errorData?.message?.includes('Invalid timestamp')) {
+        // Retry signing with a new timestamp
+        throw new InvalidTimestampError(
+          'Invalid timestamp. Please try again with a new timestamp.',
+          Math.floor(Number(errorData.serverTimestamp) / 1000),
+        );
+      }
+
+      this.checkForAccountAlreadyRegisteredError(response, errorData);
+
+      throw new Error(
+        `Mobile join failed: ${response.status} ${errorData?.message || ''}`,
+      );
+    }
+
+    return (await response.json()) as SubscriptionDto;
+  }
+
+  /**
+   * Get opt-in status for multiple addresses.
+   * @param body - The request body containing addresses to check.
+   * @returns Promise<OptInStatusDto> - The opt-in status for each address.
+   */
+  async getOptInStatus(body: OptInStatusInputDto): Promise<OptInStatusDto> {
+    // Validate input
+    if (!body.addresses || body.addresses.length === 0) {
+      throw new Error('Addresses are required');
+    }
+    if (body.addresses.length > 500) {
+      throw new Error('Addresses must be less than 500');
+    }
+
+    const response = await this.makeRequest('/public/rewards/ois', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Get opt-in status failed: ${response.status}`);
+    }
+
+    return (await response.json()) as OptInStatusDto;
+  }
+
+  /**
+   * Opt-out and delete the subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns Promise<OptOutDto> - The opt-out response.
+   */
+  async optOut(subscriptionId: string): Promise<OptOutDto> {
+    const response = await this.makeRequest(
+      '/wr/subscriptions/opt-out',
+      {
+        method: 'POST',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Opt-out failed: ${response.status}`);
+    }
+
+    return (await response.json()) as OptOutDto;
+  }
+
+  /**
+   * Get the active season boosts for a specific subscription.
+   * @param seasonId - The ID of the season to get status for.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The active points boosts DTO.
+   */
+  async getActivePointsBoosts(
+    seasonId: string,
+    subscriptionId: string,
+  ): Promise<PointsBoostEnvelopeDto> {
+    const response = await this.makeRequest(
+      `/seasons/${seasonId}/active-boosts`,
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to get active rewards boost: ${response.status}`);
+    }
+
+    return (await response.json()) as PointsBoostEnvelopeDto;
+  }
+
+  /**
+   * Get the unlocked rewards for a specific subscription.
+   * @param seasonId - The ID of the season to get status for.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The rewards DTO.
+   */
+  async getUnlockedRewards(
+    seasonId: string,
+    subscriptionId: string,
+  ): Promise<RewardDto[]> {
+    const response = await this.makeRequest(
+      `/rewards?seasonId=${seasonId}`,
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to get unlocked: ${response.status}`);
+    }
+
+    return (await response.json()) as RewardDto[];
+  }
+
+  /**
+   * Claim a reward.
+   * @param rewardId - The ID of the reward to claim.
+   * @param dto - The claim reward request body.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The claim reward DTO.
+   */
+  async claimReward(
+    rewardId: string,
+    subscriptionId: string,
+    dto?: ClaimRewardDto,
+  ): Promise<void> {
+    const response = await this.makeRequest(
+      `/wr/rewards/${rewardId}/claim`,
+      {
+        method: 'POST',
+        body: JSON.stringify(dto),
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to claim reward: ${response.status}`);
+    }
+  }
+
+  /**
+   * Get discover seasons information (previous, current and next season).
+   * @returns The discover seasons DTO with previous, current and next season information.
+   */
+  async getDiscoverSeasons(): Promise<DiscoverSeasonsDto> {
+    const response = await this.makeRequest('/public/seasons/status', {
+      method: 'GET',
+    });
+
+    if (!response.ok) {
+      throw new Error(`Get discover seasons failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Convert date strings to Date objects for previous season
+    if (data.previous) {
+      if (data.previous.startDate) {
+        data.previous.startDate = new Date(data.previous.startDate);
+      }
+      if (data.previous.endDate) {
+        data.previous.endDate = new Date(data.previous.endDate);
+      }
+    }
+
+    // Convert date strings to Date objects for current season
+    if (data.current) {
+      if (data.current.startDate) {
+        data.current.startDate = new Date(data.current.startDate);
+      }
+      if (data.current.endDate) {
+        data.current.endDate = new Date(data.current.endDate);
+      }
+    }
+
+    // Convert date strings to Date objects for next season
+    if (data.next) {
+      if (data.next.startDate) {
+        data.next.startDate = new Date(data.next.startDate);
+      }
+      if (data.next.endDate) {
+        data.next.endDate = new Date(data.next.endDate);
+      }
+    }
+
+    // Coerce: if current season exists but end date has passed, set it as previous
+    if (data.current?.endDate) {
+      const now = new Date();
+      const endDate =
+        data.current.endDate instanceof Date
+          ? data.current.endDate
+          : new Date(data.current.endDate);
+
+      if (endDate <= now) {
+        data.previous = data.current;
+        data.current = null;
+      }
+    }
+
+    return data as DiscoverSeasonsDto;
+  }
+
+  /**
+   * Get season metadata for a specific season.
+   * @param seasonId - The ID of the season to get metadata for.
+   * @returns The season metadata DTO.
+   */
+  async getSeasonMetadata(seasonId: string): Promise<SeasonMetadataDto> {
+    const response = await this.makeRequest(
+      `/public/seasons/${seasonId}/meta`,
+      {
+        method: 'GET',
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get season metadata failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Convert date strings to Date objects
+    if (data.startDate) {
+      data.startDate = new Date(data.startDate);
+    }
+    if (data.endDate) {
+      data.endDate = new Date(data.endDate);
+    }
+
+    // Ensure activityTypes is always an array per SeasonMetadataDto
+    if (!Array.isArray(data.activityTypes)) {
+      data.activityTypes = [];
+    }
+
+    return data as SeasonMetadataDto;
+  }
+
+  /**
+   * Get Season 1 Linea token reward for the subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The Linea token reward DTO or null if not found.
+   */
+  async getSeasonOneLineaRewardTokens(
+    subscriptionId: string,
+  ): Promise<LineaTokenRewardDto | null> {
+    const response = await this.makeRequest(
+      '/rewards/season-1/linea-tokens',
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok || response.status === 404) {
+      throw new Error(
+        `Failed to get Season 1 Linea reward tokens: ${response.status}`,
+      );
+    }
+
+    const data = await response.json();
+
+    // Convert bigint to string if backend sends it as a number
+    return {
+      subscriptionId: data.subscriptionId,
+      amount: String(data.amount),
+    } as LineaTokenRewardDto;
+  }
+
+  /**
+   * Apply a bonus code to a subscription.
+   * @param dto - The DTO containing the bonus code to apply.
+   * @param subscriptionId - The subscription ID to apply the bonus code to.
+   * @returns Promise that resolves when the bonus code is applied successfully.
+   * @throws Error with the error message from the API response.
+   */
+  async applyBonusCode(
+    dto: ApplyBonusCodeDto,
+    subscriptionId: string,
+  ): Promise<void> {
+    const response = await this.makeRequest(
+      '/wr/subscriptions/apply-bonus-code',
+      {
+        method: 'POST',
+        body: JSON.stringify(dto),
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      if (response.status === 204) {
+        return;
+      }
+
+      const errorData = await response.json();
+      const errorMessage =
+        errorData?.message || `Apply bonus code failed: ${response.status}`;
+
+      throw new Error(errorMessage);
+    }
+  }
+
+  /**
+   * Get CAIP-10 encoded account addresses linked to the current subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns Array of CAIP-10 account strings (up to 1000).
+   */
+  async getSubscriptionAccounts(subscriptionId: string): Promise<string[]> {
+    const response = await this.makeRequest(
+      `/subscriptions/accounts`,
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new AuthorizationFailedError(
+          'Rewards authorization failed. Please login and try again.',
+        );
+      }
+      throw new Error(`Get subscription accounts failed: ${response.status}`);
+    }
+
+    return (await response.json()) as string[];
+  }
+
+  /**
+   * Get all available campaigns.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The list of available campaigns.
+   */
+  async getCampaigns(subscriptionId: string): Promise<CampaignDto[]> {
+    const response = await this.makeRequest(
+      '/campaigns',
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get campaigns failed: ${response.status}`);
+    }
+
+    return (await response.json()) as CampaignDto[];
+  }
+
+  /**
+   * Opt a subscription into a campaign.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @param campaignId - The campaign ID to opt into.
+   * @returns The participant status after opting in.
+   */
+  async optInToCampaign(
+    subscriptionId: string,
+    campaignId: string,
+  ): Promise<CampaignParticipantStatusDto> {
+    const response = await this.makeRequest(
+      `/wr/campaigns/${campaignId}/opt-in`,
+      { method: 'POST' },
+      subscriptionId,
+    );
+
+    if (response.status === 409) {
+      // Already opted in — fetch and return current status as a graceful success
+      return this.getCampaignParticipantStatus(subscriptionId, campaignId);
+    }
+
+    if (!response.ok) {
+      throw new Error(`Opt-in to campaign failed: ${response.status}`);
+    }
+
+    return (await response.json()) as CampaignParticipantStatusDto;
+  }
+
+  /**
+   * Get the campaign participant status for a subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @param campaignId - The campaign ID to check status for.
+   * @returns The participant status.
+   */
+  async getCampaignParticipantStatus(
+    subscriptionId: string,
+    campaignId: string,
+  ): Promise<CampaignParticipantStatusDto> {
+    const response = await this.makeRequest(
+      `/campaigns/${campaignId}/status`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get campaign participant status failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as CampaignParticipantStatusDto;
+  }
+
+  /**
+   * Get benefits for a specific subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The benefits paged array.
+   */
+  async getBenefits(
+    subscriptionId: string,
+    limit: number,
+  ): Promise<SubscriptionBenefitDto[]> {
+    const response = await this.makeRequest(
+      `/benefits?limit=${limit}&offset=0`,
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get benefits failed: ${response.status}`);
+    }
+    const data = await response.json();
+    return data.results as SubscriptionBenefitDto[];
+  }
+
+  /**
+   * Get the VIP dashboard for the current subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The VIP dashboard, or null when the user is not VIP.
+   */
+  async getVIPDashboard(
+    subscriptionId: string,
+  ): Promise<VipDashboardDto | null> {
+    const response = await this.makeRequest(
+      '/vip/me',
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Get VIP dashboard failed: ${response.status}`);
+    }
+
+    return (await response.json()) as VipDashboardDto;
+  }
+
+  /**
+   * Display-only equity multiplier estimate from client-supplied holdings.
+   * Not settlement input (RWDS-1485); client balance is untrusted.
+   */
+  async getVipEquityMultiplier(
+    subscriptionId: string,
+    holdingsUsd: string,
+  ): Promise<VipEquityMultiplierDto | null> {
+    const response = await this.makeRequest(
+      '/vip/equity-multiplier',
+      {
+        method: 'POST',
+        body: JSON.stringify({ holdingsUsd }),
+      },
+      subscriptionId,
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Get VIP equity multiplier failed: ${response.status}`);
+    }
+
+    return (await response.json()) as VipEquityMultiplierDto;
+  }
+
+  /**
+   * Get the VIP referee stats for the current subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The referee stats, or null when the user is not a VIP referee.
+   */
+  async getVipRefereeDashboard(
+    subscriptionId: string,
+  ): Promise<VipRefereeMeDto | null> {
+    const response = await this.makeRequest(
+      '/vip/referee/me',
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Get VIP referee dashboard failed: ${response.status}`);
+    }
+
+    return (await response.json()) as VipRefereeMeDto;
+  }
+
+  /**
+   * Get the VIP fee table for the current subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The VIP fee response (tier 0 will have fees=null).
+   */
+  async getVipFees(subscriptionId: string): Promise<VipFeesResponseDto> {
+    const response = await this.makeRequest(
+      '/vip/fees',
+      {
+        method: 'GET',
+      },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get VIP fees failed: ${response.status}`);
+    }
+
+    return (await response.json()) as VipFeesResponseDto;
+  }
+
+  /**
+   * Fetch the active profile's trading-fee grant using Profile Sync auth.
+   */
+  async getTradingFeeGrants(): Promise<TradingFeeGrantResponseDto> {
+    const token = await this.#messenger.call(
+      'AuthenticationController:getBearerToken',
+    );
+    if (!token) {
+      throw new Error('Profile Sync bearer token is required');
+    }
+
+    const response = await this.makeRequest(
+      '/trading-fee-grants',
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      undefined,
+      TRADING_FEE_GRANT_REQUEST_TIMEOUT_MS,
+    );
+    if (!response.ok) {
+      throw new Error(`Get trading fee grants failed: ${response.status}`);
+    }
+
+    const result: unknown = await response.json();
+    if (!isTradingFeeGrantResponse(result)) {
+      throw new Error('Invalid trading fee grant response');
+    }
+
+    const currentToken = await this.#messenger.call(
+      'AuthenticationController:getBearerToken',
+    );
+    if (currentToken !== token) {
+      throw new Error('Profile changed during trading fee grant request');
+    }
+
+    return result;
+  }
+
+  async getVipTransactions(
+    subscriptionId: string,
+    type: VipTransactionType,
+    cursor: string | null,
+  ): Promise<PaginatedVipTransactionsDto> {
+    const query = [`type=${encodeURIComponent(type)}`];
+    if (cursor) {
+      query.push(`cursor=${encodeURIComponent(cursor)}`);
+    }
+    const response = await this.makeRequest(
+      `/vip/transactions?${query.join('&')}`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get VIP transactions failed: ${response.status}`);
+    }
+    return (await response.json()) as PaginatedVipTransactionsDto;
+  }
+
+  async lookupVipTransaction(
+    subscriptionId: string,
+    key: string,
+  ): Promise<VipTransactionDto> {
+    const response = await this.makeRequest(
+      `/vip/transactions/lookup?key=${encodeURIComponent(key)}`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Lookup VIP transaction failed: ${response.status}`);
+    }
+    return (await response.json()) as VipTransactionDto;
+  }
+
+  async getVipTransactionsLastUpdated(
+    subscriptionId: string,
+    type: VipTransactionType,
+  ): Promise<Date | null> {
+    const response = await this.makeRequest(
+      `/vip/transactions/last-updated?type=${encodeURIComponent(type)}`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get VIP transactions last updated failed: ${response.status}`,
+      );
+    }
+    const result = (await response.json()) as VipTransactionsLastUpdatedDto;
+    return result.lastUpdated ? new Date(result.lastUpdated) : null;
+  }
+
+  /**
+   * Record an impression for a specific benefit. This is used to track when users have viewed a benefit in the UI.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @param benefitId - The benefit ID to record impression for.
+   * @param benefitType - The benefit type to record impression for.
+   * @param walletAddress - The wallet address that viewed the benefit. Optional; omitted from the body when not provided.
+   * @returns Promise that resolves when the impression is recorded successfully.
+   */
+  async postBenefitImpression(
+    subscriptionId: string,
+    benefitId: number,
+    benefitType: number,
+    walletAddress?: string,
+  ): Promise<void> {
+    const response = await this.makeRequest(
+      `/benefits/impression`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          benefitId,
+          benefitType,
+          ...(walletAddress ? { walletAddress } : {}),
+        }),
+      },
+      subscriptionId,
+    );
+    if (!response.ok) {
+      throw new Error(`Post benefit impression failed: ${response.status}`);
+    }
+  }
+
+  /**
+   * Get the campaign leaderboard showing top 20 participants per tier.
+   * This is a public endpoint - no authentication required.
+   * @param campaignId - The campaign ID to get leaderboard for.
+   * @returns The leaderboard data grouped by tier.
+   */
+  async getOndoCampaignLeaderboard(
+    campaignId: string,
+  ): Promise<CampaignLeaderboardDto> {
+    const response = await this.makeRequest(
+      `/ondo-gm/${campaignId}/leaderboard`,
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get campaign leaderboard failed: ${response.status}`);
+    }
+
+    return (await response.json()) as CampaignLeaderboardDto;
+  }
+
+  /**
+   * Get the current user's position on the campaign leaderboard.
+   * This is an authenticated endpoint.
+   * @param campaignId - The campaign ID to get position for.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The user's leaderboard position, or null if not found (404).
+   */
+  async getOndoCampaignLeaderboardPosition(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<CampaignLeaderboardPositionDto | null> {
+    const response = await this.makeRequest(
+      `/ondo-gm/${campaignId}/leaderboard/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Get campaign leaderboard position failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as CampaignLeaderboardPositionDto;
+  }
+
+  /**
+   * Get the current user's Ondo GM portfolio for a campaign.
+   * This is an authenticated endpoint.
+   * @param campaignId - The campaign ID to get portfolio for.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The portfolio, or null if not found (404).
+   */
+  async getOndoCampaignPortfolioPosition(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<OndoGmPortfolioDto | null> {
+    const response = await this.makeRequest(
+      `/ondo-gm/${campaignId}/portfolio/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Get campaign portfolio position failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as OndoGmPortfolioDto;
+  }
+
+  /**
+   * Get paginated activity for an Ondo GM campaign.
+   * This is an authenticated endpoint.
+   * @param campaignId - The campaign ID.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @param cursor - Pagination cursor, null for the first page.
+   * @returns Paginated activity entries.
+   */
+  async getOndoCampaignActivity(
+    campaignId: string,
+    subscriptionId: string,
+    cursor: string | null,
+  ): Promise<PaginatedOndoGmActivityDto> {
+    const queryParams: string[] = [];
+    if (cursor) queryParams.push(`cursor=${encodeURIComponent(cursor)}`);
+
+    let url = `/ondo-gm/${campaignId}/activity/me`;
+    if (queryParams.length > 0) url += `?${queryParams.join('&')}`;
+
+    const response = await this.makeRequest(
+      url,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get campaign activity failed: ${response.status}`);
+    }
+
+    return (await response.json()) as PaginatedOndoGmActivityDto;
+  }
+
+  /**
+   * Get the last-updated timestamp for Ondo GM campaign activity.
+   * This is an authenticated endpoint.
+   * @param campaignId - The campaign ID.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The last-updated date, or null if no activity exists.
+   */
+  async getOndoCampaignActivityLastUpdated(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<Date | null> {
+    const response = await this.makeRequest(
+      `/ondo-gm/${campaignId}/activity/me/last-updated`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get campaign activity last updated failed: ${response.status}`,
+      );
+    }
+
+    const result = await response.json();
+    return result?.lastUpdated ? new Date(result.lastUpdated) : null;
+  }
+
+  /**
+   * Get campaign-wide total deposits.
+   * This is a public endpoint - no authentication required.
+   * @param campaignId - The campaign ID to get deposits for.
+   * @returns The total USD deposited across all participants.
+   */
+  async getOndoCampaignDeposits(
+    campaignId: string,
+  ): Promise<OndoGmCampaignDepositsDto> {
+    const response = await this.makeRequest(
+      `/ondo-gm/${campaignId}/stats/deposits`,
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Get campaign deposits failed: ${response.status}`);
+    }
+
+    return (await response.json()) as OndoGmCampaignDepositsDto;
+  }
+
+  async getOndoCampaignParticipantOutcome(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<OndoGmCampaignParticipantOutcomeDto> {
+    const response = await this.makeRequest(
+      `/ondo-gm/${campaignId}/outcome/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Ondo GM participant outcome failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as OndoGmCampaignParticipantOutcomeDto;
+  }
+
+  /**
+   * Get the Perps Trading Campaign leaderboard (top 20 entries, no tiers).
+   * Public endpoint — no authentication required.
+   * @param campaignId - The campaign ID.
+   */
+  async getPerpsTradingCampaignLeaderboard(
+    campaignId: string,
+  ): Promise<PerpsTradingCampaignLeaderboardDto> {
+    const response = await this.makeRequest(
+      `/perps-trading/${campaignId}/leaderboard`,
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get perps trading campaign leaderboard failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PerpsTradingCampaignLeaderboardDto;
+  }
+
+  /**
+   * Get the current user's position on the Perps Trading Campaign leaderboard.
+   * Authenticated endpoint.
+   * @param campaignId - The campaign ID.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The user's position, or null if not found (404).
+   */
+  async getPerpsTradingCampaignLeaderboardPosition(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PerpsTradingCampaignLeaderboardPositionDto | null> {
+    const response = await this.makeRequest(
+      `/perps-trading/${campaignId}/leaderboard/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Get perps trading campaign leaderboard position failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PerpsTradingCampaignLeaderboardPositionDto;
+  }
+
+  /**
+   * Get the Perps Trading Campaign volume stats.
+   * Public endpoint — no authentication required.
+   * @param campaignId - The campaign ID.
+   */
+  async getPerpsTradingCampaignVolume(
+    campaignId: string,
+  ): Promise<PerpsTradingCampaignVolumeDto> {
+    const response = await this.makeRequest(
+      `/perps-trading/${campaignId}/stats/total-volume`,
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get perps trading campaign volume failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PerpsTradingCampaignVolumeDto;
+  }
+
+  async getPerpsTradingCampaignPrizePool(
+    campaignId: string,
+  ): Promise<PerpsTradingCampaignPrizePoolDto> {
+    const response = await this.makeRequest(
+      `/perps-trading/${campaignId}/prize-pool`,
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get perps trading campaign prize pool failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PerpsTradingCampaignPrizePoolDto;
+  }
+
+  async getPerpsTradingCampaignParticipantOutcome(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PerpsTradingCampaignParticipantOutcomeDto> {
+    const response = await this.makeRequest(
+      `/perps-trading/${campaignId}/outcome/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Get Perps Trading participant outcome failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PerpsTradingCampaignParticipantOutcomeDto;
+  }
+
+  async getPredictThePitchLeaderboard(
+    campaignId: string,
+  ): Promise<PredictThePitchLeaderboardDto> {
+    const response = await this.makeRequest(
+      `/predict-the-pitch/${campaignId}/leaderboard`,
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Predict The Pitch leaderboard failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PredictThePitchLeaderboardDto;
+  }
+
+  async getPredictThePitchLeaderboardPosition(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PredictThePitchLeaderboardPositionDto | null> {
+    const response = await this.makeRequest(
+      `/predict-the-pitch/${campaignId}/leaderboard/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Predict The Pitch leaderboard position failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PredictThePitchLeaderboardPositionDto;
+  }
+
+  async getPredictThePitchPositions(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PredictThePitchPositionsDto> {
+    const response = await this.makeRequest(
+      `/predict-the-pitch/${campaignId}/positions/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Predict The Pitch positions failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PredictThePitchPositionsDto;
+  }
+
+  async getPredictThePitchParticipantOutcome(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PredictThePitchCampaignParticipantOutcomeDto> {
+    const response = await this.makeRequest(
+      `/predict-the-pitch/${campaignId}/outcome/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Predict The Pitch participant outcome failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PredictThePitchCampaignParticipantOutcomeDto;
+  }
+
+  async getPredictThePitchPrizePool(
+    campaignId: string,
+  ): Promise<PredictThePitchPrizePoolDto> {
+    const response = await this.makeRequest(
+      `/predict-the-pitch/${campaignId}/prize-pool`,
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Predict The Pitch prize pool failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as PredictThePitchPrizePoolDto;
+  }
+
+  async getMoneyAccountSweepstakesStatsMe(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<MoneyAccountSweepstakesStatsMeDto> {
+    const response = await this.makeRequest(
+      `/money-account-sweepstakes/${campaignId}/stats/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Money Account Sweepstakes stats failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as MoneyAccountSweepstakesStatsMeDto;
+  }
+
+  async getMoneyAccountSweepstakesPrizePool(
+    campaignId: string,
+  ): Promise<MoneyAccountSweepstakesPrizePoolDto> {
+    const response = await this.makeRequest(
+      `/money-account-sweepstakes/${campaignId}/prize-pool`,
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Money Account Sweepstakes prize pool failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as MoneyAccountSweepstakesPrizePoolDto;
+  }
+
+  async getMoneyAccountSweepstakesVolumeStats(
+    campaignId: string,
+  ): Promise<MoneyAccountSweepstakesVolumeStatsDto> {
+    const response = await this.makeRequest(
+      `/money-account-sweepstakes/${campaignId}/stats/volume`,
+      { method: 'GET' },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Money Account Sweepstakes volume stats failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as MoneyAccountSweepstakesVolumeStatsDto;
+  }
+
+  async getMoneyAccountSweepstakesDrawProof(
+    campaignId: string,
+  ): Promise<MoneyAccountSweepstakesDrawProofDto | null> {
+    const response = await this.makeRequest(
+      `/money-account-sweepstakes/${campaignId}/draw-proof`,
+      { method: 'GET' },
+    );
+
+    if (response.status === 404) {
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Money Account Sweepstakes draw proof failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as MoneyAccountSweepstakesDrawProofDto;
+  }
+
+  async getMoneyAccountSweepstakesParticipantOutcome(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<MoneyAccountSweepstakesOutcomeDto> {
+    const response = await this.makeRequest(
+      `/money-account-sweepstakes/${campaignId}/outcome/me`,
+      { method: 'GET' },
+      subscriptionId,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Get Money Account Sweepstakes participant outcome failed: ${response.status}`,
+      );
+    }
+
+    return (await response.json()) as MoneyAccountSweepstakesOutcomeDto;
+  }
+
+  /**
+   * Register (or re-assert) the Money Account holder address for a subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @param moneyAccountAddress - The Money Account holder address to bind.
+   * @param timestamp - The timestamp (ms) included in the signed message.
+   * @param signature - The Money Account signature of the binding message.
+   * @returns `'bound'` on 201/200, or `'conflict'` when the address is already
+   * bound to a different subscription (409).
+   */
+  async registerMoneyAccountBinding(
+    subscriptionId: string,
+    moneyAccountAddress: string,
+    timestamp: number,
+    signature: string,
+  ): Promise<'bound' | 'conflict'> {
+    const response = await this.makeRequest(
+      '/wr/money-account/binding/signed',
+      {
+        method: 'POST',
+        body: JSON.stringify({ moneyAccountAddress, timestamp, signature }),
+      },
+      subscriptionId,
+    );
+
+    if (response.status === 409) {
+      return 'conflict';
+    }
+
+    if (!response.ok) {
+      let errorData: { code?: string; serverTime?: number } | undefined;
+      try {
+        errorData = (await response.json()) as {
+          code?: string;
+          serverTime?: number;
+        };
+      } catch {
+        // Body may be empty or non-JSON; fall through to the generic error.
+      }
+
+      if (errorData?.code === 'TIMESTAMP_OUT_OF_WINDOW') {
+        throw new InvalidTimestampError(
+          'Invalid timestamp. Please try again with a new timestamp.',
+          Number(errorData.serverTime),
+        );
+      }
+
+      throw new Error(
+        `Register Money Account binding failed: ${response.status}`,
+      );
+    }
+
+    return 'bound';
+  }
+}

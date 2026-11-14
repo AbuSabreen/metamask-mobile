@@ -1,48 +1,215 @@
-/* eslint-disable react/display-name */
-/* eslint-disable react/prop-types */
 /* eslint-disable no-console */
-
-// Third party dependencies.
 import React from 'react';
 
-// External dependencies.
-import Button, { ButtonVariants } from '../Buttons/Button';
-import ButtonIcon, { ButtonIconVariants } from '../Buttons/ButtonIcon';
-import { IconName } from '../Icons/Icon';
+import {
+  Box,
+  Text,
+  TextVariant,
+  ButtonIcon,
+  ButtonIconSize,
+  IconName,
+} from '@metamask/design-system-react-native';
 
-// Internal dependencies.
-import { default as HeaderBaseComponent } from './HeaderBase';
+import HeaderBase from './HeaderBase';
+import { HeaderBaseVariant } from './HeaderBase.types';
 
-const HeaderBaseStoryMeta = {
+const HeaderBaseMeta = {
   title: 'Component Library / HeaderBase',
-  component: HeaderBaseComponent,
+  component: HeaderBase,
+  argTypes: {
+    children: {
+      control: 'text',
+    },
+    variant: {
+      control: 'select',
+      options: Object.values(HeaderBaseVariant),
+    },
+    twClassName: {
+      control: 'text',
+    },
+  },
 };
 
-export default HeaderBaseStoryMeta;
+export default HeaderBaseMeta;
 
-export const HeaderBase = {
+export const Default = {
+  args: {
+    children: 'Header title',
+    variant: HeaderBaseVariant.Compact,
+  },
+};
+
+export const Variant = {
   render: () => (
-    <HeaderBaseComponent
+    <>
+      <HeaderBase
+        variant={HeaderBaseVariant.Compact}
+        startAccessory={
+          <ButtonIcon
+            iconName={IconName.ArrowLeft}
+            size={ButtonIconSize.Md}
+            onPress={() => console.log('Back pressed')}
+          />
+        }
+        endAccessory={
+          <ButtonIcon
+            iconName={IconName.Close}
+            size={ButtonIconSize.Md}
+            onPress={() => console.log('Close pressed')}
+          />
+        }
+      >
+        Compact variant
+      </HeaderBase>
+      <HeaderBase
+        variant={HeaderBaseVariant.Display}
+        startAccessory={
+          <ButtonIcon
+            iconName={IconName.ArrowLeft}
+            size={ButtonIconSize.Md}
+            onPress={() => console.log('Back pressed')}
+          />
+        }
+        endAccessory={
+          <ButtonIcon
+            iconName={IconName.Close}
+            size={ButtonIconSize.Md}
+            onPress={() => console.log('Close pressed')}
+          />
+        }
+      >
+        Display variant
+      </HeaderBase>
+    </>
+  ),
+};
+
+export const TwClassName = {
+  render: () => (
+    <HeaderBase twClassName="bg-info-default px-4">
+      Header with custom styles
+    </HeaderBase>
+  ),
+};
+
+export const StartButtonIconProps = {
+  render: () => (
+    <HeaderBase
+      startButtonIconProps={{
+        iconName: IconName.ArrowLeft,
+        onPress: () => console.log('Back pressed'),
+      }}
+    >
+      With start button
+    </HeaderBase>
+  ),
+};
+
+export const EndButtonIconProps = {
+  render: () => (
+    <HeaderBase
+      endButtonIconProps={[
+        {
+          iconName: IconName.Close,
+          onPress: () => console.log('Close pressed'),
+        },
+      ]}
+    >
+      With end button
+    </HeaderBase>
+  ),
+};
+
+export const MultipleEndButtonIconProps = {
+  render: () => (
+    <HeaderBase
+      endButtonIconProps={[
+        {
+          iconName: IconName.Close,
+          onPress: () => console.log('Close pressed'),
+        },
+        {
+          iconName: IconName.Search,
+          onPress: () => console.log('Search pressed'),
+        },
+        {
+          iconName: IconName.Setting,
+          onPress: () => console.log('Settings pressed'),
+        },
+      ]}
+    >
+      Multiple end buttons
+    </HeaderBase>
+  ),
+};
+
+export const StartAccessory = {
+  render: () => (
+    <HeaderBase
       startAccessory={
         <ButtonIcon
-          variant={ButtonIconVariants.Secondary}
           iconName={IconName.ArrowLeft}
-          onPress={() => {
-            console.log('clicked');
-          }}
-        />
-      }
-      endAccessory={
-        <Button
-          variant={ButtonVariants.Primary}
-          label="Cancel"
-          onPress={() => {
-            console.log('clicked');
-          }}
+          size={ButtonIconSize.Md}
+          onPress={() => console.log('Back pressed')}
         />
       }
     >
-      Super Long HeaderBase Title that may span 3 lines
-    </HeaderBaseComponent>
+      With start accessory
+    </HeaderBase>
+  ),
+};
+
+export const EndAccessory = {
+  render: () => (
+    <HeaderBase
+      endAccessory={
+        <ButtonIcon
+          iconName={IconName.Close}
+          size={ButtonIconSize.Md}
+          onPress={() => console.log('Close pressed')}
+        />
+      }
+    >
+      With end accessory
+    </HeaderBase>
+  ),
+};
+
+export const BothAccessories = {
+  render: () => (
+    <HeaderBase
+      startAccessory={
+        <ButtonIcon
+          iconName={IconName.ArrowLeft}
+          size={ButtonIconSize.Md}
+          onPress={() => console.log('Back pressed')}
+        />
+      }
+      endAccessory={
+        <ButtonIcon
+          iconName={IconName.Close}
+          size={ButtonIconSize.Md}
+          onPress={() => console.log('Close pressed')}
+        />
+      }
+    >
+      Both accessories
+    </HeaderBase>
+  ),
+};
+
+export const Children = {
+  render: () => (
+    <HeaderBase
+      startButtonIconProps={{
+        iconName: IconName.ArrowLeft,
+        onPress: () => console.log('Back pressed'),
+      }}
+    >
+      <Box twClassName="items-center">
+        <Text variant={TextVariant.HeadingSm}>Custom Title</Text>
+        <Text variant={TextVariant.BodySm}>Subtitle text</Text>
+      </Box>
+    </HeaderBase>
   ),
 };

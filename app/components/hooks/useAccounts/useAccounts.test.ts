@@ -1,61 +1,72 @@
-import { renderHook, act } from '@testing-library/react-hooks';
+import { renderHook, act, waitFor } from '@testing-library/react-native';
 import { KeyringTypes } from '@metamask/keyring-controller';
-import { toChecksumAddress } from 'ethereumjs-util';
+import { EthScope } from '@metamask/keyring-api';
 import useAccounts from './useAccounts';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
+import { backgroundState } from '../../../util/test/initial-root-state';
 import { MOCK_ACCOUNTS_CONTROLLER_STATE } from '../../../util/test/accountsControllerTestUtils';
 import { Account } from './useAccounts.types';
+import { toChecksumAddress } from '../../../util/address';
+
+jest.mock('../../../core/Engine', () => ({
+  getTotalEvmFiatAccountBalance: jest.fn().mockReturnValue({
+    ethFiat: 0,
+    ethFiat1dAgo: 0,
+    tokenFiat: 0,
+    tokenFiat1dAgo: 0,
+    totalNativeTokenBalance: '0',
+    ticker: 'ETH',
+  }),
+}));
 
 const MOCK_ENS_CACHED_NAME = 'fox.eth';
 
 const MOCK_CHAIN_ID = '0x1';
 
-const MOCK_ACCOUNT_ADDRESSES = Object.values(
+const MOCK_ACCOUNTS = Object.values(
   MOCK_ACCOUNTS_CONTROLLER_STATE.internalAccounts.accounts,
-).map((account) => account.address);
+);
 
 const MOCK_ACCOUNT_1: Account = {
+  id: MOCK_ACCOUNTS[0].id,
   name: 'Account 1',
-  address: toChecksumAddress(MOCK_ACCOUNT_ADDRESSES[0]),
+  address: toChecksumAddress(MOCK_ACCOUNTS[0].address),
   type: KeyringTypes.hd,
   yOffset: 0,
   isSelected: false,
-  assets: {
-    fiatBalance: '\n0 ETH',
-  },
-  balanceError: undefined,
+  caipAccountId: `eip155:0:${MOCK_ACCOUNTS[0].address}`,
+  scopes: [EthScope.Eoa],
+  isLoadingAccount: false,
+  snapId: undefined,
 };
 const MOCK_ACCOUNT_2: Account = {
+  id: MOCK_ACCOUNTS[1].id,
   name: 'Account 2',
-  address: toChecksumAddress(MOCK_ACCOUNT_ADDRESSES[1]),
+  address: toChecksumAddress(MOCK_ACCOUNTS[1].address),
   type: KeyringTypes.hd,
   yOffset: 78,
   isSelected: true,
-  assets: {
-    fiatBalance: '\n< 0.00001 ETH',
-  },
-  balanceError: undefined,
+  caipAccountId: `eip155:0:${MOCK_ACCOUNTS[1].address}`,
+  scopes: [EthScope.Eoa],
+  isLoadingAccount: false,
+  snapId: undefined,
 };
 
 const MOCK_STORE_STATE = {
   settings: {},
   engine: {
     backgroundState: {
-      ...initialBackgroundState,
+      ...backgroundState,
       AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE,
       AccountTrackerController: {
-        accounts: {
-          [MOCK_ACCOUNT_1.address]: {
-            balance: '0x0',
+        accountsByChainId: {
+          '0x1': {
+            [MOCK_ACCOUNT_1.address]: {
+              balance: '0x0',
+            },
+            [MOCK_ACCOUNT_2.address]: {
+              balance: '0x5',
+            },
           },
-          [MOCK_ACCOUNT_2.address]: {
-            balance: '0x5',
-          },
-        },
-      },
-      NetworkController: {
-        providerConfig: {
-          chainId: MOCK_CHAIN_ID,
         },
       },
     },
@@ -85,27 +96,10 @@ describe('useAccounts', () => {
     jest.clearAllMocks();
   });
 
-  it('returns empty data if isLoading is true', async () => {
+  it('returns empty data if isLoading is true', () => {
     const { result } = renderHook(() => useAccounts({ isLoading: true }));
     expect(result.current.accounts).toStrictEqual([]);
     expect(result.current.ensByAccountAddress).toStrictEqual({});
-  });
-
-  it('populates balanceError property for accounts', async () => {
-    const expectedBalanceError = 'Insufficient funds';
-    const { result, waitForNextUpdate } = renderHook(() =>
-      useAccounts({
-        checkBalanceError: (balance) =>
-          balance === '0x0' ? 'Insufficient funds' : '',
-      }),
-    );
-    await act(async () => {
-      await waitForNextUpdate();
-    });
-    expect(result.current.accounts[0].balanceError).toStrictEqual(
-      expectedBalanceError,
-    );
-    expect(result.current.accounts[1].balanceError).toStrictEqual('');
   });
 
   it('returns internal accounts', async () => {
@@ -113,9 +107,9 @@ describe('useAccounts', () => {
       MOCK_ACCOUNT_1,
       MOCK_ACCOUNT_2,
     ];
-    const { result, waitForNextUpdate } = renderHook(() => useAccounts());
-    await act(async () => {
-      await waitForNextUpdate();
+    const { result } = renderHook(() => useAccounts());
+    await waitFor(() => {
+      expect(result.current.accounts.length).toBeGreaterThan(0);
     });
     expect(result.current.accounts).toStrictEqual(expectedInternalAccounts);
   });
@@ -124,10 +118,91 @@ describe('useAccounts', () => {
     const expectedENSNames = {
       [MOCK_ACCOUNT_1.address]: MOCK_ENS_CACHED_NAME,
     };
-    const { result, waitForNextUpdate } = renderHook(() => useAccounts());
-    await act(async () => {
-      await waitForNextUpdate();
+    const { result } = renderHook(() => useAccounts());
+    await waitFor(() => {
+      expect(
+        Object.keys(result.current.ensByAccountAddress).length,
+      ).toBeGreaterThan(0);
     });
     expect(result.current.ensByAccountAddress).toStrictEqual(expectedENSNames);
+  });
+
+  it('returns scopes for evm accounts', async () => {
+    const { result } = renderHook(() => useAccounts());
+    await waitFor(() => {
+      expect(result.current.accounts.length).toBeGreaterThan(0);
+    });
+    expect(result.current.accounts[0].scopes).toStrictEqual([EthScope.Eoa]);
+  });
+
+  it('returns a stable accounts reference when inputs are unchanged', () => {
+    const { result, rerender } = renderHook(() => useAccounts());
+    const firstRef = result.current.accounts;
+    rerender({});
+    expect(result.current.accounts).toBe(firstRef);
+  });
+
+  describe('fetchENS parameter', () => {
+    it('fetches ENS names when fetchENS is true (default)', async () => {
+      const expectedENSNames = {
+        [MOCK_ACCOUNT_1.address]: MOCK_ENS_CACHED_NAME,
+      };
+
+      const { result } = renderHook(() => useAccounts());
+      await waitFor(() => {
+        expect(
+          Object.keys(result.current.ensByAccountAddress).length,
+        ).toBeGreaterThan(0);
+      });
+
+      expect(result.current.ensByAccountAddress).toStrictEqual(
+        expectedENSNames,
+      );
+    });
+
+    it('fetches ENS names when fetchENS is explicitly true', async () => {
+      const expectedENSNames = {
+        [MOCK_ACCOUNT_1.address]: MOCK_ENS_CACHED_NAME,
+      };
+
+      const { result } = renderHook(() => useAccounts({ fetchENS: true }));
+      await waitFor(() => {
+        expect(
+          Object.keys(result.current.ensByAccountAddress).length,
+        ).toBeGreaterThan(0);
+      });
+
+      expect(result.current.ensByAccountAddress).toStrictEqual(
+        expectedENSNames,
+      );
+    });
+
+    it('does not fetch ENS names when fetchENS is false', async () => {
+      const { result } = renderHook(() => useAccounts({ fetchENS: false }));
+
+      // Give some time for any potential async operations
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      expect(result.current.ensByAccountAddress).toStrictEqual({});
+    });
+
+    it('returns accounts but not ENS names when fetchENS is false', async () => {
+      const expectedInternalAccounts: Account[] = [
+        MOCK_ACCOUNT_1,
+        MOCK_ACCOUNT_2,
+      ];
+
+      const { result } = renderHook(() => useAccounts({ fetchENS: false }));
+
+      // Give some time for accounts to be populated
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      expect(result.current.accounts).toStrictEqual(expectedInternalAccounts);
+      expect(result.current.ensByAccountAddress).toStrictEqual({});
+    });
   });
 });

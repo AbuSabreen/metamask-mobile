@@ -1,4 +1,4 @@
-// eslint-disable-next-line import/no-nodejs-modules, import/no-commonjs, @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+// eslint-disable-next-line import-x/no-nodejs-modules, import-x/no-commonjs, @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
 const EventEmitter = require('events').EventEmitter;
 
 class RemotePort extends EventEmitter {
@@ -7,6 +7,8 @@ class RemotePort extends EventEmitter {
     this.sendMessage = sendMessage;
   }
 
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   postMessage = (msg: any) => {
     this.sendMessage(msg);
   };

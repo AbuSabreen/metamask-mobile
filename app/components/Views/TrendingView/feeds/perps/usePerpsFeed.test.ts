@@ -1,0 +1,259 @@
+/**
+ * usePerpsFeed — unit tests
+ *
+ * Focuses on the sorting/ordering logic that lives inside the useMemo:
+ * 1. No-query path: items sorted by the variant's comparator.
+ * 2. Query path: Fuse.js relevance order is preserved.
+ * 3. defaultSortOptionId matches PERPS_VARIANT_SORT_OPTION for each variant.
+ */
+
+import { renderHook } from '@testing-library/react-hooks';
+import type { PerpsMarketData } from '@metamask/perps-controller';
+import {
+  filterAndSortByPriceChangeDirection,
+  usePerpsFeed,
+  PERPS_VARIANT_SORT_OPTION,
+} from './usePerpsFeed';
+
+// ---------------------------------------------------------------------------
+// Core dependency mocks
+// ---------------------------------------------------------------------------
+
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(() => []),
+}));
+
+const mockMarkets: PerpsMarketData[] = [];
+const mockRefetch = jest.fn();
+
+jest.mock('../../../../UI/Perps/hooks', () => ({
+  usePerpsMarkets: jest.fn(() => ({
+    markets: mockMarkets,
+    isLoading: false,
+    refresh: mockRefetch,
+    isRefreshing: false,
+  })),
+}));
+
+jest.mock('../../../../UI/Perps/providers/PerpsConnectionProvider', () => ({
+  PerpsConnectionContext: { _currentValue: null },
+}));
+
+jest.mock('../../../../UI/Perps/selectors/perpsController', () => ({
+  selectPerpsWatchlistMarkets: jest.fn(),
+}));
+
+const mockUseHomepageSparklines = jest.fn();
+
+jest.mock(
+  '../../../Homepage/Sections/Perpetuals/hooks/useHomepageSparklines',
+  () => ({
+    useHomepageSparklines: (markets: PerpsMarketData[]) => {
+      mockUseHomepageSparklines(markets);
+      return { sparklines: {} };
+    },
+  }),
+);
+
+jest.mock('../../hooks/useFeedRefresh', () => ({
+  useFeedRefresh: jest.fn(),
+}));
+
+// ---------------------------------------------------------------------------
+// fuseSearch mock — controllable so we can verify order is preserved
+// ---------------------------------------------------------------------------
+
+const mockFuseSearch = jest.fn();
+jest.mock('../search-utils', () => ({
+  fuseSearch: (...args: unknown[]) => mockFuseSearch(...args),
+  PERPS_FUSE_OPTIONS: {},
+}));
+
+jest.mock('@metamask/perps-controller', () => ({
+  ...jest.requireActual('@metamask/perps-controller'),
+  filterMarketsByQuery: jest.fn((items: unknown[]) => items),
+}));
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+import { usePerpsMarkets } from '../../../../UI/Perps/hooks';
+import { TILE_CAROUSEL_DEFAULT_MAX_TILES } from '../../components/TileCarousel';
+
+const makeMarket = (
+  symbol: string,
+  change24hPercent: string,
+  volumeNumber: number,
+): PerpsMarketData =>
+  ({
+    symbol,
+    name: symbol,
+    change24hPercent,
+    volumeNumber,
+    marketType: 'stock',
+    isHip3: false,
+  }) as unknown as PerpsMarketData;
+
+const renderFeed = (options: Parameters<typeof usePerpsFeed>[0] = {}) =>
+  renderHook(() => usePerpsFeed(options));
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('usePerpsFeed', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Default: fuseSearch returns items as-is
+    mockFuseSearch.mockImplementation((items: unknown[]) => items);
+  });
+
+  it.each([true, false])(
+    'limits sparkline markets to visible tiles when withTileExtras is %s',
+    (withTileExtras) => {
+      const markets = Array.from(
+        { length: TILE_CAROUSEL_DEFAULT_MAX_TILES + 1 },
+        (_, index) => ({
+          ...makeMarket(`MARKET${index}`, String(index), 100),
+          trend:
+            index === 0
+              ? undefined
+              : ([
+                  [1, '100'],
+                  [2, '101'],
+                ] as PerpsMarketData['trend']),
+        }),
+      );
+      // Keep a market without trends visible so the hook can provide its fallback.
+      markets[0].change24hPercent = '100';
+      (usePerpsMarkets as jest.Mock).mockReturnValue({
+        markets,
+        isLoading: false,
+        refresh: mockRefetch,
+        isRefreshing: false,
+      });
+
+      const { result } = renderFeed({ withTileExtras });
+
+      expect(mockUseHomepageSparklines).toHaveBeenLastCalledWith(
+        withTileExtras ? [markets[0], ...markets.slice(2).reverse()] : [],
+      );
+      expect(result.current.data).toHaveLength(markets.length);
+    },
+  );
+
+  describe('no-query path', () => {
+    it('sorts all/crypto/rwa variants by 24h price change descending', () => {
+      const markets = [
+        makeMarket('LOW', '1', 100),
+        makeMarket('HIGH', '5', 50),
+        makeMarket('MID', '3', 75),
+      ];
+      (usePerpsMarkets as jest.Mock).mockReturnValue({
+        markets,
+        isLoading: false,
+        refresh: mockRefetch,
+        isRefreshing: false,
+      });
+
+      for (const variant of ['all', 'crypto', 'rwa'] as const) {
+        const { result } = renderFeed({ variant });
+        const symbols = result.current.data.map((d) => d.market.symbol);
+        expect(symbols).toEqual(['HIGH', 'MID', 'LOW']);
+      }
+    });
+  });
+
+  describe('price-change mover filtering', () => {
+    it('filters gainers to positive price changes sorted descending', () => {
+      const markets = [
+        makeMarket('LOSER', '-3', 100),
+        makeMarket('HIGH_GAINER', '5', 50),
+        makeMarket('LOW_GAINER', '1', 75),
+      ];
+
+      expect(
+        filterAndSortByPriceChangeDirection(markets, 'gainers').map(
+          (market) => market.symbol,
+        ),
+      ).toEqual(['HIGH_GAINER', 'LOW_GAINER']);
+    });
+
+    it('filters losers to negative price changes sorted ascending', () => {
+      const markets = [
+        makeMarket('GAINER', '3', 100),
+        makeMarket('SMALL_LOSER', '-1', 50),
+        makeMarket('BIG_LOSER', '-7', 75),
+      ];
+
+      expect(
+        filterAndSortByPriceChangeDirection(markets, 'losers').map(
+          (market) => market.symbol,
+        ),
+      ).toEqual(['BIG_LOSER', 'SMALL_LOSER']);
+    });
+  });
+
+  describe('query path', () => {
+    it('preserves Fuse.js relevance order for every variant', () => {
+      const markets = [
+        makeMarket('BTC', '1', 100),
+        makeMarket('ETH', '5', 50),
+        makeMarket('SOL', '3', 75),
+      ];
+      (usePerpsMarkets as jest.Mock).mockReturnValue({
+        markets,
+        isLoading: false,
+        refresh: mockRefetch,
+        isRefreshing: false,
+      });
+
+      // Fuse returns a specific relevance order (SOL first, then ETH, then BTC)
+      const fuseRelevanceOrder = [
+        makeMarket('SOL', '3', 75),
+        makeMarket('ETH', '5', 50),
+        makeMarket('BTC', '1', 100),
+      ];
+      mockFuseSearch.mockReturnValue(fuseRelevanceOrder);
+
+      for (const variant of ['all', 'crypto', 'rwa'] as const) {
+        const { result } = renderFeed({ variant, query: 'S' });
+        const symbols = result.current.data.map((d) => d.market.symbol);
+        // Must match fuse order, NOT sorted by price change (which would be ETH→SOL→BTC)
+        expect(symbols).toEqual(['SOL', 'ETH', 'BTC']);
+      }
+    });
+  });
+
+  describe('defaultSortOptionId', () => {
+    it.each([
+      ['all', 'priceChange'],
+      ['crypto', 'priceChange'],
+      ['rwa', 'priceChange'],
+    ] as const)(
+      'returns "%s" for variant "%s"',
+      (variant, expectedSortOptionId) => {
+        (usePerpsMarkets as jest.Mock).mockReturnValue({
+          markets: [],
+          isLoading: false,
+          refresh: mockRefetch,
+          isRefreshing: false,
+        });
+
+        const { result } = renderFeed({ variant });
+        expect(result.current.defaultSortOptionId).toBe(expectedSortOptionId);
+        // Also verify it matches the canonical map
+        expect(result.current.defaultSortOptionId).toBe(
+          PERPS_VARIANT_SORT_OPTION[variant],
+        );
+      },
+    );
+  });
+
+  it('passes skipInitialFetch through to usePerpsMarkets', () => {
+    renderFeed({ skipInitialFetch: true });
+
+    expect(usePerpsMarkets).toHaveBeenCalledWith({ skipInitialFetch: true });
+  });
+});

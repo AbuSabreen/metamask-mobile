@@ -1,0 +1,110 @@
+import { fireEvent } from '@testing-library/react-native';
+import { renderScreen } from '../../../util/test/renderWithProvider';
+import TokensFullView from './TokensFullView';
+import { useNavigation } from '@react-navigation/native';
+
+// Mock external dependencies that are not under test
+jest.mock('@metamask/design-system-twrnc-preset', () => ({
+  useTailwind: () => {
+    const tw = () => ({});
+    tw.style = () => ({});
+    return tw;
+  },
+}));
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: jest.fn(),
+}));
+
+// Mock AssetPollingProvider to avoid Engine/controller polling setup
+jest.mock('../../hooks/AssetPolling/AssetPollingProvider', () => ({
+  AssetPollingProvider: () => null,
+}));
+
+jest.mock('../../../core/Engine', () => ({
+  context: {
+    PreferencesController: {
+      setTokenSortConfig: jest.fn(),
+    },
+  },
+}));
+
+// Mock Tokens component to avoid complex Redux state setup
+jest.mock('../../UI/Tokens', () => {
+  const React = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+
+  return function MockTokens({
+    isFullView: _isFullView,
+  }: {
+    isFullView?: boolean;
+  }) {
+    return React.createElement(
+      View,
+      { testID: 'tokens-component' },
+      'Tokens Component',
+    );
+  };
+});
+
+// Type the mocked functions
+const mockUseNavigation = useNavigation as jest.MockedFunction<
+  typeof useNavigation
+>;
+
+describe('TokensFullView', () => {
+  const mockGoBack = jest.fn();
+  const mockNavigate = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    // Setup default mocks
+    mockUseNavigation.mockReturnValue({
+      goBack: mockGoBack,
+      navigate: mockNavigate,
+    } as unknown as ReturnType<typeof useNavigation>);
+  });
+
+  it('renders header with title and back button', () => {
+    // Arrange
+    const { getByTestId, getByText } = renderScreen(TokensFullView, {
+      name: 'TokensFullView',
+    });
+
+    // Act & Assert
+    expect(getByTestId('back-button')).toBeOnTheScreen();
+    expect(getByText('Tokens')).toBeOnTheScreen();
+    expect(getByTestId('tokens-component')).toBeOnTheScreen();
+  });
+
+  it('calls goBack when back button is pressed', () => {
+    // Arrange
+    const { getByTestId } = renderScreen(TokensFullView, {
+      name: 'TokensFullView',
+    });
+
+    // Act
+    const backButton = getByTestId('back-button');
+    fireEvent.press(backButton);
+
+    // Assert
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the add token screen when the header customize button is pressed', () => {
+    // Arrange
+    const { getByTestId } = renderScreen(TokensFullView, {
+      name: 'TokensFullView',
+    });
+
+    // Act
+    fireEvent.press(getByTestId('import-token-button'));
+
+    // Assert
+    expect(mockNavigate).toHaveBeenCalledWith('AddAsset', {
+      assetType: 'token',
+    });
+  });
+});

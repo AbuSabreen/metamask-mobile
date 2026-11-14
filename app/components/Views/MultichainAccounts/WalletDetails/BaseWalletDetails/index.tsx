@@ -1,0 +1,296 @@
+import React, { useCallback, useState, useMemo, useRef } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { TouchableOpacity, View } from 'react-native';
+import { useStyles } from '../../../../hooks/useStyles';
+import styleSheet from './styles';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  FontWeight,
+  ButtonIconSize,
+  Icon,
+  IconColor,
+  IconName,
+  IconSize,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { WalletDetailsIds } from '../WalletDetails.testIds';
+import {
+  AlignItems,
+  FlexDirection,
+  JustifyContent,
+} from '../../../../UI/Box/box.types';
+import { Box } from '../../../../UI/Box/Box';
+import { strings } from '../../../../../../locales/i18n';
+import {
+  AccountWalletObject,
+  AccountGroupObject,
+} from '@metamask/account-tree-controller';
+
+// Type for combined account data that includes the add account item
+type AccountGroupListItem = AccountGroupObject | { type: 'add-account' };
+import { useWalletBalances } from '../hooks/useWalletBalances';
+import { useSelector } from 'react-redux';
+import AnimatedSpinner, { SpinnerSize } from '../../../../UI/AnimatedSpinner';
+import { useWalletInfo } from '../hooks/useWalletInfo';
+import Routes from '../../../../../constants/navigation/Routes';
+import { FlashList, FlashListRef } from '@shopify/flash-list';
+import AccountCell from '../../../../../component-library/components-temp/MultichainAccounts/AccountCell/AccountCell';
+import HeaderBaseGlass from '../../../../../component-library/components-temp/HeaderBaseGlass';
+import { selectAccountGroupsByWallet } from '../../../../../selectors/multichainAccounts/accountTreeController';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+import { AddAccountItem } from './components/AddAccountItem';
+import Logger from '../../../../../util/Logger';
+import Engine from '../../../../../core/Engine';
+import { selectAvatarAccountType } from '../../../../../selectors/settings';
+
+interface BaseWalletDetailsProps {
+  wallet: AccountWalletObject;
+  children?: React.ReactNode;
+}
+
+export const BaseWalletDetails = ({
+  wallet,
+  children,
+}: BaseWalletDetailsProps) => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const { styles } = useStyles(styleSheet, {});
+  const [isLoading, setIsLoading] = useState(false);
+  const accountGroupsFlashListRef =
+    useRef<FlashListRef<AccountGroupListItem> | null>(null);
+
+  const { keyringId, isSRPBackedUp } = useWalletInfo(wallet);
+
+  const avatarAccountType = useSelector(selectAvatarAccountType);
+
+  const accountGroupsByWallet = useSelector(selectAccountGroupsByWallet);
+  const accountGroups = useMemo(
+    () =>
+      accountGroupsByWallet.find((section) => section.wallet.id === wallet.id)
+        ?.data ?? [],
+    [accountGroupsByWallet, wallet.id],
+  );
+
+  // Combined data arrays that include the add account item as the last element
+  const accountGroupsWithAddItem = useMemo(() => {
+    const addAccountItem = { type: 'add-account' as const };
+    return keyringId ? [...accountGroups, addAccountItem] : accountGroups;
+  }, [accountGroups, keyringId]);
+
+  const { formattedWalletTotalBalance } = useWalletBalances(wallet.id);
+
+  const handleRevealSRP = useCallback(() => {
+    if (keyringId) {
+      navigation.navigate(Routes.SETTINGS.REVEAL_PRIVATE_CREDENTIAL, {
+        keyringId,
+        popToTopOnDone: true, // Return to wallet home and dismiss Accounts sheet + Wallet Details
+      });
+    }
+  }, [navigation, keyringId]);
+
+  const handleBackupPressed = useCallback(() => {
+    navigation.navigate(Routes.SET_PASSWORD_FLOW.ROOT, {
+      screen: Routes.SET_PASSWORD_FLOW.MANUAL_BACKUP_STEP_1,
+      params: { backupFlow: true },
+    });
+  }, [navigation]);
+
+  const handleCreateAccount = useCallback(async () => {
+    try {
+      const { MultichainAccountService } = Engine.context;
+
+      await MultichainAccountService.createNextMultichainAccountGroup({
+        entropySource: keyringId as string,
+      });
+
+      setIsLoading(false);
+
+      // Scroll to the bottom to show the newly created account
+      if (accountGroupsFlashListRef.current) {
+        // Use a small delay to ensure the new account is rendered
+        setTimeout(() => {
+          accountGroupsFlashListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      }
+    } catch (e: unknown) {
+      Logger.error(
+        e as Error,
+        'error while trying to add a new multichain account',
+      );
+      setIsLoading(false);
+    }
+  }, [keyringId]);
+
+  const handlePress = useCallback(() => {
+    // Force immediate state update
+    setIsLoading(true);
+
+    // Create account immediately without delay
+    handleCreateAccount();
+  }, [handleCreateAccount]);
+
+  // Render account group item
+  const renderAccountGroupItem = ({
+    item: accountGroup,
+    index,
+  }: {
+    item: AccountGroupListItem;
+    index: number;
+  }) => {
+    // Handle add account item
+    if ('type' in accountGroup && accountGroup.type === 'add-account') {
+      return (
+        <AddAccountItem
+          index={index}
+          totalItemsCount={accountGroupsWithAddItem.length}
+          isLoading={isLoading}
+          onPress={handlePress}
+        />
+      );
+    }
+
+    const isFirst = index === 0;
+
+    const accountBoxStyle = [
+      styles.accountGroupBox,
+      ...(isFirst ? [styles.firstAccountBox] : []),
+    ];
+
+    return (
+      <View style={accountBoxStyle}>
+        <AccountCell
+          accountGroup={accountGroup}
+          avatarAccountType={avatarAccountType}
+          hideMenu
+        />
+      </View>
+    );
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <HeaderBaseGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        testID={WalletDetailsIds.HEADER}
+        style={styles.header}
+        startButtonIconProps={{
+          testID: WalletDetailsIds.BACK_BUTTON,
+          iconName: IconName.ArrowLeft,
+          size: ButtonIconSize.Md,
+          onPress: () => navigation.goBack(),
+          accessibilityLabel: strings('navigation.back'),
+        }}
+      >
+        {wallet.metadata.name}
+      </HeaderBaseGlass>
+      <View
+        style={styles.container}
+        testID={WalletDetailsIds.WALLET_DETAILS_CONTAINER}
+      >
+        <View style={styles.walletName}>
+          <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
+            {strings('multichain_accounts.wallet_details.wallet_name')}
+          </Text>
+          <Box
+            testID={WalletDetailsIds.WALLET_NAME}
+            flexDirection={FlexDirection.Row}
+            alignItems={AlignItems.center}
+            gap={8}
+          >
+            <Text
+              style={styles.text}
+              variant={TextVariant.BodyMd}
+              fontWeight={FontWeight.Medium}
+            >
+              {wallet.metadata.name}
+            </Text>
+          </Box>
+        </View>
+        <View testID={WalletDetailsIds.WALLET_BALANCE} style={styles.balance}>
+          <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
+            {strings('multichain_accounts.wallet_details.balance')}
+          </Text>
+          <Box
+            flexDirection={FlexDirection.Row}
+            alignItems={AlignItems.center}
+            gap={8}
+          >
+            {formattedWalletTotalBalance === undefined ? (
+              <AnimatedSpinner size={SpinnerSize.SM} />
+            ) : (
+              <Text
+                style={styles.text}
+                variant={TextVariant.BodyMd}
+                fontWeight={FontWeight.Medium}
+              >
+                {formattedWalletTotalBalance}
+              </Text>
+            )}
+          </Box>
+        </View>
+        {keyringId && (
+          <TouchableOpacity
+            testID={WalletDetailsIds.REVEAL_SRP_BUTTON}
+            onPress={handleRevealSRP}
+            style={styles.srpSection}
+          >
+            <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
+              {strings('accounts.secret_recovery_phrase')}
+            </Text>
+            <Box
+              flexDirection={FlexDirection.Row}
+              alignItems={AlignItems.center}
+              justifyContent={JustifyContent.spaceBetween}
+            >
+              <Box
+                flexDirection={FlexDirection.Row}
+                alignItems={AlignItems.center}
+                gap={8}
+              >
+                {isSRPBackedUp === false && (
+                  <TouchableOpacity onPress={handleBackupPressed}>
+                    <Text
+                      variant={TextVariant.BodyMd}
+                      fontWeight={FontWeight.Medium}
+                      color={TextColor.ErrorDefault}
+                    >
+                      {strings('multichain_accounts.wallet_details.back_up')}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <Icon
+                  name={IconName.ArrowRight}
+                  size={IconSize.Md}
+                  color={IconColor.IconAlternative}
+                />
+              </Box>
+            </Box>
+          </TouchableOpacity>
+        )}
+        <View
+          style={styles.accountsList}
+          testID={WalletDetailsIds.ACCOUNTS_LIST}
+        >
+          <View style={styles.listContainer}>
+            <FlashList
+              data={accountGroupsWithAddItem}
+              keyExtractor={(item, index) =>
+                'type' in item && item.type === 'add-account'
+                  ? `add-account-${index}`
+                  : item.id
+              }
+              renderItem={renderAccountGroupItem}
+              ref={accountGroupsFlashListRef}
+            />
+          </View>
+        </View>
+
+        {children}
+      </View>
+    </SafeAreaView>
+  );
+};

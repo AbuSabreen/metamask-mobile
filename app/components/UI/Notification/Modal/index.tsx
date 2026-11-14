@@ -1,0 +1,105 @@
+import React from 'react';
+import { View } from 'react-native';
+import Checkbox from '../../../../component-library/components/Checkbox/Checkbox';
+import {
+  Button,
+  ButtonVariant,
+  ButtonSize,
+  Icon,
+  IconColor,
+  IconName,
+  IconSize,
+  Text,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import createStyles from './styles';
+import { useTheme } from '../../../../util/theme';
+interface ModalContentProps {
+  title: string;
+  message: string;
+  iconName: IconName;
+  iconColor: IconColor;
+  iconSize: IconSize;
+  checkBoxLabel: string;
+  btnLabelCancel: string;
+  btnLabelCta: string;
+  isChecked: boolean;
+  setIsChecked: (isChecked: boolean) => void;
+  hascheckBox?: boolean | null;
+  handleCta: () => void;
+  handleCancel: () => void;
+  loading?: boolean;
+}
+
+const ModalContent = ({
+  title,
+  message,
+  iconName,
+  iconColor,
+  iconSize,
+  checkBoxLabel,
+  btnLabelCancel,
+  btnLabelCta,
+  isChecked,
+  setIsChecked,
+  hascheckBox,
+  handleCancel,
+  handleCta,
+  loading,
+}: ModalContentProps) => {
+  const { colors } = useTheme();
+  const styles = createStyles(colors);
+
+  return (
+    <View style={styles.container}>
+      <Icon
+        name={iconName}
+        color={iconColor}
+        size={iconSize}
+        style={styles.icon}
+      />
+      <Text variant={TextVariant.HeadingMd} style={styles.title}>
+        {title}
+      </Text>
+      <Text variant={TextVariant.BodyMd} style={styles.description}>
+        {message}
+      </Text>
+      <View style={styles.bottom}>
+        {hascheckBox && (
+          <Checkbox
+            label={checkBoxLabel}
+            isChecked={isChecked}
+            onPress={() => setIsChecked(!isChecked)}
+          />
+        )}
+        <View style={styles.buttonsContainer}>
+          <Button
+            variant={ButtonVariant.Secondary}
+            size={ButtonSize.Lg}
+            style={styles.button}
+            accessibilityRole={'button'}
+            accessible
+            onPress={handleCancel}
+          >
+            {btnLabelCancel}
+          </Button>
+          <Button
+            variant={ButtonVariant.Primary}
+            isDisabled={hascheckBox ? !isChecked : false}
+            isDanger={hascheckBox ?? false}
+            size={ButtonSize.Lg}
+            style={styles.button}
+            accessibilityRole={'button'}
+            accessible
+            onPress={handleCta}
+            isLoading={loading}
+          >
+            {btnLabelCta}
+          </Button>
+        </View>
+      </View>
+    </View>
+  );
+};
+
+export default ModalContent;

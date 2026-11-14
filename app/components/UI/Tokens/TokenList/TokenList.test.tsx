@@ -1,0 +1,694 @@
+import React from 'react';
+import { render, fireEvent, act } from '@testing-library/react-native';
+import { DeviceEventEmitter } from 'react-native';
+import { Provider, useSelector } from 'react-redux';
+import configureMockStore from 'redux-mock-store';
+import { TokenList } from './TokenList';
+import { useNavigation } from '@react-navigation/native';
+import { WalletViewSelectorsIDs } from '../../../Views/Wallet/WalletView.testIds';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { AnalyticsEventBuilder } from '../../../../util/analytics/AnalyticsEventBuilder';
+import { SCROLL_TO_TOKEN_EVENT } from '../constants';
+import { useMoneyTokenListCta } from '../../Money/hooks/useMoneyTokenListCta';
+import { SCREEN_NAMES } from '../../Money/constants/moneyEvents';
+
+// Mock external dependencies
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: jest.fn(),
+}));
+
+jest.mock('../../../hooks/useAnalytics/useAnalytics');
+
+jest.mock('../../../../util/theme', () => {
+  const { mockTheme } = jest.requireActual('../../../../util/theme');
+  return {
+    useTheme: () => mockTheme,
+  };
+});
+
+jest.mock('../../../../../locales/i18n', () => ({
+  strings: jest.fn((key) => key),
+}));
+
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: jest.fn(),
+}));
+
+// Mock selectors
+jest.mock('../../../../selectors/preferencesController', () => ({
+  selectPrivacyMode: jest.fn(() => false),
+  selectIsTokenNetworkFilterEqualCurrentNetwork: jest.fn(() => true),
+}));
+
+const mockTokenListItemCta = {
+  label: 'Get 4% APY',
+  color: 'success-default',
+  shouldShow: jest.fn(),
+  onPress: jest.fn(),
+};
+
+jest.mock('../../Money/hooks/useMoneyTokenListCta', () => ({
+  useMoneyTokenListCta: jest.fn(() => ({
+    tokenListItemCta: mockTokenListItemCta,
+  })),
+}));
+
+// Mock child components
+jest.mock('./TokenListItem/TokenListItem', () => ({
+  TokenListItem: ({
+    assetKey,
+    tokenListItemCta,
+    tokenPositionInList,
+    tokensInList,
+  }: {
+    assetKey: { address: string };
+    tokenListItemCta?: { label: string };
+    tokenPositionInList?: number;
+    tokensInList?: number;
+  }) => {
+    const React = jest.requireActual('react');
+    const { View, Text } = jest.requireActual('react-native');
+    return React.createElement(
+      View,
+      { testID: `token-item-${assetKey.address}` },
+      React.createElement(Text, null, `Token: ${assetKey.address}`),
+      tokenListItemCta
+        ? React.createElement(
+            Text,
+            { testID: `token-cta-${assetKey.address}` },
+            tokenListItemCta.label,
+          )
+        : null,
+      React.createElement(
+        Text,
+        { testID: `token-context-${assetKey.address}` },
+        `${tokenPositionInList}/${tokensInList}`,
+      ),
+    );
+  },
+  TokenListItemBip44: ({ assetKey }: { assetKey: { address: string } }) => {
+    const React = jest.requireActual('react');
+    const { View, Text } = jest.requireActual('react-native');
+    return React.createElement(
+      View,
+      { testID: `token-item-bip44-${assetKey.address}` },
+      React.createElement(Text, null, `Token BIP44: ${assetKey.address}`),
+    );
+  },
+}));
+
+// Mock design system components
+jest.mock('@metamask/design-system-react-native', () => ({
+  Box: ({
+    children,
+    testID,
+    twClassName: _twClassName,
+  }: {
+    children: React.ReactNode;
+    testID?: string;
+    twClassName?: string;
+  }) => {
+    const React = jest.requireActual('react');
+    const { View } = jest.requireActual('react-native');
+    return React.createElement(View, { testID, style: { flex: 1 } }, children);
+  },
+  Button: ({
+    children,
+    onPress,
+    testID,
+    variant: _variant,
+    isFullWidth: _isFullWidth,
+  }: {
+    children: React.ReactNode;
+    onPress: () => void;
+    testID?: string;
+    variant?: string;
+    isFullWidth?: boolean;
+  }) => {
+    const React = jest.requireActual('react');
+    const { TouchableOpacity, Text } = jest.requireActual('react-native');
+    return React.createElement(
+      TouchableOpacity,
+      { testID, onPress },
+      React.createElement(Text, null, children),
+    );
+  },
+  ButtonVariant: {
+    Secondary: 'Secondary',
+  },
+}));
+
+// Mock FlashList
+const mockScrollToIndex = jest.fn().mockResolvedValue(undefined);
+jest.mock('@shopify/flash-list', () => {
+  const React = jest.requireActual('react');
+  const { FlatList } = jest.requireActual('react-native');
+  return {
+    FlashList: React.forwardRef(
+      (props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+        React.useImperativeHandle(ref, () => ({
+          recomputeViewableItems: jest.fn(),
+          scrollToIndex: mockScrollToIndex,
+        }));
+        return React.createElement(FlatList, { ...props, ref });
+      },
+    ),
+  };
+});
+
+const mockStore = configureMockStore();
+const mockNavigate = jest.fn();
+const mockTrackEvent = jest.fn();
+const mockUseNavigation = useNavigation as jest.MockedFunction<
+  typeof useNavigation
+>;
+const mockUseSelector = useSelector as jest.MockedFunction<typeof useSelector>;
+const mockUseAnalytics = useAnalytics as jest.MockedFunction<
+  typeof useAnalytics
+>;
+
+const mockTokenKeys = [
+  {
+    address: '0x123',
+    chainId: '0x1',
+    isStaked: false,
+  },
+  {
+    address: '0x456',
+    chainId: '0x1',
+    isStaked: true,
+  },
+];
+
+const initialState = {};
+
+describe('TokenList', () => {
+  const defaultProps = {
+    tokenKeys: mockTokenKeys,
+    refreshing: false,
+    onRefresh: jest.fn(),
+    showRemoveMenu: jest.fn(),
+    setShowScamWarningModal: jest.fn(),
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseNavigation.mockReturnValue({
+      navigate: mockNavigate,
+    } as unknown as ReturnType<typeof useNavigation>);
+
+    mockUseAnalytics.mockReturnValue({
+      trackEvent: mockTrackEvent,
+      createEventBuilder: AnalyticsEventBuilder.createEventBuilder,
+      enable: jest.fn(),
+      identify: jest.fn(),
+      createDataDeletionTask: jest.fn(),
+      checkDataDeleteStatus: jest.fn(),
+      getDeleteRegulationCreationDate: jest.fn(),
+      getDeleteRegulationId: jest.fn(),
+      isEnabled: jest.fn(),
+      getAnalyticsId: jest.fn(),
+    });
+
+    // Mock useSelector to call the selector function with empty state
+    mockUseSelector.mockImplementation((selector) => selector({}));
+  });
+
+  const renderComponent = (props = {}, storeState = initialState) => {
+    const store = mockStore(storeState);
+    return render(
+      <Provider store={store}>
+        <TokenList {...defaultProps} {...props} />
+      </Provider>,
+    );
+  };
+
+  it('renders token list when tokens are present', () => {
+    const { getByTestId } = renderComponent();
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST),
+    ).toBeOnTheScreen();
+    expect(getByTestId('token-item-0x123')).toBeOnTheScreen();
+    expect(getByTestId('token-item-0x456')).toBeOnTheScreen();
+  });
+
+  it('forwards Money CTA to mapped token rows', () => {
+    const { getByTestId } = renderComponent();
+
+    expect(getByTestId('token-cta-0x123')).toHaveTextContent('Get 4% APY');
+    expect(getByTestId('token-cta-0x456')).toHaveTextContent('Get 4% APY');
+    expect(getByTestId('token-context-0x123')).toHaveTextContent('1/2');
+    expect(getByTestId('token-context-0x456')).toHaveTextContent('2/2');
+  });
+
+  it('initializes Money CTA analytics for the full token list screen', () => {
+    renderComponent({ isFullView: true });
+
+    expect(useMoneyTokenListCta).toHaveBeenCalledWith(
+      SCREEN_NAMES.TOKENS_SECTION_FULL_VIEW,
+    );
+  });
+
+  it('renders empty container when no tokens', () => {
+    const { getByTestId } = renderComponent({ tokenKeys: [] });
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST),
+    ).toBeOnTheScreen();
+  });
+
+  it('shows view all button when maxItems is exceeded', () => {
+    const { getByText } = renderComponent({ maxItems: 1 });
+
+    expect(getByText('wallet.view_all_tokens')).toBeOnTheScreen();
+  });
+
+  it('hides view all button when maxItems is not exceeded', () => {
+    const { queryByText } = renderComponent({ maxItems: 5 });
+
+    expect(queryByText('wallet.view_all_tokens')).toBeNull();
+  });
+
+  it('hides view all button when maxItems is undefined', () => {
+    const { queryByText } = renderComponent({ maxItems: undefined });
+
+    expect(queryByText('wallet.view_all_tokens')).toBeNull();
+  });
+
+  it('limits displayed tokens when maxItems is specified', () => {
+    const { getByTestId, queryByTestId } = renderComponent({ maxItems: 1 });
+
+    expect(getByTestId('token-item-0x123')).toBeOnTheScreen();
+    expect(queryByTestId('token-item-0x456')).toBeNull();
+  });
+
+  it('navigates to tokens full view when view all button is pressed', () => {
+    const { getByText } = renderComponent({ maxItems: 1 });
+
+    const viewAllButton = getByText('wallet.view_all_tokens');
+    fireEvent.press(viewAllButton);
+
+    expect(mockNavigate).toHaveBeenCalledWith('TokensFullView');
+  });
+
+  it('tracks analytics event when view all button is pressed', () => {
+    const { getByText } = renderComponent({ maxItems: 1 });
+
+    const viewAllButton = getByText('wallet.view_all_tokens');
+    fireEvent.press(viewAllButton);
+
+    expect(mockTrackEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'View All Assets Clicked',
+        properties: expect.objectContaining({
+          asset_type: 'Token',
+        }),
+      }),
+    );
+  });
+
+  it('renders container without items when tokenKeys is empty', () => {
+    const { getByTestId, queryByTestId } = renderComponent({ tokenKeys: [] });
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST),
+    ).toBeOnTheScreen();
+    expect(queryByTestId('token-item-0x123')).toBeNull();
+  });
+
+  it('calls onRefresh when refresh control is triggered', () => {
+    const onRefresh = jest.fn();
+    const { getByTestId } = renderComponent({ onRefresh, isFullView: true });
+
+    const flashList = getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST);
+    const refreshControl = flashList.props.refreshControl;
+
+    refreshControl.props.onRefresh();
+
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies contentContainerStyle when isFullView is true', () => {
+    const { getByTestId } = renderComponent({
+      isFullView: true,
+    });
+
+    const flashList = getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST);
+    expect(flashList.props.contentContainerStyle).toBeDefined();
+  });
+
+  it('renders token list correctly', () => {
+    // Reset and set new mock implementation for this test
+    mockUseSelector.mockReset();
+    mockUseSelector.mockImplementation((selector) => {
+      if (selector.toString().includes('selectPrivacyMode')) {
+        return false;
+      }
+      if (
+        selector
+          .toString()
+          .includes('selectIsTokenNetworkFilterEqualCurrentNetwork')
+      ) {
+        return true;
+      }
+      return undefined;
+    });
+
+    const { getByTestId } = renderComponent();
+
+    // The component should render tokens, but we can't easily test which specific component
+    // is used due to the mocking complexity. Instead, we verify the component renders correctly.
+    expect(
+      getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST),
+    ).toBeOnTheScreen();
+  });
+
+  it('uses TokenListItem when multichain accounts state 2 is disabled', () => {
+    const { getByTestId } = renderComponent();
+
+    expect(getByTestId('token-item-0x123')).toBeOnTheScreen();
+    expect(getByTestId('token-item-0x456')).toBeOnTheScreen();
+  });
+
+  it('handles undefined tokenKeys gracefully', () => {
+    const { getByTestId, queryByTestId } = renderComponent({
+      tokenKeys: undefined,
+    });
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST),
+    ).toBeOnTheScreen();
+    expect(queryByTestId('token-item-0x123')).toBeNull();
+    expect(queryByTestId('token-item-0x456')).toBeNull();
+  });
+
+  it('handles null tokenKeys gracefully', () => {
+    const { getByTestId, queryByTestId } = renderComponent({ tokenKeys: null });
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST),
+    ).toBeOnTheScreen();
+    expect(queryByTestId('token-item-0x123')).toBeNull();
+    expect(queryByTestId('token-item-0x456')).toBeNull();
+  });
+
+  it('shows refreshing state correctly', () => {
+    const { getByTestId } = renderComponent({
+      refreshing: true,
+      isFullView: true,
+    });
+
+    const flashList = getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST);
+    const refreshControl = flashList.props.refreshControl;
+
+    expect(refreshControl.props.refreshing).toBe(true);
+  });
+
+  it('generates unique keys for token items', () => {
+    const { getByTestId } = renderComponent({ isFullView: true });
+
+    const flashList = getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST);
+    const keyExtractor = flashList.props.keyExtractor;
+
+    const key1 = keyExtractor(mockTokenKeys[0], 0);
+    const key2 = keyExtractor(mockTokenKeys[1], 1);
+
+    expect(key1).toBe('0x123-0x1-unstaked-0');
+    expect(key2).toBe('0x456-0x1-staked-1');
+    expect(key1).not.toBe(key2);
+  });
+
+  it('passes correct props to token list items', () => {
+    const showRemoveMenu = jest.fn();
+    const setShowScamWarningModal = jest.fn();
+
+    renderComponent({
+      showRemoveMenu,
+      setShowScamWarningModal,
+      showPercentageChange: false,
+    });
+
+    // The actual prop passing is tested through the component rendering
+    // This test ensures the component doesn't crash with different prop combinations
+    expect(showRemoveMenu).not.toHaveBeenCalled();
+    expect(setShowScamWarningModal).not.toHaveBeenCalled();
+  });
+
+  describe('Token List Rendering', () => {
+    beforeEach(() => {
+      // Reset selector mocks for this describe block
+      mockUseSelector.mockReset();
+    });
+
+    it('renders tokens directly in Box when not full view', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      const { getByTestId } = renderComponent({ isFullView: false });
+
+      expect(getByTestId('token-item-0x123')).toBeOnTheScreen();
+      expect(getByTestId('token-item-0x456')).toBeOnTheScreen();
+    });
+
+    it('renders FlashList when isFullView is true', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      const { getByTestId } = renderComponent({ isFullView: true });
+
+      expect(
+        getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST),
+      ).toBeOnTheScreen();
+    });
+
+    it('shows view all button when maxItems is exceeded and not full view', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      const { getByText } = renderComponent({ maxItems: 1, isFullView: false });
+
+      expect(getByText('wallet.view_all_tokens')).toBeOnTheScreen();
+    });
+
+    it('renders mapped token items when not full view', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      const { queryByTestId } = renderComponent({ isFullView: false });
+
+      expect(queryByTestId('token-item-0x123')).toBeOnTheScreen();
+      expect(queryByTestId('token-item-0x456')).toBeOnTheScreen();
+    });
+  });
+
+  describe('Scroll to Token Event', () => {
+    beforeEach(() => {
+      mockScrollToIndex.mockClear();
+      // Reset selector mocks
+      mockUseSelector.mockReset();
+    });
+
+    afterEach(() => {
+      // Clean up any event listeners
+      DeviceEventEmitter.removeAllListeners(SCROLL_TO_TOKEN_EVENT);
+      DeviceEventEmitter.removeAllListeners('scrollToTokenIndex');
+    });
+
+    it('scrolls to token using FlashList scrollToIndex when token is found and in full view', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      renderComponent({ isFullView: true });
+
+      // Emit scroll-to-token event
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          address: '0x123',
+          chainId: '0x1',
+        });
+      });
+
+      expect(mockScrollToIndex).toHaveBeenCalledWith({
+        index: 0,
+        animated: true,
+        viewPosition: 0.5,
+      });
+    });
+
+    it('scrolls to correct index when token is not first in list', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      renderComponent({ isFullView: true });
+
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          address: '0x456',
+          chainId: '0x1',
+        });
+      });
+
+      expect(mockScrollToIndex).toHaveBeenCalledWith({
+        index: 1,
+        animated: true,
+        viewPosition: 0.5,
+      });
+    });
+
+    it('does not scroll when token is not found in the list', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      renderComponent({ isFullView: true });
+
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          address: '0xnonexistent',
+          chainId: '0x1',
+        });
+      });
+
+      expect(mockScrollToIndex).not.toHaveBeenCalled();
+    });
+
+    it('does not scroll when chainId does not match', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      renderComponent({ isFullView: true });
+
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          address: '0x123',
+          chainId: '0x5', // Different chainId
+        });
+      });
+
+      expect(mockScrollToIndex).not.toHaveBeenCalled();
+    });
+
+    it('emits scrollToTokenIndex event in .map() mode (not full view)', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      const scrollToTokenIndexHandler = jest.fn();
+      DeviceEventEmitter.addListener(
+        'scrollToTokenIndex',
+        scrollToTokenIndexHandler,
+      );
+
+      renderComponent({ isFullView: false });
+
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          address: '0x123',
+          chainId: '0x1',
+        });
+      });
+
+      expect(scrollToTokenIndexHandler).toHaveBeenCalledWith({
+        index: 0,
+        offset: 0, // 0 * 72 (TOKEN_ROW_HEIGHT)
+      });
+      expect(mockScrollToIndex).not.toHaveBeenCalled();
+    });
+
+    it('calculates correct offset based on token index in .map() mode', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      const scrollToTokenIndexHandler = jest.fn();
+      DeviceEventEmitter.addListener(
+        'scrollToTokenIndex',
+        scrollToTokenIndexHandler,
+      );
+
+      renderComponent({ isFullView: false });
+
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          address: '0x456',
+          chainId: '0x1',
+        });
+      });
+
+      expect(scrollToTokenIndexHandler).toHaveBeenCalledWith({
+        index: 1,
+        offset: 72, // 1 * 72 (TOKEN_ROW_HEIGHT)
+      });
+    });
+
+    it('matches token address case-insensitively', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      renderComponent({ isFullView: true });
+
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          address: '0X123', // Uppercase
+          chainId: '0x1',
+        });
+      });
+
+      expect(mockScrollToIndex).toHaveBeenCalledWith({
+        index: 0,
+        animated: true,
+        viewPosition: 0.5,
+      });
+    });
+
+    it('matches a listed token address that differs only by case', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      renderComponent({
+        isFullView: true,
+        tokenKeys: [
+          {
+            address: '0X123',
+            chainId: '0x1',
+            isStaked: false,
+          },
+        ],
+      });
+
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          address: '0x123',
+          chainId: '0x1',
+        });
+      });
+
+      expect(mockScrollToIndex).toHaveBeenCalledWith({
+        index: 0,
+        animated: true,
+        viewPosition: 0.5,
+      });
+    });
+
+    it('does not scroll when the event address is missing', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      renderComponent({ isFullView: true });
+
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          chainId: '0x1',
+        });
+      });
+
+      expect(mockScrollToIndex).not.toHaveBeenCalled();
+    });
+
+    it('cleans up event listener on unmount', () => {
+      mockUseSelector.mockImplementation((selector) => selector({}));
+
+      const { unmount } = renderComponent({ isFullView: true });
+
+      // Unmount the component
+      unmount();
+
+      // Emit event after unmount
+      act(() => {
+        DeviceEventEmitter.emit(SCROLL_TO_TOKEN_EVENT, {
+          address: '0x123',
+          chainId: '0x1',
+        });
+      });
+
+      // Should not scroll because listener was removed
+      expect(mockScrollToIndex).not.toHaveBeenCalled();
+    });
+  });
+});

@@ -1,0 +1,128 @@
+import React, { useCallback } from 'react';
+
+import { KeyboardAvoidingView, Platform } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../../core/NavigationService/types';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { useRampSDK, withRampSDK } from '../../sdk';
+import useRampsController from '../../../hooks/useRampsController';
+import ScreenLayout from '../../components/ScreenLayout';
+import Row from '../../components/Row';
+import Text, {
+  TextVariant,
+} from '../../../../../../component-library/components/Texts/Text';
+import Button, {
+  ButtonVariants,
+  ButtonSize,
+  ButtonWidthTypes,
+} from '../../../../../../component-library/components/Buttons/Button';
+import { strings } from '../../../../../../../locales/i18n';
+import useAnalytics from '../../../hooks/useAnalytics';
+import Routes from '../../../../../../constants/navigation/Routes';
+
+import ActivationKeys from './ActivationKeys';
+
+import ListItem from '../../../../../../component-library/components/List/ListItem';
+import ListItemColumn from '../../../../../../component-library/components/List/ListItemColumn';
+
+import styles from './Settings.styles';
+import { useSelector } from 'react-redux';
+import HeaderStandardGlass from '../../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../../selectors/featureFlagController/glassHeaders';
+
+export const RAMP_SETTINGS_HEADER_TEST_ID = 'ramp-settings-header';
+export const RAMP_SETTINGS_BACK_BUTTON_TEST_ID = 'ramp-settings-back-button';
+export const RAMP_SETTINGS_HEADLESS_PLAYGROUND_BUTTON_TEST_ID =
+  'ramp-settings-headless-playground-button';
+
+function Settings() {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
+  const { isInternalBuild } = useRampSDK();
+  const trackEvent = useAnalytics();
+  const { userRegion } = useRampsController();
+  const style = styles();
+
+  const handleBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const handleChangeRegion = useCallback(() => {
+    navigation.navigate(Routes.SETTINGS.REGION_SELECTOR);
+  }, [navigation]);
+
+  const handleOpenHeadlessPlayground = useCallback(() => {
+    navigation.navigate(Routes.RAMP.HEADLESS_PLAYGROUND);
+  }, [navigation]);
+
+  return (
+    <SafeAreaView edges={['top']} style={style.container}>
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        testID={RAMP_SETTINGS_HEADER_TEST_ID}
+        title={strings('app_settings.fiat_on_ramp.title')}
+        onBack={handleBack}
+        backButtonProps={{ testID: RAMP_SETTINGS_BACK_BUTTON_TEST_ID }}
+      />
+      <KeyboardAvoidingView
+        style={style.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <ScreenLayout scrollable>
+          <ScreenLayout.Body>
+            <ScreenLayout.Content>
+              <Row first>
+                <Text variant={TextVariant.BodyLGMedium}>
+                  {strings('app_settings.fiat_on_ramp.current_region')}
+                </Text>
+
+                <ListItem>
+                  <ListItemColumn>
+                    <Text>{userRegion?.country?.flag || '🏳️'}</Text>
+                  </ListItemColumn>
+                  <ListItemColumn>
+                    <Text>
+                      {userRegion?.state?.name ||
+                        userRegion?.country?.name ||
+                        strings('app_settings.fiat_on_ramp.no_region_selected')}
+                    </Text>
+                  </ListItemColumn>
+                </ListItem>
+                <Button
+                  variant={ButtonVariants.Primary}
+                  size={ButtonSize.Lg}
+                  width={ButtonWidthTypes.Full}
+                  onPress={handleChangeRegion}
+                  label={strings('app_settings.fiat_on_ramp.change_region')}
+                />
+              </Row>
+              {isInternalBuild ? (
+                <Row>
+                  <ActivationKeys />
+                </Row>
+              ) : null}
+              {isInternalBuild ? (
+                <Row>
+                  <Button
+                    variant={ButtonVariants.Secondary}
+                    size={ButtonSize.Lg}
+                    width={ButtonWidthTypes.Full}
+                    onPress={handleOpenHeadlessPlayground}
+                    label={strings(
+                      'app_settings.fiat_on_ramp.headless_playground.entry_button',
+                    )}
+                    testID={RAMP_SETTINGS_HEADLESS_PLAYGROUND_BUTTON_TEST_ID}
+                  />
+                </Row>
+              ) : null}
+            </ScreenLayout.Content>
+          </ScreenLayout.Body>
+        </ScreenLayout>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+export default withRampSDK(Settings);

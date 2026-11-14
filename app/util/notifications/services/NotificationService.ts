@@ -1,0 +1,422 @@
+import notifee, {
+  AndroidChannel,
+  AuthorizationStatus,
+  EventDetail,
+  EventType,
+  Event as NotifeeEvent,
+  Notification,
+} from '@notifee/react-native';
+import { Linking, Alert as NativeAlert, Platform } from 'react-native';
+import { strings } from '../../../../locales/i18n';
+import { store } from '../../../store';
+import { markPushNotificationOsPromptRequested } from '../../../actions/onboarding';
+import Logger from '../../../util/Logger';
+import {
+  ChannelId,
+  notificationChannels,
+} from '../../../util/notifications/androidChannels';
+import { hasTestOverrides } from '../../test/utils';
+import { withTimeout } from '../methods';
+import { mmStorage } from '../settings';
+import { STORAGE_IDS } from '../settings/storage/constants';
+import { LAUNCH_ACTIVITY, PressActionId } from '../types';
+
+interface AlertButton {
+  text: string;
+  onPress: () => void | Promise<void>;
+}
+
+class NotificationsService {
+  async getBlockedNotifications(): Promise<Map<ChannelId, boolean>> {
+    try {
+      const settings = await notifee.getNotificationSettings();
+      const isNotAuthorised =
+        settings.authorizationStatus === AuthorizationStatus.NOT_DETERMINED ||
+        settings.authorizationStatus === AuthorizationStatus.DENIED;
+
+      const channels = isNotAuthorised
+        ? notificationChannels
+        : await notifee.getChannels();
+
+      const deniedChannelMap = new Map<ChannelId, boolean>();
+      channels.forEach((c) => {
+        // default channels
+        if (isNotAuthorised) {
+          deniedChannelMap.set(c.id as ChannelId, true);
+          return;
+        }
+        // known notifee channels
+        if ('blocked' in c && c.blocked) {
+          deniedChannelMap.set(c.id as ChannelId, true);
+        }
+      });
+
+      return deniedChannelMap;
+    } catch (e) {
+      Logger.error(
+        e as Error,
+        strings('notifications.error_checking_permission'),
+      );
+      return new Map<ChannelId, boolean>();
+    }
+  }
+
+  async getAllPermissions(
+    shouldOpenSettings = true,
+  ): Promise<{ permission: 'authorized' | 'denied' }> {
+    const promises: Promise<string>[] = notificationChannels.map(
+      async (channel: AndroidChannel) =>
+        await withTimeout(this.createChannel(channel), 5000),
+    );
+    await Promise.allSettled(promises);
+    let permission: 'authorized' | 'denied' = await withTimeout(
+      this.hasPerimssion(),
+      5000,
+    );
+
+    const blockedNotifications = await withTimeout(
+      this.getBlockedNotifications(),
+      5000,
+    );
+
+    // E2E tests do not play well with OS push permissions
+    if (hasTestOverrides) {
+      return { permission: 'authorized' };
+    }
+
+    if (
+      (permission !== 'authorized' || blockedNotifications.size !== 0) &&
+      shouldOpenSettings
+    ) {
+      permission = await this.requestPermission();
+    }
+    return { permission };
+  }
+
+  async isDeviceNotificationEnabled() {
+    const permission = await notifee.getNotificationSettings();
+
+    const isAuthorized =
+      permission.authorizationStatus === AuthorizationStatus.AUTHORIZED;
+
+    store.dispatch({
+      type: 'TOGGLE_DEVICE_NOTIFICATIONS',
+      deviceNotificationEnabled: isAuthorized,
+    });
+    return isAuthorized;
+  }
+
+  defaultButtons = (resolve: (value: boolean) => void): AlertButton[] => [
+    {
+      text: strings('notifications.prompt_cancel'),
+      onPress: () => {
+        const promptCount = mmStorage.getLocal(
+          STORAGE_IDS.PUSH_NOTIFICATIONS_PROMPT_COUNT,
+        );
+        mmStorage.saveLocal(
+          STORAGE_IDS.PUSH_NOTIFICATIONS_PROMPT_COUNT,
+          promptCount + 1,
+        );
+        mmStorage.saveLocal(
+          STORAGE_IDS.PUSH_NOTIFICATIONS_PROMPT_TIME,
+          Date.now().toString(),
+        );
+
+        resolve(false);
+      },
+    },
+    {
+      text: strings('notifications.prompt_ok'),
+      onPress: async () => {
+        this.openSystemSettings();
+        resolve(true);
+      },
+    },
+  ];
+
+  asyncAlert = (
+    title: string,
+    msg: string,
+    getButtons: (resolve: (value: boolean) => void) => AlertButton[] = this
+      .defaultButtons,
+  ): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      NativeAlert.alert(title, msg, getButtons(resolve), {
+        cancelable: false,
+      });
+    });
+
+  /**
+   * Shows the alert that sends the user to the system notification settings.
+   *
+   * @returns Whether the user chose to open the system settings.
+   */
+  async requestPushNotificationsPermission(): Promise<boolean> {
+    try {
+      return await this.asyncAlert(
+        strings('notifications.prompt_title'),
+        strings('notifications.prompt_desc'),
+      );
+    } catch (e) {
+      Logger.error(
+        e as Error,
+        strings('notifications.error_checking_permission'),
+      );
+      return false;
+    }
+  }
+  openSystemSettings() {
+    if (Platform.OS === 'ios') {
+      Linking.openSettings();
+    } else {
+      notifee.openNotificationSettings();
+    }
+  }
+
+  async requestPermission() {
+    const settings = await notifee.requestPermission();
+    return settings.authorizationStatus === AuthorizationStatus.AUTHORIZED ||
+      settings.authorizationStatus === AuthorizationStatus.PROVISIONAL
+      ? ('authorized' as const)
+      : ('denied' as const);
+  }
+
+  async hasPerimssion() {
+    const settings = await notifee.getNotificationSettings();
+    // status where we can assume authorized
+    if (
+      [
+        AuthorizationStatus.NOT_DETERMINED,
+        AuthorizationStatus.AUTHORIZED,
+        AuthorizationStatus.PROVISIONAL,
+      ].includes(settings.authorizationStatus)
+    ) {
+      return 'authorized' as const;
+    }
+
+    // Otherwise this settings has been denied
+    return 'denied' as const;
+  }
+
+  onForegroundEvent = (
+    observer: (event: NotifeeEvent) => Promise<void>,
+  ): (() => void) => notifee.onForegroundEvent(observer);
+
+  incrementBadgeCount = async (incrementBy?: number) => {
+    notifee.incrementBadgeCount(incrementBy);
+  };
+
+  decrementBadgeCount = async (decrementBy?: number) => {
+    notifee.decrementBadgeCount(decrementBy);
+  };
+
+  setBadgeCount = async (count: number) => {
+    notifee.setBadgeCount(count);
+  };
+
+  getBadgeCount = async () => notifee.getBadgeCount();
+
+  handleNotificationPress = async ({
+    detail,
+    callback,
+  }: {
+    detail: EventDetail;
+    callback?: (notification: Notification | undefined) => void;
+  }) => {
+    this.decrementBadgeCount(1);
+    if (detail?.notification?.id) {
+      await this.cancelTriggerNotification(detail.notification.id);
+    }
+
+    if (detail?.notification) {
+      callback?.(detail.notification);
+    }
+  };
+
+  handleNotificationEvent = async ({
+    type,
+    detail,
+    callback,
+  }: NotifeeEvent & {
+    callback?: (notification: Notification | undefined) => void;
+  }) => {
+    switch (type) {
+      case EventType.DELIVERED:
+        this.incrementBadgeCount(1);
+        break;
+      case EventType.PRESS:
+        this.handleNotificationPress({
+          detail,
+          callback,
+        });
+        break;
+    }
+  };
+
+  cancelTriggerNotification = async (id?: string) => {
+    if (!id) return;
+    await notifee.cancelTriggerNotification(id);
+  };
+
+  cancelAllNotifications = async () => {
+    await notifee.cancelAllNotifications();
+  };
+
+  createChannel = async (channel: AndroidChannel): Promise<string> =>
+    notifee.createChannel(channel);
+
+  displayNotification = async ({
+    channelId = ChannelId.DEFAULT_NOTIFICATION_CHANNEL_ID,
+    pressActionId = PressActionId.OPEN_HOME,
+    title,
+    body,
+    data,
+    id,
+    throwOnError = false,
+  }: {
+    channelId?: ChannelId;
+    pressActionId?: PressActionId;
+    title: string;
+    body?: string;
+    data?: unknown;
+    id?: string;
+    throwOnError?: boolean;
+  }): Promise<void> => {
+    try {
+      const channel = notificationChannels.find((c) => c.id === channelId);
+      if (channel) {
+        await notifee.createChannel(channel);
+      }
+      const notifId = id ?? `notif-${Date.now()}`;
+      await notifee.displayNotification({
+        id: notifId,
+        title,
+        body,
+        // Notifee can only store and handle data strings
+        ...(data === undefined
+          ? {}
+          : { data: { dataStr: JSON.stringify(data) } }),
+        android: {
+          // Omit largeIcon — same fox as smallIcon caused a duplicate on Android.
+          smallIcon: 'ic_notification_small',
+          channelId: channelId ?? ChannelId.DEFAULT_NOTIFICATION_CHANNEL_ID,
+          pressAction: {
+            id: pressActionId,
+            launchActivity: LAUNCH_ACTIVITY,
+          },
+          tag: notifId,
+        },
+        ios: {
+          launchImageName: 'Default',
+          sound: 'default',
+          interruptionLevel: 'critical',
+          foregroundPresentationOptions: {
+            alert: true,
+            sound: true,
+            badge: true,
+            banner: true,
+            list: true,
+          },
+        },
+      });
+    } catch (error) {
+      Logger.log('Error displaying notification ', error);
+      if (throwOnError) {
+        throw error;
+      }
+    }
+  };
+}
+
+const NotificationService = new NotificationsService();
+
+export default NotificationService;
+
+export type PushPermissionStatus = 'granted' | 'promptable' | 'denied';
+
+const getPushPermissionStatusFromAuthorizationStatus = (
+  authorizationStatus: AuthorizationStatus,
+): PushPermissionStatus => {
+  if (
+    authorizationStatus === AuthorizationStatus.AUTHORIZED ||
+    authorizationStatus === AuthorizationStatus.PROVISIONAL
+  ) {
+    return 'granted';
+  }
+
+  if (authorizationStatus === AuthorizationStatus.NOT_DETERMINED) {
+    return 'promptable';
+  }
+
+  return 'denied';
+};
+
+export async function requestPushPermissions() {
+  const result = await NotificationService.getAllPermissions(true);
+  store.dispatch(markPushNotificationOsPromptRequested());
+  return result.permission === 'authorized';
+}
+
+export async function hasPushPermission() {
+  const result = await NotificationService.getAllPermissions(false);
+  return result.permission === 'authorized';
+}
+
+export async function getPushPermission() {
+  const result = await NotificationService.getAllPermissions(false);
+  return result.permission;
+}
+
+export async function getPushPermissionStatus(): Promise<PushPermissionStatus> {
+  try {
+    const settings = await notifee.getNotificationSettings();
+    return getPushPermissionStatusFromAuthorizationStatus(
+      settings.authorizationStatus,
+    );
+  } catch {
+    return 'denied';
+  }
+}
+
+/**
+ * Returns true when the OS has granted push permission (AUTHORIZED or PROVISIONAL).
+ * NOT_DETERMINED and DENIED both return false.
+ * Use this to gate registration, settings UI, and pre-prompt eligibility.
+ */
+export async function isPushPermissionGranted(): Promise<boolean> {
+  return (await getPushPermissionStatus()) === 'granted';
+}
+
+/**
+ * Returns true when requesting push permission may show the OS dialog.
+ * iOS exposes a NOT_DETERMINED state, but Notifee only exposes AUTHORIZED/DENIED
+ * on Android. Treat Android's not-granted state as promptable; on Android < 13
+ * there is still no dialog — check `canOsPromptForPushPermission` before requesting.
+ */
+export async function isPushPermissionPromptable(): Promise<boolean> {
+  if (Platform.OS === 'android') {
+    return !(await isPushPermissionGranted());
+  }
+
+  return (await getPushPermissionStatus()) === 'promptable';
+}
+
+/** Android API level that introduced the `POST_NOTIFICATIONS` runtime permission. */
+export const ANDROID_POST_NOTIFICATIONS_API_LEVEL = 33;
+
+/**
+ * Whether the OS can show a push-permission dialog.
+ *
+ * Android added `POST_NOTIFICATIONS` in API 33. Below that there is no runtime
+ * permission: `requestPermission()` never shows a dialog and just returns the
+ * current enabled/disabled state. `isPushPermissionPromptable` still treats
+ * Android's not-granted state as promptable, so callers must check this first
+ * and send Android < 13 users to system settings instead of requesting.
+ */
+export function canOsPromptForPushPermission(): boolean {
+  if (Platform.OS !== 'android') {
+    return true;
+  }
+
+  return Number(Platform.Version) >= ANDROID_POST_NOTIFICATIONS_API_LEVEL;
+}

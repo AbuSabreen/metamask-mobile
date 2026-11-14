@@ -1,0 +1,828 @@
+import React from 'react';
+import { StyleSheet } from 'react-native';
+import { fireEvent } from '@testing-library/react-native';
+import I18n from '../../../../../../locales/i18n';
+import PredictActivityDetails from './PredictActivityDetail';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import { PredictActivityType } from '../../types';
+import { PredictActivityDetailsSelectorsIDs } from '../../Predict.testIds';
+import Routes from '../../../../../constants/navigation/Routes';
+import { selectPredictBrandRefreshEnabled } from '../../../../../selectors/featureFlagController/predictBrandRefresh';
+
+jest.mock(
+  '../../../../../selectors/featureFlagController/predictBrandRefresh',
+  () => ({ selectPredictBrandRefreshEnabled: jest.fn() }),
+);
+
+jest.mock(
+  '../../../../../component-library/components-temp/CapsuleGlass',
+  () => {
+    const { View } = jest.requireActual('react-native');
+    return {
+      __esModule: true,
+      default: ({ children }: { children: React.ReactNode }) => (
+        <View testID="capsule">{children}</View>
+      ),
+    };
+  },
+);
+
+const mockSelectPredictBrandRefreshEnabled = jest.mocked(
+  selectPredictBrandRefreshEnabled,
+);
+const mockGoBack = jest.fn();
+const mockNavigate = jest.fn();
+const mockCanGoBack = jest.fn();
+
+let mockRoute: {
+  params: {
+    activity?: {
+      type: string;
+      amountUsd: number;
+      marketTitle: string;
+      outcome?: string;
+      entry: {
+        timestamp: number;
+        amount?: number;
+        price?: number;
+        size?: number;
+      };
+      priceImpactPercentage?: number;
+      netPnlUsd?: number;
+      totalNetPnlUsd?: number;
+    };
+  };
+} = {
+  params: {
+    activity: {
+      type: 'BUY',
+      amountUsd: 100,
+      marketTitle: 'Test Market Title',
+      outcome: 'Yes',
+      entry: {
+        timestamp: 1706745600,
+        amount: 100,
+        price: 0.5,
+      },
+      priceImpactPercentage: 1.5,
+    },
+  },
+};
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    goBack: mockGoBack,
+    navigate: mockNavigate,
+    canGoBack: mockCanGoBack,
+  }),
+  useRoute: () => mockRoute,
+}));
+
+jest.mock('../../../../../core/Engine', () => ({
+  context: {
+    PredictController: {
+      trackActivityViewed: jest.fn(),
+    },
+  },
+}));
+
+jest.mock('./usdc.svg', () => 'UsdcIcon');
+
+const mockBuyActivity = {
+  type: PredictActivityType.BUY,
+  amountUsd: 100,
+  marketTitle: 'Test Market Title',
+  outcome: 'Yes',
+  entry: {
+    timestamp: 1706745600,
+    amount: 100,
+    price: 0.5,
+  },
+  priceImpactPercentage: 1.5,
+};
+
+const mockSellActivity = {
+  type: PredictActivityType.SELL,
+  amountUsd: 150,
+  marketTitle: 'Test Market Sell',
+  outcome: 'No',
+  entry: {
+    timestamp: 1706745600,
+    amount: 150,
+    price: 0.75,
+  },
+  netPnlUsd: 50,
+  priceImpactPercentage: 1.2,
+};
+
+const mockClaimActivity = {
+  type: PredictActivityType.CLAIM,
+  amountUsd: 200,
+  marketTitle: 'Test Claim Market',
+  outcome: 'Yes',
+  entry: {
+    timestamp: 1706745600,
+    amount: 200,
+    price: 1.0,
+  },
+  totalNetPnlUsd: 200,
+  netPnlUsd: 200,
+  priceImpactPercentage: 0,
+};
+
+describe('PredictActivityDetails', () => {
+  const initialState = {
+    engine: {
+      backgroundState: {
+        ...backgroundState,
+        PreferencesController: {
+          ...backgroundState.PreferencesController,
+          privacyMode: false,
+        },
+      },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRoute = {
+      params: {
+        activity: mockBuyActivity,
+      },
+    };
+    mockCanGoBack.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it('renders container with testID', () => {
+    // Arrange & Act
+    const { getByTestId } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(
+      getByTestId(PredictActivityDetailsSelectorsIDs.CONTAINER),
+    ).toBeOnTheScreen();
+  });
+
+  it('renders predict activity header title', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Predicted')).toBeOnTheScreen();
+  });
+
+  it('renders date row', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Date')).toBeOnTheScreen();
+  });
+
+  it('renders market row for buy activity', () => {
+    // Arrange
+    const longMarketTitle =
+      'Dota 2: Team Nemesis vs Natus Vincere (BO3) - PGL Wallachia Playoffs';
+    mockRoute = {
+      params: {
+        activity: {
+          ...mockBuyActivity,
+          marketTitle: longMarketTitle,
+        },
+      },
+    };
+
+    // Act
+    const { getByTestId, getByText } = renderWithProvider(
+      <PredictActivityDetails />,
+      {
+        state: initialState,
+      },
+    );
+
+    const marketLabel = getByTestId(
+      PredictActivityDetailsSelectorsIDs.MARKET_LABEL,
+    );
+    const marketValue = getByTestId(
+      PredictActivityDetailsSelectorsIDs.MARKET_VALUE,
+    );
+
+    // Assert
+    expect(getByText('Market')).toBeOnTheScreen();
+    expect(getByText(longMarketTitle)).toBeOnTheScreen();
+    expect(marketLabel.props.numberOfLines).toBe(1);
+    expect(StyleSheet.flatten(marketLabel.props.style)).toEqual(
+      expect.objectContaining({ flexShrink: 0 }),
+    );
+    expect(StyleSheet.flatten(marketValue.props.style)).toEqual(
+      expect.objectContaining({
+        flexBasis: '0%',
+        flexGrow: 1,
+        flexShrink: 1,
+        fontSize: 14,
+        textAlign: 'right',
+      }),
+    );
+  });
+
+  it('keeps the longest localized market label on one line', () => {
+    // Arrange
+    const originalLocale = I18n.locale;
+    I18n.locale = 'el';
+
+    try {
+      // Act
+      const { getByTestId, getByText } = renderWithProvider(
+        <PredictActivityDetails />,
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByText('Τιμή αγοράς')).toBeOnTheScreen();
+      expect(
+        getByTestId(PredictActivityDetailsSelectorsIDs.MARKET_LABEL).props
+          .numberOfLines,
+      ).toBe(1);
+    } finally {
+      I18n.locale = originalLocale;
+    }
+  });
+
+  it('renders outcome row for buy activity', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Outcome')).toBeOnTheScreen();
+    expect(getByText('Yes')).toBeOnTheScreen();
+  });
+
+  it('spaces the section divider evenly between the outcome and fees rows', () => {
+    // Arrange & Act
+    const { getByTestId } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    // Rows on both sides share the same vertical padding, so matching the
+    // divider's top margin to the section's bottom margin centres the rule.
+    const marketSection = StyleSheet.flatten(
+      getByTestId(PredictActivityDetailsSelectorsIDs.MARKET_SECTION).props
+        .style,
+    );
+    const divider = StyleSheet.flatten(
+      getByTestId(PredictActivityDetailsSelectorsIDs.SECTION_DIVIDER).props
+        .style,
+    );
+
+    expect(divider.marginTop).toBe(12);
+    expect(marketSection.marginBottom).toBe(divider.marginTop);
+  });
+
+  it('omits the net P&L divider when buy activity has no net P&L row', () => {
+    // Arrange & Act
+    const { queryByTestId } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(
+      queryByTestId(PredictActivityDetailsSelectorsIDs.NET_PNL_DIVIDER),
+    ).toBeNull();
+  });
+
+  it('renders predicted amount for buy activity', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Predicted amount')).toBeOnTheScreen();
+  });
+
+  it('renders shares bought for buy activity', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Shares bought')).toBeOnTheScreen();
+  });
+
+  it('renders shares bought from payload size instead of fee-inclusive amount', () => {
+    // Arrange
+    mockRoute = {
+      params: {
+        activity: {
+          ...mockBuyActivity,
+          amountUsd: 2.129179,
+          entry: {
+            ...mockBuyActivity.entry,
+            amount: 2.129179,
+            price: 0.18,
+            size: 11.11111,
+          },
+        },
+      },
+    };
+
+    // Act
+    const { getByText, queryByText } = renderWithProvider(
+      <PredictActivityDetails />,
+      {
+        state: initialState,
+      },
+    );
+
+    // Assert
+    expect(getByText('Shares bought')).toBeOnTheScreen();
+    expect(getByText('11.11')).toBeOnTheScreen();
+    expect(queryByText('11.83')).not.toBeOnTheScreen();
+  });
+
+  it('ignores zero payload size instead of rendering zero shares', () => {
+    // Arrange
+    mockRoute = {
+      params: {
+        activity: {
+          ...mockBuyActivity,
+          amountUsd: 2.129179,
+          entry: {
+            ...mockBuyActivity.entry,
+            amount: 2.129179,
+            price: 0.18,
+            size: 0,
+          },
+        },
+      },
+    };
+
+    // Act
+    const { getByText, queryByText } = renderWithProvider(
+      <PredictActivityDetails />,
+      {
+        state: initialState,
+      },
+    );
+
+    // Assert
+    expect(getByText('Shares bought')).toBeOnTheScreen();
+    expect(getByText('11.83')).toBeOnTheScreen();
+    expect(queryByText('0')).not.toBeOnTheScreen();
+  });
+
+  it('renders price per share for buy activity', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Price per share')).toBeOnTheScreen();
+  });
+
+  it('renders price impact for buy activity', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Price impact')).toBeOnTheScreen();
+  });
+
+  it('renders buy stake, shares, and bundled fees from activity size', () => {
+    // Arrange
+    mockRoute = {
+      params: {
+        activity: {
+          ...mockBuyActivity,
+          amountUsd: 2.129179,
+          entry: {
+            ...mockBuyActivity.entry,
+            amount: 2.129179,
+            price: 0.18,
+            size: 11.11111,
+          },
+        },
+      },
+    };
+
+    // Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Predicted amount')).toBeOnTheScreen();
+    expect(getByText('$2.00')).toBeOnTheScreen();
+    expect(getByText('Shares bought')).toBeOnTheScreen();
+    expect(getByText('11.11')).toBeOnTheScreen();
+    expect(getByText('Fees')).toBeOnTheScreen();
+    expect(getByText('$0.13')).toBeOnTheScreen();
+  });
+
+  it('falls back to activity amount when price is zero with valid size', () => {
+    // Arrange
+    mockRoute = {
+      params: {
+        activity: {
+          ...mockBuyActivity,
+          amountUsd: 2,
+          entry: {
+            ...mockBuyActivity.entry,
+            amount: 2,
+            price: 0,
+            size: 11.11111,
+          },
+        },
+      },
+    };
+
+    // Act
+    const { getByText, queryByText } = renderWithProvider(
+      <PredictActivityDetails />,
+      {
+        state: initialState,
+      },
+    );
+
+    // Assert
+    expect(getByText('Predicted amount')).toBeOnTheScreen();
+    expect(getByText('$2.00')).toBeOnTheScreen();
+    expect(getByText('Shares bought')).toBeOnTheScreen();
+    expect(getByText('11.11')).toBeOnTheScreen();
+    expect(queryByText('Fees')).not.toBeOnTheScreen();
+  });
+
+  it('navigates back when back button is pressed and canGoBack is true', () => {
+    // Arrange
+    const { getByTestId } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+    const backButton = getByTestId(
+      PredictActivityDetailsSelectorsIDs.BACK_BUTTON,
+    );
+
+    // Act
+    fireEvent.press(backButton);
+
+    // Assert
+    expect(mockGoBack).toHaveBeenCalled();
+  });
+
+  it('renders the back button without a glass capsule when the brand refresh is off', () => {
+    // Arrange & Act
+    const { getByTestId, queryByTestId } = renderWithProvider(
+      <PredictActivityDetails />,
+      { state: initialState },
+    );
+
+    // Assert
+    expect(
+      getByTestId(PredictActivityDetailsSelectorsIDs.BACK_BUTTON),
+    ).toBeOnTheScreen();
+    expect(queryByTestId('capsule')).toBeNull();
+  });
+
+  it('renders the back button in a glass capsule and navigates back when the brand refresh is on', () => {
+    // Arrange
+    mockSelectPredictBrandRefreshEnabled.mockReturnValue(true);
+    const { getByTestId } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Act
+    fireEvent.press(
+      getByTestId(PredictActivityDetailsSelectorsIDs.BACK_BUTTON),
+    );
+
+    // Assert
+    expect(getByTestId('capsule')).toBeOnTheScreen();
+    expect(mockGoBack).toHaveBeenCalled();
+  });
+
+  it('navigates to PREDICT.ROOT when back button is pressed and canGoBack is false', () => {
+    // Arrange
+    mockCanGoBack.mockReturnValue(false);
+    const { getByTestId } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+    const backButton = getByTestId(
+      PredictActivityDetailsSelectorsIDs.BACK_BUTTON,
+    );
+
+    // Act
+    fireEvent.press(backButton);
+
+    // Assert
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.PREDICT.ROOT);
+  });
+});
+
+describe('PredictActivityDetails - Sell Activity', () => {
+  const initialState = {
+    engine: {
+      backgroundState: {
+        ...backgroundState,
+        PreferencesController: {
+          ...backgroundState.PreferencesController,
+          privacyMode: false,
+        },
+      },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRoute = {
+      params: {
+        activity: mockSellActivity,
+      },
+    };
+  });
+
+  it('renders cash out activity header title', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Cashed out')).toBeOnTheScreen();
+  });
+
+  it('renders amount display for sell activity', () => {
+    // Arrange & Act
+    const { getByTestId } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(
+      getByTestId(PredictActivityDetailsSelectorsIDs.AMOUNT_DISPLAY),
+    ).toBeOnTheScreen();
+  });
+
+  it('spaces the amount section evenly above and below', () => {
+    // Arrange & Act
+    const { getByTestId } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    const amountSection = getByTestId(
+      PredictActivityDetailsSelectorsIDs.AMOUNT_SECTION,
+    );
+
+    // Assert
+    expect(StyleSheet.flatten(amountSection.props.style)).toEqual(
+      expect.objectContaining({
+        marginTop: 48,
+        marginBottom: 48,
+        gap: 16,
+      }),
+    );
+  });
+
+  it('renders shares sold label for sell activity', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Shares sold')).toBeOnTheScreen();
+  });
+
+  it('renders shares sold from payload size instead of fee-inclusive amount', () => {
+    // Arrange
+    mockRoute = {
+      params: {
+        activity: {
+          ...mockSellActivity,
+          amountUsd: 1.76614,
+          entry: {
+            ...mockSellActivity.entry,
+            amount: 1.76614,
+            price: 0.17,
+            size: 11.11,
+          },
+        },
+      },
+    };
+
+    // Act
+    const { getByText, queryByText } = renderWithProvider(
+      <PredictActivityDetails />,
+      {
+        state: initialState,
+      },
+    );
+
+    // Assert
+    expect(getByText('Shares sold')).toBeOnTheScreen();
+    expect(getByText('11.11')).toBeOnTheScreen();
+    expect(queryByText('10.39')).not.toBeOnTheScreen();
+  });
+
+  it('renders sell bundled fees from gross proceeds minus received amount', () => {
+    // Arrange
+    mockRoute = {
+      params: {
+        activity: {
+          ...mockSellActivity,
+          amountUsd: 1.76614,
+          entry: {
+            ...mockSellActivity.entry,
+            amount: 1.76614,
+            price: 0.17,
+            size: 11.11,
+          },
+        },
+      },
+    };
+
+    // Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Fees')).toBeOnTheScreen();
+    expect(getByText('$0.12')).toBeOnTheScreen();
+  });
+
+  it('warns and suppresses negative bundled fees', () => {
+    // Arrange
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(jest.fn());
+    mockRoute = {
+      params: {
+        activity: {
+          ...mockSellActivity,
+          amountUsd: 2,
+          entry: {
+            ...mockSellActivity.entry,
+            amount: 2,
+            price: 0.17,
+            size: 10,
+          },
+        },
+      },
+    };
+
+    // Act
+    const { queryByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(queryByText('Fees')).not.toBeOnTheScreen();
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[PredictActivityDetail] negative bundledFee, suppressing row:',
+      expect.any(Number),
+    );
+
+    warnSpy.mockRestore();
+  });
+
+  it('renders net PnL for sell activity', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Net P&L')).toBeOnTheScreen();
+  });
+
+  it('spaces the net P&L divider evenly between price per share and net P&L', () => {
+    // Arrange & Act
+    const { getByTestId } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    // Rows on both sides share the same vertical padding, so matching the
+    // divider's top margin to the section's bottom margin centres the rule.
+    const transactionSection = StyleSheet.flatten(
+      getByTestId(PredictActivityDetailsSelectorsIDs.TRANSACTION_SECTION).props
+        .style,
+    );
+    const divider = StyleSheet.flatten(
+      getByTestId(PredictActivityDetailsSelectorsIDs.NET_PNL_DIVIDER).props
+        .style,
+    );
+
+    expect(divider.marginTop).toBe(12);
+    expect(transactionSection.marginBottom).toBe(divider.marginTop);
+  });
+});
+
+describe('PredictActivityDetails - Claim Activity', () => {
+  const initialState = {
+    engine: {
+      backgroundState: {
+        ...backgroundState,
+        PreferencesController: {
+          ...backgroundState.PreferencesController,
+          privacyMode: false,
+        },
+      },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRoute = {
+      params: {
+        activity: mockClaimActivity,
+      },
+    };
+  });
+
+  it('renders claim activity header title', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Claimed winnings')).toBeOnTheScreen();
+  });
+
+  it('renders total net PnL for claim activity', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Total Net P&L')).toBeOnTheScreen();
+  });
+
+  it('omits the section divider and keeps the section gap for claim activity', () => {
+    // Arrange & Act
+    const { getByTestId, queryByTestId } = renderWithProvider(
+      <PredictActivityDetails />,
+      { state: initialState },
+    );
+
+    // Assert
+    expect(
+      queryByTestId(PredictActivityDetailsSelectorsIDs.SECTION_DIVIDER),
+    ).toBeNull();
+    expect(
+      StyleSheet.flatten(
+        getByTestId(PredictActivityDetailsSelectorsIDs.MARKET_SECTION).props
+          .style,
+      ).marginBottom,
+    ).toBe(24);
+  });
+});
+
+describe('PredictActivityDetails - No Activity', () => {
+  const initialState = {
+    engine: {
+      backgroundState: {
+        ...backgroundState,
+        PreferencesController: {
+          ...backgroundState.PreferencesController,
+          privacyMode: false,
+        },
+      },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRoute = {
+      params: {},
+    };
+  });
+
+  it('renders default header title when activity is missing', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(<PredictActivityDetails />, {
+      state: initialState,
+    });
+
+    // Assert
+    expect(getByText('Activity details')).toBeOnTheScreen();
+  });
+});

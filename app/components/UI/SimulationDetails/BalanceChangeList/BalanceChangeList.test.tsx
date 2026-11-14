@@ -14,14 +14,18 @@ jest.mock('../FiatDisplay/FiatDisplay', () => ({
   TotalFiatDisplay: 'TotalFiatDisplay',
 }));
 
+const CHAIN_ID_MOCK = '0x123';
+
 const balanceChangesMock = [
   {
     asset: {
       type: 'ERC20',
       address: '0xabc123',
+      chainId: CHAIN_ID_MOCK,
     },
     amount: new BigNumber(100),
     fiatAmount: 100,
+    usdAmount: 100,
   },
 ] as BalanceChange[];
 const headingMock = 'You received';
@@ -46,7 +50,7 @@ describe('BalanceChangeList', () => {
       'simulation-details-balance-change-list-container',
     );
 
-    expect(container.findAllByType(BalanceChangeRow)).toHaveLength(
+    expect(container.findAllByType(BalanceChangeRow as never)).toHaveLength(
       balanceChangesMock.length,
     );
   });
@@ -68,9 +72,11 @@ describe('BalanceChangeList', () => {
         asset: {
           type: 'ERC20',
           address: '0xabc123',
+          chainId: CHAIN_ID_MOCK,
         },
         amount: new BigNumber(100),
         fiatAmount: 100,
+        usdAmount: 100,
       },
       {
         asset: {
@@ -79,6 +85,7 @@ describe('BalanceChangeList', () => {
         },
         amount: new BigNumber(1000),
         fiatAmount: 1000,
+        usdAmount: 1000,
       },
     ] as BalanceChange[];
 
@@ -92,7 +99,7 @@ describe('BalanceChangeList', () => {
       'simulation-details-balance-change-list-container',
     );
 
-    const rows = container.findAllByType(BalanceChangeRow);
+    const rows = container.findAllByType(BalanceChangeRow as never);
 
     expect(rows).toHaveLength(multipleBalanceChangesMock.length);
     expect(rows[0].props.label).toBe(headingMock);

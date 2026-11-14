@@ -1,0 +1,380 @@
+import React, { useEffect, useRef } from 'react';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { darkTheme } from '@metamask/design-tokens';
+import Routes from '../../../constants/navigation/Routes';
+import { slideFromRightNativeOptions } from '../../../constants/navigation/clearStackNavigatorOptions';
+import RewardsDashboard from './Views/RewardsDashboard';
+import RewardsSettingsView from './Views/RewardsSettingsView';
+import RewardsVipSplashView from './Views/RewardsVipSplashView';
+import RewardsVipView from './Views/RewardsVipView';
+import RewardsVipRefereeSplashView from './Views/RewardsVipRefereeSplashView';
+import RewardsVipRefereeView from './Views/RewardsVipRefereeView';
+import RewardsVipTiersView from './Views/RewardsVipTiersView';
+import RewardsVipTransactionsView from './Views/RewardsVipTransactionsView';
+import CampaignsView from './Views/CampaignsView';
+import RewardsTradingCommissionsView from './Views/RewardsTradingCommissionsView';
+import RewardsTradingRebatesView from './Views/RewardsTradingRebatesView';
+import RewardsEarningsHistoryView from './Views/RewardsEarningsHistoryView';
+import OndoCampaignDetailsView from './Views/OndoCampaignDetailsView';
+import OndoCampaignWinningView from './Views/OndoCampaignWinningView';
+import SeasonOneCampaignDetailsView from './Views/SeasonOneCampaignDetailsView';
+import CampaignMechanicsView from './Views/CampaignMechanicsView';
+import OndoLeaderboardView from './Views/OndoLeaderboardView';
+import OndoCampaignRwaSelectorView from './Views/OndoCampaignRwaSelectorView';
+import OndoCampaignPortfolioView from './Views/OndoCampaignPortfolioView';
+import OndoCampaignStatsView from './Views/OndoCampaignStatsView';
+import CampaignTourStepView from './Views/CampaignTourStepView';
+import PerpsTradingCampaignDetailsView from './Views/PerpsTradingCampaignDetailsView';
+import PerpsTradingCampaignLeaderboardView from './Views/PerpsTradingCampaignLeaderboardView';
+import PerpsTradingCampaignStatsView from './Views/PerpsTradingCampaignStatsView';
+import PredictThePitchCampaignDetailsView from './Views/PredictThePitchCampaignDetailsView';
+import PredictThePitchCampaignWinningView from './Views/PredictThePitchCampaignWinningView';
+import PredictThePitchCampaignLeaderboardView from './Views/PredictThePitchCampaignLeaderboardView';
+import PredictThePitchCampaignPortfolioView from './Views/PredictThePitchCampaignPortfolioView';
+import PredictThePitchCampaignStatsView from './Views/PredictThePitchCampaignStatsView';
+import MoneyAccountSweepstakesCampaignDetailsView from './Views/MoneyAccountSweepstakesCampaignDetailsView';
+import MoneyAccountSweepstakesCampaignWinningView from './Views/MoneyAccountSweepstakesCampaignWinningView';
+import { useSelector } from 'react-redux';
+import { selectRewardsSubscriptionId } from '../../../selectors/rewards';
+import { selectSettingsReferralAvailable } from '../../../reducers/rewardsMoney/selectors';
+import { selectIsRewardsVersionBlocked } from '../../../reducers/rewards/selectors';
+import {
+  useNavigation,
+  useNavigationState,
+  useRoute,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import useRewardsVersionGuard from './hooks/useRewardsVersionGuard';
+import RewardsUpdateRequired from './components/RewardsUpdateRequired/RewardsUpdateRequired';
+import { useRewardsNotificationsNudge } from './hooks/useRewardsNotificationsNudge';
+import useRewardsToast from './hooks/useRewardsToast';
+import { strings } from '../../../../locales/i18n';
+import PerpsTradingCampaignWinningView from './Views/PerpsTradingCampaignWinningView';
+import { getActiveRouteNameFromNavigationState } from './utils';
+import {
+  isRewardsMoneyFlowScreen,
+  rewardsFlowFocusedScreen,
+  rewardsFlowRequestedScreen,
+} from './utils/rewardsFlowSubscriptionGate';
+import type { RewardsStackParamList } from './types/navigation';
+
+let sessionNotificationsNudgeShown = false;
+const Stack = createNativeStackNavigator<RewardsStackParamList>();
+
+const RewardsNavigator: React.FC = () => {
+  const subscriptionId = useSelector(selectRewardsSubscriptionId);
+  const isVersionBlocked = useSelector(selectIsRewardsVersionBlocked);
+  const settingsReferralAvailable = useSelector(
+    selectSettingsReferralAvailable,
+  );
+  const navigation = useNavigation<AppNavigationProp>();
+  const route = useRoute();
+
+  const activeRewardsRoute = useNavigationState(
+    getActiveRouteNameFromNavigationState,
+  );
+  const focusedScreen = rewardsFlowFocusedScreen(
+    activeRewardsRoute,
+    rewardsFlowRequestedScreen(route.params),
+  );
+  const focusedMoneyScreen = isRewardsMoneyFlowScreen(focusedScreen)
+    ? focusedScreen
+    : undefined;
+  // Points screens are omitted without a subscription. A money ledger stays.
+  // Settings stays only while the referral section has a cached payload to
+  // show. Any other focused route is dismissed so an opt-out cannot leave a
+  // points screen registered in navigation state.
+  const unsubscribedScreenAllowed =
+    focusedMoneyScreen !== undefined &&
+    (focusedMoneyScreen !== Routes.REWARDS_SETTINGS_VIEW ||
+      settingsReferralAvailable);
+  const closeFlow =
+    !isVersionBlocked && !subscriptionId && !unsubscribedScreenAllowed;
+
+  useRewardsVersionGuard({ refreshKey: activeRewardsRoute });
+
+  // The tab-level data hooks (useCandidateSubscriptionId, useGeoRewardsMetadata)
+  // intentionally live on RewardsDashboard, not here.
+  // RewardsDashboard is the Rewards tab entry and stays mounted while this pushed
+  // REWARDS_FLOW stack is open, so it already populates Redux for these sub-pages
+  // and keeps event-driven refetches running. Re-declaring those hooks here would
+  // duplicate the focus-driven fetches on every entry into the flow.
+
+  const { showToast, RewardsToastOptions } = useRewardsToast();
+
+  const nudgeToastActiveRef = useRef(false);
+
+  const {
+    areNotificationsEnabled,
+    canPromptToEnableNotifications,
+    showEnableNotificationsNudge,
+    closeEnableNotificationsNudge,
+  } = useRewardsNotificationsNudge({
+    onNotificationsEnabled: () => {
+      showToast(
+        RewardsToastOptions.success(
+          strings('rewards.notifications_nudge.success'),
+        ),
+      );
+    },
+  });
+
+  useEffect(() => {
+    if (!canPromptToEnableNotifications) {
+      return;
+    }
+    if (areNotificationsEnabled) {
+      return;
+    }
+
+    const isOnCampaignRoute =
+      activeRewardsRoute === Routes.REWARDS_CAMPAIGNS_VIEW ||
+      activeRewardsRoute === Routes.REWARDS_ONDO_CAMPAIGN_DETAILS_VIEW ||
+      activeRewardsRoute === Routes.REWARDS_SEASON_ONE_CAMPAIGN_DETAILS_VIEW ||
+      activeRewardsRoute ===
+        Routes.REWARDS_PERPS_TRADING_CAMPAIGN_DETAILS_VIEW ||
+      activeRewardsRoute ===
+        Routes.REWARDS_PREDICT_THE_PITCH_CAMPAIGN_DETAILS_VIEW;
+
+    if (!isOnCampaignRoute) {
+      // Explicitly close the nudge when navigating away — don't rely solely on
+      // the effect cleanup, which can miss fires when the nested navigator state
+      // change doesn't propagate up to useNavigationState in time.
+      if (nudgeToastActiveRef.current) {
+        nudgeToastActiveRef.current = false;
+        closeEnableNotificationsNudge();
+      }
+      return;
+    }
+
+    if (sessionNotificationsNudgeShown) {
+      return;
+    }
+
+    const didShowNudge = showEnableNotificationsNudge();
+    if (!didShowNudge) {
+      return;
+    }
+    sessionNotificationsNudgeShown = true;
+    nudgeToastActiveRef.current = true;
+
+    return () => {
+      if (nudgeToastActiveRef.current) {
+        nudgeToastActiveRef.current = false;
+        closeEnableNotificationsNudge();
+      }
+    };
+  }, [
+    activeRewardsRoute,
+    areNotificationsEnabled,
+    canPromptToEnableNotifications,
+    closeEnableNotificationsNudge,
+    showEnableNotificationsNudge,
+  ]);
+
+  // Recover from a lost subscription while a points screen is focused.
+  //
+  // REWARDS_FLOW is a screen on the root MainNavigator stack. If the
+  // subscription disappears while a points screen is still mounted (account
+  // switch or opt-out), dropping every screen would throw, and leaving those
+  // routes registered would keep a blank flow. Dismiss it. A money ledger
+  // stays. Settings stays only while the referral section has a payload.
+  useEffect(() => {
+    if (!closeFlow) {
+      return;
+    }
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    }
+  }, [closeFlow, navigation]);
+
+  if (isVersionBlocked) {
+    return <RewardsUpdateRequired />;
+  }
+
+  // Never render an empty native stack navigator (it throws).
+  if (closeFlow) {
+    return null;
+  }
+
+  const vipScreenOptions = {
+    headerShown: false,
+    ...slideFromRightNativeOptions,
+    contentStyle: {
+      backgroundColor: darkTheme.colors.background.default,
+    },
+  };
+
+  if (!subscriptionId) {
+    if (!focusedMoneyScreen) {
+      return null;
+    }
+    return (
+      <Stack.Navigator
+        initialRouteName={focusedMoneyScreen}
+        screenOptions={{ headerShown: false }}
+      >
+        <Stack.Screen
+          name={Routes.REWARDS_SETTINGS_VIEW}
+          component={RewardsSettingsView}
+        />
+        <Stack.Screen
+          name={Routes.REWARDS_TRADING_COMMISSIONS_VIEW}
+          component={RewardsTradingCommissionsView}
+        />
+        <Stack.Screen
+          name={Routes.REWARDS_TRADING_REBATES_VIEW}
+          component={RewardsTradingRebatesView}
+        />
+        <Stack.Screen
+          name={Routes.REWARDS_EARNINGS_HISTORY_VIEW}
+          component={RewardsEarningsHistoryView}
+        />
+      </Stack.Navigator>
+    );
+  }
+
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen
+        name={Routes.REWARDS_SETTINGS_VIEW}
+        component={RewardsSettingsView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_VIP_SPLASH_VIEW}
+        component={RewardsVipSplashView}
+        options={vipScreenOptions}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_VIP_VIEW}
+        component={RewardsVipView}
+        options={vipScreenOptions}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_VIP_TIERS_VIEW}
+        component={RewardsVipTiersView}
+        options={vipScreenOptions}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_VIP_TRANSACTIONS_VIEW}
+        component={RewardsVipTransactionsView}
+        options={vipScreenOptions}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_VIP_REFEREE_SPLASH_VIEW}
+        component={RewardsVipRefereeSplashView}
+        options={vipScreenOptions}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_VIP_REFEREE_VIEW}
+        component={RewardsVipRefereeView}
+        options={vipScreenOptions}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_CAMPAIGNS_VIEW}
+        component={CampaignsView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_TRADING_COMMISSIONS_VIEW}
+        component={RewardsTradingCommissionsView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_TRADING_REBATES_VIEW}
+        component={RewardsTradingRebatesView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_EARNINGS_HISTORY_VIEW}
+        component={RewardsEarningsHistoryView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_CAMPAIGN_TOUR_STEP}
+        component={CampaignTourStepView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_ONDO_CAMPAIGN_DETAILS_VIEW}
+        component={OndoCampaignDetailsView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_ONDO_CAMPAIGN_WINNING_VIEW}
+        component={OndoCampaignWinningView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_SEASON_ONE_CAMPAIGN_DETAILS_VIEW}
+        component={SeasonOneCampaignDetailsView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_CAMPAIGN_MECHANICS}
+        component={CampaignMechanicsView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_ONDO_CAMPAIGN_LEADERBOARD}
+        component={OndoLeaderboardView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_ONDO_CAMPAIGN_RWA_ASSET_SELECTOR}
+        component={OndoCampaignRwaSelectorView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_ONDO_CAMPAIGN_PORTFOLIO_VIEW}
+        component={OndoCampaignPortfolioView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_ONDO_CAMPAIGN_STATS}
+        component={OndoCampaignStatsView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_PERPS_TRADING_CAMPAIGN_DETAILS_VIEW}
+        component={PerpsTradingCampaignDetailsView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_PERPS_TRADING_CAMPAIGN_LEADERBOARD}
+        component={PerpsTradingCampaignLeaderboardView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_PERPS_TRADING_CAMPAIGN_STATS}
+        component={PerpsTradingCampaignStatsView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_PERPS_TRADING_CAMPAIGN_WINNING_VIEW}
+        component={PerpsTradingCampaignWinningView}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_PREDICT_THE_PITCH_CAMPAIGN_DETAILS_VIEW}
+        component={PredictThePitchCampaignDetailsView}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_PREDICT_THE_PITCH_CAMPAIGN_LEADERBOARD}
+        component={PredictThePitchCampaignLeaderboardView}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_PREDICT_THE_PITCH_CAMPAIGN_STATS}
+        component={PredictThePitchCampaignStatsView}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_PREDICT_THE_PITCH_CAMPAIGN_PORTFOLIO_VIEW}
+        component={PredictThePitchCampaignPortfolioView}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_PREDICT_THE_PITCH_CAMPAIGN_WINNING_VIEW}
+        component={PredictThePitchCampaignWinningView}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_MONEY_ACCOUNT_SWEEPSTAKES_CAMPAIGN_DETAILS_VIEW}
+        component={MoneyAccountSweepstakesCampaignDetailsView}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name={Routes.REWARDS_MONEY_ACCOUNT_SWEEPSTAKES_CAMPAIGN_WINNING_VIEW}
+        component={MoneyAccountSweepstakesCampaignWinningView}
+        options={{ headerShown: false }}
+      />
+    </Stack.Navigator>
+  );
+};
+
+export default RewardsNavigator;

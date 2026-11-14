@@ -1,0 +1,150 @@
+// Core hooks (direct controller access)
+export { useBottomSafeAreaInset } from '../../../hooks/useBottomSafeAreaInset';
+export { usePerpsCategories } from './usePerpsCategories';
+export { useHasNewMarkets } from './useHasNewMarkets';
+export { usePerpsMarkets } from './usePerpsMarkets';
+export {
+  usePerpsTopMovers,
+  isPerpsTopMoversSectionVisible,
+} from './usePerpsTopMovers';
+export { usePerpsNetwork } from './usePerpsNetwork';
+export { usePerpsProvider } from './usePerpsProvider';
+export { usePerpsNetworkConfig } from './usePerpsNetworkConfig';
+export { usePerpsNetworkManagement } from './usePerpsNetworkManagement';
+export { usePerpsTrading } from './usePerpsTrading';
+export { usePerpsWithdrawQuote } from './usePerpsWithdrawQuote';
+export { usePerpsWithdrawStatus } from './usePerpsWithdrawStatus';
+export { usePerpsWithdrawProgress } from './usePerpsWithdrawProgress';
+
+// View-level composite hooks (combining multiple hooks for specific views)
+export { usePerpsHomeData } from './usePerpsHomeData';
+export { usePerpsMarketListView } from './usePerpsMarketListView';
+export { usePerpsSearch } from './usePerpsSearch';
+export { usePerpsSorting } from './usePerpsSorting';
+export { usePerpsNavigation } from './usePerpsNavigation';
+export { usePerpsMode } from './usePerpsMode';
+export { usePerpsProChartExpanded } from './usePerpsProChartExpanded';
+export { usePerpsVisibleCandleCount } from './usePerpsVisibleCandleCount';
+export { usePerpsProOrderBookExpanded } from './usePerpsProOrderBookExpanded';
+export { usePerpsProOrderBookPosition } from './usePerpsProOrderBookPosition';
+export { usePerpsOrderBookPreferences } from './usePerpsOrderBookPreferences';
+export { usePerpsProOrdersPreferences } from './usePerpsProOrdersPreferences';
+export { usePerpsProPositionsPreferences } from './usePerpsProPositionsPreferences';
+export { usePerpsSyncedChartPrice } from './usePerpsSyncedChartPrice';
+
+// Connection management hooks
+export { usePerpsConnection } from './usePerpsConnection';
+export { useWebSocketHealthToast } from './useWebSocketHealthToast';
+
+// State hooks (Redux selectors)
+// Portfolio balance hook (for wallet integration)
+export { usePerpsPortfolioBalance } from './usePerpsPortfolioBalance';
+
+// Live data hooks (WebSocket subscriptions)
+export { usePerpsPrices } from './usePerpsPrices';
+
+// Asset metadata hooks
+export { usePerpsAssetMetadata } from './usePerpsAssetsMetadata';
+// Market data and calculation hooks
+export { usePerpsLiquidationPrice } from './usePerpsLiquidationPrice';
+export { usePerpsPositionModifyPreview } from './usePerpsPositionModifyPreview';
+export {
+  usePerpsMarketData,
+  type UsePerpsMarketDataParams,
+} from './usePerpsMarketData';
+export { usePerpsMarketStats } from './usePerpsMarketStats';
+
+// Withdrawal specific hooks
+export { useWithdrawTokens } from './useWithdrawTokens';
+export { useWithdrawValidation } from './useWithdrawValidation';
+
+// Payment tokens hook
+export { usePerpsPaymentTokens } from './usePerpsPaymentTokens';
+export { usePerpsPaymentToken } from './usePerpsPaymentToken';
+export {
+  PERPS_BALANCE_CHAIN_ID,
+  PERPS_BALANCE_PLACEHOLDER_ADDRESS,
+} from '../constants/perpsConfig';
+export { useIsPerpsBalanceSelected } from './useIsPerpsBalanceSelected';
+
+// Margin adjustment hook
+export { usePerpsAdjustMarginData } from './usePerpsAdjustMarginData';
+
+// UI utility hooks
+export { useBalanceComparison } from './useBalanceComparison';
+export { useColorPulseAnimation } from './useColorPulseAnimation';
+export { usePerpsTPSLUpdate } from './usePerpsTPSLUpdate';
+export { usePerpsClosePosition } from './usePerpsClosePosition';
+export { usePerpsOrderFees, formatFeeRate } from './usePerpsOrderFees';
+export { usePerpsQuotedFeeReservation } from './usePerpsQuotedFeeReservation';
+export { usePerpsRebateQuote } from './usePerpsRebateQuote';
+export { usePerpsRewards } from './usePerpsRewards';
+export { usePerpsRewardAccountOptedIn } from './usePerpsRewardAccountOptedIn';
+export { usePerpsCloseAllCalculations } from './usePerpsCloseAllCalculations';
+export { usePerpsCancelAllOrders } from './usePerpsCancelAllOrders';
+export { usePerpsCloseAllPositions } from './usePerpsCloseAllPositions';
+export { usePositionManagement } from './usePositionManagement';
+// Removed from barrel: usePerpsHomeActions imports Engine-dependent hooks
+// Import directly: import { usePerpsHomeActions } from './hooks/usePerpsHomeActions';
+export { useHasExistingPosition } from './useHasExistingPosition';
+export { useMinimumOrderAmount } from './useMinimumOrderAmount';
+export { usePerpsOrderForm } from './usePerpsOrderForm';
+export { usePerpsOrderValidation } from './usePerpsOrderValidation';
+export { usePerpsClosePositionValidation } from './usePerpsClosePositionValidation';
+export { useIsActivePerpsTrader } from './useIsActivePerpsTrader';
+// Removed from barrel: usePerpsClosePositionForm consumes this barrel.
+// Import directly: import { usePerpsClosePositionForm } from './hooks/usePerpsClosePositionForm';
+export { usePerpsOrderExecution } from './usePerpsOrderExecution';
+export { usePerpsOrderDepositTracking } from './usePerpsOrderDepositTracking';
+export { useIsPriceDeviatedAboveThreshold } from './useIsPriceDeviatedAboveThreshold';
+export { usePerpsFirstTimeUser } from './usePerpsFirstTimeUser';
+export { usePerpsTPSLForm } from './usePerpsTPSLForm';
+export {
+  default as usePerpsToasts,
+  getPerpsToastLabels,
+} from './usePerpsToasts';
+
+// A/B tests
+export { usePerpsScreenVsBottomSheetAbTest } from './usePerpsScreenVsBottomSheetAbTest';
+export { usePerpsHomeExploreAbTest } from './usePerpsHomeExploreAbTest';
+export { usePerpsFeeDisplayAbTest } from './usePerpsFeeDisplayAbTest';
+export { usePerpsLiveTradesAbTest } from './usePerpsLiveTradesAbTest';
+
+// Transaction data hooks
+export { usePerpsOrderFills } from './usePerpsOrderFills';
+export { usePerpsMarketFills } from './usePerpsMarketFills';
+export { usePerpsRecordedOrderFees } from './usePerpsRecordedOrderFees';
+export { usePerpsOrders } from './usePerpsOrders';
+export { usePerpsFunding } from './usePerpsFunding';
+export { useWithdrawalRequests } from './useWithdrawalRequests';
+export { useDepositRequests } from './useDepositRequests';
+export { usePerpsTransactionHistory } from './usePerpsTransactionHistory';
+
+// Event tracking hook
+export { usePerpsEventTracking } from './usePerpsEventTracking';
+export { usePerpsHomeSectionTracking } from './usePerpsHomeSectionTracking';
+export { usePerpsMarketAboutTracking } from './usePerpsMarketAboutTracking';
+
+// Performance tracking hooks
+// Removed: usePerpsScreenTracking - migrated to usePerpsMeasurement
+export { usePerpsMeasurement } from './usePerpsMeasurement';
+
+// Block explorer hook
+export { usePerpsBlockExplorerUrl } from './usePerpsBlockExplorerUrl';
+
+// Utility hooks
+export { useStableArray } from './useStableArray';
+
+// Discovery hooks (for use outside perps screens)
+export { usePerpsMarketForAsset } from './usePerpsMarketForAsset';
+export { usePerpsPositionForAsset } from './usePerpsPositionForAsset';
+
+// Stream hooks (WebSocket subscriptions)
+export * from './stream';
+
+// - usePerpsPendingOrders (order management)
+// - usePerpsError (error handling)
+// - usePerpsLivePositions (live position tracking)
+// - usePerpsPositionPnL (P&L calculations)
+// - usePerpsReadiness (readiness checks)
+// - usePerpsOrderManagement (order workflows)

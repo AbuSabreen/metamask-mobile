@@ -1,7 +1,6 @@
 import React, { useContext, useMemo } from 'react';
 import { Image, TouchableOpacity, View } from 'react-native';
 import ElevatedView from 'react-native-elevated-view';
-import { useSelector } from 'react-redux';
 import { strings } from '../../../../../locales/i18n';
 import Avatar, {
   AvatarSize,
@@ -9,30 +8,27 @@ import Avatar, {
 } from '../../../../component-library/components/Avatars/Avatar';
 import Badge from '../../../../component-library/components/Badges/Badge/Badge';
 import { BadgeVariant } from '../../../../component-library/components/Badges/Badge/Badge.types';
-import BadgeWrapper from '../../../../component-library/components/Badges/BadgeWrapper';
+import BadgeWrapper, {
+  BadgePosition,
+} from '../../../../component-library/components/Badges/BadgeWrapper';
 import Icon, {
   IconColor,
   IconName,
   IconSize,
 } from '../../../../component-library/components/Icons/Icon';
-import Text, {
-  TextVariant,
-} from '../../../../component-library/components/Texts/Text';
-import AppConstants from '../../../../core/AppConstants';
-import METAMASK_FOX from '../../../../images/fox.png';
-import {
-  selectNetworkName,
-  selectNetworkImageSource,
-} from '../../../../selectors/networkInfos';
+import { useNetworkInfo } from '../../../../selectors/selectedNetworkController';
 import { getHost } from '../../../../util/browser';
 import Device from '../../../../util/device';
 import { ThemeContext, mockTheme } from '../../../../util/theme';
-import WebsiteIcon from '../../WebsiteIcon';
 import createStyles from './TabThumbnail.styles';
 import { TabThumbnailProps } from './TabThumbnail.types';
-import useSelectedAccount from './useSelectedAccount';
-
-const { HOMEPAGE_URL } = AppConstants;
+import { useSelector } from 'react-redux';
+import { selectPermissionControllerState } from '../../../../selectors/snaps/permissionController';
+import { getPermittedEvmAddressesByHostname } from '../../../../core/Permissions';
+import { useFavicon } from '../../../hooks/useFavicon';
+import { selectInternalAccounts } from '../../../../selectors/accountsController';
+import { areAddressesEqual } from '../../../../util/address';
+import { Text, TextVariant } from '@metamask/design-system-react-native';
 
 /**
  * View that renders a tab thumbnail to be displayed in the in-app browser.
@@ -48,34 +44,50 @@ const TabThumbnail = ({
   const { colors } = useContext(ThemeContext) || mockTheme;
   const styles = useMemo(() => createStyles(colors), [colors]);
   const Container: React.ElementType = Device.isAndroid() ? View : ElevatedView;
-  const hostname = getHost(tab.url);
-  const isHomepage = hostname === getHost(HOMEPAGE_URL);
-  const selectedAccount = useSelectedAccount();
-  const networkName = useSelector(selectNetworkName);
-  const networkImageSource = useSelector(selectNetworkImageSource);
+  const tabTitle = getHost(tab.url);
+
+  // Get permitted accounts for this hostname
+  const permittedAccountsList = useSelector(selectPermissionControllerState);
+  const permittedAccountsByHostname = getPermittedEvmAddressesByHostname(
+    permittedAccountsList,
+    tabTitle,
+  );
+
+  // This only works for EVM currently
+  const activeAddress = permittedAccountsByHostname[0];
+  const internalAccounts = useSelector(selectInternalAccounts);
+  const selectedAccount = internalAccounts.find((account) =>
+    areAddressesEqual(account.address, activeAddress),
+  );
+  const { networkName, networkImageSource } = useNetworkInfo(tabTitle);
+  const { faviconURI: faviconSource } = useFavicon(tab.url);
 
   return (
     <Container style={styles.checkWrapper} elevation={8}>
       <TouchableOpacity
         accessible
-        accessibilityLabel={strings('browser.switch_tab')}
+        accessibilityRole="button"
+        // Host on the tab node itself — iOS flattens children out of the a11y
+        // tree; Android Appium matches content-desc from this label.
+        accessibilityLabel={
+          tabTitle
+            ? `${tabTitle}, ${strings('browser.switch_tab')}`
+            : strings('browser.switch_tab')
+        }
         onPress={() => onSwitch(tab)}
         style={[styles.tabWrapper, isActiveTab && styles.activeTab]}
+        testID={`browser-tab-${tab.id}`}
       >
         <View style={styles.tabHeader}>
           <View style={styles.titleButton}>
-            {isHomepage ? (
-              <Image style={styles.tabFavicon} source={METAMASK_FOX} />
-            ) : (
-              <WebsiteIcon
-                transparent
-                style={styles.tabFavicon}
-                title={hostname}
-                url={tab.url}
-              />
-            )}
+            <Avatar
+              variant={AvatarVariant.Favicon}
+              imageSource={faviconSource}
+              size={AvatarSize.Md}
+              style={styles.tabFavicon}
+            />
             <Text style={styles.tabSiteName} numberOfLines={1}>
-              {isHomepage ? strings('browser.new_tab') : hostname}
+              {tabTitle}
             </Text>
           </View>
           <TouchableOpacity
@@ -83,6 +95,7 @@ const TabThumbnail = ({
             accessibilityLabel={strings('browser.close_tab')}
             onPress={() => onClose(tab)}
             hitSlop={{ top: 10, left: 10, bottom: 10, right: 10 }}
+            testID={`tab-close-button-${tab.id}`}
           >
             <Icon
               name={IconName.Close}
@@ -94,10 +107,11 @@ const TabThumbnail = ({
         <View style={styles.tab}>
           <Image source={{ uri: tab.image }} style={styles.tabImage} />
         </View>
-        <View style={styles.footerContainer}>
-          {selectedAccount?.address && (
+        {!!selectedAccount && (
+          <View testID="footer-container" style={styles.footerContainer}>
             <View style={styles.badgeWrapperContainer}>
               <BadgeWrapper
+                badgePosition={BadgePosition.BottomRight}
                 badgeElement={
                   <Badge
                     size={AvatarSize.Xs}
@@ -110,22 +124,23 @@ const TabThumbnail = ({
                 <Avatar
                   size={AvatarSize.Xs}
                   variant={AvatarVariant.Account}
-                  accountAddress={selectedAccount?.address}
+                  accountAddress={selectedAccount.address}
                 />
               </BadgeWrapper>
             </View>
-          )}
-          <Text
-            variant={TextVariant.BodySM}
-            style={styles.footerText}
-            numberOfLines={1}
-            ellipsizeMode="tail"
-          >
-            {`${selectedAccount?.name ?? strings('browser.undefined_account')}${
-              networkName ? ` - ${networkName}` : ''
-            }`}
-          </Text>
-        </View>
+            <Text
+              variant={TextVariant.BodySm}
+              style={styles.footerText}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
+              {`${
+                selectedAccount.metadata?.name ??
+                strings('browser.undefined_account')
+              }${networkName ? ` - ${networkName}` : ''}`}
+            </Text>
+          </View>
+        )}
       </TouchableOpacity>
     </Container>
   );

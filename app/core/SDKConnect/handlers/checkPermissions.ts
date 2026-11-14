@@ -1,18 +1,25 @@
 import { KeyringController } from '@metamask/keyring-controller';
 import { PermissionController } from '@metamask/permission-controller';
 import { CommunicationLayerMessage } from '@metamask/sdk-communication-layer';
-import AppConstants from '../../AppConstants';
+import { providerErrors } from '@metamask/rpc-errors';
+import {
+  Caip25EndowmentPermissionName,
+  Caip25CaveatType,
+} from '@metamask/chain-agnostic-permission';
+import Routes from '../../../constants/navigation/Routes';
 import Engine from '../../Engine';
-import { getPermittedAccounts } from '../../Permissions';
+import {
+  getDefaultCaip25CaveatValue,
+  getPermittedAccounts,
+} from '../../Permissions';
 import { Connection } from '../Connection';
-import { HOUR_IN_MS } from '../SDKConnectConstants';
 import DevLogger from '../utils/DevLogger';
 import {
   wait,
   waitForCondition,
   waitForKeychainUnlocked,
 } from '../utils/wait.util';
-import Routes from '../../../constants/navigation/Routes';
+import { Platform } from 'react-native';
 
 // TODO: should be more generic and be used in wallet connect and android service as well
 export const checkPermissions = async ({
@@ -27,22 +34,26 @@ export const checkPermissions = async ({
   lastAuthorized?: number;
 }) => {
   try {
-    const OTPExpirationDuration =
-      Number(process.env.OTP_EXPIRATION_DURATION_IN_MS) || HOUR_IN_MS;
-
     // close poientially open loading modal
     connection.setLoading(false);
     const currentRouteName = connection.navigation?.getCurrentRoute()?.name;
 
-    const channelWasActiveRecently =
-      !!lastAuthorized && Date.now() - lastAuthorized < OTPExpirationDuration;
-
     DevLogger.log(
-      `checkPermissions initialConnection=${connection.initialConnection} method=${message?.method} lastAuthorized=${lastAuthorized} OTPExpirationDuration ${OTPExpirationDuration} channelWasActiveRecently ${channelWasActiveRecently}`,
+      `checkPermissions initialConnection=${connection.initialConnection} method=${message?.method} lastAuthorized=${lastAuthorized}`,
       connection.originatorInfo,
     );
 
-    const permittedAccounts = await getPermittedAccounts(connection.channelId);
+    // Permissions outlive the SDK session record, so an expired session must
+    // not fall through to the permitted-accounts shortcut below.
+    if ((connection.validUntil ?? 0) <= Date.now()) {
+      DevLogger.log(
+        `checkPermissions channel=${connection.channelId} session expired`,
+      );
+      connection.onTerminate({ channelId: connection.channelId });
+      throw providerErrors.unauthorized('SDK session expired');
+    }
+
+    const permittedAccounts = getPermittedAccounts(connection.channelId);
     DevLogger.log(`checkPermissions permittedAccounts`, permittedAccounts);
 
     if (permittedAccounts.length > 0) {
@@ -50,42 +61,21 @@ export const checkPermissions = async ({
     }
 
     const permissionsController = (
-      engine.context as { PermissionController: PermissionController<any, any> }
+      engine.context as {
+        // TODO: Replace "any" with type
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        PermissionController: PermissionController<any, any>;
+      }
     ).PermissionController;
 
-    // only ask approval if needed
-    const approved = connection.isApproved({
-      channelId: connection.channelId,
-      context: 'checkPermission',
-    });
+    // Make sure to wait for user to be on main pages before requesting permissions or request can get cancelled.
+    const pendingRoutes: readonly string[] = [Routes.ONBOARDING.LOGIN];
 
-    DevLogger.log(
-      `checkPermissions approved=${approved} approvalPromise=${
-        connection.approvalPromise !== undefined ? 'exists' : 'undefined'
-      }`,
-    );
-
-    if (approved) {
-      return true;
-    }
-
-    DevLogger.log(
-      `checkPermissions channelWasActiveRecently=${channelWasActiveRecently} OTPExpirationDuration=${OTPExpirationDuration}`,
-    );
-
-    if (channelWasActiveRecently) {
-      return true;
-    }
-
-    DevLogger.log(
-      `checkPermissions keychain unlocked -- route=${currentRouteName}`,
-    );
-    //FIXME Issue with KeyringController not being ready that thinks keychain is unlocked while the current route is still loading.
-    if (currentRouteName === Routes.LOCK_SCREEN) {
+    if (currentRouteName && pendingRoutes.includes(currentRouteName)) {
       await waitForCondition({
-        fn: () => {
+        fn: (): boolean => {
           const activeRoute = connection.navigation?.getCurrentRoute()?.name;
-          return activeRoute !== Routes.LOCK_SCREEN;
+          return Boolean(activeRoute && !pendingRoutes.includes(activeRoute));
         },
         waitTime: 1000,
         context: 'checkPermissions',
@@ -117,39 +107,50 @@ export const checkPermissions = async ({
       return allowed;
     }
 
-    if (
-      !connection.initialConnection &&
-      AppConstants.DEEPLINKS.ORIGIN_DEEPLINK
-    ) {
-      connection.revalidate({ channelId: connection.channelId });
-    }
-
-    const accountPermission = permissionsController.getPermission(
+    const caip25Permission = permissionsController.getPermission(
       connection.channelId,
-      'eth_accounts',
+      Caip25EndowmentPermissionName,
     );
     const moreAccountPermission = permissionsController.getPermissions(
       connection.channelId,
     );
     DevLogger.log(
-      `checkPermissions accountPermission`,
-      accountPermission,
+      `checkPermissions caip25Permission`,
+      caip25Permission,
       moreAccountPermission,
     );
-    if (!accountPermission) {
+    if (!caip25Permission) {
       connection.approvalPromise = permissionsController.requestPermissions(
         { origin: connection.channelId },
-        { eth_accounts: {} },
+        {
+          [Caip25EndowmentPermissionName]: {
+            caveats: [
+              {
+                type: Caip25CaveatType,
+                value: getDefaultCaip25CaveatValue(),
+              },
+            ],
+          },
+        },
         {
           preserveExistingPermissions: false,
         },
       );
     }
 
-    await connection.approvalPromise;
-    // Clear previous permissions if already approved.
-    connection.revalidate({ channelId: connection.channelId });
-    return true;
+    const res = await connection.approvalPromise;
+    if (Platform.OS === 'ios') {
+      // A UI crash happening on ios from AccountConnect.tsx which is triggered by permissionsController.getPermission().
+      // Seems to be a race condition between the connect being accepted and the approvalPromise being resolved.
+      // Adding a small delay seems to fix the issue.
+      // *** Assertion failure in -[RCTNativeAnimatedNodesManager disconnectAnimatedNodes:childTag:](), metamask-mobile/node_modules/react-native/Libraries/NativeAnimation/RCTNativeAnimatedNodesManager.m:142
+      // Exception thrown while executing UI block: 'childNode' is a required parameter
+      // 0x14146e100 - GPUProcessProxy::gpuProcessExited: reason=IdleExit
+      await wait(100);
+    }
+    const accounts = getPermittedAccounts(connection.channelId);
+    DevLogger.log(`checkPermissions approvalPromise completed`, res);
+    return accounts.length > 0;
   } catch (err) {
     console.warn(`checkPermissions error`, err);
     connection.approvalPromise = undefined;

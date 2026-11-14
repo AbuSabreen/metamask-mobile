@@ -1,10 +1,12 @@
 // Third party dependencies.
-import { TouchableOpacityProps } from 'react-native';
+import { ViewStyle } from 'react-native';
+import { IconSize } from '../../Icons/Icon';
+import { PressableProps } from '../../../components-temp/Pressable';
 
 /**
  * PickerBase component props.
  */
-export interface PickerBaseProps extends TouchableOpacityProps {
+export interface PickerBaseProps extends PressableProps {
   /**
    * Callback to trigger when pressed.
    */
@@ -13,9 +15,20 @@ export interface PickerBaseProps extends TouchableOpacityProps {
    * Content to wrap in PickerBase.
    */
   children: React.ReactNode;
+  /**
+   * Icon size.
+   */
+  iconSize?: IconSize;
+  /**
+   * Dropdown icon styles.
+   */
+  dropdownIconStyle?: ViewStyle;
 }
 
 /**
  * Style sheet input parameters.
  */
-export type PickerBaseStyleSheetVars = Pick<PickerBaseProps, 'style'>;
+export type PickerBaseStyleSheetVars = Pick<
+  PickerBaseProps,
+  'style' | 'dropdownIconStyle'
+>;

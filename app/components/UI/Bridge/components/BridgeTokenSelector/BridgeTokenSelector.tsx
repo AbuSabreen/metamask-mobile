@@ -1,0 +1,1196 @@
+import React, {
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+} from 'react';
+import {
+  NativeSyntheticEvent,
+  NativeScrollEvent,
+  ScrollViewProps,
+  StyleProp,
+  ViewStyle,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  useNavigation,
+  useRoute,
+  RouteProp,
+  StackActions,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import type { RootState } from '../../../../../reducers';
+import { useSelector, useDispatch } from 'react-redux';
+import { strings } from '../../../../../../locales/i18n';
+import {
+  FlashList,
+  type FlashListRef,
+  type ListRenderItem,
+} from '@shopify/flash-list';
+import { NetworkPills } from './NetworkPills';
+import Routes from '../../../../../constants/navigation/Routes';
+import { CaipChainId, type CaipAssetType } from '@metamask/utils';
+import { useStyles } from '../../../../../component-library/hooks';
+import TextFieldSearch from '../../../../../component-library/components/Form/TextFieldSearch';
+import {
+  selectAllowedChainRanking,
+  selectBridgeFeatureFlags,
+  selectTokenSelectorNetworkFilter,
+  setDestToken,
+  setIsSelectingToken,
+  setSourceToken,
+  setTokenSelectorNetworkFilter,
+} from '../../../../../core/redux/slices/bridge';
+import {
+  FeatureId,
+  formatChainIdToCaip,
+  isNativeAddress,
+  UnifiedSwapBridgeEventName,
+} from '@metamask/bridge-controller';
+import {
+  Box,
+  ButtonIcon,
+  ButtonIconSize,
+  IconColor,
+  IconName,
+  Text,
+  TextVariant,
+  TextColor,
+} from '@metamask/design-system-react-native';
+import { useAssetFromTheme } from '../../../../../util/theme';
+import NoSearchResultsLight from '../../../../../images/predictions-no-search-results-light.svg';
+import NoSearchResultsDark from '../../../../../images/predictions-no-search-results-dark.svg';
+import WatchlistEmptyLight from '../../../../../images/watchlist-empty-light.svg';
+import WatchlistEmptyDark from '../../../../../images/watchlist-empty-dark.svg';
+import { SkeletonItem } from '../SkeletonItem';
+import { TabEmptyState } from '../../../../../component-library/components-temp/TabEmptyState';
+import { TokenSelectorItem } from '../TokenSelectorItem';
+import { getNetworkImageSource } from '../../../../../util/networks';
+import { type BridgeToken, TokenSelectorType } from '../../types';
+import { usePopularTokens } from '../../hooks/usePopularTokens';
+import { useSearchTokens } from '../../hooks/useSearchTokens';
+import { useTokensWithBalances } from '../../hooks/useTokensWithBalances';
+import { useTokenSelection } from '../../hooks/useTokenSelection';
+import {
+  getDefaultTokenPairForChains,
+  isSameBridgeToken,
+  tokenMatchesQuery,
+} from '../../utils/tokenUtils';
+import { createStyles } from './BridgeTokenSelector.styles';
+import Engine from '../../../../../core/Engine';
+import { TokenDetailsSource } from '../../../TokenDetails/constants/constants';
+import { useInitialBridgeTokens } from '../../hooks/useInitialBridgeTokens';
+import { selectRWAEnabledFlag } from '../../../../../selectors/featureFlagController/rwa';
+import { getBridgeTokenBadgeLabel } from '../../utils/getBridgeTokenBadgeLabel';
+import { selectTokenWatchlistEnabled } from '../../../Assets/selectors/featureFlags';
+import { useTokenWatchlistQuery } from '../../../Assets/watchlist/hooks/useTokenWatchlistQuery';
+import WatchlistEmptyCTA from '../../../Assets/watchlist/components/WatchlistEmptyCTA';
+import {
+  applyWatchlistBridgeTokenFiatDisplay,
+  mapWatchlistTokenToBridgeToken,
+} from '../../utils/mapWatchlistTokenToBridgeToken';
+import { mergeBridgeTokensWithBalances } from '../../utils/mergeBridgeTokensWithBalances';
+import { filterOutRwaTokens } from '../../utils/filterOutRwaTokens';
+import { filterWatchlistBridgeTokens } from '../../utils/filterWatchlistBridgeTokens';
+import { prependWatchlistToSearchResults } from '../../utils/prependWatchlistToSearchResults';
+import { trackTokenListItemClicked } from '../../../Assets/watchlist/utils/trackTokenListItemClicked';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { selectCurrentCurrency } from '../../../../../selectors/currencyRateController';
+import { useSwapsFeatureId } from '../../hooks/useSwapsFeatureId';
+import { isArcUsdcErc20AssetId } from '../../../../../enablement/assets/arc';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+export interface BridgeTokenSelectorRouteParams {
+  type: TokenSelectorType;
+  /**
+   * When provided, restricts the network list to these chains instead
+   * of the default allowed chainRanking.
+   */
+  enabledChainIds?: CaipChainId[];
+  /**
+   * When true, real-world asset tokens are hidden from every list this
+   * picker renders (popular, search, and watchlist results).
+   */
+  excludeRwaTokens?: boolean;
+}
+
+export interface BridgeTokenSelectorContentProps {
+  type: TokenSelectorType;
+  selectedToken?: BridgeToken;
+  onTokenPress: (token: BridgeToken) => void;
+  enabledChainIds?: CaipChainId[];
+  excludeRwaTokens?: boolean;
+  balanceOnly?: boolean;
+  excludeToken?: BridgeToken;
+  onOpenNetworkList: () => void;
+  /**
+   * When true, the host owns the token-selector network filter: the picker
+   * neither seeds it from the selected token nor clears it on unmount.
+   */
+  hostManagesNetworkFilter?: boolean;
+  /**
+   * Scroll component for the token list. Hosts that render the picker inside a
+   * bottom sheet pass a gesture-handler ScrollView so list scrolling does not
+   * fight the sheet's drag-to-dismiss gesture.
+   */
+  renderScrollComponent?: React.ComponentType<ScrollViewProps>;
+}
+
+const MIN_SEARCH_LENGTH = 3;
+const ESTIMATED_ITEM_HEIGHT = 68; // container paddingVertical(4×2) + itemWrapper paddingVertical(10×2) + AvatarSize.Lg(40px)
+const LOAD_MORE_DISTANCE_THRESHOLD = 300; // Distance from bottom to trigger load
+
+interface BridgeTokenSelectorRowProps {
+  token: BridgeToken;
+  isSelected: boolean;
+  isNoFeeAsset: boolean;
+  badgeLabel?: string;
+  onTokenPress: (token: BridgeToken) => void;
+  onInfoPress: (token: BridgeToken) => void;
+}
+
+const BridgeTokenSelectorRow = React.memo(
+  ({
+    token,
+    isSelected,
+    isNoFeeAsset,
+    badgeLabel,
+    onTokenPress,
+    onInfoPress,
+  }: BridgeTokenSelectorRowProps) => {
+    const handleInfoPress = useCallback(() => {
+      onInfoPress(token);
+    }, [onInfoPress, token]);
+
+    const networkImageSource = useMemo(
+      () =>
+        getNetworkImageSource({
+          chainId: token.chainId,
+        }),
+      [token.chainId],
+    );
+
+    return (
+      <TokenSelectorItem
+        token={token}
+        isSelected={isSelected}
+        onPress={onTokenPress}
+        networkImageSource={networkImageSource}
+        isNoFeeAsset={isNoFeeAsset}
+        badgeLabel={badgeLabel}
+      >
+        <ButtonIcon
+          iconName={IconName.Info}
+          size={ButtonIconSize.Sm}
+          onPress={handleInfoPress}
+          iconProps={{ color: IconColor.IconAlternative }}
+        />
+      </TokenSelectorItem>
+    );
+  },
+);
+
+interface BridgeTokenSelectorEmptyStateProps {
+  containerStyle: StyleProp<ViewStyle>;
+  Icon: React.ComponentType<{ width: number; height: number }>;
+  title: string;
+  description: string;
+  testID?: string;
+}
+
+const useRwaFilteredTokens = (
+  tokens: BridgeToken[],
+  excludeRwaTokens: boolean,
+) =>
+  useMemo(
+    () => (excludeRwaTokens ? filterOutRwaTokens(tokens) : tokens),
+    [tokens, excludeRwaTokens],
+  );
+
+const BridgeTokenSelectorEmptyState = React.memo(
+  ({
+    containerStyle,
+    Icon,
+    title,
+    description,
+    testID = 'bridge-token-selector-empty-state',
+  }: BridgeTokenSelectorEmptyStateProps) => (
+    <TabEmptyState
+      testID={testID}
+      icon={<Icon width={72} height={78} />}
+      description={title}
+      descriptionProps={{
+        variant: TextVariant.HeadingMd,
+        color: TextColor.TextDefault,
+        twClassName: 'text-center',
+        numberOfLines: 1,
+      }}
+      style={containerStyle}
+      twClassName="self-center max-w-full"
+    >
+      <Text
+        variant={TextVariant.BodyMd}
+        color={TextColor.TextAlternative}
+        twClassName="text-center -mt-1"
+      >
+        {description}
+      </Text>
+    </TabEmptyState>
+  ),
+);
+
+export const BridgeTokenSelectorContent: React.FC<
+  BridgeTokenSelectorContentProps
+> = ({
+  type,
+  selectedToken,
+  onTokenPress,
+  enabledChainIds,
+  excludeRwaTokens = false,
+  balanceOnly = false,
+  excludeToken,
+  onOpenNetworkList,
+  renderScrollComponent,
+  hostManagesNetworkFilter = false,
+}) => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const dispatch = useDispatch();
+  const { styles } = useStyles(createStyles, {});
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const [searchString, setSearchString] = useState<string>('');
+  const [showWatchlistOnly, setShowWatchlistOnly] = useState(false);
+  const flatListRef = useRef<FlashListRef<BridgeToken | null>>(null);
+  const [flatListHeight, setFlatListHeight] = useState<number>(0);
+
+  const isWatchlistEnabled = useSelector(selectTokenWatchlistEnabled);
+  const isWatchlistFilterActive = isWatchlistEnabled && showWatchlistOnly;
+  const isWatchlistListMode = isWatchlistFilterActive;
+  const currentCurrency = useSelector(selectCurrentCurrency);
+
+  // Get themed SVGs for empty states
+  const NoSearchResultsIcon = useAssetFromTheme(
+    NoSearchResultsLight,
+    NoSearchResultsDark,
+  );
+  const WatchlistEmptyIcon = useAssetFromTheme(
+    WatchlistEmptyLight,
+    WatchlistEmptyDark,
+  );
+
+  // Check if search string meets minimum length requirement
+  const isValidSearch = useMemo(
+    () => searchString.trim().length >= MIN_SEARCH_LENGTH,
+    [searchString],
+  );
+
+  const featureId = useSwapsFeatureId();
+  const enabledChainRanking = useSelector((state: RootState) =>
+    selectAllowedChainRanking(state, enabledChainIds),
+  );
+  const bridgeFeatureFlags = useSelector(selectBridgeFeatureFlags);
+  const isRWAEnabled = useSelector(selectRWAEnabledFlag);
+
+  const { data: watchlistData, isLoading: isWatchlistLoading } =
+    useTokenWatchlistQuery();
+
+  const hasWatchlistItems = (watchlistData?.length ?? 0) > 0;
+  const useWatchlistMergedSearch =
+    isWatchlistListMode && hasWatchlistItems && isValidSearch;
+
+  const handleWatchlistTokenPress = useCallback(
+    (token: BridgeToken & { assetId?: CaipAssetType }, position: number) => {
+      if (isWatchlistListMode && !isValidSearch && token.assetId) {
+        trackTokenListItemClicked(trackEvent, createEventBuilder, {
+          asset: String(token.assetId),
+          source: TokenDetailsSource.SwapWatchlistFilter,
+          position,
+        });
+      }
+      onTokenPress(token);
+    },
+    [
+      createEventBuilder,
+      onTokenPress,
+      isWatchlistListMode,
+      isValidSearch,
+      trackEvent,
+    ],
+  );
+
+  // Compute the initial network filter synchronously so the first render
+  // has the correct value — avoids a wasted all-chains fetch and FlatList
+  // remount that would occur if we relied solely on the async useEffect.
+  const initialFilter = useMemo(
+    () =>
+      !hostManagesNetworkFilter &&
+      selectedToken?.chainId &&
+      type === TokenSelectorType.Dest
+        ? formatChainIdToCaip(selectedToken.chainId)
+        : undefined,
+    [], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  // Track whether we've synced the initial filter into Redux.
+  // Before sync, we use initialFilter directly; after sync, we trust Redux
+  // (which may be undefined when the user selects "All").
+  const hasSyncedFilter = useRef(false);
+  const reduxFilter = useSelector(selectTokenSelectorNetworkFilter);
+  const selectedChainId = hasSyncedFilter.current
+    ? reduxFilter
+    : (reduxFilter ?? initialFilter);
+
+  // NetworkListModal dispatches `setTokenSelectorNetworkFilter` directly.
+  // Ensure watchlist mode is cleared when a specific network becomes selected
+  // so only one pill (star, All, or network) appears active at a time.
+  useEffect(() => {
+    if (isWatchlistFilterActive && selectedChainId) {
+      setShowWatchlistOnly(false);
+    }
+  }, [isWatchlistFilterActive, selectedChainId]);
+
+  // Sync the initial filter into Redux on mount so other consumers
+  // (e.g. NetworkListModal) see the correct value. Clear on unmount.
+  useEffect(() => {
+    if (initialFilter) {
+      dispatch(setTokenSelectorNetworkFilter(initialFilter));
+    }
+    hasSyncedFilter.current = true;
+    return hostManagesNetworkFilter
+      ? undefined
+      : () => {
+          dispatch(setTokenSelectorNetworkFilter(undefined));
+        };
+  }, [hostManagesNetworkFilter, dispatch, initialFilter]);
+
+  // Ref to track if we need to re-search after chain change
+  const shouldResearchAfterChainChange = useRef(false);
+
+  // Track the last chain ID to detect changes
+  const lastChainIdRef = useRef(selectedChainId);
+  const shouldResetListPositionRef = useRef(false);
+  const prevWatchlistListModeRef = useRef(isWatchlistListMode);
+  const watchlistSessionChainIdRef = useRef(selectedChainId);
+  const networkFilterBeforeWatchlistRef = useRef<CaipChainId | undefined>(
+    undefined,
+  );
+
+  const handleWatchlistFilterPress = useCallback(() => {
+    setShowWatchlistOnly((previous) => {
+      const next = !previous;
+      if (next) {
+        networkFilterBeforeWatchlistRef.current = selectedChainId;
+        dispatch(setTokenSelectorNetworkFilter(undefined));
+      } else {
+        dispatch(
+          setTokenSelectorNetworkFilter(
+            networkFilterBeforeWatchlistRef.current,
+          ),
+        );
+      }
+      return next;
+    });
+  }, [dispatch, selectedChainId]);
+
+  // A selectedChainId can come from sources (initialFilter, stale Redux
+  // filter) that predate/ignore this picker's enabledChainIds override, so
+  // it must be validated against enabledChainRanking before being trusted.
+  const isSelectedChainInEnabledRanking = useMemo(
+    () =>
+      Boolean(selectedChainId) &&
+      enabledChainRanking.some(
+        (chain: { chainId: CaipChainId }) => chain.chainId === selectedChainId,
+      ),
+    [selectedChainId, enabledChainRanking],
+  );
+
+  // If the current filter falls outside this picker's allowed chain set,
+  // clear it in Redux so pills, the network modal, and the fetched token
+  // list all agree on "All networks" instead of silently diverging (token
+  // list matching an all-chains fetch while no pill appears selected).
+  // The stale selection also means the actual source/dest pair is no longer
+  // valid for this picker's chain scope (e.g. a Limit Order flow scoped to
+  // Ethereum with a dest token left over from a broader Polygon session), so
+  // re-anchor both tokens to a sane default pair on the fallback chain.
+  useEffect(() => {
+    if (
+      !selectedChainId ||
+      enabledChainRanking.length === 0 ||
+      isSelectedChainInEnabledRanking
+    ) {
+      return;
+    }
+
+    dispatch(setTokenSelectorNetworkFilter(undefined));
+
+    const defaultPair = getDefaultTokenPairForChains(
+      enabledChainRanking.map(
+        (chain: { chainId: CaipChainId }) => chain.chainId,
+      ),
+    );
+    if (!defaultPair) {
+      return;
+    }
+
+    dispatch(setSourceToken(defaultPair.sourceToken));
+    if (defaultPair.destToken) {
+      dispatch(setDestToken(defaultPair.destToken));
+    }
+  }, [
+    selectedChainId,
+    enabledChainRanking,
+    isSelectedChainInEnabledRanking,
+    dispatch,
+  ]);
+
+  const chainIdsToFetch = useMemo(() => {
+    if (!enabledChainRanking || enabledChainRanking.length === 0) {
+      return [];
+    }
+
+    // If a specific chain is selected and it's part of the allowed chain
+    // set, use only that chain.
+    if (selectedChainId && isSelectedChainInEnabledRanking) {
+      return [selectedChainId];
+    }
+
+    // If "All" is selected, or the selected chain isn't part of the
+    // allowed chain set, use all chains from filtered chainRanking.
+    return enabledChainRanking.map(
+      (chain: { chainId: CaipChainId }) => chain.chainId,
+    );
+  }, [selectedChainId, enabledChainRanking, isSelectedChainInEnabledRanking]);
+
+  const {
+    includeAssets,
+    tokensWithBalance,
+    fetchPopularTokens,
+    balancesByAssetId,
+    searchIncludeAssets,
+  } = useInitialBridgeTokens({
+    chainIds: chainIdsToFetch,
+    searchString,
+  });
+
+  // Fetch popular tokens
+  const { popularTokens, isLoading: isPopularTokensLoading } = usePopularTokens(
+    {
+      includeAssets,
+      fetchTokens: fetchPopularTokens,
+      enabled: !balanceOnly,
+    },
+  );
+
+  // Search tokens
+  const {
+    searchResults,
+    isSearchLoading,
+    isLoadingMore,
+    searchCursor,
+    currentSearchQuery,
+    searchTokens,
+    debouncedSearch,
+    resetSearch,
+  } = useSearchTokens({
+    chainIds: chainIdsToFetch,
+    includeAssets: searchIncludeAssets,
+    enabled: !balanceOnly,
+  });
+
+  const balanceOnlyTokens = useMemo(
+    () =>
+      tokensWithBalance.filter(
+        (token) => token.balance && parseFloat(token.balance) > 0,
+      ),
+    [tokensWithBalance],
+  );
+
+  // React to network filter changes from any source (pill press or modal).
+  // Cancels pending searches, resets stale results, and flags for re-search.
+  useEffect(() => {
+    if (lastChainIdRef.current !== selectedChainId) {
+      lastChainIdRef.current = selectedChainId;
+      shouldResetListPositionRef.current = true;
+
+      // Cancel any pending debounced searches
+      debouncedSearch.cancel();
+      // Clear old network's data to ensure clean state
+      resetSearch();
+
+      // If there's an active search, prepare to re-trigger it on the new network
+      if (isValidSearch) {
+        shouldResearchAfterChainChange.current = true;
+      }
+    }
+  }, [selectedChainId, debouncedSearch, resetSearch, isValidSearch]);
+
+  // Watchlist search is local-only. When leaving watchlist mode with an active
+  // query and no network change, restart API search for the current query.
+  useEffect(() => {
+    if (isWatchlistListMode) {
+      watchlistSessionChainIdRef.current = selectedChainId;
+    }
+  }, [isWatchlistListMode, selectedChainId]);
+
+  useEffect(() => {
+    const wasWatchlistListMode = prevWatchlistListModeRef.current;
+    prevWatchlistListModeRef.current = isWatchlistListMode;
+
+    if (!wasWatchlistListMode || isWatchlistListMode) {
+      return;
+    }
+
+    const hadShortLocalQuery = Boolean(searchString.trim()) && !isValidSearch;
+
+    if (hadShortLocalQuery) {
+      debouncedSearch.cancel();
+      resetSearch();
+      setSearchString('');
+      return;
+    }
+
+    if (
+      isValidSearch &&
+      watchlistSessionChainIdRef.current === selectedChainId
+    ) {
+      debouncedSearch.cancel();
+      resetSearch();
+      searchTokens(searchString);
+    }
+  }, [
+    isWatchlistListMode,
+    isValidSearch,
+    searchString,
+    selectedChainId,
+    debouncedSearch,
+    resetSearch,
+    searchTokens,
+  ]);
+
+  // Use custom hook for merging balances
+  const mergedPopularTokens = useTokensWithBalances(
+    popularTokens,
+    balancesByAssetId,
+  );
+  const popularTokensWithBalance = useRwaFilteredTokens(
+    balanceOnly ? balanceOnlyTokens : mergedPopularTokens,
+    excludeRwaTokens,
+  );
+  const searchResultsWithBalance = useRwaFilteredTokens(
+    useTokensWithBalances(searchResults, balancesByAssetId),
+    excludeRwaTokens,
+  );
+
+  const validTokens = useCallback(
+    (tokens: BridgeToken[]) =>
+      excludeToken
+        ? tokens.filter((token) => !isSameBridgeToken(token, excludeToken))
+        : tokens,
+    [excludeToken],
+  );
+
+  const watchlistBridgeTokens = useMemo(() => {
+    if (!isWatchlistListMode) {
+      return [];
+    }
+
+    const mappedTokens = mergeBridgeTokensWithBalances(
+      (watchlistData ?? []).map((token) =>
+        mapWatchlistTokenToBridgeToken(token, {
+          defaultCurrency: currentCurrency,
+        }),
+      ),
+      balancesByAssetId,
+    )
+      .map((token) =>
+        applyWatchlistBridgeTokenFiatDisplay(token, currentCurrency),
+      )
+      .filter(
+        (token) =>
+          !isArcUsdcErc20AssetId(token.assetId) &&
+          (!balanceOnly ||
+            (token.balance !== undefined && parseFloat(token.balance) > 0)),
+      );
+
+    return filterWatchlistBridgeTokens(
+      excludeRwaTokens ? filterOutRwaTokens(mappedTokens) : mappedTokens,
+      {
+        selectedChainId,
+        allowedChainIds: enabledChainRanking.map(
+          (chain: { chainId: CaipChainId }) => chain.chainId,
+        ),
+        searchQuery: isValidSearch || balanceOnly ? searchString : undefined,
+      },
+    );
+  }, [
+    balanceOnly,
+    isWatchlistListMode,
+    isValidSearch,
+    searchString,
+    selectedChainId,
+    watchlistData,
+    balancesByAssetId,
+    currentCurrency,
+    excludeRwaTokens,
+    enabledChainRanking,
+  ]);
+
+  const watchlistMergedSearchResults = useMemo(() => {
+    if (!useWatchlistMergedSearch) {
+      return [];
+    }
+
+    return prependWatchlistToSearchResults(
+      watchlistBridgeTokens,
+      searchResultsWithBalance,
+    );
+  }, [
+    useWatchlistMergedSearch,
+    watchlistBridgeTokens,
+    searchResultsWithBalance,
+  ]);
+
+  const buildSearchDisplayData = useCallback(
+    (
+      results: BridgeToken[],
+      {
+        includePopularLoading = true,
+      }: { includePopularLoading?: boolean } = {},
+    ) => {
+      const isLoading =
+        isSearchLoading || (includePopularLoading && isPopularTokensLoading);
+      const isWaitingForDebounce =
+        !isSearchLoading && currentSearchQuery !== searchString.trim();
+
+      if (isLoading || isWaitingForDebounce) {
+        const skeletonItemsCount = 8 - results.length;
+        return [
+          ...validTokens(results),
+          ...Array(Math.max(1, skeletonItemsCount)).fill(null),
+        ];
+      }
+
+      return validTokens(results);
+    },
+    [
+      currentSearchQuery,
+      isPopularTokensLoading,
+      isSearchLoading,
+      searchString,
+      validTokens,
+    ],
+  );
+
+  const displayData = useMemo(() => {
+    if (isWatchlistListMode && isWatchlistLoading) {
+      return Array(8).fill(null);
+    }
+
+    const useDefaultDisplay =
+      !isWatchlistListMode || (isWatchlistListMode && !hasWatchlistItems);
+
+    if (useDefaultDisplay) {
+      const isLoading = isPopularTokensLoading || isSearchLoading;
+
+      if (balanceOnly) {
+        return validTokens(
+          popularTokensWithBalance.filter((token) =>
+            tokenMatchesQuery(token, searchString.trim()),
+          ),
+        );
+      }
+
+      if (isValidSearch) {
+        return buildSearchDisplayData(searchResultsWithBalance);
+      }
+
+      if (isLoading) {
+        const skeletonItemsCount = 8 - popularTokensWithBalance.length;
+        return [
+          ...validTokens(popularTokensWithBalance),
+          ...Array(Math.max(1, skeletonItemsCount)).fill(null),
+        ];
+      }
+
+      return validTokens(popularTokensWithBalance);
+    }
+
+    if (useWatchlistMergedSearch && !balanceOnly) {
+      return buildSearchDisplayData(watchlistMergedSearchResults, {
+        includePopularLoading: false,
+      });
+    }
+
+    return validTokens(watchlistBridgeTokens);
+  }, [
+    buildSearchDisplayData,
+    hasWatchlistItems,
+    isWatchlistListMode,
+    isWatchlistLoading,
+    balanceOnly,
+    searchString,
+    isPopularTokensLoading,
+    isSearchLoading,
+    isValidSearch,
+    popularTokensWithBalance,
+    searchResultsWithBalance,
+    useWatchlistMergedSearch,
+    watchlistBridgeTokens,
+    watchlistMergedSearchResults,
+    validTokens,
+  ]);
+
+  const showWatchlistEmptyCta =
+    isWatchlistListMode &&
+    !isWatchlistLoading &&
+    !hasWatchlistItems &&
+    !isValidSearch;
+
+  // Reset only after the replacement dataset has been committed. scrollToIndex
+  // engages and lays out the first recycled row before moving the native view.
+  useEffect(() => {
+    if (!shouldResetListPositionRef.current) {
+      return undefined;
+    }
+
+    const frameId = requestAnimationFrame(() => {
+      void flatListRef.current?.scrollToIndex({ index: 0, animated: false });
+      shouldResetListPositionRef.current = false;
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [displayData, selectedChainId]);
+
+  const getIsNoFeeAsset = useCallback(
+    (token: BridgeToken) => {
+      const routeNoFee =
+        type === TokenSelectorType.Source
+          ? token.noFee?.isSource
+          : token.noFee?.isDestination;
+
+      if (routeNoFee) {
+        return true;
+      }
+
+      const caipChainId = formatChainIdToCaip(token.chainId);
+      return (
+        bridgeFeatureFlags.chains?.[caipChainId]?.noFeeAssets?.includes(
+          token.address,
+        ) ?? false
+      );
+    },
+    [bridgeFeatureFlags.chains, type],
+  );
+
+  // Re-trigger search when chain IDs change if there's an active search
+  useEffect(() => {
+    if (shouldResearchAfterChainChange.current && isValidSearch) {
+      // Reset the flag
+      shouldResearchAfterChainChange.current = false;
+      // Trigger search with current query on new network
+      searchTokens(searchString);
+    }
+  }, [chainIdsToFetch, searchString, searchTokens, isValidSearch]);
+
+  // Auto-load second page if initial search results don't fill the view
+  useEffect(() => {
+    if (
+      isValidSearch &&
+      searchResults.length > 0 &&
+      !isSearchLoading &&
+      !isLoadingMore &&
+      searchCursor &&
+      flatListHeight > 0
+    ) {
+      // Measure the rows actually rendered, not the raw API page. A page whose
+      // results are all filtered out (e.g. RWAs) would otherwise look full and
+      // never fetch the next one.
+      const estimatedContentHeight =
+        searchResultsWithBalance.length * ESTIMATED_ITEM_HEIGHT;
+
+      // If estimated content doesn't fill the view, load more
+      if (estimatedContentHeight < flatListHeight) {
+        searchTokens(searchString, searchCursor);
+      }
+    }
+  }, [
+    isValidSearch,
+    searchResults.length,
+    searchResultsWithBalance.length,
+    isSearchLoading,
+    isLoadingMore,
+    searchCursor,
+    flatListHeight,
+    searchTokens,
+    searchString,
+  ]);
+
+  const resetSearchForNetworkChange = useCallback(() => {
+    debouncedSearch.cancel();
+    resetSearch();
+
+    if (isValidSearch) {
+      shouldResearchAfterChainChange.current = true;
+    }
+  }, [debouncedSearch, resetSearch, isValidSearch]);
+
+  const handleChainSelect = useCallback(
+    (chainId?: CaipChainId) => {
+      if (isWatchlistFilterActive) {
+        setShowWatchlistOnly(false);
+        dispatch(setTokenSelectorNetworkFilter(chainId));
+        resetSearchForNetworkChange();
+        return;
+      }
+
+      // Do nothing if selecting the same network that's already selected
+      if (chainId === selectedChainId) {
+        return;
+      }
+
+      dispatch(setTokenSelectorNetworkFilter(chainId));
+
+      // Eagerly clean up search state so the UI doesn't flash stale results.
+      // The useEffect watching selectedChainId also performs this cleanup
+      // to handle changes from NetworkListModal (which dispatches directly).
+      resetSearchForNetworkChange();
+    },
+    [
+      selectedChainId,
+      dispatch,
+      isWatchlistFilterActive,
+      resetSearchForNetworkChange,
+    ],
+  );
+
+  const handleSearchTextChange = (text: string) => {
+    setSearchString(text);
+
+    const trimmedLength = text.trim().length;
+    const shouldRunDebouncedSearch =
+      !isWatchlistListMode ||
+      !hasWatchlistItems ||
+      trimmedLength >= MIN_SEARCH_LENGTH ||
+      trimmedLength === 0;
+
+    if (shouldRunDebouncedSearch) {
+      debouncedSearch(text);
+    }
+  };
+
+  const handleClearSearch = useCallback(() => {
+    setSearchString('');
+
+    const shouldResetApiSearch =
+      !isWatchlistListMode || !hasWatchlistItems || isValidSearch;
+
+    if (shouldResetApiSearch) {
+      debouncedSearch.cancel();
+      resetSearch();
+    }
+  }, [
+    debouncedSearch,
+    hasWatchlistItems,
+    isValidSearch,
+    isWatchlistListMode,
+    resetSearch,
+  ]);
+
+  const handleInfoButtonPress = useCallback(
+    (item: BridgeToken) => {
+      // Get network name from chainRanking feature flag data
+      const chainData = enabledChainRanking.find(
+        (chain: { chainId: CaipChainId; name: string }) =>
+          chain.chainId === formatChainIdToCaip(item.chainId),
+      );
+      const networkName = chainData?.name ?? '';
+      const tokenDetailsSource = isWatchlistListMode
+        ? TokenDetailsSource.SwapWatchlistFilter
+        : TokenDetailsSource.Swap;
+
+      // Use push so we always open details for the tapped token.
+      // navigate('Asset') can reuse an existing Asset route with stale params.
+      navigation.dispatch(
+        StackActions.push('Asset', {
+          ...item,
+          isNative: isNativeAddress(item.address),
+          source: tokenDetailsSource,
+        }),
+      );
+
+      Engine.context.BridgeController.trackUnifiedSwapBridgeEvent(
+        UnifiedSwapBridgeEventName.AssetDetailTooltipClicked,
+        {
+          token_name: item.name ?? 'Unknown',
+          token_symbol: item.symbol,
+          token_contract: item.address,
+          chain_name: networkName,
+          chain_id: item.chainId,
+          feature_id: featureId,
+        },
+      );
+    },
+    [navigation, enabledChainRanking, isWatchlistListMode, featureId],
+  );
+
+  const renderToken = useCallback<ListRenderItem<BridgeToken | null>>(
+    ({ item, index }) => {
+      // This is to support a partial loading state for top tokens
+      // We can show tokens with balance immediately, but we need to wait for the top tokens to load
+      if (!item) {
+        return <SkeletonItem />;
+      }
+
+      const isSelected =
+        selectedToken?.address === item.address &&
+        selectedToken?.chainId === item.chainId;
+
+      return (
+        <BridgeTokenSelectorRow
+          token={item}
+          isSelected={isSelected}
+          onTokenPress={(token) => handleWatchlistTokenPress(token, index)}
+          onInfoPress={handleInfoButtonPress}
+          isNoFeeAsset={getIsNoFeeAsset(item)}
+          badgeLabel={getBridgeTokenBadgeLabel(item, isRWAEnabled)}
+        />
+      );
+    },
+    [
+      selectedToken,
+      handleWatchlistTokenPress,
+      handleInfoButtonPress,
+      getIsNoFeeAsset,
+      isRWAEnabled,
+    ],
+  );
+
+  const keyExtractor = useCallback(
+    (item: BridgeToken | null, index: number) =>
+      item ? `${item.chainId}-${item.address}` : `skeleton-${index}`,
+    [],
+  );
+
+  // Load more results when user scrolls to the bottom
+  const handleLoadMore = useCallback(() => {
+    if (isValidSearch && !isSearchLoading && !isLoadingMore && searchCursor) {
+      searchTokens(searchString, searchCursor);
+    }
+  }, [
+    isValidSearch,
+    isSearchLoading,
+    isLoadingMore,
+    searchCursor,
+    searchTokens,
+    searchString,
+  ]);
+
+  // Custom scroll handler for pagination (replaces buggy onEndReached)
+  const handleScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const { layoutMeasurement, contentOffset, contentSize } =
+        event.nativeEvent;
+      const isCloseToBottom =
+        layoutMeasurement.height + contentOffset.y >=
+        contentSize.height - LOAD_MORE_DISTANCE_THRESHOLD;
+
+      if (isCloseToBottom) {
+        handleLoadMore();
+      }
+    },
+    [handleLoadMore],
+  );
+
+  // Render footer for pagination loading indicator
+  const renderFooter = useCallback(() => {
+    if (!isLoadingMore) {
+      return null;
+    }
+    return <SkeletonItem />;
+  }, [isLoadingMore]);
+
+  // Capture FlatList height for auto-load logic
+  const handleFlatListLayout = useCallback(
+    (event: { nativeEvent: { layout: { height: number } } }) => {
+      setFlatListHeight(event.nativeEvent.layout.height);
+    },
+    [],
+  );
+
+  // A page whose results are all filtered out (e.g. RWAs) leaves the
+  // filtered results empty while a cursor for the next page still exists.
+  // The auto-load effect will keep fetching in that case, so the empty
+  // state must stay hidden until either results appear or the cursor is
+  // exhausted, otherwise "no tokens found" flashes/sticks mid-fetch.
+  const isAwaitingMoreSearchResults =
+    searchResultsWithBalance.length === 0 && Boolean(searchCursor);
+
+  const renderEmptyState = useCallback(() => {
+    if (isWatchlistListMode && hasWatchlistItems) {
+      if (isWatchlistLoading) {
+        return null;
+      }
+
+      // No active search: this picker's watchlist has items overall, but
+      // none matched the current chain scope (either a specific network
+      // pill, or this picker's narrower `enabledChainIds` under "All"), so
+      // show favorites-specific empty copy instead of a blank list.
+      if (!isValidSearch) {
+        return (
+          <BridgeTokenSelectorEmptyState
+            containerStyle={styles.emptyStateContainer}
+            Icon={WatchlistEmptyIcon}
+            title={strings('bridge.no_watchlist_tokens_found')}
+            description={strings(
+              'bridge.no_watchlist_tokens_found_description',
+            )}
+            testID="bridge-watchlist-empty-state"
+          />
+        );
+      }
+
+      if (isSearchLoading || isLoadingMore || isAwaitingMoreSearchResults) {
+        return null;
+      }
+
+      return (
+        <BridgeTokenSelectorEmptyState
+          containerStyle={styles.emptyStateContainer}
+          Icon={NoSearchResultsIcon}
+          title={strings('bridge.no_tokens_found')}
+          description={strings('bridge.no_tokens_found_description')}
+        />
+      );
+    }
+
+    // Only show empty state when search is active, not loading, and not
+    // waiting on additional pages to fill in filtered-out results.
+    if (
+      !isValidSearch ||
+      isSearchLoading ||
+      isLoadingMore ||
+      isAwaitingMoreSearchResults
+    ) {
+      return null;
+    }
+
+    return (
+      <BridgeTokenSelectorEmptyState
+        containerStyle={styles.emptyStateContainer}
+        Icon={NoSearchResultsIcon}
+        title={strings('bridge.no_tokens_found')}
+        description={strings('bridge.no_tokens_found_description')}
+      />
+    );
+  }, [
+    hasWatchlistItems,
+    isWatchlistListMode,
+    isWatchlistLoading,
+    isValidSearch,
+    isSearchLoading,
+    isLoadingMore,
+    isAwaitingMoreSearchResults,
+    styles.emptyStateContainer,
+    NoSearchResultsIcon,
+    WatchlistEmptyIcon,
+  ]);
+
+  return (
+    <>
+      <Box twClassName="px-4 pt-1 pb-3">
+        <TextFieldSearch
+          value={searchString}
+          onChangeText={handleSearchTextChange}
+          placeholder={strings('swaps.search_token')}
+          testID="bridge-token-search-input"
+          autoComplete="off"
+          autoCorrect={false}
+          autoCapitalize="none"
+          onPressClearButton={handleClearSearch}
+        />
+      </Box>
+      <Box twClassName="pt-2 pb-4 pl-4">
+        <NetworkPills
+          selectedChainId={selectedChainId}
+          onChainSelect={handleChainSelect}
+          showWatchlistFilter={isWatchlistEnabled}
+          isWatchlistFilterActive={isWatchlistFilterActive}
+          onWatchlistFilterPress={handleWatchlistFilterPress}
+          enabledChainIds={enabledChainIds}
+          onMorePress={onOpenNetworkList}
+        />
+      </Box>
+
+      {showWatchlistEmptyCta ? (
+        <WatchlistEmptyCTA source={TokenDetailsSource.SwapWatchlistFilter} />
+      ) : (
+        <FlashList
+          ref={flatListRef}
+          testID="bridge-token-list"
+          style={styles.tokensList}
+          contentContainerStyle={styles.tokensListContainer}
+          data={displayData}
+          renderItem={renderToken}
+          keyExtractor={keyExtractor}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator
+          showsHorizontalScrollIndicator={false}
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
+          ListFooterComponent={renderFooter}
+          ListEmptyComponent={renderEmptyState}
+          onLayout={handleFlatListLayout}
+          maintainVisibleContentPosition={{ disabled: true }}
+          renderScrollComponent={renderScrollComponent}
+        />
+      )}
+    </>
+  );
+};
+
+export const BridgeTokenSelector: React.FC = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
+  const dispatch = useDispatch();
+  const { styles } = useStyles(createStyles, {});
+  const route =
+    useRoute<RouteProp<{ params: BridgeTokenSelectorRouteParams }, 'params'>>();
+  const { handleTokenPress, selectedToken } = useTokenSelection(
+    route.params?.type,
+  );
+
+  // Set selecting token state to prevent quote expired modal from showing
+  useEffect(() => {
+    dispatch(setIsSelectingToken(true));
+
+    return () => {
+      dispatch(setIsSelectingToken(false));
+    };
+  }, [dispatch]);
+
+  return (
+    <SafeAreaView style={styles.container} edges={['bottom', 'left', 'right']}>
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        title={strings('bridge.select_token')}
+        onBack={() => navigation.goBack()}
+        includesTopInset
+      />
+      <BridgeTokenSelectorContent
+        type={route.params?.type}
+        selectedToken={selectedToken}
+        onTokenPress={handleTokenPress}
+        enabledChainIds={route.params?.enabledChainIds}
+        excludeRwaTokens={route.params?.excludeRwaTokens}
+        onOpenNetworkList={() =>
+          navigation.navigate(Routes.BRIDGE.MODALS.ROOT, {
+            screen: Routes.BRIDGE.MODALS.NETWORK_LIST_MODAL,
+            params: { enabledChainIds: route.params?.enabledChainIds },
+          })
+        }
+      />
+    </SafeAreaView>
+  );
+};

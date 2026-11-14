@@ -1,16 +1,16 @@
 import React, { useCallback, useState } from 'react';
-import { Platform, Switch, Text, View } from 'react-native';
 import { strings } from '../../../../locales/i18n';
-import { BIOMETRY_TYPE } from 'react-native-keychain';
-import { createStyles } from './styles';
-import { LOGIN_WITH_REMEMBER_ME_SWITCH } from '../../../../wdio/screen-objects/testIDs/Screens/LoginScreen.testIds';
+import { AUTHENTICATION_TYPE, BIOMETRY_TYPE } from 'react-native-keychain';
+import { LoginViewSelectors } from '../../Views/Login/LoginView.testIds';
 import { useSelector } from 'react-redux';
-import generateTestId from '../../../../wdio/utils/generateTestId';
-import { LoginOptionsSwitchSelectorsIDs } from '../../../../e2e/selectors/LoginOptionsSwitch.selectors';
-import { useTheme } from '../../../util/theme';
+import SecurityOptionToggle from '../SecurityOptionToggle/SecurityOptionToggle';
 
 interface Props {
-  shouldRenderBiometricOption: BIOMETRY_TYPE | null;
+  shouldRenderBiometricOption:
+    | BIOMETRY_TYPE
+    | AUTHENTICATION_TYPE
+    | string
+    | null;
   biometryChoiceState: boolean;
   onUpdateBiometryChoice: (biometryEnabled: boolean) => void;
   onUpdateRememberMe: (rememberMeEnabled: boolean) => void;
@@ -28,10 +28,9 @@ const LoginOptionsSwitch = ({
   onUpdateBiometryChoice,
   onUpdateRememberMe,
 }: Props) => {
-  const theme = useTheme();
-  const { colors } = theme;
-  const styles = createStyles(colors);
   const allowLoginWithRememberMe = useSelector(
+    // TODO: Replace "any" with type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (state: any) => state.security.allowLoginWithRememberMe,
   );
   const [rememberMeEnabled, setRememberMeEnabled] = useState<boolean>(false);
@@ -52,45 +51,23 @@ const LoginOptionsSwitch = ({
   // if both are disabled then this component returns null
   if (shouldRenderBiometricOption !== null) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.label}>
-          {strings(
-            `biometrics.enable_${shouldRenderBiometricOption.toLowerCase()}`,
-          )}
-        </Text>
-        <Switch
-          onValueChange={onBiometryValueChanged}
-          value={biometryChoiceState}
-          style={styles.switch}
-          trackColor={{
-            true: colors.primary.default,
-            false: colors.border.muted,
-          }}
-          thumbColor={theme.brandColors.white000}
-          ios_backgroundColor={colors.border.muted}
-          testID={LoginOptionsSwitchSelectorsIDs.BIOMETRICS_SWITCH}
-        />
-      </View>
+      <SecurityOptionToggle
+        title={strings(
+          `biometrics.enable_${shouldRenderBiometricOption.toLowerCase()}`,
+        )}
+        value={biometryChoiceState}
+        onOptionUpdated={onBiometryValueChanged}
+        testId={LoginViewSelectors.BIOMETRIC_SWITCH}
+      />
     );
   } else if (shouldRenderBiometricOption === null && allowLoginWithRememberMe) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.label}>
-          {strings(`choose_password.remember_me`)}
-        </Text>
-        <Switch
-          onValueChange={onRememberMeValueChanged}
-          value={rememberMeEnabled}
-          style={styles.switch}
-          trackColor={{
-            true: colors.primary.default,
-            false: colors.border.muted,
-          }}
-          thumbColor={theme.brandColors.white000}
-          ios_backgroundColor={colors.border.muted}
-          {...generateTestId(Platform, LOGIN_WITH_REMEMBER_ME_SWITCH)}
-        />
-      </View>
+      <SecurityOptionToggle
+        title={strings('choose_password.remember_me')}
+        value={rememberMeEnabled}
+        onOptionUpdated={onRememberMeValueChanged}
+        testId={LoginViewSelectors.REMEMBER_ME_SWITCH}
+      />
     );
   }
   return null;

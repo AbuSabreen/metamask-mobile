@@ -1,7 +1,6 @@
-import React, { useEffect, useMemo, useCallback } from 'react';
+import React, { useEffect, useCallback, useRef } from 'react';
 import { connect } from 'react-redux';
 import PropTypes from 'prop-types';
-import { useNavigationState } from '@react-navigation/native';
 import {
   removeCurrentNotification,
   hideCurrentNotification,
@@ -11,18 +10,9 @@ import TransactionNotification from './TransactionNotification';
 import SimpleNotification from './SimpleNotification';
 import { currentNotificationSelector } from '../../../reducers/notification';
 
-import { findRouteNameFromNavigatorState } from '../../../util/general';
 import usePrevious from '../../hooks/usePrevious';
-import {
-  useSharedValue,
-  withTiming,
-  Easing,
-  runOnJS,
-} from 'react-native-reanimated';
 
 const { TRANSACTION, SIMPLE } = NotificationTypes;
-
-const BROWSER_ROUTE = 'BrowserView';
 
 function Notification({
   currentNotification,
@@ -30,57 +20,59 @@ function Notification({
   hideCurrentNotification,
   removeCurrentNotification,
 }) {
-  const notificationAnimated = useSharedValue(200);
-  const routes = useNavigationState((state) => state.routes);
-
   const prevNotificationIsVisible = usePrevious(currentNotificationIsVisible);
+  const dismissCompleteRef = useRef(false);
 
-  const animatedTimingStart = useCallback((animatedRef, toValue, callback) => {
-    animatedRef.value = withTiming(
-      toValue,
-      { duration: 500, easing: Easing.linear },
-      () => callback && runOnJS(callback)(),
-    );
-  }, []);
+  const handleDismissComplete = useCallback(() => {
+    if (dismissCompleteRef.current) {
+      return;
+    }
 
-  const isInBrowserView = useMemo(
-    () => findRouteNameFromNavigatorState(routes) === BROWSER_ROUTE,
-    [routes],
-  );
+    dismissCompleteRef.current = true;
+    removeCurrentNotification();
+  }, [removeCurrentNotification]);
+
+  useEffect(() => {
+    dismissCompleteRef.current = false;
+  }, [currentNotification?.id]);
 
   useEffect(
     () => () => {
-      animatedTimingStart(notificationAnimated, 200, removeCurrentNotification);
       hideCurrentNotification();
+      handleDismissComplete();
     },
-    [
-      notificationAnimated,
-      animatedTimingStart,
-      hideCurrentNotification,
-      removeCurrentNotification,
-    ],
+    [hideCurrentNotification, handleDismissComplete],
   );
 
   useEffect(() => {
     if (!prevNotificationIsVisible && currentNotificationIsVisible) {
-      animatedTimingStart(notificationAnimated, 0);
       hideCurrentNotification();
-      setTimeout(() => {
-        animatedTimingStart(
-          notificationAnimated,
-          200,
-          removeCurrentNotification,
-        );
-      }, currentNotification.autodismiss || 5000);
     }
   }, [
-    animatedTimingStart,
     hideCurrentNotification,
-    removeCurrentNotification,
     currentNotificationIsVisible,
     prevNotificationIsVisible,
-    currentNotification.autodismiss,
-    notificationAnimated,
+  ]);
+
+  useEffect(() => {
+    if (!currentNotification?.id) {
+      return;
+    }
+
+    const dismissDuration = currentNotification.autodismiss || 5000;
+    // BaseNotification normally dequeues via onDismissComplete after its exit
+    // animation. Keep this fallback so the Redux queue still advances if that
+    // callback never fires (for example, interrupted animations or unmount edge
+    // cases). The extra second gives the animation time to finish first.
+    const timeoutId = setTimeout(() => {
+      handleDismissComplete();
+    }, dismissDuration + 1000);
+
+    return () => clearTimeout(timeoutId);
+  }, [
+    currentNotification?.id,
+    currentNotification?.autodismiss,
+    handleDismissComplete,
   ]);
 
   if (!currentNotification?.type) return null;
@@ -88,17 +80,17 @@ function Notification({
     return (
       <TransactionNotification
         onClose={hideCurrentNotification}
-        isInBrowserView={isInBrowserView}
-        notificationAnimated={notificationAnimated}
-        animatedTimingStart={animatedTimingStart}
+        onDismissComplete={handleDismissComplete}
+        dismissDuration={currentNotification.autodismiss}
         currentNotification={currentNotification}
       />
     );
   if (currentNotification.type === SIMPLE)
     return (
       <SimpleNotification
-        isInBrowserView={isInBrowserView}
-        notificationAnimated={notificationAnimated}
+        onDismissComplete={handleDismissComplete}
+        dismissDuration={currentNotification.autodismiss}
+        hideCurrentNotification={hideCurrentNotification}
         currentNotification={currentNotification}
       />
     );

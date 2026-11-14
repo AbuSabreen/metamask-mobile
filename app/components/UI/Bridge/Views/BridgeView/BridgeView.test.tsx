@@ -1,0 +1,3454 @@
+import React from 'react';
+import {
+  fireGestureHandler,
+  getByGestureTestId,
+} from 'react-native-gesture-handler/jest-utils';
+import { merge } from 'lodash';
+import { initialState } from '../../_mocks_/initialState';
+import {
+  renderScreen,
+  DeepPartial,
+} from '../../../../../util/test/renderWithProvider';
+import { act, fireEvent, waitFor } from '@testing-library/react-native';
+import { Platform } from 'react-native';
+import PagerView from 'react-native-pager-view';
+import type { ReactTestInstance } from 'react-test-renderer';
+import Routes from '../../../../../constants/navigation/Routes';
+import {
+  resetBridgeState,
+  setDestToken,
+  setSourceToken,
+} from '../../../../../core/redux/slices/bridge';
+import { Hex } from '@metamask/utils';
+import type { BridgeRouteParams } from '../../hooks/useSwapBridgeNavigation';
+import { createBridgeTestState } from '../../testUtils';
+import { BridgeToken, BridgeViewMode, SecurityDataType } from '../../types';
+import {
+  RequestStatus,
+  type QuoteResponse,
+  MetaMetricsSwapsEventSource,
+  QuoteStreamCompleteReason,
+  TokenFeatureType,
+} from '@metamask/bridge-controller';
+import { TokenWarningModalMode } from '../../components/TokenWarningModal/constants';
+import { mockBridgeReducerState } from '../../_mocks_/bridgeReducerState';
+import { SolScope } from '@metamask/keyring-api';
+import { mockUseBridgeQuoteData } from '../../_mocks_/useBridgeQuoteData.mock';
+import { useBridgeQuoteData } from '../../hooks/useBridgeQuoteData';
+import { strings } from '../../../../../../locales/i18n';
+import { BridgeViewSelectorsIDs } from './BridgeView.testIds';
+import { MOCK_ENTROPY_SOURCE as mockEntropySource } from '../../../../../util/test/keyringControllerTestUtils';
+import { RootState } from '../../../../../reducers';
+import { mockQuoteWithMetadata } from '../../_mocks_/bridgeQuoteWithMetadata';
+import Engine from '../../../../../core/Engine';
+import { BridgeTrendingTokensSectionTestIds } from '../../components/BridgeTrendingTokensSection/BridgeTrendingTokensSection.testIds';
+import { SwapDiscoveryFeedTestIds } from '../../components/SwapDiscoveryFeed/SwapDiscoveryFeed.testIds';
+import {
+  SWAP_DISCOVERY_FEED_REVAMP_VARIANTS,
+  SwapDiscoveryFeedRevampVariant,
+} from '../../components/SwapDiscoveryFeed/abTestConfig';
+import { useABTest } from '../../../../../hooks/useABTest';
+import { Button } from '@metamask/design-system-react-native';
+import { FEATURE_FLAG_NAME } from '../../../../../selectors/featureFlagController/rwa';
+import { BridgeSessionProvider } from '../../providers/BridgeSessionProvider';
+import { BridgeTabKey } from './BridgeView.constants';
+import BridgeViewContent from '.';
+import { OrdersTabsSelectorsIDs } from '../../components/OrdersTabs/OrdersTabs.testIds';
+
+// Mock the account-tree-controller file that imports the problematic module
+jest.mock(
+  '../../../../../multichain-accounts/controllers/account-tree-controller',
+  () => ({
+    accountTreeControllerInit: jest.fn(() => ({
+      controller: {
+        state: { accountTree: { wallets: {} } },
+      },
+    })),
+  }),
+);
+
+const mockState = {
+  ...initialState,
+  engine: {
+    ...initialState.engine,
+    backgroundState: {
+      ...initialState.engine.backgroundState,
+      KeyringController: {
+        keyrings: [
+          {
+            accounts: ['0x1234567890123456789012345678901234567890'],
+            type: 'HD Key Tree',
+            metadata: {
+              id: mockEntropySource,
+              name: '',
+            },
+          },
+        ],
+      },
+      AccountsController: {
+        internalAccounts: {
+          selectedAccount: '30786334-3935-4563-b064-363339643939',
+          accounts: {
+            '30786334-3935-4563-b064-363339643939': {
+              id: '30786334-3935-4563-b064-363339643939',
+              address: '0x1234567890123456789012345678901234567890',
+              name: 'Account 1',
+              type: 'eip155:eoa',
+              scopes: ['eip155:0'],
+              metadata: {
+                lastSelected: 0,
+                keyring: {
+                  type: 'HD Key Tree',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as DeepPartial<RootState>;
+
+// TODO remove this mock once we have a real implementation
+jest.mock('../../../../../selectors/confirmTransaction');
+
+jest.mock('../../../../../core/Engine', () => {
+  const { MOCK_ENTROPY_SOURCE } = jest.requireActual(
+    '../../../../../util/test/keyringControllerTestUtils',
+  );
+  return {
+    controllerMessenger: {
+      // Messenger actions the tabs call are async, e.g. the limit tab's
+      // OHLCV subscribe, so this has to hand back a promise.
+      call: jest.fn().mockResolvedValue(undefined),
+      subscribe: jest.fn(),
+      unsubscribe: jest.fn(),
+    },
+    context: {
+      KeyringController: {
+        state: {
+          keyrings: [
+            {
+              accounts: ['0x1234567890123456789012345678901234567890'],
+              type: 'HD Key Tree',
+              metadata: {
+                id: MOCK_ENTROPY_SOURCE,
+                name: '',
+              },
+            },
+          ],
+        },
+      },
+      AccountsController: {
+        state: {
+          internalAccounts: {
+            selectedAccount: '30786334-3935-4563-b064-363339643939',
+            accounts: {
+              '30786334-3935-4563-b064-363339643939': {
+                id: '30786334-3935-4563-b064-363339643939',
+                address: '0x1234567890123456789012345678901234567890',
+                name: 'Account 1',
+                type: 'eip155:eoa',
+                scopes: ['eip155:0'],
+                metadata: {
+                  lastSelected: 0,
+                  keyring: {
+                    type: 'HD Key Tree',
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      AccountTreeController: {
+        accountTree: {
+          wallets: {},
+        },
+      },
+      GasFeeController: {
+        startPolling: jest.fn(),
+        stopPollingByPollingToken: jest.fn(),
+      },
+      NetworkController: {
+        getNetworkConfigurationByNetworkClientId: jest.fn(),
+      },
+      BridgeStatusController: {
+        submitTx: jest.fn().mockResolvedValue({ success: true }),
+      },
+      BridgeController: {
+        resetState: jest.fn(),
+        setBridgeFeatureFlags: jest.fn().mockResolvedValue(undefined),
+        setInputPrimaryDenomination: jest.fn(),
+        updateBridgeQuoteRequestParams: jest.fn(),
+        trackUnifiedSwapBridgeEvent: jest.fn(),
+      },
+    },
+    getTotalEvmFiatAccountBalance: jest.fn().mockReturnValue({
+      balance: '1000000000000000000', // 1 ETH
+      fiatBalance: '2000', // $2000
+    }),
+  };
+});
+
+// Mock useAccounts hook
+jest.mock('../../../../hooks/useAccounts', () => ({
+  useAccounts: () => ({
+    accounts: [
+      {
+        id: '30786334-3935-4563-b064-363339643939',
+        address: '0x1234567890123456789012345678901234567890',
+        name: 'Account 1',
+        type: 'HD Key Tree',
+        yOffset: 0,
+        isSelected: true,
+        caipAccountId: 'eip155:1:0x1234567890123456789012345678901234567890',
+        scopes: ['eip155:0', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
+      },
+    ],
+    ensByAccountAddress: {
+      '0x1234567890123456789012345678901234567890': '',
+    },
+  }),
+}));
+
+// Mock useSubmitBridgeTx hook (needed because SwapsMarketOrderConfirmButton imports it)
+jest.mock('../../../../../util/bridge/hooks/useSubmitBridgeTx', () => ({
+  __esModule: true,
+  default: () => ({
+    submitBridgeTx: jest.fn(),
+  }),
+}));
+
+jest.mock('../../../../../core/redux/slices/bridge', () => {
+  const actualBridgeSlice = jest.requireActual(
+    '../../../../../core/redux/slices/bridge',
+  );
+  return {
+    __esModule: true,
+    ...actualBridgeSlice,
+    default: actualBridgeSlice.default,
+    setSourceToken: jest.fn(actualBridgeSlice.setSourceToken),
+    setDestToken: jest.fn(actualBridgeSlice.setDestToken),
+  };
+});
+
+jest.mock('../../../../../selectors/bridge', () => ({
+  ...jest.requireActual('../../../../../selectors/bridge'),
+  selectSourceWalletAddress: jest.fn(),
+}));
+
+jest.mock(
+  '../../../../../selectors/featureFlagController/gasFeesSponsored',
+  () => ({
+    getGasFeesSponsoredNetworkEnabled: jest.fn(
+      () => (chainId: string) =>
+        // Return true for Polygon (0x89) to test sponsored quotes
+        chainId === '0x89',
+    ),
+  }),
+);
+
+const mockNavigate = jest.fn();
+const mockSetParams = jest.fn();
+const mockGoBack = jest.fn();
+const mockFocusEffects: (() => void | (() => void))[] = [];
+const mockRoute = {
+  params: {
+    sourcePage: 'test',
+  } as BridgeRouteParams,
+};
+
+jest.mock('@react-navigation/native', () => {
+  const actualNav = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualNav,
+    useFocusEffect: jest.fn((callback: () => void | (() => void)) => {
+      mockFocusEffects.push(callback);
+    }),
+    useNavigation: () => ({
+      navigate: mockNavigate,
+      setParams: mockSetParams,
+      setOptions: jest.fn(),
+      goBack: mockGoBack,
+    }),
+    useRoute: () => mockRoute,
+  };
+});
+
+// Mock useLatestBalance hook
+jest.mock('../../hooks/useLatestBalance', () => ({
+  useLatestBalance: jest.fn().mockImplementation(({ address, chainId }) => {
+    if (!address || !chainId) return undefined;
+
+    // Need to do this due to this error: "The module factory of `jest.mock()` is not allowed to reference any out-of-scope variables.""
+    const actualEthers = jest.requireActual('ethers');
+
+    return {
+      displayBalance: '2.0',
+      atomicBalance: actualEthers.BigNumber.from('2000000000000000000'), // 2 ETH
+    };
+  }),
+}));
+
+jest.mock('../../hooks/useBridgeQuoteData', () => ({
+  useBridgeQuoteData: jest
+    .fn()
+    .mockImplementation(() => mockUseBridgeQuoteData),
+}));
+
+jest.mock('../../hooks/useRecurringOrders', () => ({
+  useRecurringOrders: jest.fn(() => ({
+    orders: [],
+    isLoading: false,
+    isError: false,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    fetchNextPage: jest.fn(),
+    refetch: jest.fn(),
+  })),
+}));
+
+jest.mock('../../hooks/useLimitOrders', () => ({
+  useLimitOrders: jest.fn(() => ({
+    orders: [],
+    isLoading: false,
+    isError: false,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    fetchNextPage: jest.fn(),
+    refetch: jest.fn(),
+  })),
+}));
+
+jest.mock('../../hooks/useSentinelFeeTokenValidation', () => ({
+  useSentinelFeeTokenValidation: jest.fn(() => ({
+    isValid: true,
+    retry: jest.fn(),
+  })),
+}));
+
+jest.mock('../../hooks/useBridgeQuoteData/BridgeQuoteDataContext', () => {
+  const { useBridgeQuoteData } = jest.requireMock(
+    '../../hooks/useBridgeQuoteData',
+  );
+  return {
+    BridgeQuoteDataProvider: ({ children }: { children: unknown }) => children,
+    useBridgeQuoteDataContext: jest.fn(() => useBridgeQuoteData()),
+  };
+});
+
+jest.mock('../../../../../util/address', () => ({
+  ...jest.requireActual('../../../../../util/address'),
+  isHardwareAccount: jest.fn(),
+}));
+
+jest.mock('../../../HardwareWallet/Swaps/useHwConnectionMonitoring', () => ({
+  useHwConnectionMonitoring: jest.fn(() => ({
+    isDisconnectedRef: { current: false },
+    resetHandledError: jest.fn(),
+  })),
+}));
+
+jest.mock('../../../HardwareWallet/Swaps/hooks/useHwQrState', () => ({
+  useHwQrState: jest.fn(() => ({
+    isReadingQrSignature: false,
+    setIsReadingQrSignature: jest.fn(),
+    isQrHardwareWallet: false,
+    showInlineQrSigning: false,
+    handleQrSignatureCancel: jest.fn(),
+    pendingScanRequest: undefined,
+  })),
+}));
+
+jest.mock('react-native-fade-in-image', () => {
+  const React = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  return {
+    __esModule: true,
+    default: ({
+      children,
+      placeholderStyle,
+    }: {
+      children: React.ReactNode;
+      placeholderStyle?: unknown;
+    }) => React.createElement(View, { style: placeholderStyle }, children),
+  };
+});
+
+jest.mock('../../../../../hooks/useABTest', () => ({
+  useABTest: jest.fn(),
+}));
+
+jest.mock('../../../Tokens/hooks/useTokenSecurityQuery', () => ({
+  useTokenSecurityQuery: jest.fn(() => ({ data: null })),
+}));
+
+const mockUseABTest = jest.mocked(useABTest);
+
+jest.mock(
+  '../../components/BridgeTrendingTokensSection/BridgeTrendingTokensSection',
+  () => {
+    const React = jest.requireActual('react');
+    const { View } = jest.requireActual('react-native');
+    const TrendingTokensSectionTestIds = jest.requireActual(
+      '../../components/BridgeTrendingTokensSection/BridgeTrendingTokensSection.testIds',
+    ).BridgeTrendingTokensSectionTestIds;
+
+    return {
+      __esModule: true,
+      default: () =>
+        React.createElement(View, {
+          testID: TrendingTokensSectionTestIds.SECTION,
+        }),
+    };
+  },
+);
+
+// Mock MMDS BottomSheetDialog so that onCloseDialog synchronously calls onClose,
+// allowing keypad close() to work in tests (the real component uses reanimated
+// withTiming which never completes in JSDOM).
+jest.mock('@metamask/design-system-react-native', () => {
+  const actual = jest.requireActual('@metamask/design-system-react-native');
+  const MockReact = jest.requireActual('react');
+
+  return {
+    ...actual,
+    BottomSheetDialog: MockReact.forwardRef(
+      (
+        {
+          children,
+          onClose,
+        }: { children: React.ReactNode; onClose?: () => void },
+        dialogRef: React.Ref<{ onCloseDialog: () => void }>,
+      ) => {
+        MockReact.useImperativeHandle(dialogRef, () => ({
+          onCloseDialog: () => onClose?.(),
+        }));
+        return children;
+      },
+    ),
+  };
+});
+
+// Mock gas included support hooks
+const mockUseIsGasIncludedSTXSendBundleSupported = jest.fn();
+jest.mock(
+  '../../hooks/useIsGasIncludedSTXSendBundleSupported/index.ts',
+  () => ({
+    useIsGasIncludedSTXSendBundleSupported: (chainId?: string) =>
+      mockUseIsGasIncludedSTXSendBundleSupported(chainId),
+  }),
+);
+
+const mockUseSwapsRebate = jest.fn();
+jest.mock('../../hooks/useSwapsRebate', () => ({
+  useSwapsRebate: (...args: unknown[]) => mockUseSwapsRebate(...args),
+}));
+
+jest.mock('../../../shared/RebateBanner', () => {
+  const MockReact = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  return {
+    __esModule: true,
+    default: () =>
+      MockReact.createElement(View, { testID: 'mock-swaps-rebate-banner' }),
+  };
+});
+
+const mockUseIsGasIncluded7702Supported = jest.fn();
+jest.mock('../../hooks/useIsGasIncluded7702Supported/index.ts', () => ({
+  useIsGasIncluded7702Supported: (chainId?: string) =>
+    mockUseIsGasIncluded7702Supported(chainId),
+}));
+
+const BridgeView = () => (
+  <BridgeSessionProvider>
+    <BridgeViewContent />
+  </BridgeSessionProvider>
+);
+
+describe('BridgeView', () => {
+  const token2Address = '0x0000000000000000000000000000000000000002' as Hex;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseSwapsRebate.mockReturnValue(null);
+    mockFocusEffects.length = 0;
+    mockRoute.params = {
+      sourcePage: 'test',
+    } as BridgeRouteParams;
+    mockUseABTest.mockReturnValue({
+      variant:
+        SWAP_DISCOVERY_FEED_REVAMP_VARIANTS[
+          SwapDiscoveryFeedRevampVariant.Control
+        ],
+      variantName: SwapDiscoveryFeedRevampVariant.Control,
+      isActive: true,
+    });
+  });
+
+  it('renders source and destination token areas', async () => {
+    const { getByTestId } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: mockState },
+    );
+
+    expect(getByTestId(BridgeViewSelectorsIDs.SOURCE_TOKEN_AREA)).toBeTruthy();
+    expect(
+      getByTestId(BridgeViewSelectorsIDs.DESTINATION_TOKEN_AREA),
+    ).toBeTruthy();
+  });
+
+  it('renders the slippage settings button without an active quote', () => {
+    jest
+      .mocked(useBridgeQuoteData as unknown as jest.Mock)
+      .mockImplementationOnce(() => ({
+        ...mockUseBridgeQuoteData,
+        activeQuote: null,
+        formattedQuoteData: undefined,
+      }));
+
+    const { getByTestId } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: mockState },
+    );
+
+    expect(
+      getByTestId(BridgeViewSelectorsIDs.SLIPPAGE_SETTINGS_BUTTON),
+    ).toBeOnTheScreen();
+  });
+
+  it('opens the swap slippage modal from the settings button', () => {
+    const testState = createBridgeTestState();
+    const { getByTestId } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: testState },
+    );
+
+    fireEvent.press(
+      getByTestId(BridgeViewSelectorsIDs.SLIPPAGE_SETTINGS_BUTTON),
+    );
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.BRIDGE.MODALS.ROOT, {
+      screen: Routes.BRIDGE.MODALS.SWAP_DEFAULT_SLIPPAGE_MODAL,
+      params: {
+        sourceChainId: testState.bridge.sourceToken?.chainId,
+        destChainId: testState.bridge.destToken?.chainId,
+      },
+    });
+  });
+
+  it('resets slippage and controller quote state when leaving the screen', () => {
+    const testState = createBridgeTestState({
+      bridgeReducerOverrides: {
+        slippage: '3.5',
+        isSlippageUserOverride: true,
+      },
+    });
+    const { store, unmount } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: testState },
+    );
+
+    unmount();
+
+    expect(store.getState().bridge.slippage).toBeUndefined();
+    expect(store.getState().bridge.isSlippageUserOverride).toBe(false);
+    expect(Engine.context.BridgeController.resetState).toHaveBeenCalled();
+  });
+
+  it('scrolls to top and clears the route param when requested on focus', () => {
+    mockRoute.params = {
+      sourcePage: 'test',
+      scrollToTopOnNav: true,
+    } as BridgeRouteParams;
+
+    renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: mockState },
+    );
+
+    act(() => {
+      mockFocusEffects[mockFocusEffects.length - 1]?.();
+    });
+
+    expect(mockSetParams).toHaveBeenCalledWith({
+      scrollToTopOnNav: undefined,
+    });
+  });
+
+  it('should open BridgeTokenSelector when clicking source token', async () => {
+    const { findByText } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: mockState },
+    );
+
+    // Find and click the token button
+    const tokenButton = await findByText('ETH');
+    expect(tokenButton).toBeTruthy();
+    fireEvent.press(tokenButton);
+
+    // Verify navigation to BridgeTokenSelector
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.BRIDGE.TOKEN_SELECTOR, {
+      type: 'source',
+    });
+  });
+
+  it('should open token selector when clicking destination token area', async () => {
+    const { getByText } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: mockState },
+    );
+
+    // Find and click the destination token area
+    const destTokenArea = getByText('Swap to');
+    expect(destTokenArea).toBeTruthy();
+
+    fireEvent.press(destTokenArea);
+
+    // Verify navigation to BridgeTokenSelector
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.BRIDGE.TOKEN_SELECTOR, {
+      type: 'dest',
+    });
+  });
+
+  it('close keypad when pressing destination token input', async () => {
+    const { getByTestId, queryByTestId, getByText } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: mockState },
+    );
+
+    const sourceInput = getByTestId('source-token-area-input');
+    await act(async () => {
+      sourceInput.props.onPressIn();
+    });
+
+    // Verify keypad is open
+    await waitFor(() => {
+      expect(getByText('1')).toBeTruthy();
+      expect(queryByTestId('keypad-delete-button')).toBeTruthy();
+    });
+
+    // Press the destination token input which should close the keypad
+    const destInput = getByTestId('dest-token-area-input');
+
+    // Call the onPressIn handler directly to trigger keypad close
+    await act(async () => {
+      destInput.props.onPressIn();
+    });
+
+    // Verify keypad is closed
+    await waitFor(() => {
+      expect(queryByTestId('keypad-delete-button')).toBeNull();
+    });
+  });
+
+  it('should update source token amount when typing', async () => {
+    jest
+      .mocked(useBridgeQuoteData as unknown as jest.Mock)
+      .mockImplementation(() => ({
+        ...mockUseBridgeQuoteData,
+        activeQuote: null,
+        bestQuote: null,
+        sourceAmount: undefined,
+        isLoading: false,
+        destTokenAmount: undefined,
+        formattedQuoteData: undefined,
+      }));
+
+    const { getByTestId, getByText } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: mockState },
+    );
+
+    const sourceInput = getByTestId('source-token-area-input');
+    await act(async () => {
+      sourceInput.props.onPressIn();
+    });
+
+    // Press number buttons to input
+    fireEvent.press(getByText('9'));
+    fireEvent.press(getByText('.'));
+    fireEvent.press(getByText('5'));
+
+    // Verify the input value is updated
+    const input = getByTestId('source-token-area-input');
+    await waitFor(() => {
+      expect(input.props.value).toBe('9.5');
+    });
+
+    // Verify fiat value is displayed (9.5 ETH * $2000 = $19000)
+    expect(getByText('$19,000.00')).toBeTruthy();
+  });
+
+  it('should update source token amount when selecting a quick-pick preset', async () => {
+    jest
+      .mocked(useBridgeQuoteData as unknown as jest.Mock)
+      .mockImplementation(() => ({
+        ...mockUseBridgeQuoteData,
+        activeQuote: null,
+        bestQuote: null,
+        sourceAmount: undefined,
+        isLoading: false,
+        destTokenAmount: undefined,
+        formattedQuoteData: undefined,
+      }));
+
+    const { getByTestId, getByText } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: mockState },
+    );
+
+    const sourceInput = getByTestId('source-token-area-input');
+    await act(async () => {
+      sourceInput.props.onPressIn();
+    });
+
+    await waitFor(() => {
+      expect(getByText('25%')).toBeTruthy();
+    });
+
+    fireEvent.press(getByText('25%'));
+
+    await waitFor(() => {
+      expect(getByTestId('source-token-area-input').props.value).toBe('0.5');
+    });
+  });
+
+  it('should display source token symbol and balance', async () => {
+    const stateWithAmount = {
+      ...mockState,
+      bridge: {
+        ...mockState.bridge,
+        sourceAmount: '1.5',
+      },
+    };
+
+    const { getByText, getByTestId } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: stateWithAmount },
+    );
+
+    // Verify token symbol is displayed
+    expect(getByText('ETH')).toBeTruthy();
+
+    // Verify token amount is displayed
+    const input = getByTestId('source-token-area-input');
+    expect(input.props.value).toBe('1.5');
+
+    // Verify fiat value is displayed (1.5 ETH * $2000 = $3000)
+    expect(getByText('$3,000.00')).toBeTruthy();
+
+    // Verify balance is displayed
+    await waitFor(() => {
+      expect(getByText('2 ETH')).toBeTruthy();
+    });
+  });
+
+  it('should not display max button when source token is native token', () => {
+    const stateWithNativeToken = {
+      ...mockState,
+      bridge: {
+        ...mockState.bridge,
+        sourceToken: {
+          address: '0x0000000000000000000000000000000000000000', // Native ETH address
+          chainId: '0x1' as Hex,
+          decimals: 18,
+          image: '',
+          name: 'Ether',
+          symbol: 'ETH',
+        },
+      },
+    };
+
+    const { queryByTestId } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: stateWithNativeToken },
+    );
+
+    // Verify max button is not present for native token
+    expect(queryByTestId('token-input-area-max-button')).toBeNull();
+  });
+
+  it('should display max button when source token is not native token', () => {
+    const stateWithERC20Token = {
+      ...mockState,
+      bridge: {
+        ...mockState.bridge,
+        sourceToken: {
+          address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC token address
+          chainId: '0x1' as Hex,
+          decimals: 6,
+          image:
+            'https://static.cx.metamask.io/api/v1/tokenIcons/1/0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.png',
+          name: 'USD Coin',
+          symbol: 'USDC',
+        },
+      },
+    };
+
+    const { queryByTestId } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: stateWithERC20Token },
+    );
+
+    // Verify max button is present for ERC-20 token
+    expect(queryByTestId('token-input-area-max-button')).toBeTruthy();
+  });
+
+  it('should set source amount to maximum balance when max button is pressed', async () => {
+    const stateWithERC20Token = {
+      ...mockState,
+      bridge: {
+        ...mockState.bridge,
+        sourceToken: {
+          address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC token address
+          chainId: '0x1' as Hex,
+          decimals: 6,
+          image:
+            'https://static.cx.metamask.io/api/v1/tokenIcons/1/0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.png',
+          name: 'USD Coin',
+          symbol: 'USDC',
+        },
+      },
+    };
+
+    const { getByTestId } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: stateWithERC20Token },
+    );
+
+    // Find and press the max button
+    const maxButton = getByTestId('token-input-area-max-button');
+    expect(maxButton).toBeTruthy();
+    fireEvent.press(maxButton);
+
+    const input = getByTestId('source-token-area-input');
+    await waitFor(() => {
+      expect(input.props.value).toBe('2');
+    });
+  });
+
+  it('switch tokens and preserve keypad state when clicking arrow button', async () => {
+    const mockStateWithTokens = {
+      ...mockState,
+      bridge: {
+        ...mockState.bridge,
+        sourceToken: {
+          address: '0x0000000000000000000000000000000000000000',
+          chainId: '0x1' as Hex,
+          decimals: 18,
+          image: '',
+          name: 'Ether',
+          symbol: 'ETH',
+        },
+        destToken: {
+          address: token2Address,
+          chainId: '0x1' as Hex,
+          decimals: 6,
+          image:
+            'https://static.cx.metamask.io/api/v1/tokenIcons/1/0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.png',
+          symbol: 'USDC',
+        },
+      },
+    };
+
+    const { getByTestId, queryByTestId } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: mockStateWithTokens },
+    );
+
+    // Keypad is open before flip
+    const keypadBeforeFlip = queryByTestId('keypad-delete-button');
+    const wasKeypadOpen = !!keypadBeforeFlip;
+
+    const arrowButton = getByTestId('arrow-button');
+    fireEvent.press(arrowButton);
+
+    expect(setSourceToken).toHaveBeenCalledWith(
+      mockStateWithTokens.bridge.destToken,
+    );
+    expect(setDestToken).toHaveBeenCalledWith(
+      mockStateWithTokens.bridge.sourceToken,
+    );
+
+    // Keypad state is preserved after flip — not explicitly closed or opened
+    const keypadAfterFlip = queryByTestId('keypad-delete-button');
+    expect(!!keypadAfterFlip).toBe(wasKeypadOpen);
+  });
+
+  it('disables switch button when destination token network is disabled', () => {
+    const avalancheChainId = '0xa86a' as Hex; // Avalanche C-Chain
+
+    // Create base state with the disabled network configuration
+    const baseStateWithDisabledNetwork = {
+      ...mockState,
+      engine: {
+        ...mockState.engine,
+        backgroundState: {
+          ...mockState.engine?.backgroundState,
+          NetworkEnablementController: {
+            enabledNetworkMap: {
+              eip155: {
+                '0x1': true, // Ethereum enabled
+                [avalancheChainId]: false, // Avalanche disabled
+              },
+              solana: {
+                'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': true,
+              },
+              bip122: {
+                'bip122:000000000019d6689c085ae165831e93': true,
+              },
+              tron: {
+                'tron:728126428': true,
+              },
+            },
+          },
+        },
+      },
+    } as DeepPartial<RootState>;
+
+    const testState = createBridgeTestState(
+      {
+        bridgeReducerOverrides: {
+          sourceToken: {
+            address: '0x0000000000000000000000000000000000000000',
+            chainId: '0x1' as Hex,
+            decimals: 18,
+            image: '',
+            name: 'Ether',
+            symbol: 'ETH',
+          },
+          destToken: {
+            address: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', // USDC on Avalanche
+            chainId: avalancheChainId,
+            decimals: 6,
+            image: '',
+            name: 'USD Coin',
+            symbol: 'USDC',
+          },
+          selectedDestChainId: avalancheChainId,
+        },
+      },
+      baseStateWithDisabledNetwork,
+    );
+
+    const { getByTestId } = renderScreen(
+      BridgeView,
+      {
+        name: Routes.BRIDGE.ROOT,
+      },
+      { state: testState },
+    );
+
+    const arrowButton = getByTestId('arrow-button');
+
+    // Button should be disabled when dest network is disabled
+    expect(arrowButton).toBeDisabled();
+    // When disabled, onPress is set to undefined in FLipQuoteButton
+    expect(arrowButton.props.onPress).toBeUndefined();
+  });
+
+  describe('Solana Swap', () => {
+    it('renders non-EVM source token without native reserve warning', () => {
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quoteRequest: {
+            insufficientBal: false,
+          },
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [mockQuoteWithMetadata],
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+          sourceToken: {
+            address: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501',
+            chainId: SolScope.Mainnet,
+            decimals: 9,
+            image: '',
+            name: 'Solana',
+            symbol: 'SOL',
+          },
+          destToken: {
+            address: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501',
+            chainId: SolScope.Mainnet,
+            decimals: 9,
+            image: '',
+            name: 'Solana',
+            symbol: 'SOL',
+          },
+        },
+      });
+
+      const { queryByText } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      expect(
+        queryByText(
+          strings('bridge.insufficient_native_reserve_title', {
+            ticker: 'SOL',
+          }),
+        ),
+      ).toBeNull();
+    });
+
+    it('leaves slippage unset until a current-pair quote suggests a value', async () => {
+      const mockQuote = mockQuoteWithMetadata;
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quoteRequest: {
+            insufficientBal: false,
+          },
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [mockQuote],
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+          sourceToken: {
+            address: 'So11111111111111111111111111111111111111112',
+            chainId: SolScope.Mainnet,
+            decimals: 9,
+            image: '',
+            name: 'Solana',
+            symbol: 'SOL',
+          },
+          destToken: {
+            address: 'So11111111111111111111111111111111111111112',
+            chainId: SolScope.Mainnet,
+            decimals: 9,
+            image: '',
+            name: 'Solana',
+            symbol: 'SOL',
+          },
+        },
+      });
+
+      const { store } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      // Quotes without quote.slippage must not invent a client default.
+      await waitFor(() => {
+        expect(store.getState().bridge.slippage).toBeUndefined();
+      });
+    });
+  });
+
+  describe('RWA same-chain EVM swap', () => {
+    it('leaves slippage unset when the active quote is not for the selected pair', async () => {
+      const mockQuote = mockQuoteWithMetadata;
+      const ethChainId = '0x1' as const;
+      const testState = createBridgeTestState(
+        {
+          bridgeControllerOverrides: {
+            quoteRequest: {
+              insufficientBal: false,
+            },
+            quotesLoadingStatus: RequestStatus.FETCHED,
+            quotes: [mockQuote],
+          },
+          bridgeReducerOverrides: {
+            sourceAmount: '1.0',
+            sourceToken: {
+              address: '0x0000000000000000000000000000000000000001',
+              chainId: ethChainId,
+              decimals: 18,
+              image: '',
+              name: 'Token A',
+              symbol: 'TKA',
+              rwaData: { instrumentType: 'stock' } as BridgeToken['rwaData'],
+            },
+            destToken: {
+              address: '0x0000000000000000000000000000000000000002',
+              chainId: ethChainId,
+              decimals: 6,
+              image: '',
+              name: 'USDC',
+              symbol: 'USDC',
+            },
+          },
+        },
+        {
+          ...initialState,
+          engine: {
+            ...initialState.engine,
+            backgroundState: {
+              ...initialState.engine.backgroundState,
+              RemoteFeatureFlagController: {
+                ...initialState.engine.backgroundState
+                  .RemoteFeatureFlagController,
+                remoteFeatureFlags: {
+                  ...initialState.engine.backgroundState
+                    .RemoteFeatureFlagController.remoteFeatureFlags,
+                  [FEATURE_FLAG_NAME]: true,
+                },
+              },
+            },
+          },
+        },
+      );
+
+      const { store } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(store.getState().bridge.slippage).toBeUndefined();
+      });
+    });
+  });
+
+  describe('Bottom Content', () => {
+    const renderZeroStateBridgeView = () => {
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [],
+          quotesLastFetched: 12,
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: undefined,
+        },
+      });
+
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          activeQuote: null,
+          isLoading: false,
+          quoteFetchError: null,
+          isNoQuotesAvailable: false,
+          destTokenAmount: undefined,
+        }));
+
+      return renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+    };
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      // Reset to default mock so persistent mockImplementation from prior tests
+      // does not leak (clearAllMocks only clears calls, not implementations)
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => mockUseBridgeQuoteData);
+    });
+
+    it('does not display keypad on initial render when no amount is entered', () => {
+      const { queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      expect(queryByTestId('keypad-delete-button')).toBeNull();
+    });
+
+    it('does not display keypad on initial render when amount is zero', () => {
+      const stateWithZeroAmount = {
+        ...mockState,
+        bridge: {
+          ...mockState.bridge,
+          sourceAmount: '0',
+        },
+      };
+
+      const { queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: stateWithZeroAmount },
+      );
+
+      expect(queryByTestId('keypad-delete-button')).toBeNull();
+    });
+
+    it('displays keypad on initial focus when route requests source amount auto-focus', async () => {
+      mockRoute.params = {
+        sourcePage: 'test',
+        autoFocusSourceAmountInput: true,
+      } as BridgeRouteParams;
+
+      const { queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      act(() => {
+        mockFocusEffects.forEach((focusEffect) => {
+          focusEffect();
+        });
+      });
+
+      await waitFor(() => {
+        expect(queryByTestId('keypad-delete-button')).toBeTruthy();
+      });
+    });
+
+    it('shows loading mode with quote skeleton only', () => {
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLastFetched: null,
+        },
+      });
+
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isLoading: true,
+          activeQuote: null,
+        }));
+
+      const { getByTestId, queryByTestId, queryByText } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.QUOTE_DETAILS_SKELETON),
+      ).toBeTruthy();
+      expect(queryByTestId('banneralert')).toBeNull();
+      expect(queryByTestId('edit-slippage-button')).toBeNull();
+      expect(
+        queryByTestId(BridgeTrendingTokensSectionTestIds.SECTION),
+      ).toBeNull();
+      expect(queryByText('Fetching quote')).toBeNull();
+    });
+
+    it('shows quote skeleton when a non-zero input has no active quote yet', () => {
+      const testState = createBridgeTestState({
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+        },
+      });
+
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isLoading: false,
+          activeQuote: null,
+          needsNewQuote: false,
+        }));
+
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.QUOTE_DETAILS_SKELETON),
+      ).toBeTruthy();
+      expect(queryByTestId(BridgeViewSelectorsIDs.CONFIRM_BUTTON)).toBeNull();
+      expect(queryByTestId('edit-slippage-button')).toBeNull();
+    });
+
+    it('keeps quote mode content visible while refreshing an existing quote', async () => {
+      const now = Date.now();
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.LOADING,
+          quotes: [mockQuoteWithMetadata],
+          quotesLastFetched: now,
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+        },
+      });
+
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isLoading: true,
+          activeQuote: mockQuoteWithMetadata,
+        }));
+
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(queryByTestId('edit-slippage-button')).toBeTruthy();
+      });
+
+      expect(getByTestId(BridgeViewSelectorsIDs.CONFIRM_BUTTON)).toBeTruthy();
+      expect(
+        queryByTestId(BridgeViewSelectorsIDs.QUOTE_DETAILS_SKELETON),
+      ).toBeNull();
+    });
+
+    it('shows quote mode with quote content and confirm button', async () => {
+      const now = Date.now();
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [mockQuoteWithMetadata],
+          quotesLastFetched: now,
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+        },
+      });
+
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isLoading: false,
+          activeQuote: mockQuoteWithMetadata,
+        }));
+
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(queryByTestId('edit-slippage-button')).toBeTruthy();
+      });
+      expect(getByTestId(BridgeViewSelectorsIDs.CONFIRM_BUTTON)).toBeTruthy();
+      expect(
+        queryByTestId(BridgeTrendingTokensSectionTestIds.SECTION),
+      ).toBeNull();
+    });
+
+    it('renders the rebate banner above the keypad confirm button', async () => {
+      mockRoute.params = {
+        sourcePage: 'test',
+        autoFocusSourceAmountInput: true,
+      } as BridgeRouteParams;
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [mockQuoteWithMetadata],
+          quotesLastFetched: Date.now(),
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+        },
+      });
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isLoading: false,
+          activeQuote: mockQuoteWithMetadata,
+        }));
+      mockUseSwapsRebate.mockReturnValue(5);
+
+      const { getByTestId, getAllByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+      act(() => {
+        mockFocusEffects.forEach((focusEffect) => {
+          focusEffect();
+        });
+      });
+
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.CONFIRM_BUTTON_KEYPAD),
+        ).toBeTruthy();
+      });
+      // The footer copy stays mounted under the sheet so its layout never shifts.
+      expect(getAllByTestId('mock-swaps-rebate-banner')).toHaveLength(2);
+      expect(mockUseSwapsRebate).toHaveBeenCalledWith(
+        mockQuoteWithMetadata.quote,
+      );
+    });
+
+    it('hides the keypad rebate banner when a new quote is needed', async () => {
+      mockRoute.params = {
+        sourcePage: 'test',
+        autoFocusSourceAmountInput: true,
+      } as BridgeRouteParams;
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [mockQuoteWithMetadata],
+          quotesLastFetched: Date.now(),
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+        },
+      });
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isLoading: false,
+          activeQuote: mockQuoteWithMetadata,
+          needsNewQuote: true,
+        }));
+      mockUseSwapsRebate.mockReturnValue(5);
+
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+      act(() => {
+        mockFocusEffects.forEach((focusEffect) => {
+          focusEffect();
+        });
+      });
+
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.CONFIRM_BUTTON_KEYPAD),
+        ).toBeTruthy();
+      });
+      expect(queryByTestId('mock-swaps-rebate-banner')).toBeNull();
+    });
+
+    it('renders the rebate banner in the footer when the keypad is closed', async () => {
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [mockQuoteWithMetadata],
+          quotesLastFetched: Date.now(),
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+        },
+      });
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isLoading: false,
+          activeQuote: mockQuoteWithMetadata,
+        }));
+      mockUseSwapsRebate.mockReturnValue(5);
+
+      const { getByTestId, getAllByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(getByTestId(BridgeViewSelectorsIDs.CONFIRM_BUTTON)).toBeTruthy();
+      });
+      expect(
+        queryByTestId(BridgeViewSelectorsIDs.CONFIRM_BUTTON_KEYPAD),
+      ).toBeNull();
+      expect(getAllByTestId('mock-swaps-rebate-banner')).toHaveLength(1);
+    });
+
+    it('shows zero mode with trending section and without quote content', () => {
+      const { getByTestId, queryByTestId } = renderZeroStateBridgeView();
+
+      expect(
+        getByTestId(BridgeTrendingTokensSectionTestIds.SECTION),
+      ).toBeTruthy();
+      expect(queryByTestId('edit-slippage-button')).toBeNull();
+    });
+
+    it('does not render discovery content in zero mode for empty variant', () => {
+      mockUseABTest.mockReturnValue({
+        variant:
+          SWAP_DISCOVERY_FEED_REVAMP_VARIANTS[
+            SwapDiscoveryFeedRevampVariant.Empty
+          ],
+        variantName: SwapDiscoveryFeedRevampVariant.Empty,
+        isActive: true,
+      });
+
+      const { queryByTestId } = renderZeroStateBridgeView();
+
+      expect(
+        queryByTestId(BridgeTrendingTokensSectionTestIds.SECTION),
+      ).toBeNull();
+      expect(queryByTestId(SwapDiscoveryFeedTestIds.ROOT)).toBeNull();
+    });
+
+    it('does not navigate to QuoteExpiredModal when quote expires without refresh', async () => {
+      // useRenderQuoteExpireModal was removed; the expired-quote modal no longer
+      // exists. Instead, the cached quote stays visible and "Get new quote"
+      // appears in the footer.
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isExpired: true,
+          willRefresh: false,
+          needsNewQuote: true,
+        }));
+
+      renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      await waitFor(() => {
+        expect(mockNavigate).not.toHaveBeenCalledWith(
+          Routes.BRIDGE.MODALS.ROOT,
+          {
+            screen: Routes.BRIDGE.BRIDGE_VIEW,
+          },
+        );
+      });
+    });
+
+    it('does not navigate to QuoteExpiredModal when quote expires with refresh', async () => {
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isExpired: true,
+          willRefresh: true,
+        }));
+
+      renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      await waitFor(() => {
+        expect(mockNavigate).not.toHaveBeenCalledWith(
+          Routes.BRIDGE.MODALS.ROOT,
+          {
+            screen: Routes.BRIDGE.BRIDGE_VIEW,
+          },
+        );
+      });
+    });
+
+    it('does not navigate to QuoteExpiredModal when quote is valid', async () => {
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isExpired: false,
+          willRefresh: false,
+        }));
+
+      renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      await waitFor(() => {
+        expect(mockNavigate).not.toHaveBeenCalledWith(
+          Routes.BRIDGE.MODALS.ROOT,
+          {
+            screen: Routes.BRIDGE.BRIDGE_VIEW,
+          },
+        );
+      });
+    });
+
+    it('does not navigate to QuoteExpiredModal when RecipientSelectorModal is open', async () => {
+      // Set the Redux state to indicate user is selecting recipient
+      const testState = {
+        ...mockState,
+        bridge: {
+          ...mockState.bridge,
+          isSelectingRecipient: true,
+        },
+      };
+
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isExpired: true,
+          willRefresh: false,
+        }));
+
+      renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(mockNavigate).not.toHaveBeenCalledWith(
+          Routes.BRIDGE.MODALS.ROOT,
+          {
+            screen: Routes.BRIDGE.BRIDGE_VIEW,
+          },
+        );
+      });
+    });
+
+    it('shows cached quote content when quote expires', async () => {
+      // When quotes expire the cached quote (still in Redux) is shown in the
+      // QuoteDetailsCard. The slippage button must remain visible.
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          isExpired: true,
+          willRefresh: false,
+          isLoading: false,
+          needsNewQuote: true,
+          // activeQuote remains the cached quote — not cleared on expiry
+        }));
+
+      // createBridgeTestState provides source/dest tokens so QuoteDetailsCard
+      // passes its early-return guard and renders the slippage button.
+      const testState = createBridgeTestState({
+        bridgeReducerOverrides: { sourceAmount: '1.0' },
+      });
+
+      const { queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(mockNavigate).not.toHaveBeenCalledWith(
+          Routes.BRIDGE.MODALS.ROOT,
+          {
+            screen: Routes.BRIDGE.BRIDGE_VIEW,
+          },
+        );
+      });
+      expect(queryByTestId('edit-slippage-button')).not.toBeNull();
+    });
+  });
+
+  describe('quoteStreamComplete error banner', () => {
+    it('shows the banner when quoteStreamComplete has a reason', async () => {
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [],
+          quotesLastFetched: 12,
+          quoteStreamComplete: {
+            hasQuotes: false,
+            quoteCount: 0,
+            reason: QuoteStreamCompleteReason.AMOUNT_TOO_LOW,
+          },
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '0.0001',
+        },
+      });
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(
+          getByText(strings('bridge.quote_stream_complete_amount_too_low')),
+        ).toBeTruthy();
+      });
+    });
+
+    it('does not show the banner when quoteStreamComplete is null', async () => {
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [],
+          quotesLastFetched: 12,
+          quoteStreamComplete: null,
+        },
+      });
+
+      const { queryByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(
+          queryByText(strings('bridge.quote_stream_complete_amount_too_low')),
+        ).toBeNull();
+      });
+    });
+
+    it('does not show the banner when quoteStreamComplete has no reason', async () => {
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [],
+          quotesLastFetched: 12,
+          quoteStreamComplete: { hasQuotes: false, quoteCount: 0 },
+        },
+      });
+
+      const { queryByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(
+          queryByText(strings('bridge.quote_stream_complete_amount_too_low')),
+        ).toBeNull();
+      });
+    });
+  });
+
+  describe('deep link parameter handling', () => {
+    const mockDeepLinkSourceToken = {
+      address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+      chainId: '0x1' as Hex,
+      decimals: 6,
+      name: 'USD Coin',
+      symbol: 'USDC',
+    };
+
+    const mockDeepLinkDestToken = {
+      address: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+      chainId: '0x1' as Hex,
+      decimals: 6,
+      name: 'Tether USD',
+      symbol: 'USDT',
+    };
+
+    const mockSecondDeepLinkSourceToken = {
+      address: '0x0000000000000000000000000000000000000003',
+      chainId: '0x1' as Hex,
+      decimals: 18,
+      name: 'Second Source',
+      symbol: 'SECOND_SOURCE',
+    };
+
+    const mockSecondDeepLinkDestToken = {
+      address: '0x0000000000000000000000000000000000000004',
+      chainId: '0x1' as Hex,
+      decimals: 18,
+      name: 'Second Destination',
+      symbol: 'SECOND_DEST',
+    };
+
+    const stateWithSwapTabsEnabled = () =>
+      merge({}, mockState, {
+        engine: {
+          backgroundState: {
+            RemoteFeatureFlagController: {
+              remoteFeatureFlags: {
+                swapsLimitOrder: { enabled: true },
+                swapsRecurringBuy: { enabled: true },
+              },
+            },
+          },
+        },
+      }) as DeepPartial<RootState>;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      // Reset route params to default for deep link testing
+      mockRoute.params = {
+        sourcePage: 'deeplink',
+      } as BridgeRouteParams;
+    });
+
+    it('uses sourceToken from route params when provided', () => {
+      mockRoute.params.sourceToken = mockDeepLinkSourceToken;
+
+      // Update the mock state to include the deep link source token
+      const testState = {
+        ...mockState,
+        bridge: {
+          ...mockState.bridge,
+          sourceToken: mockDeepLinkSourceToken,
+        },
+      };
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      // Should display the deep link token symbol
+      expect(getByText('USDC')).toBeTruthy();
+    });
+
+    it('uses destToken from route params when provided', () => {
+      mockRoute.params.destToken = mockDeepLinkDestToken;
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      // Should display the deep link dest token symbol
+      expect(getByText('USDT')).toBeTruthy();
+    });
+
+    it('uses sourceAmount from route params when provided', () => {
+      // Need to provide a source token for the amount to be set
+      mockRoute.params.sourceToken = {
+        address: '0x0000000000000000000000000000000000000000',
+        chainId: '0x1' as Hex,
+        decimals: 18,
+        image: '',
+        name: 'Ether',
+        symbol: 'ETH',
+      };
+      mockRoute.params.sourceAmount = '1000000';
+
+      // Update the mock state to include the source token and amount
+      const testState = {
+        ...mockState,
+        bridge: {
+          ...mockState.bridge,
+          sourceToken: mockRoute.params.sourceToken,
+          sourceAmount: '1000000',
+        },
+      };
+
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      // Should display the deep link amount in the input (formatted with commas)
+      const input = getByTestId('source-token-area-input');
+      expect(input.props.value).toBe('1,000,000');
+    });
+
+    it('uses all deep link params when all are provided', () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        sourceToken: mockDeepLinkSourceToken,
+        destToken: mockDeepLinkDestToken,
+        sourceAmount: '1000000',
+      } as BridgeRouteParams;
+
+      // Update the mock state to include the deep link tokens and amount
+      const testState = {
+        ...mockState,
+        bridge: {
+          ...mockState.bridge,
+          sourceToken: mockDeepLinkSourceToken,
+          destToken: mockDeepLinkDestToken,
+          sourceAmount: '1000000',
+        },
+      };
+
+      const { getByText, getByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      // Should display all deep link data
+      expect(getByText('USDC')).toBeTruthy();
+      expect(getByText('USDT')).toBeTruthy();
+      const input = getByTestId('source-token-area-input');
+      expect(input.props.value).toBe('1,000,000');
+    });
+
+    it('falls back to Redux state when deep link params are not provided', () => {
+      // Ensure no deep link params are set
+      mockRoute.params = {
+        sourcePage: 'test',
+      } as BridgeRouteParams;
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      // Should display default ETH token from Redux state
+      expect(getByText('ETH')).toBeTruthy();
+    });
+
+    it.each([
+      {
+        name: 'Market from Limit',
+        startingTab: BridgeTabKey.Limit,
+        targetTab: BridgeTabKey.Market,
+        startingTokenAreaTestId: BridgeViewSelectorsIDs.LIMIT_SOURCE_TOKEN_AREA,
+        sourceTokenAreaTestId: BridgeViewSelectorsIDs.SOURCE_TOKEN_AREA,
+      },
+      {
+        name: 'Market from Recurring',
+        startingTab: BridgeTabKey.Recurring,
+        targetTab: BridgeTabKey.Market,
+        startingTokenAreaTestId:
+          BridgeViewSelectorsIDs.RECURRING_SOURCE_TOKEN_AREA,
+        sourceTokenAreaTestId: BridgeViewSelectorsIDs.SOURCE_TOKEN_AREA,
+      },
+      {
+        name: 'Limit',
+        startingTab: BridgeTabKey.Limit,
+        targetTab: BridgeTabKey.Limit,
+        startingTokenAreaTestId: BridgeViewSelectorsIDs.LIMIT_SOURCE_TOKEN_AREA,
+        sourceTokenAreaTestId: BridgeViewSelectorsIDs.LIMIT_SOURCE_TOKEN_AREA,
+      },
+      {
+        name: 'Recurring',
+        startingTab: BridgeTabKey.Recurring,
+        targetTab: BridgeTabKey.Recurring,
+        startingTokenAreaTestId:
+          BridgeViewSelectorsIDs.RECURRING_SOURCE_TOKEN_AREA,
+        sourceTokenAreaTestId:
+          BridgeViewSelectorsIDs.RECURRING_SOURCE_TOKEN_AREA,
+      },
+    ])(
+      'rehydrates explicit tokens for a warm $name deeplink',
+      async ({
+        startingTab,
+        targetTab,
+        startingTokenAreaTestId,
+        sourceTokenAreaTestId,
+      }) => {
+        mockRoute.params = {
+          sourcePage: 'deeplink',
+          bridgeViewMode: BridgeViewMode.Unified,
+          location: MetaMetricsSwapsEventSource.MainView,
+          sourceToken: mockDeepLinkSourceToken,
+          destToken: mockDeepLinkDestToken,
+          swapViewTraceId: 'trace-1',
+          initialTab: startingTab,
+        };
+        const rendered = renderScreen(
+          BridgeView,
+          { name: Routes.BRIDGE.ROOT },
+          { state: stateWithSwapTabsEnabled() },
+        );
+        await waitFor(() => {
+          expect(rendered.store.getState().bridge.sourceToken).toEqual(
+            mockDeepLinkSourceToken,
+          );
+          expect(rendered.store.getState().bridge.destToken).toEqual(
+            mockDeepLinkDestToken,
+          );
+          expect(
+            rendered.getByTestId(startingTokenAreaTestId),
+          ).toBeOnTheScreen();
+        });
+
+        act(() => {
+          rendered.store.dispatch(resetBridgeState());
+        });
+        mockRoute.params = {
+          sourcePage: 'deeplink',
+          bridgeViewMode: BridgeViewMode.Unified,
+          location: MetaMetricsSwapsEventSource.MainView,
+          sourceToken: mockSecondDeepLinkSourceToken,
+          destToken: mockSecondDeepLinkDestToken,
+          swapViewTraceId: 'trace-2',
+          initialTab: targetTab,
+        };
+        rendered.rerender(<BridgeView />);
+
+        await waitFor(() => {
+          expect(rendered.store.getState().bridge.sourceToken).toEqual(
+            mockSecondDeepLinkSourceToken,
+          );
+          expect(rendered.store.getState().bridge.destToken).toEqual(
+            mockSecondDeepLinkDestToken,
+          );
+          expect(rendered.getByTestId(sourceTokenAreaTestId)).toBeOnTheScreen();
+        });
+      },
+    );
+
+    it('restores default tokens for a warm deeplink without token params', async () => {
+      mockRoute.params = {
+        sourcePage: 'deeplink',
+        bridgeViewMode: BridgeViewMode.Unified,
+        location: MetaMetricsSwapsEventSource.MainView,
+        sourceToken: mockDeepLinkSourceToken,
+        destToken: mockDeepLinkDestToken,
+        swapViewTraceId: 'trace-1',
+      };
+      const rendered = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithSwapTabsEnabled() },
+      );
+      await waitFor(() => {
+        expect(rendered.store.getState().bridge.sourceToken).toEqual(
+          mockDeepLinkSourceToken,
+        );
+        expect(rendered.store.getState().bridge.destToken).toEqual(
+          mockDeepLinkDestToken,
+        );
+      });
+
+      act(() => {
+        rendered.store.dispatch(resetBridgeState());
+      });
+      mockRoute.params = {
+        sourcePage: 'deeplink',
+        bridgeViewMode: BridgeViewMode.Unified,
+        location: MetaMetricsSwapsEventSource.MainView,
+        swapViewTraceId: 'trace-2',
+      };
+      rendered.rerender(<BridgeView />);
+
+      await waitFor(() => {
+        expect(rendered.store.getState().bridge.sourceToken).toBeDefined();
+        expect(rendered.store.getState().bridge.destToken).toBeDefined();
+      });
+      expect(
+        rendered.queryByText(strings('bridge.swap_from')),
+      ).not.toBeOnTheScreen();
+      expect(
+        rendered.queryByText(strings('bridge.swap_to')),
+      ).not.toBeOnTheScreen();
+    });
+  });
+
+  describe('location forwarding', () => {
+    it('forwards route.params.location to SwapsMarketOrderConfirmButton via price impact modal navigation', async () => {
+      mockRoute.params = {
+        sourcePage: 'test',
+        location: MetaMetricsSwapsEventSource.MainView,
+      } as BridgeRouteParams;
+
+      // shouldShowPriceImpactError causes handleContinue to navigate to the
+      // PriceImpactModal. The location value is embedded in the navigation params.
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          activeQuote: {
+            ...mockQuoteWithMetadata,
+            quote: {
+              ...mockQuoteWithMetadata.quote,
+              priceData: { priceImpact: { amount: '0.30' } },
+            },
+          },
+          formattedQuoteData: {
+            ...mockUseBridgeQuoteData.formattedQuoteData,
+            priceImpact: '30%',
+          },
+          shouldShowPriceImpactError: true,
+        }));
+
+      const testState = createBridgeTestState(
+        {
+          bridgeControllerOverrides: {
+            quotesLoadingStatus: RequestStatus.FETCHED,
+            quotes: [mockQuoteWithMetadata],
+            quotesLastFetched: Date.now(),
+          },
+          bridgeReducerOverrides: {
+            sourceAmount: '1.0',
+          },
+        },
+        mockState,
+      );
+
+      const rendered = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      // The new Pressable-based Button does not expose onPress on the host View
+      // when disabled, so we find the Button component instance and call onPress directly.
+      const buttons = rendered.UNSAFE_getAllByType(Button);
+      const confirmButton = buttons.find(
+        (b) => b.props.testID === BridgeViewSelectorsIDs.CONFIRM_BUTTON,
+      );
+
+      await act(async () => {
+        confirmButton?.props.onPress?.();
+      });
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith(
+          Routes.BRIDGE.MODALS.ROOT,
+          expect.objectContaining({
+            params: expect.objectContaining({
+              location: MetaMetricsSwapsEventSource.MainView,
+            }),
+          }),
+        );
+      });
+    });
+  });
+
+  describe('gas included support hooks', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    it('calls gas included support hooks with source token chain ID', () => {
+      const testState = {
+        ...mockState,
+        bridge: {
+          ...mockState.bridge,
+          sourceToken: {
+            address: '0x0000000000000000000000000000000000000000',
+            chainId: '0x1' as Hex,
+            decimals: 18,
+            image: '',
+            name: 'Ether',
+            symbol: 'ETH',
+          },
+        },
+      };
+
+      renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      expect(mockUseIsGasIncludedSTXSendBundleSupported).toHaveBeenCalledWith(
+        '0x1',
+      );
+      expect(mockUseIsGasIncluded7702Supported).toHaveBeenCalledWith('0x1');
+    });
+  });
+
+  describe('Quote Details Card', () => {
+    it('displays quote details card when active quote exists', async () => {
+      const mockQuote = mockQuoteWithMetadata;
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [mockQuote],
+          quotesLastFetched: Date.now(),
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+        },
+      });
+
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          activeQuote: mockQuote,
+        }));
+
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        // QuoteDetailsCard should be rendered
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.BRIDGE_VIEW_SCROLL),
+        ).toBeTruthy();
+      });
+    });
+
+    it('does not display quote details card when no active quote', () => {
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          activeQuote: null,
+        }));
+
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      // Verify ScrollView exists
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.BRIDGE_VIEW_SCROLL),
+      ).toBeTruthy();
+
+      // QuoteDetailsCard should not be rendered when no quote
+      expect(queryByTestId('quote-details-card')).toBeNull();
+    });
+  });
+
+  describe('Tap Outside to Close Keypad', () => {
+    // TODO: Re-enable after fixing component tree navigation for onResponderRelease
+    it.skip('closes keypad when tapping outside input area', async () => {
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      // Verify keypad is open initially (opened by useBridgeViewOnFocus on mount)
+      await waitFor(() => {
+        expect(queryByTestId('keypad-delete-button')).toBeTruthy();
+      });
+
+      // Tap outside the input area - the onResponderRelease is on the main content Box
+      // which wraps the ScrollView, so we need to go up two parents
+      const scrollView = getByTestId(BridgeViewSelectorsIDs.BRIDGE_VIEW_SCROLL);
+      const container = scrollView.parent?.parent;
+      await act(async () => {
+        // Call the onResponderRelease handler from the parent Box
+        if (container?.props.onResponderRelease) {
+          container.props.onResponderRelease();
+        }
+      });
+
+      // Keypad should be closed
+      await waitFor(() => {
+        expect(queryByTestId('keypad-delete-button')).toBeNull();
+      });
+    });
+  });
+
+  describe('Sponsored Quote Badge', () => {
+    it('renders when quote is on a sponsored network', async () => {
+      const polygonChainId = '0x89' as Hex;
+
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [mockQuoteWithMetadata],
+          quotesLastFetched: Date.now(),
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+          sourceToken: {
+            address: '0x0000000000000000000000000000000000000000',
+            chainId: polygonChainId,
+            decimals: 18,
+            image: '',
+            name: 'Polygon',
+            symbol: 'POL',
+          },
+          destToken: {
+            address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+            chainId: polygonChainId,
+            decimals: 6,
+            image: '',
+            name: 'USD Coin',
+            symbol: 'USDC',
+          },
+        },
+      });
+
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          activeQuote: mockQuoteWithMetadata,
+        }));
+
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      // Verify the component renders with the sponsored network tokens
+      await waitFor(() => {
+        const sourceTokenArea = getByTestId(
+          BridgeViewSelectorsIDs.SOURCE_TOKEN_AREA,
+        );
+        expect(sourceTokenArea).toBeTruthy();
+        // Both tokens are on Polygon (0x89), which is mocked as a sponsored network
+      });
+    });
+
+    it('renders when tokens are on different chains', () => {
+      const testState = createBridgeTestState({
+        bridgeReducerOverrides: {
+          sourceToken: {
+            address: '0x0000000000000000000000000000000000000000',
+            chainId: '0x1' as Hex, // Ethereum
+            decimals: 18,
+            image: '',
+            name: 'Ether',
+            symbol: 'ETH',
+          },
+          destToken: {
+            address: '0x0000000000000000000000000000000000000000',
+            chainId: '0x89' as Hex, // Polygon
+            decimals: 18,
+            image: '',
+            name: 'Polygon',
+            symbol: 'POL',
+          },
+        },
+      });
+
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      // Verify the component renders with tokens on different chains
+      const sourceTokenArea = getByTestId(
+        BridgeViewSelectorsIDs.SOURCE_TOKEN_AREA,
+      );
+      expect(sourceTokenArea).toBeTruthy();
+      // Tokens are on different chains, so sponsored feature won't apply
+    });
+  });
+
+  describe('Bridge View Mode', () => {
+    it('initializes bridge view mode from route params', async () => {
+      mockRoute.params = {
+        bridgeViewMode: BridgeViewMode.Bridge,
+        sourcePage: 'test',
+        location: MetaMetricsSwapsEventSource.MainView,
+      };
+
+      const { store } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: mockState },
+      );
+
+      await waitFor(() => {
+        expect(store.getState().bridge.bridgeViewMode).toBe(
+          BridgeViewMode.Bridge,
+        );
+      });
+    });
+
+    it('does not override existing bridge view mode', async () => {
+      mockRoute.params = {
+        bridgeViewMode: BridgeViewMode.Bridge,
+        sourcePage: 'test',
+        location: MetaMetricsSwapsEventSource.MainView,
+      };
+
+      const testState = {
+        ...mockState,
+        bridge: {
+          ...mockState.bridge,
+          bridgeViewMode: BridgeViewMode.Swap,
+        },
+      };
+
+      const { store } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        // Should keep existing mode
+        expect(store.getState().bridge.bridgeViewMode).toBe(
+          BridgeViewMode.Swap,
+        );
+      });
+    });
+  });
+
+  describe('Keypad Input Constraints', () => {
+    it('prevents input when max length is reached', async () => {
+      // MAX_INPUT_LENGTH is 36 characters
+      const maxLengthAmount = '123456789012345678901234567890123456'; // 36 chars
+      const testState = {
+        ...mockState,
+        bridge: {
+          ...mockState.bridge,
+          sourceAmount: maxLengthAmount,
+        },
+      };
+
+      const { getByText, getByTestId, store } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      const initialAmount = store.getState().bridge.sourceAmount;
+      expect(initialAmount).toBe(maxLengthAmount);
+      // Open the keypad first by pressing on the source token input
+      const sourceInput = getByTestId('source-token-area-input');
+      await act(async () => {
+        sourceInput.props.onPressIn();
+      });
+
+      // Try to add another digit
+      fireEvent.press(getByText('9'));
+
+      await waitFor(() => {
+        const currentAmount = store.getState().bridge.sourceAmount;
+        // Amount should not change when max length is reached
+        expect(currentAmount).toBe(initialAmount);
+      });
+    });
+  });
+
+  describe('Missing Wallet Address', () => {
+    it('disables submit when wallet address is not available', async () => {
+      const mockQuote = mockQuoteWithMetadata;
+
+      // Mock selectSourceWalletAddress to return undefined
+      const { selectSourceWalletAddress } = jest.requireMock(
+        '../../../../../selectors/bridge',
+      );
+      selectSourceWalletAddress.mockReturnValueOnce(undefined);
+
+      const testState = createBridgeTestState({
+        bridgeControllerOverrides: {
+          quotesLoadingStatus: RequestStatus.FETCHED,
+          quotes: [mockQuote],
+          quotesLastFetched: Date.now(),
+        },
+        bridgeReducerOverrides: {
+          sourceAmount: '1.0',
+        },
+      });
+
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          activeQuote: mockQuote,
+        }));
+
+      const { queryByTestId } = renderScreen(
+        BridgeView,
+        {
+          name: Routes.BRIDGE.ROOT,
+        },
+        { state: testState },
+      );
+
+      // When wallet address is missing, the bottom content should not render the confirm button
+      await waitFor(() => {
+        // The confirm button should not be present or should be disabled
+        const confirmButton = queryByTestId('swaps-confirm-button');
+        if (confirmButton) {
+          expect(confirmButton.props.accessibilityState.disabled).toBe(true);
+        }
+        // It's acceptable if the button doesn't render at all when wallet address is missing
+      });
+
+      // Restore the mock for other tests
+      selectSourceWalletAddress.mockReturnValue(
+        '0x1234567890123456789012345678901234567890',
+      );
+    });
+  });
+
+  describe('Token Warning Banner', () => {
+    const mockWarningFeatures = [
+      {
+        featureId: 'low_locked_liquidity',
+        type: SecurityDataType.Warning,
+        description: 'This token is suspicious.',
+      },
+    ];
+
+    const mockMaliciousFeatures = [
+      {
+        featureId: 'honeypot',
+        type: SecurityDataType.Malicious,
+        description: 'This token is malicious.',
+      },
+    ];
+
+    // createBridgeTestState sets bridge from mockBridgeReducerState (sourceAmount non-zero,
+    // destToken.symbol = 'USDC') which puts the view into 'quote' contentMode.
+    const stateWithDestSecurityData = (
+      type: SecurityDataType,
+      features: typeof mockWarningFeatures,
+    ) =>
+      createBridgeTestState(
+        {
+          bridgeReducerOverrides: {
+            destToken: {
+              ...(mockBridgeReducerState.destToken as BridgeToken),
+              securityData: { type, metadata: { features } },
+            },
+          },
+        },
+        mockState,
+      );
+
+    it('does not show the banner when destToken has no securityData', () => {
+      const testState = createBridgeTestState({}, mockState);
+
+      const { queryByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      expect(
+        queryByText(
+          strings('bridge.token_warning_suspicious_banner', { token: 'USDC' }),
+        ),
+      ).toBeNull();
+      expect(
+        queryByText(
+          strings('bridge.token_warning_malicious_banner', { token: 'USDC' }),
+        ),
+      ).toBeNull();
+    });
+
+    it('shows the banner in zero state (no source amount) when destToken has securityData', () => {
+      const testState = createBridgeTestState(
+        {
+          bridgeReducerOverrides: {
+            sourceAmount: undefined,
+            destToken: {
+              ...(mockBridgeReducerState.destToken as BridgeToken),
+              securityData: {
+                type: SecurityDataType.Warning,
+                metadata: { features: mockWarningFeatures },
+              },
+            },
+          },
+        },
+        mockState,
+      );
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      expect(
+        getByText(
+          strings('bridge.token_warning_suspicious_banner', { token: 'USDC' }),
+        ),
+      ).toBeOnTheScreen();
+    });
+
+    it('shows the suspicious banner for a Warning type token', () => {
+      const testState = stateWithDestSecurityData(
+        SecurityDataType.Warning,
+        mockWarningFeatures,
+      );
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      expect(
+        getByText(
+          strings('bridge.token_warning_suspicious_banner', { token: 'USDC' }),
+        ),
+      ).toBeOnTheScreen();
+    });
+
+    it('shows the malicious banner for a Malicious type token', () => {
+      const testState = stateWithDestSecurityData(
+        SecurityDataType.Malicious,
+        mockMaliciousFeatures,
+      );
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      expect(
+        getByText(
+          strings('bridge.token_warning_malicious_banner', { token: 'USDC' }),
+        ),
+      ).toBeOnTheScreen();
+    });
+
+    it('navigates to TOKEN_WARNING_MODAL with Info mode when banner is pressed', async () => {
+      mockRoute.params = {
+        sourcePage: 'test',
+        bridgeViewMode: BridgeViewMode.Swap,
+        location: MetaMetricsSwapsEventSource.MainView,
+      };
+      const testState = stateWithDestSecurityData(
+        SecurityDataType.Warning,
+        mockWarningFeatures,
+      );
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      const banner = getByText(
+        strings('bridge.token_warning_suspicious_banner', { token: 'USDC' }),
+      );
+      await act(async () => {
+        fireEvent.press(banner);
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.BRIDGE.MODALS.ROOT, {
+        screen: Routes.BRIDGE.MODALS.TOKEN_WARNING_MODAL,
+        params: {
+          warningType: SecurityDataType.Warning,
+          features: mockWarningFeatures,
+          mode: TokenWarningModalMode.Info,
+          location: MetaMetricsSwapsEventSource.MainView,
+        },
+      });
+    });
+
+    it('passes Malicious warningType when navigating from a malicious banner', async () => {
+      mockRoute.params = {
+        sourcePage: 'test',
+        bridgeViewMode: BridgeViewMode.Swap,
+        location: MetaMetricsSwapsEventSource.MainView,
+      };
+      const testState = stateWithDestSecurityData(
+        SecurityDataType.Malicious,
+        mockMaliciousFeatures,
+      );
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      const banner = getByText(
+        strings('bridge.token_warning_malicious_banner', { token: 'USDC' }),
+      );
+      await act(async () => {
+        fireEvent.press(banner);
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.BRIDGE.MODALS.ROOT, {
+        screen: Routes.BRIDGE.MODALS.TOKEN_WARNING_MODAL,
+        params: expect.objectContaining({
+          warningType: SecurityDataType.Malicious,
+          features: mockMaliciousFeatures,
+          mode: TokenWarningModalMode.Info,
+        }),
+      });
+    });
+  });
+
+  describe('Missing Price Banner', () => {
+    const mockWarning = {
+      type: TokenFeatureType.WARNING,
+      feature_id: 'warn-1',
+      description: 'This token is suspicious.',
+    };
+
+    const quoteModeState = (tokenWarnings: (typeof mockWarning)[] = []) =>
+      createBridgeTestState(
+        {
+          bridgeControllerOverrides: { tokenWarnings },
+          ...(tokenWarnings.length > 0 && {
+            bridgeReducerOverrides: {
+              destToken: {
+                ...(mockBridgeReducerState.destToken as BridgeToken),
+                securityData: {
+                  type: tokenWarnings[0].type as unknown as SecurityDataType,
+                  metadata: {
+                    features: tokenWarnings.map((w) => ({
+                      featureId: w.feature_id,
+                      type: w.type as unknown as SecurityDataType,
+                      description: w.description,
+                    })),
+                  },
+                },
+              },
+            },
+          }),
+        },
+        mockState,
+      );
+
+    it('shows the missing price banner when quote price data is unavailable', () => {
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          activeQuote: {
+            ...mockQuoteWithMetadata,
+            quote: {
+              ...mockQuoteWithMetadata.quote,
+              priceData: undefined,
+            },
+          },
+        }));
+
+      const { getByTestId, getByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: quoteModeState() },
+      );
+
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.MISSING_PRICE_BANNER),
+      ).toBeOnTheScreen();
+      expect(
+        getByText(strings('swaps.market_price_unavailable')),
+      ).toBeOnTheScreen();
+    });
+
+    it('does not navigate when the missing price banner is pressed', async () => {
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          activeQuote: {
+            ...mockQuoteWithMetadata,
+            quote: {
+              ...mockQuoteWithMetadata.quote,
+              priceData: undefined,
+            },
+          },
+        }));
+
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: quoteModeState() },
+      );
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(BridgeViewSelectorsIDs.MISSING_PRICE_BANNER),
+        );
+      });
+
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.BRIDGE.MODALS.ROOT,
+        expect.objectContaining({
+          screen: Routes.BRIDGE.MODALS.MISSING_PRICE_MODAL,
+        }),
+      );
+    });
+
+    it('renders both the token warning banner and the missing price banner together', () => {
+      jest
+        .mocked(useBridgeQuoteData as unknown as jest.Mock)
+        .mockImplementation(() => ({
+          ...mockUseBridgeQuoteData,
+          activeQuote: {
+            ...mockQuoteWithMetadata,
+            quote: {
+              ...mockQuoteWithMetadata.quote,
+              priceData: undefined,
+            },
+          },
+        }));
+
+      const { getByText } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: quoteModeState([mockWarning]) },
+      );
+
+      expect(
+        getByText(
+          strings('bridge.token_warning_suspicious_banner', { token: 'USDC' }),
+        ),
+      ).toBeOnTheScreen();
+      expect(
+        getByText(strings('swaps.market_price_unavailable')),
+      ).toBeOnTheScreen();
+    });
+  });
+
+  describe('Tab swipe navigation', () => {
+    const stateWithTabsEnabled = () =>
+      merge({}, mockState, {
+        engine: {
+          backgroundState: {
+            RemoteFeatureFlagController: {
+              remoteFeatureFlags: {
+                swapsLimitOrder: { enabled: true },
+                swapsRecurringBuy: { enabled: true },
+              },
+            },
+          },
+        },
+      }) as DeepPartial<RootState>;
+
+    const swipe = async (translationX: number, velocityX = 0) => {
+      await act(async () => {
+        fireGestureHandler(
+          getByGestureTestId(BridgeViewSelectorsIDs.FIRST_PAGE_SWIPE_GESTURE),
+          [{ translationX, velocityX }],
+        );
+        await Promise.resolve();
+      });
+    };
+
+    // The native pager never reports scrolling in Jest, so tests drive its
+    // events directly.
+    const firePagerEvent = async (
+      getByTestId: (testID: string) => ReactTestInstance,
+      eventName: 'pageScroll' | 'pageSelected' | 'pageScrollStateChanged',
+      nativeEvent: Record<string, unknown>,
+    ) => {
+      await act(async () => {
+        fireEvent(getByTestId(BridgeViewSelectorsIDs.TABS_CONTENT), eventName, {
+          nativeEvent,
+        });
+      });
+    };
+
+    const settlePager = (getByTestId: (testID: string) => ReactTestInstance) =>
+      firePagerEvent(getByTestId, 'pageScrollStateChanged', {
+        pageScrollState: 'idle',
+      });
+
+    // Records every pager render, since the native pager only reads
+    // `initialPage` when it mounts.
+    const spyOnPagerRenders = () => {
+      const renders: { pager: PagerView; initialPage?: number }[] = [];
+      const originalRender = PagerView.prototype.render;
+      jest.spyOn(PagerView.prototype, 'render').mockImplementation(function (
+        this: PagerView,
+      ) {
+        renders.push({ pager: this, initialPage: this.props.initialPage });
+        return originalRender.call(this);
+      });
+      return renders;
+    };
+
+    const setTabFlags = async (
+      store: ReturnType<typeof renderScreen>['store'],
+      { limit, recurring }: { limit: boolean; recurring: boolean },
+    ) => {
+      const { RemoteFeatureFlagController } =
+        store.getState().engine.backgroundState;
+      Object.assign(Engine, {
+        state: {
+          RemoteFeatureFlagController: {
+            ...RemoteFeatureFlagController,
+            remoteFeatureFlags: {
+              ...RemoteFeatureFlagController.remoteFeatureFlags,
+              swapsLimitOrder: { enabled: limit },
+              swapsRecurringBuy: { enabled: recurring },
+            },
+          },
+        },
+      });
+      await act(async () => {
+        store.dispatch({
+          type: 'UPDATE_BG_STATE',
+          payload: { key: 'RemoteFeatureFlagController' },
+        });
+      });
+    };
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+      delete (Engine as { state?: unknown }).state;
+    });
+
+    it('remounts the pager on the selected tab when a tab is inserted before it', async () => {
+      const recurringOnlyState = merge({}, mockState, {
+        engine: {
+          backgroundState: {
+            RemoteFeatureFlagController: {
+              remoteFeatureFlags: { swapsRecurringBuy: { enabled: true } },
+            },
+          },
+        },
+      }) as DeepPartial<RootState>;
+      const renders = spyOnPagerRenders();
+      const { getByTestId, store } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: recurringOnlyState },
+      );
+      fireEvent.press(getByTestId(BridgeViewSelectorsIDs.RECURRING_TAB));
+      await settlePager(getByTestId);
+      const pagerBeforeInsert = renders[renders.length - 1].pager;
+
+      await setTabFlags(store, { limit: true, recurring: true });
+
+      const lastRender = renders[renders.length - 1];
+      expect(lastRender.pager === pagerBeforeInsert).toBe(false);
+      expect(lastRender.initialPage).toBe(2);
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.RECURRING_BUY_CONTAINER),
+      ).toBeOnTheScreen();
+    });
+
+    it('keeps the selected tab when a tab before it is removed', async () => {
+      const renders = spyOnPagerRenders();
+      const { getByTestId, queryByTestId, store } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+      fireEvent.press(getByTestId(BridgeViewSelectorsIDs.RECURRING_TAB));
+      await settlePager(getByTestId);
+      const pagerBeforeRemoval = renders[renders.length - 1].pager;
+
+      await setTabFlags(store, { limit: false, recurring: true });
+      // The remounted pager reports the page it mounted on.
+      await firePagerEvent(getByTestId, 'pageSelected', { position: 1 });
+      await settlePager(getByTestId);
+
+      const lastRender = renders[renders.length - 1];
+      expect(lastRender.pager === pagerBeforeRemoval).toBe(false);
+      expect(lastRender.initialPage).toBe(1);
+      expect(queryByTestId(BridgeViewSelectorsIDs.LIMIT_TAB)).toBeNull();
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.RECURRING_BUY_CONTAINER),
+      ).toBeOnTheScreen();
+    });
+
+    it('opens the initial tab requested by the route', async () => {
+      mockRoute.params = {
+        sourcePage: 'TokenDetails',
+        bridgeViewMode: BridgeViewMode.Unified,
+        location: MetaMetricsSwapsEventSource.TokenView,
+        initialTab: BridgeTabKey.Recurring,
+      };
+
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.RECURRING_BUY_CONTAINER),
+        ).toBeOnTheScreen();
+      });
+      expect(mockSetParams).toHaveBeenCalledWith({
+        initialTab: undefined,
+      });
+    });
+
+    it('opens the Limit tab requested by the route', async () => {
+      mockRoute.params = {
+        sourcePage: 'deeplink',
+        bridgeViewMode: BridgeViewMode.Unified,
+        location: MetaMetricsSwapsEventSource.MainView,
+        initialTab: BridgeTabKey.Limit,
+        initialLimitOrderExpirationMinutes: 10080,
+        initialLimitOrderPriceTolerance: '0.5',
+        swapViewTraceId: 'trace-1',
+      };
+
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+        ).toBeOnTheScreen();
+      });
+      expect(mockSetParams).toHaveBeenCalledWith({
+        initialTab: undefined,
+      });
+    });
+
+    it('mounts the pager on the Limit tab requested by the route', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      mockRoute.params = {
+        sourcePage: 'deeplink',
+        bridgeViewMode: BridgeViewMode.Unified,
+        location: MetaMetricsSwapsEventSource.MainView,
+        initialTab: BridgeTabKey.Limit,
+      };
+      // The native pager only reads `initialPage` from its first render.
+      const renderedInitialPages: (number | undefined)[] = [];
+      const originalRender = PagerView.prototype.render;
+      jest.spyOn(PagerView.prototype, 'render').mockImplementation(function (
+        this: PagerView,
+      ) {
+        renderedInitialPages.push(this.props.initialPage);
+        return originalRender.call(this);
+      });
+
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+      mockRoute.params.initialTab = undefined;
+
+      const [initialPage] = renderedInitialPages;
+      expect(initialPage).toBe(1);
+
+      // Android reports the page it mounted on once the pager is attached.
+      await firePagerEvent(getByTestId, 'pageSelected', {
+        position: initialPage,
+      });
+      await firePagerEvent(getByTestId, 'pageScrollStateChanged', {
+        pageScrollState: 'dragging',
+      });
+      await settlePager(getByTestId);
+
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+      ).toBeOnTheScreen();
+    });
+
+    it('applies the limit order deep link presets over the session values once per deep link', () => {
+      mockRoute.params = {
+        sourcePage: 'deeplink',
+        bridgeViewMode: BridgeViewMode.Unified,
+        location: MetaMetricsSwapsEventSource.MainView,
+        initialTab: BridgeTabKey.Limit,
+        initialLimitOrderExpirationMinutes: 10080,
+        initialLimitOrderPriceTolerance: '0.5',
+      };
+
+      const testState = merge({}, stateWithTabsEnabled(), {
+        bridge: {
+          limitOrderExpirationMinutes: 1440,
+          limitOrderCostTolerance: '3',
+        },
+      }) as DeepPartial<RootState>;
+
+      const { store } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      expect(store.getState().bridge.limitOrderExpirationMinutes).toBe(10080);
+      expect(store.getState().bridge.limitOrderCostTolerance).toBe('0.5');
+      expect(mockSetParams).toHaveBeenCalledWith({
+        initialLimitOrderExpirationMinutes: undefined,
+        initialLimitOrderPriceTolerance: undefined,
+      });
+    });
+
+    it('keeps the session limit order settings when the deep link omits presets', () => {
+      mockRoute.params = {
+        sourcePage: 'deeplink',
+        bridgeViewMode: BridgeViewMode.Unified,
+        location: MetaMetricsSwapsEventSource.MainView,
+        initialTab: BridgeTabKey.Limit,
+      };
+
+      const testState = merge({}, stateWithTabsEnabled(), {
+        bridge: {
+          limitOrderExpirationMinutes: 10080,
+          limitOrderCostTolerance: '3',
+        },
+      }) as DeepPartial<RootState>;
+
+      const { store } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      expect(store.getState().bridge.limitOrderExpirationMinutes).toBe(10080);
+      expect(store.getState().bridge.limitOrderCostTolerance).toBe('3');
+    });
+
+    it('keeps the limit order settings when switching tabs away and back', async () => {
+      mockRoute.params = {
+        sourcePage: 'test',
+        initialTab: BridgeTabKey.Limit,
+      } as BridgeRouteParams;
+
+      const testState = merge({}, stateWithTabsEnabled(), {
+        bridge: {
+          limitOrderExpirationMinutes: 10080,
+          limitOrderCostTolerance: '3',
+        },
+      }) as DeepPartial<RootState>;
+
+      const { getByTestId, queryByTestId, store } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: testState },
+      );
+
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+        ).toBeOnTheScreen();
+      });
+
+      // The mocked setParams leaves params in place; the real one clears
+      // initialTab once consumed. Mirror that before switching tabs.
+      mockRoute.params.initialTab = undefined;
+
+      fireEvent.press(getByTestId(BridgeViewSelectorsIDs.MARKET_TAB));
+      await settlePager(getByTestId);
+      await waitFor(() => {
+        expect(
+          queryByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+        ).toBeNull();
+      });
+      expect(store.getState().bridge.limitOrderExpirationMinutes).toBe(10080);
+      expect(store.getState().bridge.limitOrderCostTolerance).toBe('3');
+
+      fireEvent.press(getByTestId(BridgeViewSelectorsIDs.LIMIT_TAB));
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+        ).toBeOnTheScreen();
+      });
+      expect(store.getState().bridge.limitOrderExpirationMinutes).toBe(10080);
+      expect(store.getState().bridge.limitOrderCostTolerance).toBe('3');
+    });
+
+    it('resets a reused Limit tab from History to Open orders', async () => {
+      const rendered = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+      fireEvent.press(rendered.getByTestId(BridgeViewSelectorsIDs.LIMIT_TAB));
+      await waitFor(() => {
+        expect(
+          rendered.getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+        ).toBeOnTheScreen();
+      });
+      fireEvent.press(rendered.getByTestId(OrdersTabsSelectorsIDs.HISTORY_TAB));
+      expect(
+        rendered.getByText(strings('bridge.orders.empty.history')),
+      ).toBeOnTheScreen();
+
+      mockRoute.params = {
+        sourcePage: 'TokenDetails',
+        bridgeViewMode: BridgeViewMode.Unified,
+        location: MetaMetricsSwapsEventSource.TokenView,
+        initialTab: BridgeTabKey.Limit,
+      };
+      rendered.rerender(<BridgeView />);
+
+      await waitFor(() => {
+        expect(
+          rendered.getByText(strings('bridge.orders.empty.open_orders')),
+        ).toBeOnTheScreen();
+      });
+      expect(
+        rendered.queryByText(strings('bridge.orders.empty.history')),
+      ).toBeNull();
+    });
+
+    it('shows the next tab once a left swipe settles on Android', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+
+      expect(
+        queryByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+      ).toBeNull();
+
+      await firePagerEvent(getByTestId, 'pageScrollStateChanged', {
+        pageScrollState: 'dragging',
+      });
+      await firePagerEvent(getByTestId, 'pageSelected', { position: 1 });
+      await settlePager(getByTestId);
+
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+        ).toBeOnTheScreen();
+      });
+    });
+
+    it('mounts the Limit page on a Limit tab press and keeps the Market quote state until the pager settles', async () => {
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+      const resetState = jest.mocked(
+        Engine.context.BridgeController.resetState,
+      );
+      resetState.mockClear();
+
+      fireEvent.press(getByTestId(BridgeViewSelectorsIDs.LIMIT_TAB));
+
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+      ).toBeOnTheScreen();
+      expect(
+        queryByTestId(
+          `${BridgeViewSelectorsIDs.TAB_PAGE_SKELETON}-${BridgeTabKey.Limit}`,
+        ),
+      ).toBeNull();
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.SOURCE_TOKEN_AREA),
+      ).toBeOnTheScreen();
+      expect(resetState).not.toHaveBeenCalled();
+
+      await settlePager(getByTestId);
+
+      await waitFor(() => {
+        expect(resetState).toHaveBeenCalled();
+      });
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+      ).toBeOnTheScreen();
+    });
+
+    it('shows the previous tab once a right swipe settles', async () => {
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+
+      fireEvent.press(getByTestId(BridgeViewSelectorsIDs.LIMIT_TAB));
+      await settlePager(getByTestId);
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+        ).toBeOnTheScreen();
+      });
+
+      await firePagerEvent(getByTestId, 'pageScrollStateChanged', {
+        pageScrollState: 'dragging',
+      });
+      await firePagerEvent(getByTestId, 'pageScroll', {
+        position: 0,
+        offset: 0.4,
+      });
+      await firePagerEvent(getByTestId, 'pageSelected', { position: 0 });
+      await settlePager(getByTestId);
+
+      await waitFor(() => {
+        expect(
+          queryByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+        ).toBeNull();
+      });
+      expect(mockGoBack).not.toHaveBeenCalled();
+    });
+
+    it('keeps the pager scrollable on the Market tab and leaves right swipes to the native back gesture on iOS', async () => {
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+
+      await swipe(80, 600);
+
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.TABS_CONTENT).props.scrollEnabled,
+      ).toBe(true);
+      expect(
+        getByTestId(BridgeViewSelectorsIDs.BACK_GESTURE_EDGE),
+      ).toBeOnTheScreen();
+      expect(mockGoBack).not.toHaveBeenCalled();
+    });
+
+    it('shows the Limit tab once a drag from the Market tab settles on iOS', async () => {
+      const { getByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+
+      await firePagerEvent(getByTestId, 'pageScrollStateChanged', {
+        pageScrollState: 'dragging',
+      });
+      await firePagerEvent(getByTestId, 'pageSelected', { position: 1 });
+      await settlePager(getByTestId);
+
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.LIMIT_ORDER_CONTAINER),
+        ).toBeOnTheScreen();
+      });
+    });
+
+    it('shows the back gesture edge only once the pager settles on the Market tab on iOS', async () => {
+      const { getByTestId, queryByTestId } = renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+      fireEvent.press(getByTestId(BridgeViewSelectorsIDs.LIMIT_TAB));
+      await settlePager(getByTestId);
+
+      expect(
+        queryByTestId(BridgeViewSelectorsIDs.BACK_GESTURE_EDGE),
+      ).toBeNull();
+
+      fireEvent.press(getByTestId(BridgeViewSelectorsIDs.MARKET_TAB));
+
+      expect(
+        queryByTestId(BridgeViewSelectorsIDs.BACK_GESTURE_EDGE),
+      ).toBeNull();
+
+      await settlePager(getByTestId);
+
+      await waitFor(() => {
+        expect(
+          getByTestId(BridgeViewSelectorsIDs.BACK_GESTURE_EDGE),
+        ).toBeOnTheScreen();
+      });
+    });
+
+    it('navigates back on a right swipe on the Market tab on Android', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+
+      await swipe(80, 600);
+
+      expect(mockGoBack).toHaveBeenCalled();
+    });
+
+    it('stays on the screen on a left swipe on the Market tab on Android', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: stateWithTabsEnabled() },
+      );
+
+      await swipe(-80, -600);
+
+      expect(mockGoBack).not.toHaveBeenCalled();
+    });
+
+    it('navigates back on a right swipe over the tab content when the tabs bar is hidden on Android', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      renderScreen(
+        BridgeView,
+        { name: Routes.BRIDGE.ROOT },
+        { state: mockState },
+      );
+
+      await swipe(80, 600);
+
+      expect(mockGoBack).toHaveBeenCalled();
+    });
+  });
+});

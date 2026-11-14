@@ -1,0 +1,126 @@
+// Third party dependencies.
+import React from 'react';
+
+// Internal dependencies.
+import ConfirmTurnOnBackupAndSyncModal from './ConfirmTurnOnBackupAndSyncModal';
+import renderWithProvider from '../../../../util/test/renderWithProvider';
+import { useNavigation } from '@react-navigation/native';
+import { fireEvent, waitFor } from '@testing-library/react-native';
+import { toggleBasicFunctionality } from '../../../../actions/settings';
+import { strings } from '../../../../../locales/i18n';
+
+jest.mock('../../../../actions/settings', () => ({
+  ...jest.requireActual('../../../../actions/settings'),
+  toggleBasicFunctionality: jest.fn(() => jest.fn()),
+}));
+
+const { InteractionManager } = jest.requireActual('react-native');
+
+InteractionManager.runAfterInteractions = jest.fn(async (callback) =>
+  callback(),
+);
+
+const mockEnableBackupAndSync = jest.fn();
+const mockTrackEnableBackupAndSyncEvent = jest.fn();
+
+jest.mock('../../../../util/navigation/navUtils', () => ({
+  ...jest.requireActual('../../../../util/navigation/navUtils'),
+  useParams: () => ({
+    enableBackupAndSync: mockEnableBackupAndSync,
+    trackEnableBackupAndSyncEvent: mockTrackEnableBackupAndSyncEvent,
+  }),
+  useRoute: jest.fn(),
+  createNavigationDetails: jest.fn(),
+}));
+
+const mockDispatch = jest.fn();
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useDispatch: () => mockDispatch,
+}));
+
+const mockGoBack = jest.fn();
+jest.mock('@react-navigation/native', () => {
+  const actualReactNavigation = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualReactNavigation,
+    useNavigation: () => ({
+      navigate: jest.fn(),
+      setOptions: jest.fn(),
+      goBack: mockGoBack,
+      reset: jest.fn(),
+      getParent: () => ({
+        pop: jest.fn(),
+      }),
+      isFocused: jest.fn(() => true),
+    }),
+  };
+});
+
+describe('ConfirmTurnOnBackupAndSyncModal', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders the title and confirm button', () => {
+    const { getByText } = renderWithProvider(
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      //@ts-ignore
+      <ConfirmTurnOnBackupAndSyncModal navigation={useNavigation()} />,
+    );
+
+    expect(getByText(strings('backupAndSync.enable.title'))).toBeOnTheScreen();
+    expect(
+      getByText(strings('default_settings.sheet.buttons.turn_on')),
+    ).toBeOnTheScreen();
+  });
+
+  it('enables basic functionality, then backup and sync', async () => {
+    const { getByText } = renderWithProvider(
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      //@ts-ignore
+      <ConfirmTurnOnBackupAndSyncModal navigation={useNavigation()} />,
+    );
+
+    const confirmButton = getByText('Turn on');
+    fireEvent.press(confirmButton);
+
+    await waitFor(() => {
+      expect(toggleBasicFunctionality).toHaveBeenCalledWith(true);
+      expect(mockTrackEnableBackupAndSyncEvent).toHaveBeenCalled();
+      expect(mockEnableBackupAndSync).toHaveBeenCalled();
+    });
+  });
+
+  it('dismisses the modal route after confirming', async () => {
+    const { getByText } = renderWithProvider(
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      //@ts-ignore
+      <ConfirmTurnOnBackupAndSyncModal navigation={useNavigation()} />,
+    );
+
+    fireEvent.press(
+      getByText(strings('default_settings.sheet.buttons.turn_on')),
+    );
+
+    await waitFor(() => {
+      expect(mockGoBack).toHaveBeenCalled();
+    });
+  });
+
+  it('dismisses the modal route after cancelling', async () => {
+    const { getByText } = renderWithProvider(
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      //@ts-ignore
+      <ConfirmTurnOnBackupAndSyncModal navigation={useNavigation()} />,
+    );
+
+    fireEvent.press(
+      getByText(strings('default_settings.sheet.buttons.cancel')),
+    );
+
+    await waitFor(() => {
+      expect(mockGoBack).toHaveBeenCalled();
+    });
+  });
+});

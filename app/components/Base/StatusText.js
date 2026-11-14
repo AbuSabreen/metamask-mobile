@@ -5,7 +5,7 @@ import { StyleSheet } from 'react-native';
 import { FIAT_ORDER_STATES } from '../../constants/on-ramp';
 import { strings } from '../../../locales/i18n';
 import { useTheme } from '../../util/theme';
-import { CommonSelectorsIDs } from '../../../e2e/selectors/Common.selectors';
+import { TransactionStatus } from '@metamask/transaction-controller';
 
 const styles = StyleSheet.create({
   status: {
@@ -15,42 +15,58 @@ const styles = StyleSheet.create({
   },
 });
 
-export const ConfirmedText = (props) => (
+export const ConfirmedText = ({ testID, style: styleProp, ...props }) => (
   <Text
-    testID={CommonSelectorsIDs.STATUS_CONFIRMED}
+    testID={testID}
     bold
     green
-    style={styles.status}
+    style={[styles.status, styleProp]}
     {...props}
   />
 );
-export const PendingText = (props) => {
-  const { colors } = useTheme();
-  return (
-    <Text
-      bold
-      style={[styles.status, { color: colors.secondary.default }]}
-      {...props}
-    />
-  );
-};
-export const FailedText = (props) => {
-  const { colors } = useTheme();
-  return (
-    <Text
-      bold
-      style={[styles.status, { color: colors.error.default }]}
-      {...props}
-    />
-  );
+ConfirmedText.propTypes = {
+  testID: PropTypes.string,
+  style: PropTypes.oneOfType([PropTypes.object, PropTypes.array]),
 };
 
-function StatusText({ status, context, ...props }) {
+export const PendingText = ({ testID, style: styleProp, ...props }) => {
+  const { colors } = useTheme();
+  return (
+    <Text
+      testID={testID}
+      bold
+      style={[styles.status, { color: colors.warning.default }, styleProp]}
+      {...props}
+    />
+  );
+};
+PendingText.propTypes = {
+  testID: PropTypes.string,
+  style: PropTypes.oneOfType([PropTypes.object, PropTypes.array]),
+};
+
+export const FailedText = ({ testID, style: styleProp, ...props }) => {
+  const { colors } = useTheme();
+  return (
+    <Text
+      testID={testID}
+      bold
+      style={[styles.status, { color: colors.error.default }, styleProp]}
+      {...props}
+    />
+  );
+};
+FailedText.propTypes = {
+  testID: PropTypes.string,
+  style: PropTypes.oneOfType([PropTypes.object, PropTypes.array]),
+};
+
+function StatusText({ status, context = 'transaction', testID, ...props }) {
   switch (status) {
     case 'Confirmed':
     case 'confirmed':
       return (
-        <ConfirmedText {...props}>
+        <ConfirmedText testID={testID} {...props}>
           {strings(`${context}.${status}`)}
         </ConfirmedText>
       );
@@ -58,15 +74,22 @@ function StatusText({ status, context, ...props }) {
     case 'pending':
     case 'Submitted':
     case 'submitted':
+    case 'Unconfirmed':
+    case 'unconfirmed':
+    case TransactionStatus.signed:
       return (
-        <PendingText {...props}>{strings(`${context}.${status}`)}</PendingText>
+        <PendingText testID={testID} {...props}>
+          {strings(`${context}.${status}`)}
+        </PendingText>
       );
     case 'Failed':
     case 'Cancelled':
     case 'failed':
     case 'cancelled':
       return (
-        <FailedText {...props}>{strings(`${context}.${status}`)}</FailedText>
+        <FailedText testID={testID} {...props}>
+          {strings(`${context}.${status}`)}
+        </FailedText>
       );
 
     case FIAT_ORDER_STATES.COMPLETED:
@@ -95,13 +118,10 @@ function StatusText({ status, context, ...props }) {
   }
 }
 
-StatusText.defaultProps = {
-  context: 'transaction',
-};
-
 StatusText.propTypes = {
   status: PropTypes.string.isRequired,
   context: PropTypes.string,
+  testID: PropTypes.string,
 };
 
 export default StatusText;

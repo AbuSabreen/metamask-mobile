@@ -1,0 +1,213 @@
+import React, { useRef, useCallback, useEffect } from 'react';
+import { View } from 'react-native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import styleSheet from './AssetDetailsActions.styles';
+import { useStyles } from '../../../../component-library/hooks';
+import MainActionButton from '../../../../component-library/components-temp/MainActionButton';
+import { strings } from '../../../../../locales/i18n';
+import { IconName } from '../../../../component-library/components/Icons/Icon';
+import { TokenOverviewSelectorsIDs } from '../../../UI/AssetOverview/TokenOverview.testIds';
+import { useSelector } from 'react-redux';
+import { selectCanSignTransactions } from '../../../../selectors/accountsController';
+import { selectIsSwapsEnabled } from '../../../../core/redux/slices/bridge';
+import Routes from '../../../../constants/navigation/Routes';
+import useDepositEnabled from '../../../UI/Ramp/hooks/useDepositEnabled';
+import { RootState } from '../../../../reducers';
+import { useAnalytics } from '../../../../components/hooks/useAnalytics/useAnalytics';
+import {
+  trackActionButtonClick,
+  ActionButtonType,
+  ActionLocation,
+  ActionPosition,
+} from '../../../../util/analytics/actionButtonTracking';
+import {
+  SwapBridgeNavigationLocation,
+  useSwapBridgeNavigation,
+} from '../../../UI/Bridge/hooks/useSwapBridgeNavigation';
+
+export interface AssetDetailsActionsProps {
+  displayBuyButton: boolean | undefined;
+  displaySwapsButton: boolean | undefined;
+  onBuy?: () => void;
+  onSend: () => void;
+  onReceive: () => void;
+  // Asset context for fund flow
+  asset?: {
+    assetId?: string;
+    address?: string;
+    chainId?: string;
+  };
+  // Optional custom action IDs to avoid test ID conflicts
+  buyButtonActionID?: string;
+  swapButtonActionID?: string;
+  sendButtonActionID?: string;
+  receiveButtonActionID?: string;
+  containerTestID?: string;
+  isGlass?: boolean;
+}
+
+// TODO: Delete when TokenDetailsV2Buttons flag is fully rolled out
+export const AssetDetailsActions: React.FC<AssetDetailsActionsProps> = ({
+  displayBuyButton,
+  displaySwapsButton,
+  onBuy,
+  onSend,
+  onReceive,
+  asset,
+  buyButtonActionID = TokenOverviewSelectorsIDs.BUY_BUTTON,
+  swapButtonActionID = TokenOverviewSelectorsIDs.SWAP_BUTTON,
+  sendButtonActionID = TokenOverviewSelectorsIDs.SEND_BUTTON,
+  receiveButtonActionID = TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+  containerTestID,
+  isGlass = false,
+}) => {
+  const { styles } = useStyles(styleSheet, {});
+  const canSignTransactions = useSelector(selectCanSignTransactions);
+  const isSwapsEnabled = useSelector((state: RootState) =>
+    selectIsSwapsEnabled(state),
+  );
+  const navigation = useNavigation<AppNavigationProp>();
+  const { navigate } = navigation;
+  const { trackEvent, createEventBuilder } = useAnalytics();
+
+  const { goToSwaps } = useSwapBridgeNavigation({
+    location: SwapBridgeNavigationLocation.MainView,
+    sourcePage: 'MainView',
+    // Homepage control row owns ACTION_BUTTON_CLICKED so MainView is not reported as navbar.
+    skipActionButtonClickTracking: true,
+  });
+
+  // Prevent rapid navigation clicks - locks all buttons during navigation
+  const navigationLockRef = useRef(false);
+
+  // Reset lock when screen comes into focus (handles return from navigation)
+  useFocusEffect(
+    useCallback(() => {
+      navigationLockRef.current = false;
+    }, []),
+  );
+
+  // Listen to navigation state changes to unlock when navigation completes or fails
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('state', () => {
+      navigationLockRef.current = false;
+    });
+    return unsubscribe;
+  }, [navigation]);
+
+  // Check if FundActionMenu would be empty
+  const { isDepositEnabled } = useDepositEnabled();
+  const isBuyMenuAvailable = isDepositEnabled || true;
+
+  // Button should be enabled if we have standard funding options OR a custom onBuy function
+  const isBuyingAvailable = isBuyMenuAvailable || !!onBuy;
+
+  // Wrapper to prevent rapid navigation clicks
+  const withNavigationLock = useCallback((callback: () => void) => {
+    if (navigationLockRef.current) return;
+    navigationLockRef.current = true;
+    callback();
+  }, []);
+
+  const handleBuyPress = useCallback(() => {
+    withNavigationLock(() => {
+      // Track the home screen Buy button click
+      trackActionButtonClick(trackEvent, createEventBuilder, {
+        action_name: ActionButtonType.BUY,
+        action_position: ActionPosition.FIRST_POSITION,
+        button_label: strings('asset_overview.buy_button'),
+        location: ActionLocation.HOME,
+      });
+
+      // Navigate to FundActionMenu with both custom onBuy and asset context
+      // The menu will prioritize custom onBuy over standard funding options
+      // This allows custom funding flows even when deposit/ramp are unavailable
+      navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+        screen: Routes.MODAL.FUND_ACTION_MENU,
+        params: {
+          onBuy, // Custom buy function (takes priority if provided)
+          asset, // Asset context for standard funding flows
+        },
+      });
+    });
+  }, [
+    withNavigationLock,
+    trackEvent,
+    createEventBuilder,
+    navigate,
+    onBuy,
+    asset,
+  ]);
+
+  const handleSwapPress = useCallback(() => {
+    withNavigationLock(() => {
+      trackActionButtonClick(trackEvent, createEventBuilder, {
+        action_name: ActionButtonType.SWAP,
+        action_position: ActionPosition.SECOND_POSITION,
+        button_label: strings('asset_overview.swap'),
+        location: ActionLocation.HOME,
+      });
+      goToSwaps();
+    });
+  }, [withNavigationLock, trackEvent, createEventBuilder, goToSwaps]);
+
+  const handleSendPress = useCallback(() => {
+    withNavigationLock(onSend);
+  }, [withNavigationLock, onSend]);
+
+  const handleReceivePress = useCallback(() => {
+    withNavigationLock(onReceive);
+  }, [withNavigationLock, onReceive]);
+
+  return (
+    <View
+      style={styles.activitiesButton}
+      testID={containerTestID}
+      accessible={false}
+    >
+      {displayBuyButton && (
+        <MainActionButton
+          iconName={IconName.AttachMoney}
+          label={strings('asset_overview.buy_button')}
+          onPress={handleBuyPress}
+          isDisabled={!isBuyingAvailable}
+          testID={buyButtonActionID}
+          containerStyle={styles.buttonContainer}
+          isGlass={isGlass}
+        />
+      )}
+      {displaySwapsButton && (
+        <MainActionButton
+          iconName={IconName.SwapVertical}
+          label={strings('asset_overview.swap')}
+          onPress={handleSwapPress}
+          isDisabled={!isSwapsEnabled}
+          testID={swapButtonActionID}
+          containerStyle={styles.buttonContainer}
+          isGlass={isGlass}
+        />
+      )}
+      <MainActionButton
+        iconName={IconName.Arrow2UpRight}
+        label={strings('asset_overview.send_button')}
+        onPress={handleSendPress}
+        isDisabled={!canSignTransactions}
+        testID={sendButtonActionID}
+        containerStyle={styles.buttonContainer}
+        isGlass={isGlass}
+      />
+      <MainActionButton
+        iconName={IconName.Received}
+        label={strings('asset_overview.receive_button')}
+        onPress={handleReceivePress}
+        isDisabled={false}
+        testID={receiveButtonActionID}
+        containerStyle={styles.buttonContainer}
+        isGlass={isGlass}
+      />
+    </View>
+  );
+};
+
+export default AssetDetailsActions;

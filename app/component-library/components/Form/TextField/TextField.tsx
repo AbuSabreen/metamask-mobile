@@ -1,102 +1,142 @@
 /* eslint-disable react/prop-types */
 
 // Third party dependencies.
-import React, { useCallback, useState } from 'react';
-import { View } from 'react-native';
+import React, {
+  useCallback,
+  useState,
+  useRef,
+  useImperativeHandle,
+} from 'react';
+import { Pressable, TextInput, View } from 'react-native';
 
 // External dependencies.
 import { useStyles } from '../../../hooks';
 import Input from './foundation/Input';
+import { TextVariant } from '../../../components/Texts/Text';
 
 // Internal dependencies.
 import styleSheet from './TextField.styles';
 import { TextFieldProps } from './TextField.types';
 import {
-  DEFAULT_TEXTFIELD_SIZE,
-  TOKEN_TEXTFIELD_INPUT_TEXT_VARIANT,
   TEXTFIELD_TEST_ID,
   TEXTFIELD_STARTACCESSORY_TEST_ID,
   TEXTFIELD_ENDACCESSORY_TEST_ID,
 } from './TextField.constants';
 
-const TextField: React.FC<TextFieldProps> = ({
-  style,
-  size = DEFAULT_TEXTFIELD_SIZE,
-  startAccessory,
-  endAccessory,
-  isError = false,
-  inputElement,
-  isDisabled = false,
-  autoFocus = false,
-  onBlur,
-  onFocus,
-  ...props
-}) => {
-  const [isFocused, setIsFocused] = useState(autoFocus);
-
-  const { styles } = useStyles(styleSheet, {
-    style,
-    size,
-    isError,
-    isDisabled,
-    isFocused,
-  });
-
-  const onBlurHandler = useCallback(
-    (e: any) => {
-      if (!isDisabled) {
-        setIsFocused(false);
-        onBlur?.(e);
-      }
+/**
+ * @deprecated Please update your code to use `TextField` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/TextField/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#textfield-component Migration docs}
+ * @since @metamask/design-system-react-native@0.9.0
+ */
+const TextField = React.forwardRef<TextInput | null, TextFieldProps>(
+  (
+    {
+      style,
+      startAccessory,
+      endAccessory,
+      isError = false,
+      inputElement,
+      isDisabled = false,
+      autoFocus = false,
+      onBlur,
+      onFocus,
+      testID,
+      ...props
     },
-    [isDisabled, setIsFocused, onBlur],
-  );
+    ref,
+  ) => {
+    const [isFocused, setIsFocused] = useState(autoFocus);
+    const inputRef = useRef<TextInput>(null);
 
-  const onFocusHandler = useCallback(
-    (e: any) => {
-      if (!isDisabled) {
-        setIsFocused(true);
-        onFocus?.(e);
+    // Expose the input methods to parent components
+    useImperativeHandle<TextInput | null, TextInput | null>(
+      ref,
+      () => inputRef.current,
+      [],
+    );
+
+    const { styles } = useStyles(styleSheet, {
+      style,
+      isError,
+      isDisabled,
+      isFocused,
+    });
+
+    const onBlurHandler = useCallback(
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (e: any) => {
+        if (!isDisabled) {
+          setIsFocused(false);
+          onBlur?.(e);
+        }
+      },
+      [isDisabled, setIsFocused, onBlur],
+    );
+
+    const onFocusHandler = useCallback(
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (e: any) => {
+        if (!isDisabled) {
+          setIsFocused(true);
+          onFocus?.(e);
+        }
+      },
+      [isDisabled, setIsFocused, onFocus],
+    );
+
+    const onPressHandler = useCallback(() => {
+      if (!isDisabled && inputRef.current) {
+        inputRef.current.focus();
       }
-    },
-    [isDisabled, setIsFocused, onFocus],
-  );
+    }, [isDisabled]);
 
-  return (
-    <View style={styles.base} testID={TEXTFIELD_TEST_ID}>
-      {startAccessory && (
-        <View
-          style={styles.startAccessory}
-          testID={TEXTFIELD_STARTACCESSORY_TEST_ID}
-        >
-          {startAccessory}
-        </View>
-      )}
-      <View style={styles.input}>
-        {inputElement ? (
-          { inputElement }
-        ) : (
-          <Input
-            textVariant={TOKEN_TEXTFIELD_INPUT_TEXT_VARIANT}
-            isDisabled={isDisabled}
-            autoFocus={autoFocus}
-            onBlur={onBlurHandler}
-            onFocus={onFocusHandler}
-            {...props}
-            isStateStylesDisabled
-          />
+    return (
+      <Pressable
+        style={styles.base}
+        testID={TEXTFIELD_TEST_ID}
+        onPress={onPressHandler}
+      >
+        {startAccessory && (
+          <View
+            style={styles.startAccessory}
+            testID={TEXTFIELD_STARTACCESSORY_TEST_ID}
+          >
+            {startAccessory}
+          </View>
         )}
-      </View>
-      {endAccessory && (
-        <View
-          style={styles.endAccessory}
-          testID={TEXTFIELD_ENDACCESSORY_TEST_ID}
-        >
-          {endAccessory}
+        <View style={styles.inputContainer}>
+          {inputElement ?? (
+            <Input
+              textVariant={TextVariant.BodyMD}
+              isDisabled={isDisabled}
+              autoFocus={autoFocus}
+              onBlur={onBlurHandler}
+              onFocus={onFocusHandler}
+              testID={testID}
+              style={styles.input}
+              numberOfLines={1}
+              multiline={false}
+              {...props}
+              ref={inputRef}
+              isStateStylesDisabled
+            />
+          )}
         </View>
-      )}
-    </View>
-  );
-};
+        {endAccessory && (
+          <View
+            style={styles.endAccessory}
+            testID={TEXTFIELD_ENDACCESSORY_TEST_ID}
+          >
+            {endAccessory}
+          </View>
+        )}
+      </Pressable>
+    );
+  },
+);
 
 export default TextField;

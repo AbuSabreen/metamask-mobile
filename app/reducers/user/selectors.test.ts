@@ -1,0 +1,366 @@
+// NavigationProvider.test.tsx
+import { renderHook } from '@testing-library/react-hooks';
+import { useSelector } from 'react-redux';
+import {
+  selectAppServicesReady,
+  selectIsConnectionRemoved,
+  selectUserLoggedIn,
+  selectUserState,
+  selectMusdConversionEducationSeen,
+  selectMusdConversionAssetDetailCtasSeen,
+  selectMoneyOnboardingSeen,
+  selectMoneySplashSeen,
+  selectMoneyEarnBannerDismissedTokens,
+  selectTokenOverviewChartType,
+  selectTokenOverviewChartInterval,
+  selectTokenIndicators,
+  selectOnboardingStepperProgress,
+  selectBridgeLimitTabSeen,
+} from './selectors';
+import { ChartType } from '../../components/UI/Charts/AdvancedChart/AdvancedChart.types';
+import { DEFAULT_TOKEN_OVERVIEW_CHART_INTERVAL } from '../../components/UI/AssetOverview/Price/tokenOverviewChart.constants';
+
+// Mock the redux store state
+const mockState = {
+  user: {
+    appServicesReady: false,
+    userLoggedIn: true,
+    isConnectionRemoved: false,
+    musdConversionEducationSeen: false,
+    musdConversionAssetDetailCtasSeen: {} as Record<string, boolean>,
+    moneyOnboardingSeen: false,
+    moneySplashSeen: false,
+    moneyEarnBannerDismissedTokens: {} as Record<string, boolean>,
+    tokenOverviewChartType: ChartType.Line as ChartType,
+    tokenOverviewChartInterval: DEFAULT_TOKEN_OVERVIEW_CHART_INTERVAL,
+    tokenIndicators: [] as string[],
+    onboardingStepperProgress: {} as Record<string, number>,
+    bridgeLimitTabSeen: false,
+  },
+};
+
+// Mock react-redux
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn((selector) => selector(mockState)),
+}));
+
+describe('user state selectors', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('selectUserState', () => {
+    it('should return the entire user state', () => {
+      const { result } = renderHook(() => useSelector(selectUserState));
+      expect(result.current).toEqual(mockState.user);
+    });
+  });
+
+  describe('selectAppServicesReady', () => {
+    it('should return false when services are not ready', () => {
+      const { result } = renderHook(() => useSelector(selectAppServicesReady));
+      expect(result.current).toBe(false);
+    });
+  });
+
+  describe('selectUserLoggedIn', () => {
+    it('should return true when user is logged in', () => {
+      const { result } = renderHook(() => useSelector(selectUserLoggedIn));
+      expect(result.current).toBe(true);
+    });
+  });
+
+  describe('selectIsConnectionRemoved', () => {
+    it('should return false when user change password less than 20 times', () => {
+      const { result } = renderHook(() =>
+        useSelector(selectIsConnectionRemoved),
+      );
+      expect(result.current).toBe(false);
+    });
+
+    it('should return true when user change password more than 20 times', () => {
+      mockState.user.isConnectionRemoved = true;
+      const { result } = renderHook(() =>
+        useSelector(selectIsConnectionRemoved),
+      );
+      expect(result.current).toBe(true);
+    });
+  });
+
+  describe('selectMusdConversionEducationSeen', () => {
+    it('returns false when the user has not seen the mUSD conversion education screen', () => {
+      mockState.user.musdConversionEducationSeen = false;
+
+      const { result } = renderHook(() =>
+        useSelector(selectMusdConversionEducationSeen),
+      );
+
+      expect(result.current).toBe(false);
+    });
+
+    it('returns true when the user has already seen the mUSD conversion education screen', () => {
+      mockState.user.musdConversionEducationSeen = true;
+
+      const { result } = renderHook(() =>
+        useSelector(selectMusdConversionEducationSeen),
+      );
+
+      expect(result.current).toBe(true);
+    });
+  });
+
+  describe('selectMusdConversionAssetDetailCtasSeen', () => {
+    it('returns empty object when no CTAs have been dismissed', () => {
+      mockState.user.musdConversionAssetDetailCtasSeen = {};
+
+      const { result } = renderHook(() =>
+        useSelector(selectMusdConversionAssetDetailCtasSeen),
+      );
+
+      expect(result.current).toEqual({});
+    });
+
+    it('returns record of dismissed CTAs keyed by chainId-address', () => {
+      mockState.user.musdConversionAssetDetailCtasSeen = {
+        '0x1-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': true,
+        '0xe708-0xdac17f958d2ee523a2206206994597c13d831ec7': true,
+      };
+
+      const { result } = renderHook(() =>
+        useSelector(selectMusdConversionAssetDetailCtasSeen),
+      );
+
+      expect(result.current).toEqual({
+        '0x1-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': true,
+        '0xe708-0xdac17f958d2ee523a2206206994597c13d831ec7': true,
+      });
+    });
+  });
+
+  describe('selectMoneyOnboardingSeen', () => {
+    it('returns false when money onboarding has not been seen', () => {
+      mockState.user.moneyOnboardingSeen = false;
+
+      const { result } = renderHook(() =>
+        useSelector(selectMoneyOnboardingSeen),
+      );
+
+      expect(result.current).toBe(false);
+    });
+
+    it('returns true when money onboarding has been seen', () => {
+      mockState.user.moneyOnboardingSeen = true;
+
+      const { result } = renderHook(() =>
+        useSelector(selectMoneyOnboardingSeen),
+      );
+
+      expect(result.current).toBe(true);
+    });
+
+    it('defaults to false when moneyOnboardingSeen is not set', () => {
+      // @ts-expect-error - Testing undefined state
+      mockState.user.moneyOnboardingSeen = undefined;
+
+      const { result } = renderHook(() =>
+        useSelector(selectMoneyOnboardingSeen),
+      );
+
+      expect(result.current).toBe(false);
+    });
+  });
+
+  describe('selectMoneySplashSeen', () => {
+    it('returns false when the splash has not been seen', () => {
+      mockState.user.moneySplashSeen = false;
+
+      const { result } = renderHook(() => useSelector(selectMoneySplashSeen));
+
+      expect(result.current).toBe(false);
+    });
+
+    it('returns true when the splash has been seen', () => {
+      mockState.user.moneySplashSeen = true;
+
+      const { result } = renderHook(() => useSelector(selectMoneySplashSeen));
+
+      expect(result.current).toBe(true);
+    });
+
+    it('defaults to false when moneySplashSeen is not set', () => {
+      // @ts-expect-error - Testing undefined state
+      mockState.user.moneySplashSeen = undefined;
+
+      const { result } = renderHook(() => useSelector(selectMoneySplashSeen));
+
+      expect(result.current).toBe(false);
+    });
+  });
+
+  describe('selectMoneyEarnBannerDismissedTokens', () => {
+    it('returns empty object when no banners have been dismissed', () => {
+      mockState.user.moneyEarnBannerDismissedTokens = {};
+
+      const { result } = renderHook(() =>
+        useSelector(selectMoneyEarnBannerDismissedTokens),
+      );
+
+      expect(result.current).toEqual({});
+    });
+
+    it('returns record of dismissed banners keyed by chainId-address', () => {
+      mockState.user.moneyEarnBannerDismissedTokens = {
+        '0x1-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': true,
+        '0xe708-0xdac17f958d2ee523a2206206994597c13d831ec7': true,
+      };
+
+      const { result } = renderHook(() =>
+        useSelector(selectMoneyEarnBannerDismissedTokens),
+      );
+
+      expect(result.current).toEqual({
+        '0x1-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': true,
+        '0xe708-0xdac17f958d2ee523a2206206994597c13d831ec7': true,
+      });
+    });
+
+    it('defaults to empty object when moneyEarnBannerDismissedTokens is not set', () => {
+      // @ts-expect-error - Testing undefined state
+      mockState.user.moneyEarnBannerDismissedTokens = undefined;
+
+      const { result } = renderHook(() =>
+        useSelector(selectMoneyEarnBannerDismissedTokens),
+      );
+
+      expect(result.current).toEqual({});
+    });
+  });
+
+  describe('selectTokenOverviewChartType', () => {
+    it('returns ChartType.Line when chart type is set to Line', () => {
+      mockState.user.tokenOverviewChartType = ChartType.Line;
+
+      const { result } = renderHook(() =>
+        useSelector(selectTokenOverviewChartType),
+      );
+
+      expect(result.current).toBe(ChartType.Line);
+    });
+
+    it('returns ChartType.Candles when chart type is set to Candles', () => {
+      mockState.user.tokenOverviewChartType = ChartType.Candles;
+
+      const { result } = renderHook(() =>
+        useSelector(selectTokenOverviewChartType),
+      );
+
+      expect(result.current).toBe(ChartType.Candles);
+    });
+
+    it('returns ChartType.Line default when tokenOverviewChartType is not set', () => {
+      // @ts-expect-error - Testing undefined state
+      mockState.user.tokenOverviewChartType = undefined;
+
+      const { result } = renderHook(() =>
+        useSelector(selectTokenOverviewChartType),
+      );
+
+      expect(result.current).toBe(ChartType.Line);
+    });
+  });
+
+  describe('selectTokenOverviewChartInterval', () => {
+    it('returns persisted interval when valid', () => {
+      mockState.user.tokenOverviewChartInterval = '1h';
+
+      const { result } = renderHook(() =>
+        useSelector(selectTokenOverviewChartInterval),
+      );
+
+      expect(result.current).toBe('1h');
+    });
+
+    it('returns default when interval is invalid', () => {
+      mockState.user.tokenOverviewChartInterval = 'invalid';
+
+      const { result } = renderHook(() =>
+        useSelector(selectTokenOverviewChartInterval),
+      );
+
+      expect(result.current).toBe(DEFAULT_TOKEN_OVERVIEW_CHART_INTERVAL);
+    });
+  });
+
+  describe('selectTokenIndicators', () => {
+    it('returns empty array when no indicators are active', () => {
+      mockState.user.tokenIndicators = [];
+
+      const { result } = renderHook(() => useSelector(selectTokenIndicators));
+
+      expect(result.current).toEqual([]);
+    });
+
+    it('returns active indicators when set', () => {
+      mockState.user.tokenIndicators = ['RSI', 'MACD'];
+
+      const { result } = renderHook(() => useSelector(selectTokenIndicators));
+
+      expect(result.current).toEqual(['RSI', 'MACD']);
+    });
+
+    it('returns empty array when tokenIndicators is not set', () => {
+      // @ts-expect-error - Testing undefined state
+      mockState.user.tokenIndicators = undefined;
+
+      const { result } = renderHook(() => useSelector(selectTokenIndicators));
+
+      expect(result.current).toEqual([]);
+    });
+  });
+
+  describe('selectOnboardingStepperProgress', () => {
+    it('returns empty object when onboardingStepperProgress is not set', () => {
+      // @ts-expect-error - Testing undefined state
+      mockState.user.onboardingStepperProgress = undefined;
+
+      const { result } = renderHook(() =>
+        useSelector(selectOnboardingStepperProgress),
+      );
+
+      expect(result.current).toEqual({});
+    });
+
+    it('returns the stored progress record when populated', () => {
+      mockState.user.onboardingStepperProgress = { money: 1, earn: 2 };
+
+      const { result } = renderHook(() =>
+        useSelector(selectOnboardingStepperProgress),
+      );
+
+      expect(result.current).toEqual({ money: 1, earn: 2 });
+    });
+  });
+
+  describe('selectBridgeLimitTabSeen', () => {
+    it('returns true when the Limit tab has been seen', () => {
+      mockState.user.bridgeLimitTabSeen = true;
+
+      const { result } = renderHook(() =>
+        useSelector(selectBridgeLimitTabSeen),
+      );
+
+      expect(result.current).toBe(true);
+    });
+
+    it('defaults to false when bridgeLimitTabSeen is not set', () => {
+      // @ts-expect-error - Testing undefined state
+      mockState.user.bridgeLimitTabSeen = undefined;
+
+      const { result } = renderHook(() =>
+        useSelector(selectBridgeLimitTabSeen),
+      );
+
+      expect(result.current).toBe(false);
+    });
+  });
+});

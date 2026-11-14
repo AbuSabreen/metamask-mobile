@@ -4,7 +4,8 @@ set -e
 set -u
 set -o pipefail
 
-SCRIPT_DIRECTORY=$(cd "${BASH_SOURCE[0]%/*}" && pwd)
+# //\\// normalizes Windows backslash invocation paths (Yarn/Git Bash); no-op elsewhere.
+SCRIPT_DIRECTORY=$(cd "$(dirname "${BASH_SOURCE[0]//\\//}")" && pwd)
 PROJECT_DIRECTORY=$(cd "${SCRIPT_DIRECTORY}" && cd ../ && pwd)
 
 # Generate attributions
@@ -19,15 +20,14 @@ main() {
   # To exclude `devDependencies`, we delete them from the manifest first, then
   # reinstall. We had to do this because we couldn't find a package that could
   # extract licences just from production dependencies that worked correctly
-  # with Yarn v1. We also couldn't use `yarn install --prod` here because that
-  # is also broken on Yarn v1, in that it still ends up installing some
-  # packages from `devDependencies`.
+  # with Yarn. We also couldn't use `yarn install --prod` here because that
+  # can still end up installing some packages from `devDependencies`.
   local tmp="package.json_temp"
   jq 'del(.devDependencies)' package.json >"$tmp"
   mv "$tmp" package.json
 
   rm -rf "${PROJECT_DIRECTORY}/node_modules"
-  yarn --pure-lockfile
+  yarn install --immutable
 
   cd "${PROJECT_DIRECTORY}/scripts/generate-attributions"
 

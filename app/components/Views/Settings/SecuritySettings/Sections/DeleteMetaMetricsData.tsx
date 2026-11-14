@@ -4,7 +4,8 @@ import {
   DataDeleteResponseStatus,
   MetaMetricsEvents,
 } from '../../../../../core/Analytics';
-import { useMetrics } from '../../../../hooks/useMetrics';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { useAnalyticsDataDeletion } from '../../../../hooks/useAnalyticsDataDeletion';
 import SettingsButtonSection from '../../../../UI/SettingsButtonSection';
 import { strings } from '../../../../../../locales/i18n';
 import {
@@ -13,14 +14,13 @@ import {
 } from '../../../../../constants/urls';
 import Logger from '../../../../../util/Logger';
 import { getBrand, getDeviceId } from 'react-native-device-info';
-import Text, {
+import {
+  FontWeight,
+  Text,
+  TextButton,
   TextColor,
   TextVariant,
-} from '../../../../../component-library/components/Texts/Text';
-import Button, {
-  ButtonSize,
-  ButtonVariants,
-} from '../../../../../component-library/components/Buttons/Button';
+} from '@metamask/design-system-react-native';
 import useDataDeletion from './useDataDeletion';
 
 interface DeleteMetaMetricsDataProps {
@@ -57,6 +57,7 @@ interface DeleteMetaMetricsDataProps {
  *   Then "Delete Metametrics data" section text is "This will delete historical
  *     MetaMetrics data associated with your wallet.[...] View the ConsenSys Privacy Policy."
  *   And user can click the "delete metametrics" button again
+ *   (button availability is driven by metricsOptin state — opted-in means data is being tracked)
  *
  * Feature: opted-out user is back on MetaMetrics settings screen after deletion
  *   Given user has opted-out for metrics
@@ -70,11 +71,13 @@ interface DeleteMetaMetricsDataProps {
  *     This process can take up to 60 days. View the ConsenSys Privacy Policy."
  *   And "delete metametrics" button is disabled
  *   And user can NOT click the "delete metametrics" button again until data deletion task is finished
+ *   (button state is driven by metricsOptin — opted-out means no new data to delete)
  * ```
  */
 const DeleteMetaMetricsData = (props: DeleteMetaMetricsDataProps) => {
-  const { checkDataDeleteStatus, trackEvent, createDataDeletionTask } =
-    useMetrics();
+  const { checkDataDeleteStatus, createDataDeletionTask } =
+    useAnalyticsDataDeletion();
+  const { trackEvent, createEventBuilder } = useAnalytics();
 
   /** metricsOptin prop is used to update the component when the user toggles the opt-in switch
    * We don't need the value to determine if the deletion button should be enabled or not
@@ -93,21 +96,12 @@ const DeleteMetaMetricsData = (props: DeleteMetaMetricsDataProps) => {
   const dataDeletionAvailable = isDataDeletionAvailable();
 
   const checkInitialStatus = useCallback(async () => {
-    const {
-      deletionRequestDate,
-      dataDeletionRequestStatus,
-      hasCollectedDataSinceDeletionRequest,
-    } = await checkDataDeleteStatus();
+    const { deletionRequestDate, dataDeletionRequestStatus } =
+      await checkDataDeleteStatus();
 
-    setDataTrackedSinceLastDeletion(hasCollectedDataSinceDeletionRequest);
     setDeletionTaskDate(deletionRequestDate);
     setDataDeletionTaskStatus(dataDeletionRequestStatus);
-  }, [
-    setDataTrackedSinceLastDeletion,
-    setDeletionTaskDate,
-    setDataDeletionTaskStatus,
-    checkDataDeleteStatus,
-  ]);
+  }, [setDeletionTaskDate, setDataDeletionTaskStatus, checkDataDeleteStatus]);
 
   const showDeleteTaskError = () => {
     Alert.alert(
@@ -123,29 +117,49 @@ const DeleteMetaMetricsData = (props: DeleteMetaMetricsDataProps) => {
 
   const trackDataDeletionRequest = () => {
     trackEvent(
-      MetaMetricsEvents.ANALYTICS_REQUEST_DATA_DELETION,
-      {
-        os: Platform.OS,
-        os_version: Platform.Version,
-        device_model: `${getBrand()} ${getDeviceId()}`,
-      },
-      false,
+      createEventBuilder(MetaMetricsEvents.ANALYTICS_REQUEST_DATA_DELETION)
+        .addProperties({
+          os: Platform.OS,
+          os_version: Platform.Version,
+          device_model: `${getBrand()} ${getDeviceId()}`,
+        })
+        .build(),
     );
   };
 
   const deleteMetaMetrics = async () => {
-    try {
-      const deleteResponse = await createDataDeletionTask();
+    let deleteResponse:
+      | Awaited<ReturnType<typeof createDataDeletionTask>>
+      | undefined;
 
-      if (DataDeleteResponseStatus.ok === deleteResponse?.status) {
-        await checkInitialStatus();
-        trackDataDeletionRequest();
-      } else {
-        showDeleteTaskError();
-      }
-    } catch (error: any) {
+    try {
+      deleteResponse = await createDataDeletionTask();
+    } catch (error: unknown) {
       showDeleteTaskError();
       Logger.log('Error deleteMetaMetrics -', error);
+      return;
+    }
+
+    const responseStatus =
+      deleteResponse === null || deleteResponse === undefined
+        ? undefined
+        : deleteResponse.status;
+
+    if (DataDeleteResponseStatus.ok === responseStatus) {
+      try {
+        // Local-to-screen reset: no new event has been generated since this
+        // deletion request was just initiated, so the button must reflect
+        // "no data tracked since last deletion" regardless of metricsOptin.
+        // The mount effect will re-seed from metricsOptin on re-entry.
+        setDataTrackedSinceLastDeletion(false);
+        await checkInitialStatus();
+        trackDataDeletionRequest();
+      } catch (error: unknown) {
+        showDeleteTaskError();
+        Logger.log('Error deleteMetaMetrics -', error);
+      }
+    } else {
+      showDeleteTaskError();
     }
   };
 
@@ -175,55 +189,77 @@ const DeleteMetaMetricsData = (props: DeleteMetaMetricsDataProps) => {
       descriptionText={
         dataDeletionAvailable ? (
           <>
-            <Text variant={TextVariant.BodyMD} color={TextColor.Alternative}>
+            <Text
+              variant={TextVariant.BodySm}
+              fontWeight={FontWeight.Medium}
+              color={TextColor.TextAlternative}
+            >
               {strings('app_settings.delete_metrics_description_part_one')}
             </Text>{' '}
-            <Button
-              variant={ButtonVariants.Link}
-              size={ButtonSize.Auto}
+            <TextButton
+              variant={TextVariant.BodySm}
               onPress={openMetametricsHowto}
-              label={strings(
-                'app_settings.delete_metrics_description_part_two',
-              )}
-            />{' '}
-            <Text variant={TextVariant.BodyMD} color={TextColor.Alternative}>
+            >
+              {strings('app_settings.delete_metrics_description_part_two')}
+            </TextButton>{' '}
+            <Text
+              variant={TextVariant.BodySm}
+              fontWeight={FontWeight.Medium}
+              color={TextColor.TextAlternative}
+            >
               {strings('app_settings.delete_metrics_description_part_three')}
             </Text>{' '}
-            <Text variant={TextVariant.BodyMD} color={TextColor.Alternative}>
+            <Text
+              variant={TextVariant.BodySm}
+              fontWeight={FontWeight.Medium}
+              color={TextColor.TextAlternative}
+            >
               {strings('app_settings.delete_metrics_description_before_delete')}
             </Text>{' '}
-            <Button
-              variant={ButtonVariants.Link}
-              size={ButtonSize.Auto}
+            <TextButton
+              variant={TextVariant.BodySm}
               onPress={openPrivacyPolicy}
-              label={strings(
+            >
+              {strings(
                 'app_settings.delete_metrics_description_privacy_policy',
               )}
-            />
+            </TextButton>
           </>
         ) : (
           <>
-            <Text variant={TextVariant.BodyMD} color={TextColor.Alternative}>
+            <Text
+              variant={TextVariant.BodySm}
+              fontWeight={FontWeight.Medium}
+              color={TextColor.TextAlternative}
+            >
               {strings(
                 'app_settings.delete_metrics_description_after_delete_part_one',
               )}
             </Text>{' '}
-            <Text variant={TextVariant.BodyMD} color={TextColor.Alternative}>
+            <Text
+              variant={TextVariant.BodySm}
+              fontWeight={FontWeight.Medium}
+              color={TextColor.TextAlternative}
+            >
               {deletionTaskDate}
             </Text>
-            <Text variant={TextVariant.BodyMD} color={TextColor.Alternative}>
+            <Text
+              variant={TextVariant.BodySm}
+              fontWeight={FontWeight.Medium}
+              color={TextColor.TextAlternative}
+            >
               {strings(
                 'app_settings.delete_metrics_description_after_delete_part_two',
               )}
             </Text>{' '}
-            <Button
-              variant={ButtonVariants.Link}
-              size={ButtonSize.Auto}
+            <TextButton
+              variant={TextVariant.BodySm}
               onPress={openPrivacyPolicy}
-              label={strings(
+            >
+              {strings(
                 'app_settings.delete_metrics_description_privacy_policy',
               )}
-            />
+            </TextButton>
           </>
         )
       }

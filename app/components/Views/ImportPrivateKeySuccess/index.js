@@ -16,8 +16,7 @@ import { strings } from '../../../../locales/i18n';
 import Device from '../../../util/device';
 import { ScreenshotDeterrent } from '../../UI/ScreenshotDeterrent';
 import { ThemeContext, mockTheme } from '../../../util/theme';
-
-import { ImportPrivateKeySuccessScreenSelectorsIDs } from '../../../../e2e/selectors/ImportPrivateKeySuccessScreen.selectors';
+import { SuccessImportAccountIDs } from './SuccessImportAccount.testIds';
 
 const createStyles = (colors) =>
   StyleSheet.create({
@@ -77,6 +76,8 @@ const createStyles = (colors) =>
  * View that's displayed the first time imports account
  */
 class ImportPrivateKeySuccess extends PureComponent {
+  backHandlerSubscription = null;
+
   static propTypes = {
     /**
     /* navigation object required to push and pop other views
@@ -86,16 +87,17 @@ class ImportPrivateKeySuccess extends PureComponent {
 
   componentDidMount = () => {
     InteractionManager.runAfterInteractions(() => {
-      BackHandler.addEventListener('hardwareBackPress', this.handleBackPress);
+      this.backHandlerSubscription = BackHandler.addEventListener(
+        'hardwareBackPress',
+        this.handleBackPress,
+      );
     });
   };
 
   componentWillUnmount = () => {
     InteractionManager.runAfterInteractions(() => {
-      BackHandler.removeEventListener(
-        'hardwareBackPress',
-        this.handleBackPress,
-      );
+      this.backHandlerSubscription?.remove?.();
+      this.backHandlerSubscription = null;
     });
   };
 
@@ -121,22 +123,18 @@ class ImportPrivateKeySuccess extends PureComponent {
         >
           <View
             style={styles.content}
-            testID={
-              ImportPrivateKeySuccessScreenSelectorsIDs.IMPORT_SUCESS_SCREEN_ID
-            }
+            testID={SuccessImportAccountIDs.CONTAINER}
           >
             <TouchableOpacity
               onPress={this.dismiss}
               style={styles.navbarRightButton}
-              testID={
-                ImportPrivateKeySuccessScreenSelectorsIDs.IMPORT_SUCESS_SCREEN_CLOSE_BUTTON_ID
-              }
+              testID={SuccessImportAccountIDs.CLOSE_BUTTON}
             >
               <MaterialIcon name="close" size={15} style={styles.closeIcon} />
             </TouchableOpacity>
             <View style={styles.top}>
               <Icon
-                name="ios-checkmark-circle-outline"
+                name="checkmark-circle-outline"
                 style={styles.icon}
                 color={colors.success.default}
               />

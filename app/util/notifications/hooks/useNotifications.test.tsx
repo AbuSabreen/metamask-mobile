@@ -1,0 +1,398 @@
+import { act, renderHook, waitFor } from '@testing-library/react-native';
+
+// eslint-disable-next-line import-x/no-namespace
+import * as Actions from '../../../actions/notification/helpers';
+import {
+  createMockNotificationEthReceived,
+  createMockNotificationEthSent,
+} from '../../../components/UI/Notification/__mocks__/mock_notifications';
+// eslint-disable-next-line import-x/no-namespace
+import * as Selectors from '../../../selectors/notifications';
+import { renderHookWithProvider } from '../../test/renderWithProvider';
+import {
+  useContiguousLoading,
+  useDisableNotifications,
+  useEnableNotifications,
+  useListNotifications,
+  useMarkNotificationAsRead,
+} from './useNotifications';
+// eslint-disable-next-line import-x/no-namespace
+import * as UsePushNotifications from './usePushNotifications';
+
+jest.mock('../constants', () => ({
+  isNotificationsFeatureEnabled: () => true,
+}));
+
+jest.mock('./usePushNotifications', () => ({
+  usePushNotificationsToggle: jest.fn(),
+}));
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest.resetAllMocks();
+});
+
+describe('useNotifications - useListNotifications()', () => {
+  const arrangeMocks = () => {
+    const mockFetchNotifications = jest.spyOn(Actions, 'fetchNotifications');
+    const mockSelectLoading = jest.spyOn(
+      Selectors,
+      'selectIsFetchingMetamaskNotifications',
+    );
+    const mockSelectData = jest.spyOn(Selectors, 'getNotificationsList');
+
+    return {
+      mockFetchNotifications,
+      mockSelectLoading,
+      mockSelectData,
+    };
+  };
+
+  type Mocks = ReturnType<typeof arrangeMocks>;
+  const arrangeAct = async (mutateMocks?: (mocks: Mocks) => void) => {
+    // Arrange
+    const mocks = arrangeMocks();
+    mutateMocks?.(mocks);
+
+    // Act
+    const hook = renderHookWithProvider(() => useListNotifications());
+    await act(() => hook.result.current.listNotifications());
+    await waitFor(() =>
+      expect(mocks.mockFetchNotifications).toHaveBeenCalled(),
+    );
+
+    return { mocks, hook };
+  };
+
+  it('successfully invokes action', async () => {
+    const { mocks } = await arrangeAct();
+    expect(mocks.mockSelectLoading).toHaveBeenCalled();
+    expect(mocks.mockSelectData).toHaveBeenCalled();
+  });
+
+  it('creates an error when fails', async () => {
+    const { hook } = await arrangeAct((m) => {
+      m.mockFetchNotifications.mockRejectedValue(new Error('Test Error'));
+    });
+
+    expect(hook.result.current.error).toBeDefined();
+  });
+});
+
+describe('useNotifications - useEnableNotifications()', () => {
+  const arrangeMocks = () => {
+    const mockTogglePushNotification = jest.fn().mockResolvedValue(true);
+    const mockUsePushNotificationsToggle = jest
+      .mocked(UsePushNotifications.usePushNotificationsToggle)
+      .mockReturnValue({
+        data: true,
+        loading: false,
+        togglePushNotification: mockTogglePushNotification,
+      });
+    const mockEnableNotifications = jest.spyOn(Actions, 'enableNotifications');
+    const mockSelectLoading = jest.spyOn(
+      Selectors,
+      'selectIsUpdatingMetamaskNotifications',
+    );
+    const mockSelectData = jest.spyOn(
+      Selectors,
+      'selectIsMetamaskNotificationsEnabled',
+    );
+
+    return {
+      mockTogglePushNotification,
+      mockUsePushNotificationsToggle,
+      mockEnableNotifications,
+      mockSelectLoading,
+      mockSelectData,
+    };
+  };
+
+  type Mocks = ReturnType<typeof arrangeMocks>;
+  const arrangeAct = async (mutateMocks?: (mocks: Mocks) => void) => {
+    // Arrange
+    const mocks = arrangeMocks();
+    mutateMocks?.(mocks);
+
+    // Act
+    const hook = renderHookWithProvider(() => useEnableNotifications());
+    await act(async () => {
+      await hook.result.current.enableNotifications();
+    });
+    await waitFor(() =>
+      expect(mocks.mockEnableNotifications).toHaveBeenCalled(),
+    );
+
+    return { mocks, hook };
+  };
+
+  it('successfully invokes action', async () => {
+    const { mocks } = await arrangeAct();
+    expect(mocks.mockUsePushNotificationsToggle).toHaveBeenCalled();
+    expect(mocks.mockTogglePushNotification).toHaveBeenCalled();
+    expect(mocks.mockSelectLoading).toHaveBeenCalled();
+    expect(mocks.mockSelectData).toHaveBeenCalled();
+    expect(mocks.mockEnableNotifications).toHaveBeenCalledWith({
+      hasMarketingConsent: false,
+      productAnnouncementEnabled: true,
+      registerPushNotifications: false,
+    });
+    expect(mocks.mockTogglePushNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the current marketing consent when enabling notifications', async () => {
+    const mocks = arrangeMocks();
+
+    const hook = renderHookWithProvider(() => useEnableNotifications(), {
+      state: { security: { dataCollectionForMarketing: true } },
+    });
+    await act(() => hook.result.current.enableNotifications());
+    await waitFor(() =>
+      expect(mocks.mockEnableNotifications).toHaveBeenCalled(),
+    );
+
+    expect(mocks.mockEnableNotifications).toHaveBeenCalledWith({
+      hasMarketingConsent: true,
+      productAnnouncementEnabled: true,
+      registerPushNotifications: false,
+    });
+  });
+
+  it('keeps shared notification setup before push toggling', async () => {
+    const { mocks } = await arrangeAct();
+
+    expect(
+      mocks.mockEnableNotifications.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mocks.mockTogglePushNotification.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not register push while enabling notifications without a push nudge', async () => {
+    const mocks = arrangeMocks();
+
+    const hook = renderHookWithProvider(() =>
+      useEnableNotifications({ nudgeEnablePush: false }),
+    );
+    await act(async () => {
+      await hook.result.current.enableNotifications();
+    });
+
+    expect(mocks.mockEnableNotifications).toHaveBeenCalledWith({
+      hasMarketingConsent: false,
+      productAnnouncementEnabled: true,
+      registerPushNotifications: false,
+    });
+    expect(mocks.mockTogglePushNotification).toHaveBeenCalled();
+  });
+
+  it('continues when push enablement fails', async () => {
+    const { mocks } = await arrangeAct((m) => {
+      m.mockTogglePushNotification.mockResolvedValue(false);
+    });
+
+    expect(mocks.mockEnableNotifications).toHaveBeenCalled();
+    expect(mocks.mockTogglePushNotification).toHaveBeenCalled();
+  });
+
+  it('creates an error when fails', async () => {
+    const { hook } = await arrangeAct((m) => {
+      m.mockEnableNotifications.mockRejectedValue(new Error('Test Error'));
+    });
+
+    expect(hook.result.current.error).toBeDefined();
+  });
+
+  it('throws helper failures when requested by the caller', async () => {
+    const mocks = arrangeMocks();
+    mocks.mockEnableNotifications.mockRejectedValue(new Error('Test Error'));
+    const hook = renderHookWithProvider(() =>
+      useEnableNotifications({ nudgeEnablePush: true, throwOnError: true }),
+    );
+
+    await expect(
+      act(async () => {
+        await hook.result.current.enableNotifications();
+      }),
+    ).rejects.toThrow('Test Error');
+
+    expect(hook.result.current.error).toBeDefined();
+    expect(mocks.mockTogglePushNotification).not.toHaveBeenCalled();
+  });
+});
+
+describe('useNotifications - useDisableNotifications()', () => {
+  const arrangeMocks = () => {
+    const mockTogglePushNotification = jest.fn().mockResolvedValue(true);
+    const mockUsePushNotificationsToggle = jest
+      .mocked(UsePushNotifications.usePushNotificationsToggle)
+      .mockReturnValue({
+        data: true,
+        loading: false,
+        togglePushNotification: mockTogglePushNotification,
+      });
+    const mockDisableNotifications = jest
+      .spyOn(Actions, 'disableNotifications')
+      .mockResolvedValue(undefined);
+    const mockSelectLoading = jest.spyOn(
+      Selectors,
+      'selectIsUpdatingMetamaskNotifications',
+    );
+    const mockSelectData = jest.spyOn(
+      Selectors,
+      'selectIsMetamaskNotificationsEnabled',
+    );
+
+    return {
+      mockTogglePushNotification,
+      mockUsePushNotificationsToggle,
+      mockDisableNotifications,
+      mockSelectLoading,
+      mockSelectData,
+    };
+  };
+
+  type Mocks = ReturnType<typeof arrangeMocks>;
+  const arrangeAct = async (mutateMocks?: (mocks: Mocks) => void) => {
+    // Arrange
+    const mocks = arrangeMocks();
+    mutateMocks?.(mocks);
+
+    // Act
+    const hook = renderHookWithProvider(() => useDisableNotifications());
+    let result: boolean | undefined;
+    await act(async () => {
+      result = await hook.result.current.disableNotifications();
+    });
+    await waitFor(() =>
+      expect(mocks.mockDisableNotifications).toHaveBeenCalled(),
+    );
+
+    return { mocks, hook, result };
+  };
+
+  it('returns true after disabling push and global notifications', async () => {
+    const { mocks, result } = await arrangeAct();
+
+    expect(result).toBe(true);
+    expect(mocks.mockUsePushNotificationsToggle).not.toHaveBeenCalled();
+    expect(mocks.mockTogglePushNotification).not.toHaveBeenCalled();
+    expect(mocks.mockSelectLoading).toHaveBeenCalled();
+    expect(mocks.mockSelectData).toHaveBeenCalled();
+  });
+
+  it('returns false when global notification disable fails', async () => {
+    const { hook, result } = await arrangeAct((m) => {
+      m.mockDisableNotifications.mockRejectedValue(new Error('Test Error'));
+    });
+
+    expect(result).toBe(false);
+    expect(hook.result.current.error).toBeDefined();
+  });
+
+  it('delegates push and global disablement to one helper call', async () => {
+    const { mocks } = await arrangeAct();
+
+    expect(mocks.mockDisableNotifications).toHaveBeenCalledTimes(1);
+    expect(mocks.mockTogglePushNotification).not.toHaveBeenCalled();
+  });
+});
+
+describe('useNotifications - useMarkNotificationAsRead()', () => {
+  const arrangeMocks = () => {
+    const mockMarkNotificationsAsRead = jest
+      .spyOn(Actions, 'markNotificationsAsRead')
+      .mockImplementation(jest.fn());
+    const mockData = [
+      createMockNotificationEthSent(),
+      createMockNotificationEthReceived(),
+    ];
+    return {
+      mockMarkNotificationsAsRead,
+      mockData,
+    };
+  };
+
+  it('successfully invokes action', async () => {
+    // Arrange
+    const mocks = arrangeMocks();
+
+    // Act
+    const hook = renderHookWithProvider(() => useMarkNotificationAsRead());
+    await act(() => hook.result.current.markNotificationAsRead(mocks.mockData));
+
+    // Assert
+    await waitFor(() =>
+      expect(mocks.mockMarkNotificationsAsRead).toHaveBeenCalled(),
+    );
+  });
+});
+
+describe('useNotifications - useContiguousLoading()', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const arrangeHook = (loading1: boolean, loading2: boolean) =>
+    renderHook(
+      ({ loadingParam1, loadingParam2 }) =>
+        useContiguousLoading(loadingParam1, loadingParam2),
+      {
+        initialProps: { loadingParam1: loading1, loadingParam2: loading2 },
+      },
+    );
+
+  const assertResultAfterMs = (
+    ms: number,
+    result: ReturnType<typeof arrangeHook>['result'],
+    expectedValue: boolean,
+  ) => {
+    act(() => {
+      jest.advanceTimersByTime(ms);
+    });
+    expect(result.current).toBe(expectedValue);
+  };
+
+  it('returns true when either loadingParam1 or loadingParam2 is true', () => {
+    const { result, rerender } = arrangeHook(true, false);
+    expect(result.current).toBe(true);
+
+    rerender({ loadingParam1: false, loadingParam2: true });
+    expect(result.current).toBe(true);
+  });
+
+  it('returns false after both loadingParam1 and loadingParam2 are false and delay has passed', () => {
+    const { result, rerender } = arrangeHook(true, false);
+    expect(result.current).toBe(true);
+
+    // Toggle both loading states off
+    rerender({ loadingParam1: false, loadingParam2: false });
+    expect(result.current).toBe(true);
+
+    // Wait for contiguous loading to expire
+    assertResultAfterMs(100, result, false);
+  });
+
+  it('remains true if loadingParam1 or loadingParam2 becomes true again before delay expires', () => {
+    const { result, rerender } = arrangeHook(true, false);
+    expect(result.current).toBe(true);
+
+    // Toggle both loading states off
+    rerender({ loadingParam1: false, loadingParam2: false });
+    expect(result.current).toBe(true);
+
+    // Wait a little, but not long enough to contiguous loading to expire
+    assertResultAfterMs(50, result, true);
+
+    // Rerender with loading set to true
+    rerender({ loadingParam1: false, loadingParam2: true });
+    expect(result.current).toBe(true);
+
+    // Now if we we wait, it should still remain true since loading params are enabled
+    assertResultAfterMs(200, result, true);
+  });
+});

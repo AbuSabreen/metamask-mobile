@@ -1,0 +1,310 @@
+import { getLocalHost } from './FixtureUtils.ts';
+import Koa, { Context } from 'koa';
+import { createLogger } from '../logger.ts';
+import {
+  E2ECommandTypes,
+  type ExportedAppState,
+  Resource,
+  ServerStatus,
+} from '../types.ts';
+import PortManager, { ResourceType } from '../PortManager.ts';
+
+const logger = createLogger({
+  name: 'CommandQueueServer',
+});
+
+/**
+ * The command queue item to add to the command queue server
+ *
+ * @param type - The type of command to add to the command queue
+ * @param args - The arguments to add to the command queue
+ */
+export interface CommandQueueItem {
+  type: E2ECommandTypes;
+  args: Record<string, unknown>;
+}
+
+type StateExportKind = 'state' | 'appState';
+
+/** Command, endpoints and messages for each state export the app can POST. */
+const STATE_EXPORTS: Record<
+  StateExportKind,
+  {
+    command: E2ECommandTypes;
+    path: string;
+    notFound: string;
+    getterName: string;
+  }
+> = {
+  state: {
+    command: E2ECommandTypes.exportState,
+    path: '/exported-state',
+    notFound: 'No exported state available',
+    getterName: 'getExportedState',
+  },
+  appState: {
+    command: E2ECommandTypes.exportAppState,
+    path: '/exported-app-state',
+    notFound: 'No exported app state available',
+    getterName: 'getExportedAppState',
+  },
+};
+
+const STATE_EXPORT_KINDS = Object.keys(STATE_EXPORTS) as StateExportKind[];
+
+class CommandQueueServer implements Resource {
+  private _app: Koa;
+  private _server: ReturnType<Koa['listen']> | undefined;
+  private _queue: CommandQueueItem[];
+  private _exports: Record<StateExportKind, Record<string, unknown> | null>;
+  _serverPort: number;
+  _serverStatus: ServerStatus = ServerStatus.STOPPED;
+
+  constructor() {
+    this._app = new Koa();
+    this._queue = [];
+    this._exports = { state: null, appState: null };
+    this._serverPort = 0; // will be set with setServerPort()
+    this._app.use(async (ctx: Context) => {
+      // Middleware to handle requests
+      ctx.set('Access-Control-Allow-Origin', '*');
+      ctx.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
+      ctx.set(
+        'Access-Control-Allow-Headers',
+        'Origin, X-Requested-With, Content-Type, Accept',
+      );
+
+      if (this._isQueueRequest(ctx)) {
+        const newQueue = [...this._queue];
+        this._queue.length = 0;
+        ctx.body = {
+          queue: newQueue,
+        };
+        return;
+      }
+
+      if (this._isDebugRequest(ctx)) {
+        ctx.body = {
+          queue: this._queue,
+        };
+        return;
+      }
+
+      for (const kind of STATE_EXPORT_KINDS) {
+        const { path, notFound } = STATE_EXPORTS[kind];
+        if (ctx.method === 'POST' && ctx.path === path) {
+          const body = await this._parseJsonBody(ctx);
+          this._exports[kind] = body as Record<string, unknown>;
+          ctx.status = 200;
+          ctx.body = { success: true };
+          return;
+        }
+        if (ctx.method === 'GET' && ctx.path === `${path}.json`) {
+          const exported = this._exports[kind];
+          if (exported === null) {
+            ctx.status = 404;
+            ctx.body = { error: notFound };
+            return;
+          }
+          ctx.body = exported;
+          return;
+        }
+      }
+    });
+  }
+
+  isStarted(): boolean {
+    return this._serverStatus === ServerStatus.STARTED;
+  }
+
+  getServerPort(): number {
+    return this._serverPort;
+  }
+
+  getServerStatus(): ServerStatus {
+    return this._serverStatus;
+  }
+
+  setServerPort(port: number): void {
+    this._serverPort = port;
+  }
+
+  // Start the fixture server
+  async start(): Promise<void> {
+    if (this._serverStatus === ServerStatus.STARTED) {
+      logger.debug('The command queue server has already been started');
+      return;
+    }
+
+    const options = {
+      host: getLocalHost(),
+      port: this._serverPort,
+      exclusive: true,
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      logger.debug('Starting command queue server on port', this._serverPort);
+      this._server = this._app.listen(options);
+      if (!this._server) {
+        logger.error(
+          '❌ Failed to start command queue server on port',
+          this._serverPort,
+        );
+        reject(new Error('Failed to start command queue server'));
+        return;
+      }
+      let onError: ((err: Error) => void) | null = null;
+      let onListening: (() => void) | null = null;
+      onError = (err: Error) => {
+        if (onListening) {
+          this._server?.removeListener('listening', onListening);
+        }
+        logger.error(
+          '❌ Failed to start command queue server on port',
+          this._serverPort,
+          err,
+        );
+        this._serverStatus = ServerStatus.STOPPED;
+        try {
+          this._server?.close();
+        } catch (e) {
+          // ignore cleanup errors
+        }
+        this._server = undefined;
+        reject(err);
+      };
+      onListening = () => {
+        if (onError) {
+          this._server?.removeListener('error', onError);
+        }
+        this._serverStatus = ServerStatus.STARTED;
+        resolve();
+      };
+      this._server.once('error', onError);
+      this._server.once('listening', onListening);
+    });
+  }
+  // Stop the fixture server
+  async stop(): Promise<void> {
+    if (!this._server) {
+      return;
+    }
+
+    await new Promise((resolve, reject) => {
+      logger.debug('Stopping command queue server on port', this._serverPort);
+      if (!this._server) {
+        logger.error(
+          '❌ Failed to stop command queue server on port',
+          this._serverPort,
+        );
+        throw new Error('Failed to stop command queue server');
+      }
+      this._server.close();
+      this._server.once('error', reject);
+      this._server.once('close', () => {
+        // Release the port after server is stopped
+        if (this._serverPort > 0) {
+          PortManager.getInstance().releasePort(
+            ResourceType.COMMAND_QUEUE_SERVER,
+          );
+        }
+        resolve(undefined);
+      });
+      this._server = undefined;
+      this._serverStatus = ServerStatus.STOPPED;
+    });
+    logger.debug('Command queue server stopped on port', this._serverPort);
+  }
+
+  addToQueue(item: CommandQueueItem) {
+    this._queue.push(item);
+  }
+
+  requestStateExport() {
+    this._requestExport('state');
+  }
+
+  /**
+   * Asks the app for the same sanitized document as its in-app state log
+   * export, plus the fields its controller metadata leaves out.
+   */
+  requestAppStateExport() {
+    this._requestExport('appState');
+  }
+
+  async getExportedState(
+    timeout = 10000,
+    pollInterval = 500,
+  ): Promise<Record<string, unknown>> {
+    return this._waitForExport('state', timeout, pollInterval);
+  }
+
+  async getExportedAppState(
+    timeout = 10000,
+    pollInterval = 500,
+  ): Promise<ExportedAppState> {
+    return (await this._waitForExport(
+      'appState',
+      timeout,
+      pollInterval,
+    )) as unknown as ExportedAppState;
+  }
+
+  private _requestExport(kind: StateExportKind) {
+    this._exports[kind] = null;
+    this._queue.push({
+      type: STATE_EXPORTS[kind].command,
+      args: {},
+    });
+  }
+
+  private async _waitForExport(
+    kind: StateExportKind,
+    timeout: number,
+    pollInterval: number,
+  ): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + timeout;
+
+    while (Date.now() < deadline) {
+      const exported = this._exports[kind];
+      if (exported !== null) {
+        this._exports[kind] = null;
+        return exported;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+
+    const { getterName, path } = STATE_EXPORTS[kind];
+    throw new Error(
+      `${getterName} timed out after ${timeout}ms — the app did not POST to ${path}. ` +
+        'Ensure the command queue server is running and the app is polling /queue.json.',
+    );
+  }
+
+  private _isQueueRequest(ctx: Context) {
+    return ctx.method === 'GET' && ctx.path === '/queue.json';
+  }
+
+  private _isDebugRequest(ctx: Context) {
+    return ctx.method === 'GET' && ctx.path === '/debug.json';
+  }
+
+  private _parseJsonBody(ctx: Context): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      let body = '';
+      ctx.req.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      ctx.req.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (e) {
+          reject(e);
+        }
+      });
+      ctx.req.on('error', reject);
+    });
+  }
+}
+
+export default CommandQueueServer;

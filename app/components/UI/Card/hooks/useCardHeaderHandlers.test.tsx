@@ -1,0 +1,215 @@
+import React from 'react';
+import { Alert, Pressable } from 'react-native';
+import { render, fireEvent } from '@testing-library/react-native';
+import {
+  showCardExitConfirmation,
+  useCardHeaderHandlers,
+} from './useCardHeaderHandlers';
+import Routes from '../../../../constants/navigation/Routes';
+
+const mockNavigate = jest.fn();
+const mockGoBack = jest.fn();
+const mockReset = jest.fn();
+const mockParentGoBack = jest.fn();
+const mockParentCanGoBack = jest.fn(() => true);
+
+let mockParentState: {
+  index: number;
+  routes: { name: string; params?: { returnToCaller?: boolean } }[];
+} | null = null;
+
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({
+    navigate: mockNavigate,
+    goBack: mockGoBack,
+    reset: mockReset,
+    getParent: () =>
+      mockParentState
+        ? {
+            goBack: mockParentGoBack,
+            canGoBack: mockParentCanGoBack,
+            getState: () => mockParentState,
+            getParent: () => undefined,
+          }
+        : undefined,
+  }),
+}));
+
+jest.mock('../../../../../locales/i18n', () => ({
+  strings: jest.fn((key: string) => `mocked_${key}`),
+}));
+
+const HookProbe = ({
+  headerMode,
+  handlerKey,
+}: {
+  headerMode: Parameters<typeof useCardHeaderHandlers>[0];
+  handlerKey: 'onBack' | 'onClose';
+}) => {
+  const handlers = useCardHeaderHandlers(headerMode);
+  const handler = handlers[handlerKey];
+
+  return (
+    <Pressable testID="handler-button" onPress={handler}>
+      Trigger
+    </Pressable>
+  );
+};
+
+describe('useCardHeaderHandlers', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockParentState = null;
+    mockParentCanGoBack.mockReturnValue(true);
+    jest.spyOn(Alert, 'alert');
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('returns onBack handler for back header mode', () => {
+    const { getByTestId } = render(
+      <HookProbe headerMode="back" handlerKey="onBack" />,
+    );
+
+    fireEvent.press(getByTestId('handler-button'));
+
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows exit confirmation alert for close-with-confirmation header mode', () => {
+    const { getByTestId } = render(
+      <HookProbe headerMode="close-with-confirmation" handlerKey="onClose" />,
+    );
+
+    fireEvent.press(getByTestId('handler-button'));
+
+    expect(Alert.alert).toHaveBeenCalledWith(
+      'mocked_card.card_onboarding.exit_confirmation.title',
+      'mocked_card.card_onboarding.exit_confirmation.message',
+      expect.any(Array),
+    );
+  });
+
+  it('runs the given exit action from showCardExitConfirmation', () => {
+    const onExit = jest.fn();
+
+    showCardExitConfirmation(onExit);
+
+    const alertCall = (Alert.alert as jest.Mock).mock.calls[0];
+    alertCall[2][1].onPress();
+
+    expect(onExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('navigates to wallet home when exit is confirmed', () => {
+    const { getByTestId } = render(
+      <HookProbe headerMode="close-with-confirmation" handlerKey="onClose" />,
+    );
+
+    fireEvent.press(getByTestId('handler-button'));
+
+    const alertCall = (Alert.alert as jest.Mock).mock.calls[0];
+    const destructiveButton = alertCall[2][1];
+
+    destructiveButton.onPress();
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.WALLET.HOME);
+  });
+
+  it('navigates directly to wallet home for close-direct header mode', () => {
+    const { getByTestId } = render(
+      <HookProbe headerMode="close-direct" handlerKey="onClose" />,
+    );
+
+    fireEvent.press(getByTestId('handler-button'));
+
+    expect(Alert.alert).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.WALLET.HOME);
+  });
+
+  it('pops the Card root for close-direct when the caller asked to return', () => {
+    mockParentState = {
+      index: 1,
+      routes: [
+        { name: Routes.WALLET.HOME },
+        {
+          name: Routes.CARD.ROOT,
+          params: { returnToCaller: true },
+        },
+      ],
+    };
+
+    const { getByTestId } = render(
+      <HookProbe headerMode="close-direct" handlerKey="onClose" />,
+    );
+
+    fireEvent.press(getByTestId('handler-button'));
+
+    expect(mockParentGoBack).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('pops the Card root when the confirmed exit should return to the caller', () => {
+    mockParentState = {
+      index: 1,
+      routes: [
+        { name: Routes.WALLET.HOME },
+        {
+          name: Routes.CARD.ROOT,
+          params: { returnToCaller: true },
+        },
+      ],
+    };
+
+    const { getByTestId } = render(
+      <HookProbe headerMode="close-with-confirmation" handlerKey="onClose" />,
+    );
+
+    fireEvent.press(getByTestId('handler-button'));
+
+    const alertCall = (Alert.alert as jest.Mock).mock.calls[0];
+    const destructiveButton = alertCall[2][1];
+
+    destructiveButton.onPress();
+
+    expect(mockParentGoBack).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('resets navigator to Card Home for close-reset-home header mode', () => {
+    const { getByTestId } = render(
+      <HookProbe headerMode="close-reset-home" handlerKey="onClose" />,
+    );
+
+    fireEvent.press(getByTestId('handler-button'));
+
+    expect(Alert.alert).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockReset).toHaveBeenCalledWith({
+      index: 0,
+      routes: [{ name: Routes.CARD.HOME }],
+    });
+  });
+
+  it('returns no handlers for none header mode', () => {
+    const NoneProbe = () => {
+      const handlers = useCardHeaderHandlers('none');
+      return (
+        <Pressable testID="none-handler-button" onPress={handlers.onClose}>
+          Trigger
+        </Pressable>
+      );
+    };
+
+    const { getByTestId } = render(<NoneProbe />);
+
+    fireEvent.press(getByTestId('none-handler-button'));
+
+    expect(Alert.alert).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockGoBack).not.toHaveBeenCalled();
+    expect(mockReset).not.toHaveBeenCalled();
+  });
+});

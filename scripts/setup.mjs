@@ -1,219 +1,495 @@
+/* eslint-disable import-x/no-nodejs-modules */
 import fs from 'fs';
-import { $ } from 'execa';
+import { $ as runScript } from 'execa';
 import { Listr } from 'listr2';
+import path from 'path';
 
+const IS_CI = process.env.CI;
 const IS_OSX = process.platform === 'darwin';
-// iOS builds are enabled by default on macOS only but can be enabled explicitly
-const BUILD_IOS = process.argv.slice(2)?.[0] === '--build-ios' || IS_OSX;
+
+// iOS builds are enabled by default on macOS only but can be enabled or disabled explicitly
+let BUILD_IOS = IS_OSX;
+let IS_NODE = false;
+let BUILD_ANDROID = true
+let INSTALL_PODS;
+let VERBOSE = IS_CI;
+// GitHub CI pipeline flag - defaults to false
+let GITHUB_CI = false;
+const args = process.argv.slice(2) || [];
+for (const arg of args) {
+  switch (arg) {
+    case '--build-ios':
+      BUILD_IOS = true;
+      continue;
+    case '--no-build-ios':
+      BUILD_IOS = false;
+      continue;
+    case '--install-pods':
+      INSTALL_PODS = true;
+      continue;
+    case '--no-install-pods':
+      INSTALL_PODS = false;
+      continue;
+    case '--node':
+      IS_NODE = true;
+      continue;
+    case '--no-build-android':
+      BUILD_ANDROID = false
+      continue;
+    case '--build-on-github-ci':
+      GITHUB_CI = true;
+      continue;
+    case '--verbose':
+      VERBOSE = true;
+      continue;
+    default:
+      throw new Error(`Unrecognized CLI arg ${arg}`);
+  }
+}
+if (INSTALL_PODS === undefined) {
+  INSTALL_PODS = BUILD_IOS;
+}
+if (INSTALL_PODS && !BUILD_IOS) {
+  throw new Error('Cannot install pods if iOS setup has been skipped');
+}
+const $  = runScript(VERBOSE ? {stdio: 'inherit'} : undefined);
 
 const rendererOptions = {
   collapseErrors: false,
   showSkipMessage: false,
   suffixSkips: true,
-  collapseSubtasks: false
-};
-
-/*
- * FIXME: We shouldn't be making system wide installs without user consent.
- * Should make it optional on non-CI environments
-*/
-const detoxGlobalInstallTask = {
-  title: 'Install Detox utils',
-  task: (_, task) => task.newListr([
-    {
-      title: 'Install detox-cli globally',
-      task: async () => {
-        await $`yarn global add detox-cli`;
-      }
-    },
-    {
-      title: 'Install applesimutils globally',
-      task: async (_, appSimTask) => {
-        if (!IS_OSX) {
-          appSimTask.skip('Not macOS.');
-        } else {
-          await $`brew tap wix/brew`;
-          await $`brew install applesimutils`;
-        }
-      }
-    }
-  ],
-    {
-     rendererOptions
-    }
-  )
+  collapseSubtasks: false,
 };
 
 /*
  * TODO: parse example env file and add missing variables to existing .js.env
  */
-const copyEnvVarsTask = {
-  title: 'Copy env vars',
-  task: async (_, task) => {
-    const isCI = process.env.CI;
-    if (isCI) {
-      task.skip('CI detected')
-    } else {
-      const envFiles = [
-        '.js.env',
-        '.ios.env',
-        '.android.env',
-        '.e2e.env'];
-      envFiles.forEach((envFileName) => {
-        try {
-          fs.copyFileSync(`${envFileName}.example`, envFileName, fs.constants.COPYFILE_EXCL);
-        } catch (err) {
-          // Ignore if file already exists
-          return;
-
-        }
-      })
-    }
-  }
-};
-
-const ppomBuildTask = {
-  title: 'Build PPOM',
+const copyAndSourceEnvVarsTask = {
+  title: 'Copy and source environment variables',
   task: (_, task) => {
+    if (IS_CI) {
+      return task.skip('Skipping copying and sourcing environment variables.');
+    }
 
-    const $ppom = $({ cwd: 'ppom' });
-
-    return task.newListr([
+    return task.newListr(
+      [
+        {
+          title: 'Copy env vars',
+          task: async () => {
+            const envFiles = [
+              '.js.env',
+              '.ios.env',
+              '.android.env',
+              '.e2e.env',
+            ];
+            envFiles.forEach((envFileName) => {
+              try {
+                fs.copyFileSync(
+                  `${envFileName}.example`,
+                  envFileName,
+                  fs.constants.COPYFILE_EXCL,
+                );
+              } catch (err) {
+                // Ignore if file already exists
+                return;
+              }
+            });
+          },
+        },
+        {
+          title: 'Source env vars',
+          task: async () => {
+            const envFiles = [
+              '.js.env',
+              '.ios.env',
+              '.android.env',
+              '.e2e.env',
+            ];
+            envFiles.forEach((envFileName) => {
+              `source ${envFileName}`;
+            });
+          },
+        },
+      ],
       {
-        title: 'Clean',
-        task: async () => {
-          await $ppom`yarn clean`;
-        }
+        concurrent: false,
+        exitOnError: true,
+        rendererOptions,
       },
-      {
-        title: 'Install deps',
-        task: async () => {
-          await $ppom`yarn`;
-        }
-      },
-      {
-        title: 'Lint',
-        task: async () => {
-          await $ppom`yarn lint`;
-        }
-      },
-      {
-        title: 'Build',
-        task: async () => {
-          await $ppom`yarn build`;
-        }
-      }
-    ], {
-      concurrent: false,
-      exitOnError: true,
-    })
-  }
-}
-
-const gemInstallTask = {
-  title: 'Install gems',
-  task: (_, task) => task.newListr([
-    {
-      title: 'Install gems using bundler',
-      task: async (_, gemInstallTask) => {
-        if (!BUILD_IOS) {
-          return gemInstallTask.skip('Skipping iOS.')
-        }
-        await $`bundle install`;
-      },
-    },
-  ], {
-    exitOnError: true,
-    concurrent: false,
-    rendererOptions
-  })
-}
-
-const mainSetupTask = {
-  title: 'Dependencies setup',
-  task: (_, task) => task.newListr([
-    {
-      title: 'Install CocoaPods',
-      task: async (_, podInstallTask) => {
-        if (!BUILD_IOS) {
-          return podInstallTask.skip('Skipping iOS.')
-        }
-        await $`bundle exec pod install --project-directory=ios`;
-      },
-    },
-    {
-      title: 'Run lavamoat allow-scripts',
-      task: async () => {
-        await $`yarn allow-scripts`;
-      },
-    },
-    copyEnvVarsTask,
-    detoxGlobalInstallTask
-  ],
-    {
-      exitOnError: false,
-      concurrent: true,
-      rendererOptions
-    })
+    );
+  },
 };
 
-const patchModulesTask = {
-  title: 'Patch modules',
-  task: (_, task) => task.newListr([
-    {
-      title: 'Build Inpage Bridge',
-      task: async () => {
-        await $`./scripts/build-inpage-bridge.sh`;
+const setupIosTask = {
+  title: 'Set up iOS',
+  task: async (_, task) => {
+    if (!BUILD_IOS) {
+      return task.skip('Skipping iOS set up.');
+    }
+
+    const tasks = [
+      {
+        title: 'Install bundler gem',
+        task: async (_, task) => {
+          await $`gem install bundler -v 2.5.8`;
+        },
+      },
+      {
+        title: 'Install gems',
+        task: async (_, task) => {
+          if (GITHUB_CI) {
+            // In GitHub CI, install gems for self-hosted runners
+            await $`yarn gem:bundle:install`;
+          } else {
+            await $`yarn gem:bundle:install`;
+          }
+        },
+      },
+      {
+        title: 'Create xcconfig files',
+        task: async () => {
+          fs.writeFileSync('ios/debug.xcconfig', '');
+          fs.writeFileSync('ios/release.xcconfig', '');
+        },
+      },
+    ];
+
+    if (INSTALL_PODS) {
+      tasks.push({
+        title: 'Install CocoaPods',
+        task: async () => {
+          await $`yarn pod:install`;
+        },
+      });
+    }
+
+    return task.newListr(
+      tasks,
+      {
+        concurrent: false,
+        exitOnError: true,
+      },
+    );
+  },
+};
+
+const buildInpageBridgeTask = {
+  title: 'Build inpage bridge',
+  task: async (_, task) => {
+    if (IS_NODE) {
+      return task.skip('Skipping building inpage bridge.');
+    }
+    // Ensure the build type is passed to the script
+    const buildType = process.env.METAMASK_BUILD_TYPE || '';
+    await $({ env: { METAMASK_BUILD_TYPE: buildType } })`./scripts/build-inpage-bridge.sh`;
+  },
+};
+
+const jetifyTask = {
+  title: 'Jetify npm packages for Android',
+  task: async (_, task) => {
+    if (!BUILD_ANDROID) {
+      return task.skip('Skipping jetifying npm packages.');
+    }
+    if (IS_NODE) {
+      return task.skip('Skipping jetifying npm packages.');
+    }
+    await $`yarn jetify`;
+  },
+};
+
+const patchPackageTask = {
+  title: 'Patch npm packages',
+  task: async () => {
+    await $`yarn patch-package --error-on-fail`;
+  },
+};
+
+const installFoundryTask = {
+  title: 'Install Foundry',
+  task: (_, task) => {
+    if (IS_NODE) {
+      return task.skip('Skipping Foundry installation (node-only mode).');
+    }
+    return task.newListr(
+      [
+        {
+          title: 'Install Foundry binary',
+          task: async () => {
+            await $`yarn install:foundryup`;
+          },
+        },
+        {
+          title: 'Verify installation',
+          task: async () => {
+            const anvilPath = 'node_modules/.bin/anvil';
+            if (!fs.existsSync(anvilPath)) {
+              await $`rm -rf .metamask/cache`;
+              await $`yarn install:foundryup`;
+            }
+          },
+        },
+      ],
+      {
+        concurrent: false,
+        exitOnError: true,
+        rendererOptions,
+      },
+    );
+  },
+};
+
+const expoBuildLinks = {
+  title: 'Try EXPO!',
+  task: async () => {
+    function hyperlink(label, url) {
+      return `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\`;
+    }
+
+    console.log(`
+     Setup complete! Consider getting started with EXPO on MetaMask. Here are the 3 easy steps to get up and running.
+
+     Step 1: Install EXPO Executable
+      📱 iOS simulator: ${hyperlink('yarn install:ios:dev', 'https://github.com/MetaMask/metamask-mobile/blob/main/README.md#download-and-install-the-development-build')} (requires gh auth login)
+      📱 iOS device (.ipa): ${hyperlink('yarn install:ios:dev:device', 'https://github.com/MetaMask/metamask-mobile/blob/main/README.md#download-and-install-the-development-build')} (requires gh auth login + device UDID in provisioning profile)
+      🤖 Android (.apk): ${hyperlink('yarn install:android:dev', 'https://github.com/MetaMask/metamask-mobile/blob/main/README.md#download-and-install-the-development-build')} (requires gh auth login)
+     Step 2: 👀 yarn watch or yarn watch:clean
+     Step 3: 🚀 launch app on emulator or scan QR code in terminal
+      `);
+  },
+};
+
+// Listr trims each captured console.log chunk, so a trailing newline, space or
+// tab is removed and the next task's output butts against this one. A zero-width
+// space is not in JavaScript's whitespace set, so it survives the trim while
+// rendering as nothing — giving one blank line of separation.
+const TRAILING_BLANK_LINE = '\u200b';
+
+/**
+ * Report which agent skills are installed.
+ *
+ * Skills are installed by `postinstall`, whose output Yarn swallows into a build
+ * log — so without this the base set arrives silently and nobody learns that
+ * team skills are opt-in. This only reads what is already on disk; it never runs
+ * a sync, so `yarn setup` does not install twice.
+ */
+const reportAgentSkillsTask = {
+  title: 'Report agent skills',
+  task: async (_, task) => {
+    // Agent skills are developer tooling. `postinstall` already skips installing
+    // them in CI, so there would be nothing to report and the output is noise.
+    if (IS_CI || IS_NODE) {
+      return task.skip('Skipping agent skills report.');
+    }
+
+    const skillsDir = path.join(process.cwd(), '.claude', 'skills');
+
+    let installed = [];
+    try {
+      installed = fs
+        .readdirSync(skillsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        // Only skills this tooling manages. Personal skills living in the same
+        // directory would otherwise inflate the count.
+        .filter((name) => name.startsWith('mms-'));
+    } catch (error) {
+      // ENOENT just means nothing has been installed yet — a fresh clone before
+      // postinstall, or SKILLS_AUTO_UPDATE=0. Fall through to the empty-state
+      // branch below, which points at `yarn skills`.
+      //
+      // Anything else (EACCES after a stray `sudo yarn`, ENOTDIR if a file
+      // shadows the directory) means the state is unknown rather than empty, and
+      // "none installed, run `yarn skills`" would send the reader at a command
+      // that fails the same way without naming the cause.
+      //
+      // Reported, NOT thrown. This list runs with exitOnError, and `tasks.run()`
+      // is unguarded, so throwing from a purely informational step would abort
+      // the Expo build links and the whole iOS / Terms-of-Use stage that
+      // follow it — over a skill count. That would also break the promise in
+      // README: "Skipping `yarn skills` is fine — it only affects agent tooling,
+      // not the app build."
+      // Optional chaining because a non-object rejection would otherwise throw a
+      // TypeError from inside the catch — the exact abort the comment above rules
+      // out. The upstream CLI's safeReadDir guards the same way.
+      if (error?.code !== 'ENOENT') {
+        task.title = `Report agent skills — could not read ${skillsDir} (${error?.code ?? 'unknown error'}); skills may be installed but unreadable.`;
+        return undefined;
       }
-    },
-    // TODO: find a saner alternative to bring node modules into react native bundler. See ReactNativify
-    {
-      title: 'React Native nodeify',
-      task: async () => {
-        await $`node_modules/.bin/rn-nodeify --install crypto,buffer,react-native-randombytes,vm,stream,http,https,os,url,net,fs --hack`;
-      }
-    },
-    {
-      title: 'Jetify',
-      task: async () => {
-        await $`yarn jetify`;
-      }
-    },
-    {
-      title: 'Patch npm packages',
-      task: async () => {
-        await $`yarn patch-package`;
-      }
-    },
-    {
-      title: 'Create xcconfig files',
-      task: async () => {
-        fs.writeFileSync('ios/debug.xcconfig', '');
-        fs.writeFileSync('ios/release.xcconfig', '');
-      }
-    },
-    {
-      title: 'Init git submodules',
-      task: async () => {
-        await $`git submodule update --init`;
-      }
-    },
-  ],
-    {
-      concurrent: false,
+    }
+
+    if (installed.length === 0) {
+      // NOT task.skip(): rendererOptions sets showSkipMessage: false, so a skip
+      // message is swallowed and the user sees only "[SKIPPED]". Retitling is the
+      // only way this guidance actually reaches them — and on a fresh clone this
+      // is the path most likely to be taken.
+      // `yarn install`, not `yarn skills`: the base set is what the automatic path
+      // delivers, and `yarn skills` with no flags resolves to every domain
+      // (tools/sync falls back to DOMAINS=all unless postinstall exports
+      // SKILLS_DEFAULT_SCOPE). Pointing an empty state at it would hand someone ~39
+      // skills when the default they are missing is 10.
+      task.title =
+        'Report agent skills — none installed. Run `yarn install` for the base set, or `yarn skills` for every domain.';
+      return undefined;
+    }
+
+    // Counts .claude/skills only, so it says Claude Code only. The installer also
+    // writes .cursor/rules and .agents/skills, but it writes them independently and
+    // they drift — a base-only postinstall refreshes one while an earlier
+    // all-domains `yarn skills` is still sitting in the others. Naming harnesses
+    // this number was not read from is how it came to report 10 on a checkout where
+    // Cursor was loading 39.
+    //
+    // A count off disk, not a report of what this run did. `metamask-skills
+    // postinstall` returns 0 on every internal failure, so a sync that errored
+    // leaves the previous install in place and it would be counted here as if it
+    // were current. Hence "found", not "installed" — the number is honest about
+    // being a directory listing.
+    //
+    // It also counts skills from an earlier all-domains `yarn skills`: postinstall
+    // does not pass --prune-stale, so those directories persist and keep loading
+    // even though nothing refreshes them.
+    //
+    // The prune bullet cannot be one command, because sync's fallback depends on
+    // what the reader already has. With a domain saved in .skills.local, plain
+    // `--prune-stale` keeps it (saved wins) and adding `--domain none` silently
+    // discards it — measured 12 -> 10. With nothing saved the fallback is `all`, so
+    // plain `--prune-stale` installs every domain before pruning — measured
+    // 10 -> 37. Hence the parenthetical rather than a single copy-pasteable line.
+    console.log(`
+     Found ${installed.length} agent skill(s) in .claude/skills.
+
+     The base set installs automatically; yarn skills adds every domain:
+      🔎 Pick specific domains:       yarn skills --select
+      📖 Inspect one:                 yarn metamask-skills describe <domain>/<skill>
+      🧹 Drop ones no longer managed: yarn skills --prune-stale
+                                      (add --domain none for the base set only)
+${TRAILING_BLANK_LINE}`);
+    return undefined;
+  },
+};
+
+const updateGitSubmodulesTask = {
+  title: 'Init git submodules',
+  task: async (_, task) => {
+    if (IS_NODE) {
+      return task.skip('Skipping init git submodules.');
+    }
+    await $`git submodule update --init`;
+  },
+};
+
+const runLavamoatAllowScriptsTask = {
+  title: 'Run lavamoat allow-scripts',
+  task: async () => {
+    await $`yarn allow-scripts`;
+  },
+};
+
+const generateTermsOfUseTask = {
+  title: 'Generate Terms of Use',
+  task: (_, task) =>
+    task.newListr(
+      [
+        {
+          title: 'Download Terms of Use',
+          task: async () => {
+            try {
+              await $`curl -o ./docs/assets/termsOfUse.html https://legal.consensys.io/plain/terms-of-use/`;
+            } catch (error) {
+              throw new Error('Failed to download Terms of Use');
+            }
+          },
+        },
+        {
+          title: 'Write Terms of Use file',
+          task: async () => {
+            const termsOfUsePath = path.resolve(
+              './docs/assets/termsOfUse.html',
+            );
+            const outputDir = path.resolve('./app/util/termsOfUse');
+            const outputPath = path.join(outputDir, 'termsOfUseContent.ts');
+
+            let termsOfUse = '';
+            try {
+              termsOfUse = fs.readFileSync(termsOfUsePath, 'utf8');
+            } catch (error) {
+              throw new Error('Failed to read Terms of Use file');
+            }
+
+            const outputContent = `export default ${JSON.stringify(
+              termsOfUse,
+            )};`;
+
+            try {
+              fs.mkdirSync(outputDir, { recursive: true });
+              fs.writeFileSync(outputPath, outputContent, 'utf8');
+            } catch (error) {
+              throw new Error('Failed to write Terms of Use content file');
+            }
+          },
+        },
+      ],
+      {
+        concurrent: false,
+        exitOnError: true,
+        rendererOptions,
+      },
+    ),
+};
+
+/**
+ * Tasks that changes node modules and should run sequentially
+ */
+const prepareDependenciesTask = {
+  title: 'Prepare dependencies',
+  task: (_, task) =>
+    task.newListr(
+      [
+        copyAndSourceEnvVarsTask,
+        updateGitSubmodulesTask,
+        // Inpage bridge must generate before node modules are altered
+        buildInpageBridgeTask,
+        jetifyTask,
+        runLavamoatAllowScriptsTask,
+        patchPackageTask,
+        installFoundryTask,
+        reportAgentSkillsTask,
+        expoBuildLinks,
+      ],
+      {
+        exitOnError: true,
+        concurrent: false,
+        rendererOptions,
+      },
+    ),
+};
+
+/**
+ * Tasks that are run concurrently
+ */
+const concurrentTasks = {
+  title: 'Concurrent tasks',
+  task: (_, task) =>
+    task.newListr([setupIosTask, generateTermsOfUseTask], {
+      concurrent: true,
       exitOnError: true,
-    })
-}
-const tasks = new Listr([
-  gemInstallTask,
-  patchModulesTask,
-  mainSetupTask,
-  ppomBuildTask,
-],
-  {
-    exitOnError: true,
-    concurrent: false,
-  });
+      rendererOptions,
+    }),
+};
+
+const tasks = new Listr([prepareDependenciesTask, concurrentTasks], {
+  concurrent: false,
+  exitOnError: true,
+  renderer: VERBOSE ? 'verbose' : 'default',
+  rendererOptions,
+});
 
 await tasks.run();
 
+// Git hooks are opt-in; point developers at the install command after a local setup.
+if (!IS_CI) {
+  console.log(
+    '\nGit hooks are optional. To enable pre-commit lint/format: yarn git:hooks:install\n',
+  );
+}

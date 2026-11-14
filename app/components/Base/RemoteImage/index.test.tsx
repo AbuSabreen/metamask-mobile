@@ -1,47 +1,685 @@
 import React from 'react';
-import { shallow } from 'enzyme';
 import RemoteImage from './';
+import { getFormattedIpfsUrl } from '@metamask/assets-controllers';
+import { act, render, waitFor, fireEvent } from '@testing-library/react-native';
+import { useSelector } from 'react-redux';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import Logger from '../../../util/Logger';
+import { Dimensions } from 'react-native';
+import { Image } from 'expo-image';
+import { mockTheme } from '../../../util/theme';
+
+// Keep image loading explicit in these tests so the mock cannot overwrite
+// dimension assertions with a timer-driven default load.
+jest.mock('expo-image', () => {
+  const ReactActual = jest.requireActual('react');
+  const { View: MockView } = jest.requireActual('react-native');
+
+  const MockImage = ReactActual.forwardRef(
+    (
+      props: {
+        testID?: string;
+        style?: object;
+        source?: unknown;
+        recyclingKey?: string;
+      },
+      ref: React.Ref<unknown>,
+    ) => ReactActual.createElement(MockView, { ...props, ref }),
+  );
+
+  MockImage.displayName = 'MockedExpoImage';
+
+  return {
+    __esModule: true,
+    Image: MockImage,
+    ImageContentFit: {
+      contain: 'contain',
+      cover: 'cover',
+      fill: 'fill',
+      none: 'none',
+      'scale-down': 'scale-down',
+    },
+  };
+});
 
 jest.mock('react-redux', () => ({
   ...jest.requireActual('react-redux'),
-  useSelector: jest
-    .fn()
-    .mockImplementation(() => 'https://cloudflare-ipfs.com/ipfs/'),
+  useSelector: jest.fn().mockImplementation(() => 'https://dweb.link/ipfs/'),
 }));
 
-jest.mock('../../../components/hooks/useIpfsGateway', () => jest.fn());
+jest.mock('../../../components/hooks/useIpfsGateway', () => ({
+  __esModule: true,
+  default: jest.fn(() => 'https://dweb.link/ipfs/'),
+}));
+
+jest.mock('@metamask/assets-controllers', () => ({
+  getFormattedIpfsUrl: jest.fn(),
+}));
+
+jest.mock('../../../util/networks', () => ({
+  ...jest.requireActual('../../../util/networks'),
+  isSolanaMainnet: jest.fn(),
+}));
+
+jest.mock('../../../util/Logger', () => ({
+  log: jest.fn(),
+}));
+
+jest.mock('../../UI/Identicon', () => {
+  const { Text: MockText } = jest.requireActual('react-native');
+  const ReactActual = jest.requireActual('react');
+  return {
+    __esModule: true,
+    default: ({ address }: { address?: string; customStyle?: object }) =>
+      ReactActual.createElement(MockText, { testID: 'identicon' }, address),
+  };
+});
+
+jest.mock('./RemoteImageBadgeWrapper', () => ({
+  __esModule: true,
+  default: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+const mockGetFormattedIpfsUrl = getFormattedIpfsUrl as jest.Mock;
+const mockLogger = Logger as jest.Mocked<typeof Logger>;
+const createPendingIpfsResolution = () =>
+  new Promise<false>(() => {
+    // Tests that assert IPFS behavior override this default mock.
+  });
 
 describe('RemoteImage', () => {
-  it('should render svg correctly', () => {
-    const wrapper = shallow(
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetFormattedIpfsUrl.mockImplementation(createPendingIpfsResolution);
+  });
+
+  it('renders svg correctly', () => {
+    const { UNSAFE_getByType } = render(
       <RemoteImage
         source={{
           uri: 'https://raw.githubusercontent.com/MetaMask/contract-metadata/master/images/dai.svg',
         }}
       />,
     );
-    expect(wrapper).toMatchSnapshot();
+
+    expect(UNSAFE_getByType(Image).props.source.uri).toBe(
+      'https://raw.githubusercontent.com/MetaMask/contract-metadata/master/images/dai.svg',
+    );
   });
 
-  it('should render static sources', () => {
-    const wrapper = shallow(
+  it('renders static sources', () => {
+    const { UNSAFE_getByType } = render(
       <RemoteImage
         source={{
           uri: 'https://s3.amazonaws.com/airswap-token-images/OXT.png',
         }}
       />,
     );
-    expect(wrapper).toMatchSnapshot();
+
+    const image = UNSAFE_getByType(Image);
+    expect(image.props.source.uri).toBe(
+      'https://s3.amazonaws.com/airswap-token-images/OXT.png',
+    );
   });
 
-  it('should render ipfs sources', () => {
-    const wrapper = shallow(
+  it('renders ipfs sources', async () => {
+    const testIpfsUri = 'ipfs://QmeE94srcYV9WwJb1p42eM4zncdLUai2N9zmMxxukoEQ23';
+    mockGetFormattedIpfsUrl.mockResolvedValue(testIpfsUri);
+
+    const { UNSAFE_getByType } = render(
       <RemoteImage
         source={{
-          uri: 'ipfs://QmeE94srcYV9WwJb1p42eM4zncdLUai2N9zmMxxukoEQ23',
+          uri: testIpfsUri,
         }}
       />,
     );
-    expect(wrapper).toMatchSnapshot();
+
+    await act(async () => {
+      // Wait for IPFS URL resolution
+    });
+
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBe(testIpfsUri);
+    });
+  });
+
+  it('renders with Solana network badge when on Solana network', async () => {
+    // @ts-expect-error - useSelector is mocked in the top of the file
+    useSelector.mockImplementation((selector) => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            ...backgroundState,
+            MultichainNetworkController: {
+              ...backgroundState.MultichainNetworkController,
+              isEvmSelected: false,
+            },
+          },
+        },
+      };
+      return selector(mockState);
+    });
+
+    const { UNSAFE_getByType } = render(
+      <RemoteImage
+        fadeIn
+        isTokenImage
+        source={{
+          uri: 'https://example.com/token.png',
+        }}
+      />,
+    );
+
+    await act(async () => {
+      // Wait for component to render
+    });
+
+    await waitFor(() => {
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBe('https://example.com/token.png');
+    });
+  });
+
+  describe('Error State Reset', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    it('renders image when source URI changes', async () => {
+      const { rerender, queryByTestId } = render(
+        <RemoteImage
+          source={{ uri: 'https://example.com/image1.png' }}
+          testID="remote-image"
+        />,
+      );
+
+      await waitFor(() => {
+        expect(queryByTestId('remote-image')).toBeOnTheScreen();
+      });
+
+      await act(async () => {
+        rerender(
+          <RemoteImage
+            source={{ uri: 'https://example.com/image2.png' }}
+            testID="remote-image"
+          />,
+        );
+      });
+
+      await waitFor(() => {
+        expect(queryByTestId('remote-image')).toBeOnTheScreen();
+      });
+    });
+
+    it('renders Identicon when address is provided', async () => {
+      const { queryByTestId } = render(
+        <RemoteImage
+          source={{ uri: 'https://example.com/image.png' }}
+          address="0x123"
+          testID="remote-image"
+        />,
+      );
+
+      await waitFor(() => {
+        expect(queryByTestId('remote-image')).toBeOnTheScreen();
+      });
+    });
+
+    it('renders new image after source changes', async () => {
+      const { rerender, queryByTestId } = render(
+        <RemoteImage
+          source={{ uri: 'https://example.com/invalid1.png' }}
+          testID="remote-image-1"
+        />,
+      );
+
+      await waitFor(() => {
+        expect(queryByTestId('remote-image-1')).toBeOnTheScreen();
+      });
+
+      await act(async () => {
+        rerender(
+          <RemoteImage
+            source={{ uri: 'https://example.com/valid.png' }}
+            testID="remote-image-2"
+          />,
+        );
+      });
+
+      await waitFor(() => {
+        expect(queryByTestId('remote-image-2')).toBeOnTheScreen();
+      });
+    });
+  });
+
+  describe('onLoad callback', () => {
+    it('calls onLoad prop when image loads successfully', async () => {
+      const mockOnLoad = jest.fn();
+
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          source={{ uri: 'https://example.com/image.png' }}
+          onLoad={mockOnLoad}
+        />,
+      );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'load', { source: { width: 100, height: 100 } });
+      });
+
+      await waitFor(() => {
+        expect(mockOnLoad).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('renders Identicon when image fails to load and address is provided', async () => {
+      const { UNSAFE_getByType, findByTestId } = render(
+        <RemoteImage
+          source={{ uri: 'https://example.com/invalid.png' }}
+          address="0x1234567890abcdef"
+          testID="remote-image"
+        />,
+      );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'error', { error: 'Failed to load image' });
+      });
+
+      await waitFor(async () => {
+        const identicon = await findByTestId('identicon');
+        expect(identicon).toBeOnTheScreen();
+      });
+    });
+
+    it('calls onError callback when image fails to load', async () => {
+      const mockOnError = jest.fn();
+
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          source={{ uri: 'https://example.com/invalid.png' }}
+          onError={mockOnError}
+        />,
+      );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'error', { error: 'Failed to load image' });
+      });
+
+      await waitFor(() => {
+        expect(mockOnError).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('resets error state when source URI changes', async () => {
+      const { UNSAFE_getByType, findByTestId, queryByTestId, rerender } =
+        render(
+          <RemoteImage
+            source={{ uri: 'https://example.com/invalid.png' }}
+            address="0x1234567890abcdef"
+          />,
+        );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'error', { error: 'Failed to load image' });
+      });
+
+      // After error, Identicon should be rendered
+      await waitFor(async () => {
+        const identicon = await findByTestId('identicon');
+        expect(identicon).toBeOnTheScreen();
+      });
+
+      await act(async () => {
+        rerender(
+          <RemoteImage
+            source={{ uri: 'https://example.com/valid.png' }}
+            address="0x1234567890abcdef"
+          />,
+        );
+      });
+
+      // After source change, error should be reset and Image should render
+      await waitFor(() => {
+        expect(queryByTestId('identicon')).not.toBeOnTheScreen();
+        const image = UNSAFE_getByType(Image);
+        expect(image).not.toBeNull();
+      });
+    });
+  });
+
+  describe('IPFS URL Resolution', () => {
+    it('returns null while resolving IPFS URL', () => {
+      const ipfsUri = 'ipfs://QmeE94srcYV9WwJb1p42eM4zncdLUai2N9zmMxxukoEQ23';
+      // Mock as a promise that doesn't resolve immediately
+      mockGetFormattedIpfsUrl.mockImplementation(
+        () =>
+          new Promise(() => {
+            // Intentionally never resolves to test loading state
+          }),
+      );
+
+      const { toJSON } = render(<RemoteImage source={{ uri: ipfsUri }} />);
+
+      // Component should return null while IPFS URL is being resolved
+      expect(toJSON()).toBeNull();
+    });
+
+    it('resolves IPFS URL successfully', async () => {
+      const ipfsUri = 'ipfs://QmeE94srcYV9WwJb1p42eM4zncdLUai2N9zmMxxukoEQ23';
+      const resolvedUrl =
+        'https://dweb.link/ipfs/QmeE94srcYV9WwJb1p42eM4zncdLUai2N9zmMxxukoEQ23';
+      mockGetFormattedIpfsUrl.mockResolvedValue(resolvedUrl);
+
+      const { UNSAFE_getByType } = render(
+        <RemoteImage source={{ uri: ipfsUri }} />,
+      );
+
+      await waitFor(() => {
+        expect(mockGetFormattedIpfsUrl).toHaveBeenCalledWith(
+          expect.any(String),
+          ipfsUri,
+          false,
+        );
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.source.uri).toBe(resolvedUrl);
+      });
+    });
+
+    it('handles IPFS URL resolution failure', async () => {
+      const ipfsUri = 'ipfs://invalid';
+      mockGetFormattedIpfsUrl.mockRejectedValue(new Error('Failed to resolve'));
+
+      render(<RemoteImage source={{ uri: ipfsUri }} />);
+
+      await waitFor(() => {
+        expect(mockLogger.log).toHaveBeenCalledWith(
+          `Failed to resolve IPFS URL for ${ipfsUri}`,
+        );
+      });
+    });
+
+    it('handles source without URI', async () => {
+      const { UNSAFE_getByType } = render(<RemoteImage source={{ uri: '' }} />);
+
+      await act(async () => {
+        // Wait for component to render
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.source.uri).toBe('');
+      });
+    });
+  });
+
+  describe('Image Dimensions', () => {
+    let dimensionsSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      dimensionsSpy = jest.spyOn(Dimensions, 'get').mockReturnValue({
+        width: 400,
+        height: 800,
+        scale: 1,
+        fontScale: 1,
+      });
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+      dimensionsSpy.mockRestore();
+    });
+
+    it('calculates dimensions for horizontal image', async () => {
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          fadeIn
+          isTokenImage
+          isFullRatio
+          source={{ uri: 'https://example.com/image.png' }}
+        />,
+      );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'load', {
+          source: { width: 800, height: 400 },
+        });
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.style.width).toBe(368);
+        expect(image.props.style.height).toBe(184);
+      });
+    });
+
+    it('calculates dimensions for vertical image', async () => {
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          fadeIn
+          isTokenImage
+          isFullRatio
+          source={{ uri: 'https://example.com/image.png' }}
+        />,
+      );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'load', {
+          source: { width: 400, height: 800 },
+        });
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.style.width).toBe(138);
+        expect(image.props.style.height).toBe(276);
+      });
+    });
+
+    it('calculates dimensions for square image', async () => {
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          fadeIn
+          isTokenImage
+          isFullRatio
+          source={{ uri: 'https://example.com/image.png' }}
+        />,
+      );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'load', {
+          source: { width: 500, height: 500 },
+        });
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.style.width).toBe(276);
+        expect(image.props.style.height).toBe(276);
+      });
+    });
+
+    it('does not update dimensions when they remain the same', async () => {
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          fadeIn
+          isTokenImage
+          isFullRatio
+          source={{ uri: 'https://example.com/image.png' }}
+        />,
+      );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'load', {
+          source: { width: 500, height: 500 },
+        });
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.style.width).toBe(276);
+      });
+
+      const firstImage = UNSAFE_getByType(Image);
+      const firstStyle = firstImage.props.style;
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'load', {
+          source: { width: 500, height: 500 },
+        });
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.style.width).toBe(276);
+
+        const secondImage = UNSAFE_getByType(Image);
+        const secondStyle = secondImage.props.style;
+
+        expect(firstStyle.width).toBe(secondStyle.width);
+        expect(firstStyle.height).toBe(secondStyle.height);
+      });
+    });
+
+    it('handles onLoad without width and height', async () => {
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          fadeIn
+          isTokenImage
+          isFullRatio
+          source={{ uri: 'https://example.com/image.png' }}
+        />,
+      );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'load', { source: {} });
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image).not.toBeNull();
+      });
+    });
+  });
+
+  describe('Rendering Modes', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('renders default image without fadeIn', () => {
+      const { UNSAFE_getByType } = render(
+        <RemoteImage source={{ uri: 'https://example.com/image.png' }} />,
+      );
+
+      const image = UNSAFE_getByType(Image);
+      expect(image.props.source.uri).toBe('https://example.com/image.png');
+    });
+
+    it('renders with fadeIn but not as token image', async () => {
+      const testPlaceholderStyle = {
+        backgroundColor: mockTheme.colors.background.alternative,
+      };
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          fadeIn
+          source={{ uri: 'https://example.com/image.png' }}
+          placeholderStyle={testPlaceholderStyle}
+        />,
+      );
+
+      await act(async () => {
+        // Wait for component to render
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.source.uri).toBe('https://example.com/image.png');
+      });
+    });
+
+    it('renders token image without full ratio', async () => {
+      const testStyle = { width: 50, height: 50 };
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          fadeIn
+          isTokenImage
+          source={{ uri: 'https://example.com/token.png' }}
+          style={testStyle}
+        />,
+      );
+
+      await act(async () => {
+        // Wait for component to render
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.source.uri).toBe('https://example.com/token.png');
+      });
+    });
+
+    it('renders token image with full ratio and dimensions', async () => {
+      jest.spyOn(Dimensions, 'get').mockReturnValue({
+        width: 400,
+        height: 800,
+        scale: 1,
+        fontScale: 1,
+      });
+
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          fadeIn
+          isTokenImage
+          isFullRatio
+          source={{ uri: 'https://example.com/token.png' }}
+        />,
+      );
+
+      await act(async () => {
+        const image = UNSAFE_getByType(Image);
+        fireEvent(image, 'load', {
+          source: { width: 600, height: 400 },
+        });
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.style.width).toBe(368);
+        expect(image.props.style.height).toBeCloseTo(245.33, 1);
+      });
+    });
+
+    it('renders token image with chainId prop', async () => {
+      const { UNSAFE_getByType } = render(
+        <RemoteImage
+          fadeIn
+          isTokenImage
+          chainId={1}
+          source={{ uri: 'https://example.com/token.png' }}
+        />,
+      );
+
+      await act(async () => {
+        // Wait for component to render
+      });
+
+      await waitFor(() => {
+        const image = UNSAFE_getByType(Image);
+        expect(image.props.source.uri).toBe('https://example.com/token.png');
+      });
+    });
   });
 });

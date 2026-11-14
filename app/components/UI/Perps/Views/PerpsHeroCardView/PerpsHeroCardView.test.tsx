@@ -1,0 +1,429 @@
+import React from 'react';
+import { render, fireEvent, waitFor } from '@testing-library/react-native';
+import { act } from '@testing-library/react-hooks';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import PerpsHeroCardView from './PerpsHeroCardView';
+import { captureRef } from 'react-native-view-shot';
+import Share from 'react-native-share';
+import Logger from '../../../../../util/Logger';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import {
+  PERPS_EVENT_PROPERTY,
+  PERPS_EVENT_VALUE,
+} from '@metamask/perps-controller';
+import {
+  PerpsHeroCardViewSelectorsIDs,
+  getPerpsHeroCardViewSelector,
+} from '../../Perps.testIds';
+
+const mockNavigate = jest.fn();
+const mockGoBack = jest.fn();
+const mockShowToast = jest.fn();
+const mockTrack = jest.fn();
+
+jest.mock('../../../../../util/theme', () => {
+  const { mockTheme } = jest.requireActual('../../../../../util/theme');
+  return {
+    useAppThemeFromContext: jest.fn(() => mockTheme),
+  };
+});
+jest.mock('@react-navigation/native');
+jest.mock('react-native-view-shot', () => ({ captureRef: jest.fn() }));
+jest.mock('react-native-share', () => ({
+  __esModule: true,
+  default: { open: jest.fn() },
+}));
+jest.mock('../../hooks', () => ({
+  usePerpsToasts: jest.fn(() => ({
+    showToast: mockShowToast,
+    PerpsToastOptions: {
+      contentSharing: {
+        pnlHeroCard: {
+          shareSuccess: { variant: 'success' },
+          shareFailed: { variant: 'error' },
+        },
+      },
+    },
+  })),
+}));
+jest.mock('../../hooks/usePerpsEventTracking', () => ({
+  usePerpsEventTracking: jest.fn(() => ({ track: mockTrack })),
+}));
+jest.mock('../../../../../util/Logger', () => ({
+  __esModule: true,
+  default: { error: jest.fn() },
+}));
+jest.mock('../../../../../../locales/i18n', () => ({
+  strings: jest.fn((key) => key),
+}));
+jest.mock('../../utils/formatUtils', () => ({
+  formatPerpsFiat: jest.fn((value) => `$${value}`),
+  parseCurrencyString: jest.fn((value) => value?.replace('$', '') || ''),
+  PRICE_RANGES_MINIMAL_VIEW: [],
+}));
+jest.mock('../../../Rewards/hooks/useSeasonStatus', () => ({
+  useSeasonStatus: jest.fn(),
+}));
+jest.mock('../../../../../component-library/hooks', () => {
+  const { mockTheme } = jest.requireActual('../../../../../util/theme');
+  return {
+    useStyles: jest.fn((styleFn, vars) => ({
+      styles: styleFn({ theme: mockTheme, vars }),
+      theme: mockTheme,
+    })),
+  };
+});
+jest.mock('../../components/PerpsTokenLogo', () => 'PerpsTokenLogo');
+jest.mock(
+  '@tommasini/react-native-scrollable-tab-view',
+  () => 'ScrollableTabView',
+);
+
+const mockCaptureRef = captureRef as jest.MockedFunction<typeof captureRef>;
+const mockShareOpen = Share.open as jest.MockedFunction<typeof Share.open>;
+const mockUseNavigation = useNavigation as jest.MockedFunction<
+  typeof useNavigation
+>;
+const mockUseRoute = useRoute as jest.MockedFunction<typeof useRoute>;
+
+/**
+ * Helper function to create mock route params with position data
+ */
+const createMockRouteParams = (overrides = {}) => ({
+  params: {
+    position: {
+      symbol: 'BTC',
+      size: '0.5',
+      entryPrice: '50000',
+      unrealizedPnl: '5000',
+      returnOnEquity: '0.10',
+      leverage: { value: 10 },
+      ...overrides,
+    },
+    marketPrice: '$55000',
+  },
+});
+
+describe('PerpsHeroCardView', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseNavigation.mockReturnValue({
+      navigate: mockNavigate,
+      goBack: mockGoBack,
+    } as never);
+    mockUseRoute.mockReturnValue(createMockRouteParams() as never);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('rendering', () => {
+    it('displays asset symbol from position', () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      const assetSymbol = getByTestId(
+        getPerpsHeroCardViewSelector.assetSymbol(0),
+      );
+
+      expect(assetSymbol).toHaveTextContent('BTC');
+    });
+
+    it('displays direction badge with leverage', () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      const directionBadgeText = getByTestId(
+        getPerpsHeroCardViewSelector.directionBadgeText(0),
+      );
+
+      expect(directionBadgeText).toHaveTextContent('Long 10x');
+    });
+
+    it('displays PnL percentage with positive prefix', () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      const pnlText = getByTestId(getPerpsHeroCardViewSelector.pnlText(0));
+
+      expect(pnlText).toHaveTextContent('+10.00%');
+    });
+  });
+
+  describe('carousel functionality', () => {
+    it('renders carousel container', () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      const carousel = getByTestId(PerpsHeroCardViewSelectorsIDs.CAROUSEL);
+
+      expect(carousel).toBeOnTheScreen();
+    });
+
+    it('renders dot indicator', () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      const dotIndicator = getByTestId(
+        PerpsHeroCardViewSelectorsIDs.DOT_INDICATOR,
+      );
+
+      expect(dotIndicator).toBeOnTheScreen();
+    });
+  });
+
+  describe('share functionality - success', () => {
+    beforeEach(() => {
+      mockCaptureRef.mockResolvedValue('file://image.png');
+      mockShareOpen.mockResolvedValue({ success: true, message: 'shared' });
+    });
+
+    it('calls captureRef when share pressed', async () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockCaptureRef).toHaveBeenCalled();
+      });
+    });
+
+    it('calls Share.open with image URI, type, and share message', async () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockShareOpen).toHaveBeenCalledWith(
+          expect.objectContaining({
+            url: 'file://image.png',
+            type: 'image/png',
+            message: 'perps.pnl_hero_card.share_message_without_referral_code',
+          }),
+        );
+      });
+    });
+
+    it('tracks PERPS_UI_INTERACTION with INITIATED status', async () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockTrack).toHaveBeenCalledWith(
+          MetaMetricsEvents.PERPS_UI_INTERACTION,
+          expect.objectContaining({
+            [PERPS_EVENT_PROPERTY.STATUS]: PERPS_EVENT_VALUE.STATUS.INITIATED,
+            [PERPS_EVENT_PROPERTY.INTERACTION_TYPE]:
+              PERPS_EVENT_VALUE.INTERACTION_TYPE.SHARE_PNL_HERO_CARD,
+          }),
+        );
+      });
+    });
+
+    it('tracks PERPS_UI_INTERACTION with SUCCESS status', async () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockTrack).toHaveBeenCalledWith(
+          MetaMetricsEvents.PERPS_UI_INTERACTION,
+          expect.objectContaining({
+            [PERPS_EVENT_PROPERTY.STATUS]: PERPS_EVENT_VALUE.STATUS.SUCCESS,
+            [PERPS_EVENT_PROPERTY.INTERACTION_TYPE]:
+              PERPS_EVENT_VALUE.INTERACTION_TYPE.SHARE_PNL_HERO_CARD,
+          }),
+        );
+      });
+    });
+
+    it('shows success toast', async () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockShowToast).toHaveBeenCalledWith(
+          expect.objectContaining({ variant: 'success' }),
+        );
+      });
+    });
+  });
+
+  describe('share functionality - failure', () => {
+    it('logs error to Logger when captureRef fails', async () => {
+      const error = new Error('Capture failed');
+      mockCaptureRef.mockRejectedValue(error);
+
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(Logger.error).toHaveBeenCalledWith(
+          error,
+          expect.objectContaining({
+            tags: { feature: 'perps' },
+            context: { name: 'PerpsHeroCardView.captureCard', data: {} },
+          }),
+        );
+      });
+    });
+
+    it('tracks FAILED status when Share.open throws error', async () => {
+      const error = new Error('Share failed');
+      mockCaptureRef.mockResolvedValue('file://image.png');
+      mockShareOpen.mockRejectedValue(error);
+
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockTrack).toHaveBeenCalledWith(
+          MetaMetricsEvents.PERPS_UI_INTERACTION,
+          expect.objectContaining({
+            [PERPS_EVENT_PROPERTY.STATUS]: PERPS_EVENT_VALUE.STATUS.FAILED,
+            [PERPS_EVENT_PROPERTY.ERROR_MESSAGE]: 'Share failed',
+            [PERPS_EVENT_PROPERTY.INTERACTION_TYPE]:
+              PERPS_EVENT_VALUE.INTERACTION_TYPE.SHARE_PNL_HERO_CARD,
+          }),
+        );
+      });
+    });
+
+    it('shows error toast when Share.open fails', async () => {
+      mockCaptureRef.mockResolvedValue('file://image.png');
+      mockShareOpen.mockRejectedValue(new Error('Share failed'));
+
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockShowToast).toHaveBeenCalledWith(
+          expect.objectContaining({ variant: 'error' }),
+        );
+      });
+    });
+
+    it('does not show error toast when user dismisses share dialog', async () => {
+      mockCaptureRef.mockResolvedValue('file://image.png');
+      mockShareOpen.mockResolvedValue({
+        success: false,
+        dismissedAction: true,
+        message: '',
+      });
+
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockShareOpen).toHaveBeenCalled();
+      });
+
+      expect(mockShowToast).not.toHaveBeenCalledWith(
+        expect.objectContaining({ variant: 'error' }),
+      );
+    });
+
+    it('logs error to Logger when Share.open fails', async () => {
+      const error = new Error('Share failed');
+      mockCaptureRef.mockResolvedValue('file://image.png');
+      mockShareOpen.mockRejectedValue(error);
+
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsHeroCardViewSelectorsIDs.SHARE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(Logger.error).toHaveBeenCalledWith(
+          error,
+          expect.objectContaining({
+            tags: { feature: 'perps' },
+            context: { name: 'PerpsHeroCardView.handleShare', data: {} },
+          }),
+        );
+      });
+    });
+  });
+
+  describe('navigation', () => {
+    it('calls goBack when close button pressed', () => {
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      fireEvent.press(getByTestId(PerpsHeroCardViewSelectorsIDs.CLOSE_BUTTON));
+
+      expect(mockGoBack).toHaveBeenCalled();
+    });
+  });
+
+  describe('data formatting', () => {
+    it('displays Short badge with leverage for negative size position', () => {
+      mockUseRoute.mockReturnValue(
+        createMockRouteParams({ size: '-0.5' }) as never,
+      );
+
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      const directionBadgeText = getByTestId(
+        getPerpsHeroCardViewSelector.directionBadgeText(0),
+      );
+
+      expect(directionBadgeText).toHaveTextContent('Short 10x');
+    });
+
+    it('displays negative PnL percentage without positive prefix', () => {
+      mockUseRoute.mockReturnValue(
+        createMockRouteParams({
+          unrealizedPnl: '-5000',
+          returnOnEquity: '-0.10',
+        }) as never,
+      );
+
+      const { getByTestId } = render(<PerpsHeroCardView />);
+
+      const pnlText = getByTestId(getPerpsHeroCardViewSelector.pnlText(0));
+
+      expect(pnlText).toHaveTextContent('-10.00%');
+    });
+  });
+});

@@ -1,9 +1,5 @@
 import { OriginatorInfo } from '@metamask/sdk-communication-layer';
-import { NavigationContainerRef } from '@react-navigation/native';
 import AppConstants from '../AppConstants';
-import addDappConnection from './AndroidSDK/addDappConnection';
-import bindAndroidSDK from './AndroidSDK/bindAndroidSDK';
-import loadDappConnections from './AndroidSDK/loadDappConnections';
 import { Connection, ConnectionProps } from './Connection';
 import {
   approveHost,
@@ -16,7 +12,7 @@ import {
   removeChannel,
   watchConnection,
 } from './ConnectionManagement';
-import { init, postInit } from './InitializationManagement';
+import { init } from './InitializationManagement';
 import {
   ApprovedHosts,
   ConnectedSessions,
@@ -34,20 +30,32 @@ import {
 } from './StateManagement';
 import Engine from '../../core/Engine';
 
+const mockNavigation = {
+  getCurrentRoute: jest.fn().mockReturnValue({ name: 'Home' }),
+  navigate: jest.fn(),
+};
+
+jest.mock('../NavigationService', () => ({
+  __esModule: true,
+  default: {
+    get navigation() {
+      return mockNavigation;
+    },
+    set navigation(value) {
+      // Mock setter - does nothing but prevents errors
+    },
+  },
+}));
+
 jest.mock('./Connection');
 jest.mock('@react-navigation/native');
 jest.mock('@metamask/sdk-communication-layer');
-jest.mock('./AndroidSDK/AndroidService');
-jest.mock('./AndroidSDK/addDappConnection');
-jest.mock('./AndroidSDK/bindAndroidSDK');
-jest.mock('./AndroidSDK/loadDappConnections');
 jest.mock('./ConnectionManagement');
 jest.mock('./InitializationManagement');
 jest.mock('./RPCQueueManager');
 jest.mock('./SDKConnectConstants');
 jest.mock('./SessionManagement');
 jest.mock('./StateManagement');
-jest.mock('../../core/Engine');
 
 describe('SDKConnect', () => {
   let sdkConnect: SDKConnect;
@@ -67,8 +75,6 @@ describe('SDKConnect', () => {
     updateSDKLoadingState as jest.MockedFunction<typeof updateSDKLoadingState>;
 
   const mockInit = init as jest.MockedFunction<typeof init>;
-
-  const mockPostInit = postInit as jest.MockedFunction<typeof postInit>;
 
   const mockPause = pause as jest.MockedFunction<typeof pause>;
 
@@ -95,7 +101,7 @@ describe('SDKConnect', () => {
   >;
 
   const mockRemoveAll = removeAll as jest.MockedFunction<typeof removeAll>;
-  mockRemoveAll.mockResolvedValue(Promise.resolve());
+  mockRemoveAll.mockResolvedValue(true);
 
   const mockInvalidateChannel = invalidateChannel as jest.MockedFunction<
     typeof invalidateChannel
@@ -109,48 +115,35 @@ describe('SDKConnect', () => {
     typeof disapproveChannel
   >;
 
-  const mockBindAndroidSDK = bindAndroidSDK as jest.MockedFunction<
-    typeof bindAndroidSDK
-  >;
-
-  const mockLoadDappConnections = loadDappConnections as jest.MockedFunction<
-    typeof loadDappConnections
-  >;
-
-  const mockAddDappConnection = addDappConnection as jest.MockedFunction<
-    typeof addDappConnection
-  >;
-
   beforeEach(() => {
     jest.clearAllMocks();
     sdkConnect = SDKConnect.getInstance();
+    // Reset SDK state for test isolation
+    sdkConnect.state._initialized = false;
+    sdkConnect.state._initializing = undefined;
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
   });
 
   describe('Initialization Management', () => {
     describe('init', () => {
       it('should initialize the SDKConnect instance', async () => {
-        const testNavigation = {} as NavigationContainerRef;
-
-        await sdkConnect.init({
-          navigation: testNavigation,
-          context: 'testContext',
-        });
+        await SDKConnect.init({ context: 'testContext' });
 
         expect(mockInit).toHaveBeenCalledTimes(1);
         expect(mockInit).toHaveBeenCalledWith({
-          navigation: testNavigation,
+          navigation: mockNavigation,
           context: 'testContext',
           instance: sdkConnect,
         });
       });
-    });
 
-    describe('postInit', () => {
-      it('should perform post-initialization tasks', async () => {
-        await sdkConnect.postInit();
-
+      it('should call postInit and execute provided callback', async () => {
+        const mockPostInit = jest.spyOn(sdkConnect, 'postInit');
+        await SDKConnect.init({ context: 'testContext' });
         expect(mockPostInit).toHaveBeenCalledTimes(1);
-        expect(mockPostInit).toHaveBeenCalledWith(sdkConnect);
       });
     });
   });
@@ -305,36 +298,39 @@ describe('SDKConnect', () => {
     });
   });
 
-  describe('Android SDK Management', () => {
+  describe('Android SDK Management (Disabled)', () => {
+    // Android SDK disabled for security reasons (pm-security #532, #534)
     describe('bindAndroidSDK', () => {
-      it('should bind the Android SDK', async () => {
-        await sdkConnect.bindAndroidSDK();
+      it('should be a no-op (Android SDK disabled)', async () => {
+        const result = await sdkConnect.bindAndroidSDK();
+        expect(result).toBeUndefined();
+      });
+    });
 
-        expect(mockBindAndroidSDK).toHaveBeenCalledTimes(1);
-        expect(mockBindAndroidSDK).toHaveBeenCalledWith(sdkConnect);
+    describe('isAndroidSDKBound', () => {
+      it('should always return false (Android SDK disabled)', () => {
+        expect(sdkConnect.isAndroidSDKBound()).toBe(false);
       });
     });
 
     describe('loadDappConnections', () => {
-      it('should load Android connections', async () => {
-        await sdkConnect.loadDappConnections();
+      it('should return empty object (Android SDK disabled)', async () => {
+        const result = await sdkConnect.loadDappConnections();
+        expect(result).toEqual({});
+      });
+    });
 
-        expect(mockLoadDappConnections).toHaveBeenCalledTimes(1);
-        expect(mockLoadDappConnections).toHaveBeenCalledWith();
+    describe('getAndroidConnections', () => {
+      it('should return undefined (Android SDK disabled)', () => {
+        expect(sdkConnect.getAndroidConnections()).toBeUndefined();
       });
     });
 
     describe('addDappConnection', () => {
-      it('should add an Android connection', async () => {
+      it('should be a no-op (Android SDK disabled)', async () => {
         const testConnection = {} as ConnectionProps;
-
-        await sdkConnect.addDappConnection(testConnection);
-
-        expect(mockAddDappConnection).toHaveBeenCalledTimes(1);
-        expect(mockAddDappConnection).toHaveBeenCalledWith(
-          testConnection,
-          sdkConnect,
-        );
+        const result = await sdkConnect.addDappConnection(testConnection);
+        expect(result).toBeUndefined();
       });
     });
   });

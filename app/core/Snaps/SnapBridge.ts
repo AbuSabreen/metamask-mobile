@@ -1,242 +1,390 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
-/* eslint-disable import/no-commonjs */
-/* eslint-disable @typescript-eslint/no-require-imports */
-/* eslint-disable @typescript-eslint/no-var-requires */
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-nocheck
-// eslint-disable-next-line import/no-nodejs-modules
+// eslint-disable-next-line import-x/no-nodejs-modules
 import { Duplex } from 'stream';
-import {
-  createSwappableProxy,
-  createEventEmitterProxy,
-} from '@metamask/swappable-obj-proxy';
-import { JsonRpcEngine } from 'json-rpc-engine';
-import { createEngineStream } from 'json-rpc-middleware-stream';
-import { NetworksChainId } from '@metamask/controller-utils';
+// @ts-expect-error - No types declarations
+import pump from 'pump';
 
-import Engine from '../Engine';
+import { JsonRpcEngine, JsonRpcMiddleware } from '@metamask/json-rpc-engine';
+// @ts-expect-error - No types declarations
+import createFilterMiddleware from '@metamask/eth-json-rpc-filters';
+// @ts-expect-error - No types declarations
+import createSubscriptionManager from '@metamask/eth-json-rpc-filters/subscriptionManager';
+import { JsonRpcParams, Json, JsonRpcRequest } from '@metamask/utils';
+import {
+  createSelectedNetworkMiddleware,
+  SelectedNetworkControllerMessenger,
+} from '@metamask/selected-network-controller';
+import {
+  createPreinstalledSnapsMiddleware,
+  createWalletSnapPermissionMiddleware,
+  SnapEndowments,
+} from '@metamask/snaps-rpc-methods';
+import {
+  PermissionMiddlewareActions,
+  RequestedPermissions,
+  SubjectType,
+  createPermissionMiddleware,
+} from '@metamask/permission-controller';
+import { providerAsMiddleware } from '@metamask/eth-json-rpc-middleware';
+import { createEngineStream } from '@metamask/json-rpc-middleware-stream';
+import { SnapId } from '@metamask/snaps-sdk';
+import { InternalAccount } from '@metamask/keyring-internal-api';
+import { Messenger } from '@metamask/messenger';
+
+import Engine from '../Engine/Engine';
 import { setupMultiplex } from '../../util/streams';
 import Logger from '../../util/Logger';
-import { getAllNetworks } from '../../util/networks';
+import {
+  createLoggerMiddleware,
+  createOriginMiddleware,
+} from '../../util/middlewares';
+import { RPCMethodsMiddleParameters } from '../RPCMethods/RPCMethodMiddleware';
 import snapMethodMiddlewareBuilder from './SnapsMethodMiddleware';
-import { SubjectType } from '@metamask/permission-controller';
+import { isSnapPreinstalled } from '../SnapKeyring/utils/snaps';
+import { MESSAGE_TYPE } from '../createTracingMiddleware';
+import { multichainMethodCallValidatorMiddleware } from '@metamask/multichain-api-middleware';
+import { rpcErrors } from '@metamask/rpc-errors';
+import createUnsupportedMethodMiddleware from '../RPCMethods/createUnsupportedMethodMiddleware';
+import {
+  UNSUPPORTED_RPC_METHODS,
+  createMultichainApiMethodMiddleware,
+} from '../RPCMethods/utils';
+import { MultichainRoutingService } from '@metamask/snaps-controllers';
+import { asLegacyMiddleware } from '@metamask/json-rpc-engine/v2';
+import { sortMultichainAccountsByLastSelected } from '../Permissions';
+import {
+  getPermittedEip155ChainIds,
+  getSessionCapabilities,
+} from '../RPCMethods/getSessionCapabilities';
 
-const ObjectMultiplex = require('@metamask/object-multiplex');
-const createFilterMiddleware = require('eth-json-rpc-filters');
-const createSubscriptionManager = require('eth-json-rpc-filters/subscriptionManager');
-const providerAsMiddleware = require('eth-json-rpc-middleware/providerAsMiddleware');
-const pump = require('pump');
+/**
+ * Type definition for the GetRPCMethodMiddleware function.
+ */
+type GetRPCMethodMiddleware = ({
+  hostname,
+  getProviderState,
+}: {
+  hostname: RPCMethodsMiddleParameters['hostname'];
+  getProviderState: RPCMethodsMiddleParameters['getProviderState'];
+}) => JsonRpcMiddleware<JsonRpcParams, Json>;
 
-interface ISnapBridgeProps {
-  snapId: string;
-  connectionStream: Duplex;
-  getRPCMethodMiddleware: (args: any) => any;
-}
-
+/**
+ * A bridge for connecting the client Ethereum provider to a Snap's execution environment.
+ *
+ * @param params - The parameters for the SnapBridge.
+ * @param params.snapId - The ID of the Snap.
+ * @param params.connectionStream - The stream to connect to the Snap.
+ * @param params.getRPCMethodMiddleware - A function to get the RPC method middleware.
+ */
 export default class SnapBridge {
-  snapId: string;
-  stream: Duplex;
-  getRPCMethodMiddleware: (args: any) => any;
-  provider: any;
-  blockTracker: any;
-
-  #mux: typeof ObjectMultiplex;
-  #providerProxy: any;
-  #blockTrackerProxy: any;
+  #snapId: SnapId;
+  #stream: Duplex;
+  #getRPCMethodMiddleware: GetRPCMethodMiddleware;
 
   constructor({
     snapId,
     connectionStream,
     getRPCMethodMiddleware,
-  }: ISnapBridgeProps) {
-    Logger.log(
-      '[SNAP BRIDGE LOG] Engine+setupSnapProvider: Setup bridge for Snap',
-      snapId,
-    );
-    this.snapId = snapId;
-    this.stream = connectionStream;
-    this.getRPCMethodMiddleware = getRPCMethodMiddleware;
+  }: {
+    snapId: SnapId;
+    connectionStream: Duplex;
+    getRPCMethodMiddleware: GetRPCMethodMiddleware;
+  }) {
+    Logger.log('[SNAP BRIDGE] Initializing SnapBridge for Snap:', snapId);
 
-    const { NetworkController } = Engine.context as any;
-
-    const { provider, blockTracker } =
-      NetworkController.getProviderAndBlockTracker();
-
-    this.#providerProxy = null;
-    this.#blockTrackerProxy = null;
-
-    this.#setProvider(provider);
-    this.#setBlockTracker(blockTracker);
-
-    this.#mux = setupMultiplex(this.stream);
+    this.#snapId = snapId;
+    this.#stream = connectionStream;
+    this.#getRPCMethodMiddleware = getRPCMethodMiddleware;
   }
 
-  #setProvider = (provider: any): void => {
-    if (this.#providerProxy) {
-      this.#providerProxy.setTarget(provider);
-    } else {
-      this.#providerProxy = createSwappableProxy(provider);
-    }
-    this.provider = provider;
-  };
-
-  #setBlockTracker = (blockTracker: any): void => {
-    if (this.#blockTrackerProxy) {
-      this.#blockTrackerProxy.setTarget(blockTracker);
-    } else {
-      this.#blockTrackerProxy = createEventEmitterProxy(blockTracker, {
-        eventFilter: 'skipInternal',
-      });
-    }
-    this.blockTracker = blockTracker;
-  };
-
-  getProviderState() {
-    const memState = this.getState();
+  /**
+   * Gets the provider state.
+   * @returns An object containing the provider state.
+   */
+  #getProviderState() {
     return {
-      isUnlocked: this.isUnlocked(),
-      ...this.getProviderNetworkState(memState),
+      isUnlocked: Engine.context.KeyringController.isUnlocked(),
     };
   }
 
-  setupProviderConnection = () => {
-    Logger.log('[SNAP BRIDGE LOG] Engine+setupProviderConnection');
-    const outStream = this.#mux.createStream('metamask-provider');
-    const engine = this.setupProviderEngine();
-    const providerStream = createEngineStream({ engine });
-    pump(outStream, providerStream, outStream, (err: any) => {
-      // handle any middleware cleanup
-      engine._middleware.forEach((mid: any) => {
-        if (mid.destroy && typeof mid.destroy === 'function') {
-          mid.destroy();
-        }
-      });
-      if (err) Logger.log('Error with provider stream conn', err);
-    });
-  };
+  /**
+   * Sets up the provider engine for the Snap.
+   * @returns The configured JSON-RPC engine.
+   */
+  #setupProviderEngine() {
+    Logger.log('[SNAP BRIDGE] Setting up provider engine');
 
-  setupProviderEngine = () => {
+    const { context, controllerMessenger } = Engine;
+    const { SelectedNetworkController, PermissionController } = context;
     const engine = new JsonRpcEngine();
 
-    // create filter polyfill middleware
-    const filterMiddleware = createFilterMiddleware({
-      provider: this.#providerProxy,
-      blockTracker: this.#blockTrackerProxy,
-    });
+    const proxy = SelectedNetworkController.getProviderAndBlockTracker(
+      this.#snapId,
+    );
 
-    // create subscription polyfill middleware
-    const subscriptionManager = createSubscriptionManager({
-      provider: this.#providerProxy,
-      blockTracker: this.#blockTrackerProxy,
-    });
+    const filterMiddleware = createFilterMiddleware(proxy);
 
-    subscriptionManager.events.on('notification', (message: any) =>
+    const subscriptionManager = createSubscriptionManager(proxy);
+    subscriptionManager.events.on('notification', (message: Json) =>
       engine.emit('notification', message),
+    );
+
+    engine.push(
+      createOriginMiddleware({ origin: this.#snapId }) as JsonRpcMiddleware<
+        JsonRpcParams,
+        Json
+      >,
+    );
+
+    engine.push(
+      createSelectedNetworkMiddleware(
+        controllerMessenger as unknown as SelectedNetworkControllerMessenger,
+      ),
     );
 
     // Filter and subscription polyfills
     engine.push(filterMiddleware);
     engine.push(subscriptionManager.middleware);
 
-    const { context, controllerMessenger } = Engine as any;
-    const { PermissionController } = context;
+    if (isSnapPreinstalled(this.#snapId)) {
+      engine.push(
+        createPreinstalledSnapsMiddleware({
+          getPermissions: PermissionController.getPermissions.bind(
+            PermissionController,
+            this.#snapId,
+          ),
+          getAllEvmAccounts: () =>
+            controllerMessenger
+              .call('AccountsController:listAccounts')
+              .map((account: InternalAccount) => account.address),
+          grantPermissions: (approvedPermissions) =>
+            controllerMessenger.call('PermissionController:grantPermissions', {
+              approvedPermissions,
+              subject: { origin: this.#snapId },
+            }),
+        }),
+      );
+    }
+
+    // TODO: Investigate type difference here.
+    // @ts-expect-error: Type mismatch.
+    engine.push(asLegacyMiddleware(createWalletSnapPermissionMiddleware()));
+
+    engine.push(
+      createPermissionMiddleware({
+        origin: this.#snapId,
+        messenger: controllerMessenger as unknown as Messenger<
+          string,
+          PermissionMiddlewareActions
+        >,
+      }),
+    );
 
     engine.push(
       snapMethodMiddlewareBuilder(
-        context,
         controllerMessenger,
-        this.snapId,
+        this.#snapId,
         SubjectType.Snap,
       ),
     );
 
-    engine.push(
-      PermissionController.createPermissionMiddleware({
-        origin: this.snapId,
-      }),
-    );
-
     // User-Facing RPC methods
     engine.push(
-      this.getRPCMethodMiddleware({
-        hostname: this.snapId,
-        getProviderState: this.getProviderState.bind(this),
+      this.#getRPCMethodMiddleware({
+        hostname: this.#snapId,
+        getProviderState: this.#getProviderState.bind(this),
       }),
     );
 
     // Forward to metamask primary provider
-    engine.push(providerAsMiddleware(this.#providerProxy));
+    // TODO: Investigate type difference here.
+    // @ts-expect-error: Type mismatch.
+    engine.push(providerAsMiddleware(proxy.provider));
+
     return engine;
-  };
+  }
 
-  getNetworkState = ({ network }: { network: string }) => {
-    const { NetworkController } = Engine.context as any;
-    const networkType = NetworkController.state.providerConfig.type;
-    const networkProvider = NetworkController.state.providerConfig;
+  /**
+   * Sets up the provider engine for the Snaps CAIP stream.
+   * @returns The configured JSON-RPC engine.
+   */
+  #setupProviderEngineCaip() {
+    const origin = this.#snapId;
 
-    const isInitialNetwork =
-      networkType && getAllNetworks().includes(networkType);
-    let chainId;
+    const { NetworkController, AccountsController, PermissionController } =
+      Engine.context;
 
-    if (isInitialNetwork) {
-      chainId = NetworksChainId[networkType];
-    } else if (networkType === 'rpc') {
-      chainId = networkProvider.chainId;
-    }
-    if (chainId && !chainId.startsWith('0x')) {
-      // Convert to hex
-      chainId = `0x${parseInt(chainId, 10).toString(16)}`;
-    }
+    const engine = new JsonRpcEngine();
 
-    const result = {
-      networkVersion: network,
-      chainId,
-    };
-    return result;
-  };
+    // Append origin to each request
+    engine.push(
+      createOriginMiddleware({ origin }) as JsonRpcMiddleware<
+        JsonRpcParams,
+        Json
+      >,
+    );
 
-  isUnlocked = (): boolean => {
-    const { KeyringController } = Engine.context as any;
-    return KeyringController.isUnlocked();
-  };
+    engine.push(
+      createLoggerMiddleware({ origin }) as JsonRpcMiddleware<
+        JsonRpcParams,
+        Json
+      >,
+    );
 
-  getState = () => {
-    const { context, datamodel } = Engine;
-    const { KeyringController } = context as any;
-    const vault = KeyringController.state.vault;
-    const { network, selectedAddress } = datamodel.flatState as any;
-    return {
-      isInitialized: !!vault,
-      isUnlocked: true,
-      network,
-      selectedAddress,
-    };
-  };
+    engine.push((req, _res, next, end) => {
+      const hasPermission = PermissionController.hasPermission(
+        this.#snapId,
+        SnapEndowments.MultichainProvider,
+      );
+      if (
+        !hasPermission ||
+        ![
+          MESSAGE_TYPE.WALLET_CREATE_SESSION,
+          MESSAGE_TYPE.WALLET_INVOKE_METHOD,
+          MESSAGE_TYPE.WALLET_GET_SESSION,
+          MESSAGE_TYPE.WALLET_REVOKE_SESSION,
+        ].includes(req.method)
+      ) {
+        return end(rpcErrors.methodNotFound({ data: { method: req.method } }));
+      }
+      return next();
+    });
 
-  getProviderNetworkState({ network }: { network: string }) {
-    const { NetworkController } = Engine.context as any;
-    const networkType = NetworkController.state.providerConfig.type;
-    const networkProvider = NetworkController.state.providerConfig;
+    engine.push(multichainMethodCallValidatorMiddleware);
 
-    const isInitialNetwork =
-      networkType && getAllNetworks().includes(networkType);
-    let chainId;
+    engine.push(
+      createMultichainApiMethodMiddleware({
+        findNetworkClientIdByChainId:
+          NetworkController.findNetworkClientIdByChainId.bind(
+            NetworkController,
+          ),
+        listAccounts: AccountsController.listAccounts.bind(AccountsController),
+        requestPermissionsForOrigin: (
+          requestedPermissions: RequestedPermissions,
+          options = {},
+        ) =>
+          PermissionController.requestPermissions(
+            { origin },
+            requestedPermissions,
+            options,
+          ),
+        getCaveatForOrigin: PermissionController.getCaveat.bind(
+          PermissionController,
+          origin,
+        ),
+        updateCaveat: PermissionController.updateCaveat.bind(
+          PermissionController,
+          origin,
+        ),
+        getSelectedNetworkClientId: () =>
+          NetworkController.state.selectedNetworkClientId,
+        revokePermissionForOrigin: PermissionController.revokePermission.bind(
+          PermissionController,
+          origin,
+        ),
+        // @ts-expect-error Type mismatch due to binding.
+        getNonEvmSupportedMethods: Engine.controllerMessenger.call.bind(
+          Engine.controllerMessenger,
+          'MultichainRoutingService:getSupportedMethods',
+        ),
+        // @ts-expect-error Type mismatch due to binding.
+        isNonEvmScopeSupported: Engine.controllerMessenger.call.bind(
+          Engine.controllerMessenger,
+          'MultichainRoutingService:isSupportedScope',
+        ),
+        handleNonEvmRequestForOrigin: (
+          params: Omit<
+            Parameters<MultichainRoutingService['handleRequest']>[0],
+            'origin'
+          >,
+        ) =>
+          Engine.controllerMessenger.call(
+            'MultichainRoutingService:handleRequest',
+            {
+              ...params,
+              origin: this.#snapId,
+            },
+          ),
+        // @ts-expect-error Type mismatch due to binding.
+        getNonEvmAccountAddresses: Engine.controllerMessenger.call.bind(
+          Engine.controllerMessenger,
+          'MultichainRoutingService:getSupportedAccounts',
+        ),
+        sortAccountIdsByLastSelected: sortMultichainAccountsByLastSelected,
+        trackSessionCreatedEvent: () => undefined,
+        // Resolve the caveat at call time: wallet_createSession grants the
+        // permission before hydrating session properties, so the fresh
+        // caveat is visible here.
+        getCapabilities: ({ address }: { address: string }) =>
+          getSessionCapabilities(
+            address,
+            getPermittedEip155ChainIds(this.#snapId),
+          ),
+      }),
+    );
 
-    if (isInitialNetwork) {
-      chainId = NetworksChainId[networkType];
-    } else if (networkType === 'rpc') {
-      chainId = networkProvider.chainId;
-    }
-    if (chainId && !chainId.startsWith('0x')) {
-      // Convert to hex
-      chainId = `0x${parseInt(chainId, 10).toString(16)}`;
-    }
+    engine.push(
+      createUnsupportedMethodMiddleware(
+        new Set([
+          ...UNSUPPORTED_RPC_METHODS,
+          'eth_requestAccounts',
+          'eth_accounts',
+        ]),
+      ),
+    );
 
-    const result = {
-      networkVersion: network,
-      chainId,
-    };
-    return result;
+    // user-facing RPC methods
+    engine.push(
+      this.#getRPCMethodMiddleware({
+        hostname: this.#snapId,
+        getProviderState: this.#getProviderState.bind(this),
+      }),
+    );
+
+    engine.push(async (req, res, _next, end) => {
+      const { provider } = NetworkController.getNetworkClientById(
+        (req as JsonRpcRequest & { networkClientId: string }).networkClientId,
+      );
+      res.result = await provider.request(req);
+      return end();
+    });
+
+    return engine;
+  }
+
+  /**
+   * Sets up the provider connection for the Snap.
+   */
+  setupProviderConnection() {
+    Logger.log('[SNAP BRIDGE] Setting up provider connection');
+
+    const mux = setupMultiplex(this.#stream);
+    const stream = mux.createStream('metamask-provider');
+
+    const engine = this.#setupProviderEngine();
+
+    const providerStream = createEngineStream({ engine });
+
+    /* istanbul ignore next 2 */
+    pump(stream, providerStream, stream, (error: Error | null) => {
+      engine.destroy();
+
+      if (error) {
+        Logger.log('[SNAP BRIDGE] Error with provider stream:', error);
+      }
+    });
+
+    const caipStream = mux.createStream('metamask-multichain-provider');
+    const caipEngine = this.#setupProviderEngineCaip();
+
+    const caipProviderStream = createEngineStream({ engine: caipEngine });
+
+    /* istanbul ignore next 2 */
+    pump(caipStream, caipProviderStream, caipStream, (error: Error | null) => {
+      caipEngine.destroy();
+
+      if (error) {
+        Logger.log('[SNAP BRIDGE] Error with CAIP provider stream:', error);
+      }
+    });
   }
 }
-///: END:ONLY_INCLUDE_IF

@@ -3,22 +3,11 @@
  */
 export enum AccountPermissionsScreens {
   Connected = 'Connected',
-  Connect = 'Connect',
+  ConnectMoreAccounts = 'ConnectMoreAccounts',
+  EditAccountsPermissions = 'EditAccountsPermissions',
+  ConnectMoreNetworks = 'ConnectMoreNetworks',
   Revoke = 'Revoke',
-}
-
-/**
- * AccountPermissions props.
- */
-export interface AccountPermissionsProps {
-  /**
-   * Props that are passed in while navigating to screen.
-   */
-  route: {
-    params: {
-      hostInfo: {
-        metadata: { origin: string };
-      };
-    };
-  };
+  PermissionsSummary = 'PermissionsSummary',
+  ChooseFromPermittedNetworks = 'ChooseFromPermittedNetworks',
+  AddAccount = 'AddAccount',
 }

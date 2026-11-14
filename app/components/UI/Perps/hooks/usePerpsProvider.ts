@@ -1,0 +1,372 @@
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { useSelector } from 'react-redux';
+import Engine from '../../../../core/Engine';
+import { selectSelectedInternalAccountAddress } from '../../../../selectors/accountsController';
+import {
+  InitializationState,
+  type GetOrderCapabilitiesParams,
+  type PerpsActiveProviderMode,
+  type PerpsOrderCapabilities,
+  type SwitchProviderResult,
+  type TriggerOrderType,
+} from '@metamask/perps-controller';
+import {
+  selectPerpsInitializationState,
+  selectPerpsNetwork,
+  selectPerpsProvider,
+} from '../selectors/perpsController';
+import {
+  PERPS_ORDER_CAPABILITIES_MAX_RETRIES,
+  PERPS_ORDER_CAPABILITIES_RETRY_BASE_DELAY_MS,
+} from '../constants/perpsConfig';
+import { PerpsConnectionManager } from '../services/PerpsConnectionManager';
+import { isLighterProviderEnabled } from '../utils/lighterFeatureFlags';
+import { selectPerpsLighterProviderEnabledFlag } from '../selectors/featureFlags';
+
+interface OrderCapabilitiesState {
+  requestKey?: string;
+  capabilities: PerpsOrderCapabilities | null;
+  isLoading: boolean;
+}
+
+type ReadyOrderCapabilities = Extract<
+  PerpsOrderCapabilities,
+  { status: 'ready' }
+>;
+type SupportedOrderStrategy =
+  ReadyOrderCapabilities['supportedStrategies'][number];
+type OrderCapabilityProviderId = ReadyOrderCapabilities['providerId'];
+
+const EMPTY_ORDER_CAPABILITIES_STATE: OrderCapabilitiesState = {
+  capabilities: null,
+  isLoading: false,
+};
+/**
+ * Hook for managing perps provider selection
+ *
+ * Provides:
+ * - Current active provider
+ * - Providers available in Mobile
+ * - Method to switch between providers
+ */
+export function usePerpsProvider(
+  orderCapabilitiesParams?: GetOrderCapabilitiesParams,
+) {
+  const activeProvider = useSelector(selectPerpsProvider);
+  const selectedAccountAddress = useSelector(
+    selectSelectedInternalAccountAddress,
+  );
+  const perpsNetwork = useSelector(selectPerpsNetwork);
+  const initializationState = useSelector(selectPerpsInitializationState);
+  const lighterEnabled = useSelector(selectPerpsLighterProviderEnabledFlag);
+  const isLighterBuildEnabled = isLighterProviderEnabled();
+
+  /**
+   * Get list of available providers based on feature flags
+   */
+  const availableProviders = useMemo((): PerpsActiveProviderMode[] => {
+    const providers: PerpsActiveProviderMode[] = ['hyperliquid'];
+
+    if (isLighterBuildEnabled && lighterEnabled) {
+      providers.push('lighter');
+      providers.push('aggregated');
+    }
+
+    return providers;
+  }, [isLighterBuildEnabled, lighterEnabled]);
+  const isProviderSelectorEnabled = isLighterBuildEnabled && lighterEnabled;
+
+  /**
+   * Switch to a different provider
+   */
+  const switchProvider = useCallback(
+    async (
+      providerId: PerpsActiveProviderMode,
+    ): Promise<SwitchProviderResult> => {
+      const controller = Engine.context.PerpsController;
+      return PerpsConnectionManager.runWithContextChangePreparation(() =>
+        controller.switchProvider(providerId),
+      );
+    },
+    [],
+  );
+
+  /**
+   * Check if a specific provider is available
+   */
+  const isProviderAvailable = useCallback(
+    (providerId: PerpsActiveProviderMode): boolean =>
+      availableProviders.includes(providerId),
+    [availableProviders],
+  );
+
+  /**
+   * Check if the current provider is HyperLiquid
+   */
+  const isHyperLiquidProvider = useMemo(
+    () => activeProvider === 'hyperliquid',
+    [activeProvider],
+  );
+
+  const capabilityRequestKey =
+    orderCapabilitiesParams?.symbol &&
+    initializationState === InitializationState.Initialized
+      ? JSON.stringify([
+          orderCapabilitiesParams.providerId,
+          orderCapabilitiesParams.symbol,
+          activeProvider,
+          perpsNetwork,
+          selectedAccountAddress,
+          initializationState,
+        ])
+      : undefined;
+  const [orderCapabilitiesState, setOrderCapabilitiesState] =
+    useState<OrderCapabilitiesState>(EMPTY_ORDER_CAPABILITIES_STATE);
+  const capabilityRequestRef = useRef({ key: capabilityRequestKey });
+  useLayoutEffect(() => {
+    capabilityRequestRef.current = { key: capabilityRequestKey };
+    return () => {
+      capabilityRequestRef.current = { key: undefined };
+    };
+  }, [capabilityRequestKey]);
+  const isCurrentCapabilityRequest =
+    capabilityRequestKey !== undefined &&
+    orderCapabilitiesState.requestKey === capabilityRequestKey;
+  const orderCapabilities = isCurrentCapabilityRequest
+    ? orderCapabilitiesState.capabilities
+    : null;
+  const isAwaitingCapabilityInitialization =
+    Boolean(orderCapabilitiesParams?.symbol) &&
+    (initializationState === InitializationState.Uninitialized ||
+      initializationState === InitializationState.Initializing);
+  const isLoadingOrderCapabilities =
+    isAwaitingCapabilityInitialization ||
+    (capabilityRequestKey !== undefined &&
+      (!isCurrentCapabilityRequest || orderCapabilitiesState.isLoading));
+
+  useEffect(() => {
+    let isCurrent = true;
+    let retryTimeout: ReturnType<typeof setTimeout> | undefined;
+    const symbol = orderCapabilitiesParams?.symbol;
+    const providerId = orderCapabilitiesParams?.providerId;
+
+    if (!symbol || initializationState !== InitializationState.Initialized) {
+      setOrderCapabilitiesState(EMPTY_ORDER_CAPABILITIES_STATE);
+      return () => {
+        isCurrent = false;
+      };
+    }
+    const requestKey = JSON.stringify([
+      providerId,
+      symbol,
+      activeProvider,
+      perpsNetwork,
+      selectedAccountAddress,
+      initializationState,
+    ]);
+    setOrderCapabilitiesState({
+      requestKey,
+      capabilities: null,
+      isLoading: true,
+    });
+
+    const loadCapabilities = async (retryCount = 0) => {
+      try {
+        const capabilities =
+          await Engine.context.PerpsController.getOrderCapabilities({
+            symbol,
+            providerId,
+          });
+        if (!isCurrent) {
+          return;
+        }
+
+        if (
+          capabilities.status === 'unavailable' &&
+          capabilities.reason === 'provider_unavailable' &&
+          retryCount < PERPS_ORDER_CAPABILITIES_MAX_RETRIES
+        ) {
+          retryTimeout = setTimeout(
+            () => {
+              retryTimeout = undefined;
+              loadCapabilities(retryCount + 1);
+            },
+            PERPS_ORDER_CAPABILITIES_RETRY_BASE_DELAY_MS * 2 ** retryCount,
+          );
+          return;
+        }
+
+        setOrderCapabilitiesState({
+          requestKey,
+          capabilities,
+          isLoading: false,
+        });
+      } catch {
+        if (isCurrent) {
+          setOrderCapabilitiesState({
+            requestKey,
+            capabilities: null,
+            isLoading: false,
+          });
+        }
+      }
+    };
+
+    loadCapabilities();
+
+    return () => {
+      isCurrent = false;
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+      }
+    };
+  }, [
+    activeProvider,
+    initializationState,
+    orderCapabilitiesParams?.providerId,
+    orderCapabilitiesParams?.symbol,
+    perpsNetwork,
+    selectedAccountAddress,
+  ]);
+
+  const expectedCapabilityProviderId =
+    orderCapabilitiesParams?.providerId ??
+    (activeProvider === 'aggregated' ? undefined : activeProvider);
+  const readyOrderCapabilities =
+    orderCapabilities?.status === 'ready' &&
+    (!expectedCapabilityProviderId ||
+      orderCapabilities.providerId === expectedCapabilityProviderId)
+      ? orderCapabilities
+      : null;
+  const supportsTwapOrders =
+    readyOrderCapabilities?.supportedStrategies.includes('twap') === true;
+  const supportsScaleOrders =
+    readyOrderCapabilities?.supportedStrategies.includes('scale') === true;
+  const supportsChaseOrders =
+    readyOrderCapabilities?.supportedStrategies.includes('chase') === true;
+  const supportedTriggerOrderTypes = useMemo<readonly TriggerOrderType[]>(
+    () => readyOrderCapabilities?.supportedTriggerOrderTypes ?? [],
+    [readyOrderCapabilities],
+  );
+  const checkTriggerOrderSupport = useCallback(
+    async (
+      type: TriggerOrderType,
+      expectedProviderId: OrderCapabilityProviderId,
+    ): Promise<boolean> => {
+      const request = capabilityRequestRef.current;
+      const symbol = orderCapabilitiesParams?.symbol;
+      if (
+        !symbol ||
+        !capabilityRequestKey ||
+        request.key !== capabilityRequestKey ||
+        (expectedCapabilityProviderId &&
+          expectedCapabilityProviderId !== expectedProviderId)
+      ) {
+        return false;
+      }
+      try {
+        const capabilities =
+          await Engine.context.PerpsController.getOrderCapabilities({
+            symbol,
+            providerId: orderCapabilitiesParams?.providerId,
+          });
+        return (
+          capabilityRequestRef.current === request &&
+          capabilities.status === 'ready' &&
+          capabilities.providerId === expectedProviderId &&
+          capabilities.supportedTriggerOrderTypes?.includes(type) === true
+        );
+      } catch {
+        return false;
+      }
+    },
+    [
+      capabilityRequestKey,
+      expectedCapabilityProviderId,
+      orderCapabilitiesParams?.providerId,
+      orderCapabilitiesParams?.symbol,
+    ],
+  );
+  const checkOrderCapability = useCallback(
+    async (
+      strategy: SupportedOrderStrategy,
+      expectedProviderId?: OrderCapabilityProviderId,
+    ): Promise<boolean> => {
+      const request = capabilityRequestRef.current;
+      const symbol = orderCapabilitiesParams?.symbol;
+      if (
+        !symbol ||
+        !capabilityRequestKey ||
+        request.key !== capabilityRequestKey ||
+        (expectedProviderId &&
+          expectedCapabilityProviderId &&
+          expectedProviderId !== expectedCapabilityProviderId)
+      ) {
+        return false;
+      }
+
+      try {
+        const capabilities =
+          await Engine.context.PerpsController.getOrderCapabilities({
+            symbol,
+            providerId: orderCapabilitiesParams?.providerId,
+          });
+        return (
+          capabilityRequestRef.current === request &&
+          capabilities.status === 'ready' &&
+          capabilities.supportedStrategies.includes(strategy) &&
+          (!expectedCapabilityProviderId ||
+            capabilities.providerId === expectedCapabilityProviderId) &&
+          (!expectedProviderId ||
+            capabilities.providerId === expectedProviderId)
+        );
+      } catch {
+        return false;
+      }
+    },
+    [
+      capabilityRequestKey,
+      expectedCapabilityProviderId,
+      orderCapabilitiesParams?.providerId,
+      orderCapabilitiesParams?.symbol,
+    ],
+  );
+
+  /**
+   * Check if multi-provider mode is enabled (more than one provider available)
+   */
+  const isMultiProviderEnabled = useMemo(
+    () => isProviderSelectorEnabled && availableProviders.length > 1,
+    [availableProviders, isProviderSelectorEnabled],
+  );
+
+  return {
+    // Current state
+    activeProvider,
+    availableProviders,
+
+    // Actions
+    switchProvider,
+
+    // Helpers
+    isProviderAvailable,
+    isHyperLiquidProvider,
+    isLoadingOrderCapabilities,
+    orderCapabilities,
+    supportsTwapOrders,
+    supportsScaleOrders,
+    supportsChaseOrders,
+    supportedTriggerOrderTypes,
+    checkTriggerOrderSupport,
+    checkOrderCapability,
+    isProviderSelectorEnabled,
+    isMultiProviderEnabled,
+  };
+}

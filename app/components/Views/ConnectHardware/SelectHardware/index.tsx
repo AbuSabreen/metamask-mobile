@@ -1,161 +1,227 @@
-/* eslint @typescript-eslint/no-var-requires: "off" */
-/* eslint @typescript-eslint/no-require-imports: "off" */
-
 import { useNavigation } from '@react-navigation/native';
-import React, { useEffect } from 'react';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
 import {
-  Image,
-  SafeAreaView,
-  StyleSheet,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { strings } from '../../../../../locales/i18n';
-import Text, {
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+  BoxJustifyContent,
+  FontWeight,
+  Icon,
+  IconName,
+  IconSize,
+  Text,
+  TextColor,
   TextVariant,
-} from '../../../../component-library/components/Texts/Text';
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import React, { ReactNode, useEffect } from 'react';
+import { Pressable } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { strings } from '../../../../../locales/i18n';
+import TitleStandard from '../../../../component-library/components-temp/TitleStandard';
 import Routes from '../../../../constants/navigation/Routes';
 import { MetaMetricsEvents } from '../../../../core/Analytics';
-import { withLedgerKeyring } from '../../../../core/Ledger/Ledger';
-import { fontStyles } from '../../../../styles/common';
-import {
-  mockTheme,
-  useAppThemeFromContext,
-  useAssetFromTheme,
-} from '../../../../util/theme';
-import { getNavigationOptionsTitle } from '../../../UI/Navbar';
-import { useMetrics } from '../../../../components/hooks/useMetrics';
-import type LedgerKeyring from '@consensys/ledgerhq-metamask-keyring';
+import { mockTheme, useAppThemeFromContext } from '../../../../util/theme';
+import { AppThemeKey } from '../../../../util/theme/models';
+import { useAnalytics } from '../../../../components/hooks/useAnalytics/useAnalytics';
+import { HardwareDeviceTypes } from '../../../../constants/keyringTypes';
+import { getConnectedDevicesCount } from '../../../../core/HardwareWallets/analytics';
+import SelectHardwareTestIds from './SelectHardware.testIds';
+import LedgerDarkLogo from '../../../../images/hardware-ledger-dark.svg';
+import LedgerLightLogo from '../../../../images/hardware-ledger-light.svg';
+import KeystoneDarkLogo from '../../../../images/hardware-keystone-dark.svg';
+import KeystoneLightLogo from '../../../../images/hardware-keystone-light.svg';
+import OneKeyDarkLogo from '../../../../images/hardware-onekey-dark.svg';
+import OneKeyLightLogo from '../../../../images/hardware-onekey-light.svg';
+import { useSelector } from 'react-redux';
+import HeaderStandardGlass from '../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../selectors/featureFlagController/glassHeaders';
 
-const createStyle = (colors: any) =>
-  StyleSheet.create({
-    screen: { justifyContent: 'center' },
-    container: {
-      flex: 1,
-      marginHorizontal: '5%',
-      justifyContent: 'center',
-    },
-    textContainer: {
-      flex: 1,
-      width: '100%',
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    buttonsContainer: {
-      flex: 7,
-      width: '100%',
-      alignItems: 'center',
-    },
-    text: {
-      ...fontStyles.normal,
-      color: colors.text.alternative,
-    },
-    image: {
-      width: 150,
-      height: 75,
-    },
-    hardwareButton: {
-      height: 125,
-      width: 200,
-      margin: 10,
-      borderWidth: 1,
-      borderRadius: 5,
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderColor: colors.border.default,
-      backgroundColor: colors.background.alternative,
-    },
-    button: {
-      width: '100%',
-    },
-  });
+interface HardwareOption {
+  title: string;
+  onPress: () => Promise<void>;
+  leadingIcon: ReactNode;
+  testID: string;
+}
 
-// Ledger Logo
-const ledgerLogoLightImgPath = 'images/ledger-light.png';
-const ledgerLogoLight = require(ledgerLogoLightImgPath);
+interface ConnectQrNavigationParams {
+  hideMarketingContent?: boolean;
+}
 
-const ledgerLogoDarkImgPath = 'images/ledger-dark.png';
-const ledgerLogoDark = require(ledgerLogoDarkImgPath);
+export const getHardwareThemeAssets = (themeAppearance: AppThemeKey) => {
+  const isDarkMode = themeAppearance === AppThemeKey.dark;
 
-// QR Hardware Logo
-const qrHardwareLogoLightImgPath = 'images/qrhardware-light.png';
-const qrHardwareLogoLight = require(qrHardwareLogoLightImgPath);
-
-const qrHardwareLogoDarkImgPath = 'images/qrhardware-dark.png';
-const qrHardwareLogoDark = require(qrHardwareLogoDarkImgPath);
+  return {
+    qrIconTileClassName: isDarkMode ? 'bg-white' : 'bg-black',
+    qrIconClassName: isDarkMode ? 'text-black' : 'text-white',
+    LedgerLogo: isDarkMode ? LedgerDarkLogo : LedgerLightLogo,
+    KeystoneLogo: isDarkMode ? KeystoneDarkLogo : KeystoneLightLogo,
+    OneKeyLogo: isDarkMode ? OneKeyDarkLogo : OneKeyLightLogo,
+  };
+};
 
 const SelectHardwareWallet = () => {
-  const navigation = useNavigation();
-  const { trackEvent } = useMetrics();
-  const { colors } = useAppThemeFromContext() || mockTheme;
-  const styles = createStyle(colors);
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const { colors, themeAppearance } = useAppThemeFromContext() || mockTheme;
+  const tw = useTailwind();
+  const {
+    qrIconTileClassName,
+    qrIconClassName,
+    LedgerLogo,
+    KeystoneLogo,
+    OneKeyLogo,
+  } = getHardwareThemeAssets(themeAppearance);
+  const qrIconTileStyle = tw.style('h-10 w-10 rounded-xl', qrIconTileClassName);
 
   useEffect(() => {
-    navigation.setOptions(
-      getNavigationOptionsTitle(
-        strings('connect_hardware.title_select_hardware'),
-        navigation,
-        false,
-        colors,
-      ),
-    );
-  }, [navigation, colors]);
+    navigation.setOptions({
+      headerShown: false,
+    });
+  }, [navigation]);
 
-  const navigateToConnectQRWallet = () => {
+  const navigateToConnectQRWallet = async (
+    params?: ConnectQrNavigationParams,
+  ) => {
+    try {
+      const connectedDeviceCount = await getConnectedDevicesCount();
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.CONNECT_HARDWARE_WALLET)
+          .addProperties({
+            device_type: HardwareDeviceTypes.QR,
+            connected_device_count: connectedDeviceCount.toString(),
+          })
+          .build(),
+      );
+    } catch (error) {
+      // [SelectHardware] Analytics error should not block navigation
+      console.error('[SelectHardware] Failed to track analytics:', error);
+    }
+    if (params) {
+      navigation.navigate(Routes.HW.CONNECT_QR_DEVICE, params);
+      return;
+    }
+
     navigation.navigate(Routes.HW.CONNECT_QR_DEVICE);
   };
 
   const navigateToConnectLedger = async () => {
-    const accounts = await withLedgerKeyring(async (keyring: LedgerKeyring) =>
-      keyring.getAccounts(),
-    );
-
-    trackEvent(MetaMetricsEvents.CONNECT_LEDGER, {
-      device_type: 'Ledger',
-    });
-
-    if (accounts.length === 0) {
-      navigation.navigate(Routes.HW.CONNECT_LEDGER);
-    } else {
-      navigation.navigate(Routes.HW.LEDGER_ACCOUNT, {
-        screen: Routes.HW.LEDGER_ACCOUNT,
-        params: {
-          accounts,
-        },
-      });
+    try {
+      const connectedDeviceCount = await getConnectedDevicesCount();
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.CONNECT_HARDWARE_WALLET)
+          .addProperties({
+            device_type: HardwareDeviceTypes.LEDGER,
+            connected_device_count: connectedDeviceCount.toString(),
+          })
+          .build(),
+      );
+    } catch (error) {
+      // [SelectHardware] Analytics error should not block navigation
+      console.error('[SelectHardware] Failed to track analytics:', error);
     }
+
+    navigation.navigate(Routes.HW.CONNECT_LEDGER);
   };
 
-  const renderHardwareButton = (image: any, onPress: any) => (
-    <TouchableOpacity onPress={onPress} style={styles.hardwareButton}>
-      <Image style={styles.image} source={image} resizeMode={'contain'} />
-    </TouchableOpacity>
+  const renderIconTile = (icon: ReactNode) => (
+    <Box
+      alignItems={BoxAlignItems.Center}
+      justifyContent={BoxJustifyContent.Center}
+      style={qrIconTileStyle}
+    >
+      {icon}
+    </Box>
   );
 
-  const LedgerButton = () => {
-    const ledgerLogo = useAssetFromTheme(ledgerLogoLight, ledgerLogoDark);
-    return renderHardwareButton(ledgerLogo, navigateToConnectLedger);
-  };
+  const hardwareOptions: HardwareOption[] = [
+    {
+      title: HardwareDeviceTypes.LEDGER,
+      onPress: navigateToConnectLedger,
+      testID: SelectHardwareTestIds.LEDGER_BUTTON,
+      leadingIcon: <LedgerLogo name="ledger-logo" width={40} height={40} />,
+    },
+    {
+      title: 'Keystone',
+      onPress: () => navigateToConnectQRWallet(),
+      testID: SelectHardwareTestIds.KEYSTONE_BUTTON,
+      leadingIcon: <KeystoneLogo name="keystone-logo" width={40} height={40} />,
+    },
+    {
+      title: 'OneKey',
+      onPress: () => navigateToConnectQRWallet({ hideMarketingContent: true }),
+      testID: SelectHardwareTestIds.ONEKEY_BUTTON,
+      leadingIcon: <OneKeyLogo name="onekey-logo" width={40} height={40} />,
+    },
+    {
+      title: 'Other QR wallet',
+      onPress: () => navigateToConnectQRWallet({ hideMarketingContent: true }),
+      testID: SelectHardwareTestIds.OTHER_QR_BUTTON,
+      leadingIcon: renderIconTile(
+        <Icon
+          name={IconName.QrCode}
+          size={IconSize.Md}
+          twClassName={qrIconClassName}
+        />,
+      ),
+    },
+  ];
 
-  const QRButton = () => {
-    const qrHardwareLogo = useAssetFromTheme(
-      qrHardwareLogoLight,
-      qrHardwareLogoDark,
-    );
-    return renderHardwareButton(qrHardwareLogo, navigateToConnectQRWallet);
-  };
+  const renderHardwareButton = ({
+    leadingIcon,
+    onPress,
+    testID,
+    title,
+  }: HardwareOption) => (
+    <Pressable
+      key={testID}
+      onPress={onPress}
+      testID={testID}
+      style={({ pressed }) =>
+        tw.style(
+          'w-full rounded-xl bg-muted px-4 py-3',
+          pressed && 'opacity-80',
+        )
+      }
+    >
+      <Box
+        flexDirection={BoxFlexDirection.Row}
+        alignItems={BoxAlignItems.Center}
+        gap={4}
+      >
+        {leadingIcon}
+        <Text
+          variant={TextVariant.BodyMd}
+          fontWeight={FontWeight.Medium}
+          color={TextColor.TextDefault}
+        >
+          {title}
+        </Text>
+      </Box>
+    </Pressable>
+  );
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.textContainer}>
-        <Text variant={TextVariant.BodyMD}>
-          {strings('connect_hardware.select_hardware')}
-        </Text>
-      </View>
-      <View style={styles.buttonsContainer}>
-        <LedgerButton />
-        <QRButton />
-      </View>
+    <SafeAreaView
+      edges={{ bottom: 'additive' }}
+      style={tw.style('flex-1 bg-default', {
+        backgroundColor: colors.background.default,
+      })}
+    >
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        includesTopInset
+        onBack={navigation.goBack}
+      />
+      <TitleStandard
+        title={strings('connect_hardware.title_select_hardware')}
+        twClassName="px-4 pt-3 pb-6"
+      />
+      <Box twClassName="gap-3 px-4">
+        {hardwareOptions.map(renderHardwareButton)}
+      </Box>
     </SafeAreaView>
   );
 };

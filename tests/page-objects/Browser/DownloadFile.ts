@@ -1,0 +1,68 @@
+import Assertions from '../../framework/Assertions';
+import Gestures from '../../framework/Gestures';
+import Matchers from '../../framework/Matchers';
+import { PlatformDetector } from '../../framework/PlatformLocator';
+import AppiumContextHelpers from '../../framework/AppiumContextHelpers';
+import Utilities from '../../framework/Utilities';
+import {
+  DownloadFileSelectorsAccessibilityIDs,
+  DownloadFileSelectorsIDs,
+  DownloadFileSelectorsText,
+} from '../../selectors/Browser/DownloadFile.selectors';
+
+class DownloadFile {
+  async verifyTapjackingAndClickDownloadButton(): Promise<void> {
+    if (!PlatformDetector.isAndroid()) {
+      // iOS blob/data downloads skip confirmation and open Save to Files directly.
+      return;
+    }
+
+    await AppiumContextHelpers.switchToNativeContext();
+    await Gestures.waitAndTap(
+      Matchers.getElementByID(
+        DownloadFileSelectorsIDs.ANDROID_CONFIRM_DOWNLOAD_BUTTON,
+      ),
+      {
+        elemDescription: 'Android confirm download button',
+      },
+    );
+  }
+
+  async verifySuccessStateVisible(): Promise<void> {
+    await AppiumContextHelpers.switchToNativeContext();
+
+    if (PlatformDetector.isIOS()) {
+      // saveToFiles presents UIDocumentPickerViewController (export), not a
+      // UIActivityViewController with a top-level "Save" action. Cancel appears
+      // in the hierarchy but is not hittable, so only assert presentation.
+      await Utilities.executeWithRetry(
+        async () => {
+          await Assertions.expectElementToExist(
+            Matchers.getElementByLabel(
+              DownloadFileSelectorsAccessibilityIDs.IOS_SAVE_SHEET_CANCEL,
+            ),
+            {
+              description: 'iOS download Save sheet Cancel control not present',
+            },
+          );
+        },
+        {
+          description: 'Assert iOS download Save sheet is presented',
+        },
+      );
+      return;
+    }
+
+    // Android: handleWebDownload shows a success alert after MediaStore save.
+    await Assertions.expectElementToBeVisible(
+      Matchers.getElementByText(
+        DownloadFileSelectorsText.ANDROID_DOWNLOAD_COMPLETE,
+      ),
+      {
+        description: 'Android download complete alert',
+      },
+    );
+  }
+}
+
+export default new DownloadFile();

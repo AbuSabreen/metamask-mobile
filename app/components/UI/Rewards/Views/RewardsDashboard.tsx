@@ -1,0 +1,517 @@
+import React, { useEffect, useCallback, useMemo, useRef } from 'react';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { runAfterInteractions } from '../utils/runAfterInteractions';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import { useFloatingTabBarInset } from '../../../../component-library/components/Navigation/TabBarFloating';
+import {
+  AvatarIcon,
+  AvatarIconSeverity,
+  AvatarIconSize,
+  Box,
+  ButtonIconSize,
+  ButtonSize,
+  ButtonVariant,
+  IconColor,
+  IconName,
+  SectionHeader,
+  TabEmptyState,
+  Text,
+  TextColor,
+  TextVariant,
+  useHeaderStandardAnimated,
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
+import { useSelector } from 'react-redux';
+import { strings } from '../../../../../locales/i18n';
+import { useHeaderGlassInset } from '../../../../component-library/components-temp/HeaderGlass';
+import HeaderStandardAnimatedGlass from '../../../../component-library/components-temp/HeaderStandardAnimatedGlass';
+import ButtonIconGlass from '../../../../component-library/components-temp/ButtonIconGlass';
+import { selectGlassHeadersEnabled } from '../../../../selectors/featureFlagController/glassHeaders';
+import HeaderRootGlass from '../../../../component-library/components-temp/HeaderRootGlass';
+import CapsuleGlass from '../../../../component-library/components-temp/CapsuleGlass';
+import ErrorBoundary from '../../../Views/ErrorBoundary';
+import { REWARDS_VIEW_SELECTORS } from './RewardsView.constants';
+import Routes from '../../../../constants/navigation/Routes';
+import {
+  selectHasAcceptedVipInvite,
+  selectHasAcceptedVipRefereeInvite,
+  selectIsVipReferee,
+  selectHideCurrentAccountNotOptedInBannerArray,
+} from '../../../../reducers/rewards/selectors';
+import {
+  selectIsCurrentSubscriptionVipEnabled,
+  selectRewardsSubscriptionId,
+} from '../../../../selectors/rewards';
+import { selectVipProgramEnabled } from '../../../../selectors/featureFlagController/vipProgram';
+import { useRewardOptinSummary } from '../hooks/useRewardOptinSummary';
+import {
+  useRewardDashboardModals,
+  RewardsDashboardModalType,
+} from '../hooks/useRewardDashboardModals';
+import { useBulkLinkState } from '../hooks/useBulkLinkState';
+import { useResumePendingMasSeriesOptIn } from '../hooks/useMoneyAccountSweepstakesOptIn';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { selectSelectedAccountGroup } from '../../../../selectors/multichainAccounts/accountTreeController';
+import { selectSessionProfileId } from '../../../../selectors/identity';
+import type { RootState } from '../../../../reducers';
+import {
+  selectReferralMeEntry,
+  selectSettingsReferralAvailable,
+} from '../../../../reducers/rewardsMoney/selectors';
+import {
+  RewardsDashboardKind,
+  trackRewardsDashboardViewed,
+} from '../utils/rewardsDashboardViewedTracking';
+import { useGeoRewardsMetadata } from '../hooks/useGeoRewardsMetadata';
+import { useReferralDetails } from '../hooks/useReferralDetails';
+import { navigateToRewardsRoute } from '../utils';
+import { navigateToSocialLeaderboard } from '../../../Views/SocialLeaderboard/Onboarding/socialLeaderboardOnboardingNavigation';
+import { selectIsSocialV1Enabled } from '../../../../selectors/featureFlagController/socialV1';
+import CampaignsPreview from '../components/Campaigns/CampaignsPreview';
+import EarnRewardsPreview from '../components/EarnRewards/EarnRewardsPreview';
+import BenefitsPreview from '../components/Benefits/BenefitsPreview.tsx';
+import RewardsOptInSection from '../components/Money/RewardsOptInSection';
+import { Pressable } from 'react-native';
+import Animated from 'react-native-reanimated';
+import { useOndoOutcomeToast } from '../hooks/useOndoOutcomeToast';
+import { usePerpsTradingCampaignEndedOutcomeToast } from '../hooks/usePerpsTradingCampaignEndedOutcomeToast';
+import { useGetPredictThePitchOutcomeToast } from '../hooks/useGetPredictThePitchOutcomeToast';
+import { useMoneyAccountSweepstakesOutcomeToast } from '../hooks/useMoneyAccountSweepstakesOutcomeToast';
+import VipIcon from '../../../../images/rewards/vip.svg';
+import Engine from '../../../../core/Engine';
+
+const VIP_UNLOCK_TAP_COUNT = 5;
+const VIP_UNLOCK_TAP_WINDOW_MS = 3000;
+
+function selectRewardsDashboardReferralMe(state: RootState) {
+  const profileId = selectSessionProfileId(state);
+  return selectReferralMeEntry(state, profileId)?.data;
+}
+
+const RewardsDashboard: React.FC = () => {
+  const tw = useTailwind();
+  const floatingTabBarInset = useFloatingTabBarInset();
+  const navigation = useNavigation<AppNavigationProp>();
+  const subscriptionId = useSelector(selectRewardsSubscriptionId);
+  const settingsReferralAvailable = useSelector(
+    selectSettingsReferralAvailable,
+  );
+  const settingsDisabled = !subscriptionId && !settingsReferralAvailable;
+  const isVipProgramEnabled = useSelector(selectVipProgramEnabled);
+  const isVipEnabled = useSelector(selectIsCurrentSubscriptionVipEnabled);
+  const hasAcceptedVipInvite = useSelector(
+    selectHasAcceptedVipInvite(subscriptionId),
+  );
+  const isVipReferee = useSelector(selectIsVipReferee);
+  const hasAcceptedVipRefereeInvite = useSelector(
+    selectHasAcceptedVipRefereeInvite(subscriptionId),
+  );
+  const referralMe = useSelector(selectRewardsDashboardReferralMe);
+  const isSocialV1Enabled = useSelector(selectIsSocialV1Enabled);
+  const { createEventBuilder } = useAnalytics();
+  const hasTrackedDashboardViewed = useRef(false);
+
+  useOndoOutcomeToast();
+  usePerpsTradingCampaignEndedOutcomeToast();
+  useGetPredictThePitchOutcomeToast();
+  useMoneyAccountSweepstakesOutcomeToast();
+
+  // Data hooks that populate Redux for the dashboard and its pushed sub-pages.
+  // The version guard and candidate-subscription fetch live one level up in
+  // RewardsHome (MainNavigator) so they also cover the onboarding entry path for
+  // non-enrolled users; only dashboard-specific hooks remain here.
+  useGeoRewardsMetadata({});
+  useReferralDetails();
+
+  const hideCurrentAccountNotOptedInBannerMap = useSelector(
+    selectHideCurrentAccountNotOptedInBannerArray,
+  );
+  const selectedAccountGroup = useSelector(selectSelectedAccountGroup);
+  const hideCurrentAccountNotOptedInBanner = useMemo((): boolean => {
+    if (hideCurrentAccountNotOptedInBannerMap && selectedAccountGroup?.id) {
+      return (
+        hideCurrentAccountNotOptedInBannerMap.find(
+          (item) => item.accountGroupId === selectedAccountGroup?.id,
+        )?.hide || false
+      );
+    }
+    return false;
+  }, [selectedAccountGroup?.id, hideCurrentAccountNotOptedInBannerMap]);
+
+  // Use the reward dashboard modals hook
+  const { showNotSupportedModal, hasShownModal } = useRewardDashboardModals();
+
+  const {
+    currentAccountGroupPartiallySupported,
+    refresh: refreshOptInSummary,
+  } = useRewardOptinSummary();
+  const refreshOptInSummaryRef = useRef(refreshOptInSummary);
+  refreshOptInSummaryRef.current = refreshOptInSummary;
+  const skipNextOptInFocusRefresh = useRef(true);
+
+  // Use the bulk link state hook for resuming interrupted opt-in processes
+  const { wasInterrupted, isRunning, resumeBulkLink } = useBulkLinkState();
+
+  // Quietly finish incomplete Money Account Sweepstakes series opt-ins
+  useResumePendingMasSeriesOptIn();
+
+  // Auto-resume interrupted bulk link process when screen comes into focus.
+  // This handles the case where the app was closed during a bulk opt-in process.
+  // The saga is idempotent - it re-fetches opt-in status to skip already-linked accounts.
+  useFocusEffect(
+    useCallback(() => {
+      const handle = runAfterInteractions(() => {
+        if (wasInterrupted && !isRunning) {
+          resumeBulkLink();
+        }
+      });
+      return () => handle.cancel();
+    }, [wasInterrupted, isRunning, resumeBulkLink]),
+  );
+
+  // The opt-in summary fetches on mount. Later visits no longer remount the
+  // tab, so refresh when it is focused again, after the shell has painted.
+  useFocusEffect(
+    useCallback(() => {
+      if (skipNextOptInFocusRefresh.current) {
+        skipNextOptInFocusRefresh.current = false;
+        return undefined;
+      }
+      const handle = runAfterInteractions(() => {
+        void refreshOptInSummaryRef.current();
+      });
+      return () => handle.cancel();
+    }, []),
+  );
+
+  // Auto-trigger dashboard modals based on account/rewards state (session-aware)
+  // This effect runs whenever key dependencies change and determines which informational
+  // modal should be shown to guide the user. Each modal type is only shown once per app session.
+  useFocusEffect(
+    useCallback(() => {
+      if (
+        currentAccountGroupPartiallySupported === false &&
+        !hideCurrentAccountNotOptedInBanner &&
+        selectedAccountGroup?.id
+      ) {
+        // Account group entirely not supported (e.g. hardware wallet account group)
+        if (!hasShownModal('not-supported' as RewardsDashboardModalType)) {
+          showNotSupportedModal();
+        }
+      }
+    }, [
+      currentAccountGroupPartiallySupported,
+      hideCurrentAccountNotOptedInBanner,
+      selectedAccountGroup?.id,
+      hasShownModal,
+      showNotSupportedModal,
+    ]),
+  );
+
+  useEffect(() => {
+    if (!hasTrackedDashboardViewed.current) {
+      trackRewardsDashboardViewed(createEventBuilder, {
+        dashboard: RewardsDashboardKind.REWARDS,
+        hasSubscription: Boolean(subscriptionId),
+        referralMe,
+      });
+      hasTrackedDashboardViewed.current = true;
+    }
+  }, [createEventBuilder, referralMe, subscriptionId]);
+
+  // Hidden VIP unlock: 5 taps on the title within 3s, once per dashboard visit,
+  // only attempted when the user isn't already VIP. A non-null
+  // getVIPDashboard response means the backend considers them VIP-eligible,
+  // so we flip the cached subscription flag locally.
+  const vipUnlockTapCountRef = useRef(0);
+  const vipUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const vipUnlockTriggeredRef = useRef(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      vipUnlockTapCountRef.current = 0;
+      vipUnlockTriggeredRef.current = false;
+      return () => {
+        if (vipUnlockTimerRef.current) {
+          clearTimeout(vipUnlockTimerRef.current);
+          vipUnlockTimerRef.current = null;
+        }
+        vipUnlockTapCountRef.current = 0;
+      };
+    }, []),
+  );
+
+  const isPushedScreen = navigation.getParent()?.getState()?.type !== 'tab';
+  const { scrollY, titleSectionHeightSv, setTitleSectionHeight, onScroll } =
+    useHeaderStandardAnimated();
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const { top: topInset } = useSafeAreaInsets();
+  const { inset: headerInset, onLayout: handleHeaderLayout } =
+    useHeaderGlassInset(isGlassHeader, topInset);
+
+  const handleBackPress = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const handleTitlePress = useCallback(() => {
+    if (isVipEnabled || vipUnlockTriggeredRef.current || !subscriptionId) {
+      return;
+    }
+
+    vipUnlockTapCountRef.current += 1;
+
+    if (vipUnlockTimerRef.current) {
+      clearTimeout(vipUnlockTimerRef.current);
+    }
+    vipUnlockTimerRef.current = setTimeout(() => {
+      vipUnlockTapCountRef.current = 0;
+      vipUnlockTimerRef.current = null;
+    }, VIP_UNLOCK_TAP_WINDOW_MS);
+
+    if (vipUnlockTapCountRef.current < VIP_UNLOCK_TAP_COUNT) {
+      return;
+    }
+
+    vipUnlockTriggeredRef.current = true;
+    vipUnlockTapCountRef.current = 0;
+    if (vipUnlockTimerRef.current) {
+      clearTimeout(vipUnlockTimerRef.current);
+      vipUnlockTimerRef.current = null;
+    }
+
+    void (async () => {
+      try {
+        // The controller flips `subscription.features.vip.enabled` as a side
+        // effect when the VIP dashboard fetch returns a non-null payload, so
+        // calling this is enough to update the icon visibility.
+        await Engine.controllerMessenger.call(
+          'RewardsController:getVIPDashboard',
+          subscriptionId,
+        );
+      } catch {
+        // Network/other error — leave the flag as-is. The easter-egg can be
+        // retried by re-entering the dashboard.
+        vipUnlockTriggeredRef.current = false;
+      }
+    })();
+  }, [isVipEnabled, subscriptionId]);
+
+  const handleVipPress = useCallback(() => {
+    navigateToRewardsRoute(
+      navigation,
+      hasAcceptedVipInvite
+        ? Routes.REWARDS_VIP_VIEW
+        : Routes.REWARDS_VIP_SPLASH_VIEW,
+    );
+  }, [hasAcceptedVipInvite, navigation]);
+
+  const handleVipRefereePress = useCallback(() => {
+    navigateToRewardsRoute(
+      navigation,
+      hasAcceptedVipRefereeInvite
+        ? Routes.REWARDS_VIP_REFEREE_VIEW
+        : Routes.REWARDS_VIP_REFEREE_SPLASH_VIEW,
+    );
+  }, [hasAcceptedVipRefereeInvite, navigation]);
+
+  const openSocialTab = useCallback(() => {
+    navigateToSocialLeaderboard(navigation.navigate);
+  }, [navigation]);
+
+  const copyTradingText = referralMe?.localized_text;
+  const showCopyTrading = Boolean(
+    isSocialV1Enabled &&
+      copyTradingText?.tradingCommissionsSection &&
+      copyTradingText.copyTradingEmptyDescription &&
+      copyTradingText.copyTradingEmptyAction,
+  );
+
+  const vipButtonStyle = isGlassHeader
+    ? undefined
+    : tw.style('h-8 w-8 items-center justify-center');
+  const vipIcon = isGlassHeader ? (
+    <CapsuleGlass twClassName="w-10 justify-center">
+      <VipIcon width={24} height={24} name="VipIcon" />
+    </CapsuleGlass>
+  ) : (
+    <VipIcon width={24} height={24} name="VipIcon" />
+  );
+
+  const headerEndAccessory = (
+    <Box twClassName="flex-row gap-2">
+      {isVipProgramEnabled && isVipReferee && (
+        <Pressable
+          accessibilityRole="button"
+          onPress={handleVipRefereePress}
+          style={vipButtonStyle}
+          testID={REWARDS_VIEW_SELECTORS.VIP_REFEREE_BUTTON}
+        >
+          {vipIcon}
+        </Pressable>
+      )}
+      {isVipProgramEnabled && isVipEnabled && (
+        <Pressable
+          accessibilityRole="button"
+          onPress={handleVipPress}
+          style={vipButtonStyle}
+          testID={REWARDS_VIEW_SELECTORS.VIP_BUTTON}
+        >
+          {vipIcon}
+        </Pressable>
+      )}
+      {settingsDisabled ? null : (
+        <ButtonIconGlass
+          isCapsule={isGlassHeader}
+          iconName={IconName.Setting}
+          onPress={() =>
+            navigateToRewardsRoute(navigation, Routes.REWARDS_SETTINGS_VIEW)
+          }
+          size={ButtonIconSize.Md}
+          accessibilityLabel={strings('rewards.settings.title')}
+          testID={REWARDS_VIEW_SELECTORS.SETTINGS_BUTTON}
+        />
+      )}
+    </Box>
+  );
+
+  return (
+    <ErrorBoundary navigation={navigation} view="RewardsView">
+      <SafeAreaView
+        // A floating header pads the status bar itself, so content scrolls under both.
+        edges={isGlassHeader ? {} : { top: 'additive' }}
+        style={tw.style('flex-1 bg-default')}
+        testID={REWARDS_VIEW_SELECTORS.SAFE_AREA_VIEW}
+      >
+        {isPushedScreen ? (
+          <HeaderStandardAnimatedGlass
+            isGlass={isGlassHeader}
+            onLayout={handleHeaderLayout}
+            includesTopInset={isGlassHeader}
+            title={strings('rewards.main_title')}
+            titleProps={{
+              onPress: handleTitlePress,
+              suppressHighlighting: true,
+              accessibilityRole: 'button',
+            }}
+            scrollY={scrollY}
+            titleSectionHeight={titleSectionHeightSv}
+            onBack={handleBackPress}
+            backButtonProps={{ testID: REWARDS_VIEW_SELECTORS.BACK_BUTTON }}
+            endAccessory={headerEndAccessory}
+          />
+        ) : (
+          <HeaderRootGlass
+            isGlass={isGlassHeader}
+            onLayout={handleHeaderLayout}
+            includesTopInset={isGlassHeader}
+            scrollY={scrollY}
+            endAccessory={headerEndAccessory}
+          >
+            <Pressable
+              accessibilityRole="header"
+              onPress={handleTitlePress}
+              testID={REWARDS_VIEW_SELECTORS.TITLE}
+            >
+              <Text variant={TextVariant.HeadingLg}>
+                {strings('rewards.main_title')}
+              </Text>
+            </Pressable>
+          </HeaderRootGlass>
+        )}
+        <Animated.ScrollView
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+          showsVerticalScrollIndicator={false}
+          style={tw.style('flex-1')}
+          contentContainerStyle={[
+            tw.style(`pb-[${floatingTabBarInset}px]`),
+            { paddingTop: headerInset },
+          ]}
+        >
+          {/* Pushed only: the large title lives in the content and collapses
+              into the header on scroll, as on Activity and the home redesign.
+              As a tab it stays in HeaderRoot, unchanged. */}
+          {isPushedScreen ? (
+            <Box
+              twClassName="px-4 pt-3 pb-3"
+              onLayout={(event) =>
+                setTitleSectionHeight(event.nativeEvent.layout.height)
+              }
+            >
+              <Pressable
+                accessibilityRole="header"
+                onPress={handleTitlePress}
+                testID={REWARDS_VIEW_SELECTORS.TITLE}
+              >
+                <Text variant={TextVariant.HeadingLg}>
+                  {strings('rewards.main_title')}
+                </Text>
+              </Pressable>
+            </Box>
+          ) : null}
+          <Box twClassName="gap-3">
+            {subscriptionId ? (
+              <CampaignsPreview />
+            ) : (
+              <RewardsOptInSection
+                showDivider={false}
+                localizedText={{
+                  invitedOptInDescription:
+                    referralMe?.localized_text.invitedOptInDescription ||
+                    strings('rewards.onboarding.description'),
+                  invitedOptInAction:
+                    referralMe?.localized_text.invitedOptInAction ||
+                    strings('rewards.campaign.opt_in'),
+                  invitedOptInLegal:
+                    referralMe?.localized_text.invitedOptInLegal,
+                }}
+              />
+            )}
+            {showCopyTrading && copyTradingText ? (
+              <Box testID={REWARDS_VIEW_SELECTORS.COPY_TRADING_SECTION}>
+                <SectionHeader
+                  title={copyTradingText.tradingCommissionsSection}
+                />
+                <Box twClassName="items-center px-4 py-4">
+                  <TabEmptyState
+                    icon={
+                      <AvatarIcon
+                        iconName={IconName.People}
+                        size={AvatarIconSize.Xl}
+                        severity={AvatarIconSeverity.Neutral}
+                        iconProps={{ color: IconColor.IconDefault }}
+                      />
+                    }
+                    description={copyTradingText.copyTradingEmptyDescription}
+                    descriptionProps={{
+                      variant: TextVariant.BodyMd,
+                      color: TextColor.TextAlternative,
+                    }}
+                    actionButtonText={copyTradingText.copyTradingEmptyAction}
+                    actionButtonProps={{
+                      variant: ButtonVariant.Primary,
+                      size: ButtonSize.Lg,
+                      twClassName: 'mt-3 self-stretch',
+                      testID: REWARDS_VIEW_SELECTORS.COPY_TRADING_ACTION,
+                    }}
+                    onAction={openSocialTab}
+                    testID={REWARDS_VIEW_SELECTORS.COPY_TRADING_EMPTY}
+                  />
+                </Box>
+              </Box>
+            ) : (
+              <EarnRewardsPreview />
+            )}
+            {subscriptionId ? <BenefitsPreview /> : null}
+          </Box>
+        </Animated.ScrollView>
+      </SafeAreaView>
+    </ErrorBoundary>
+  );
+};
+
+export default RewardsDashboard;

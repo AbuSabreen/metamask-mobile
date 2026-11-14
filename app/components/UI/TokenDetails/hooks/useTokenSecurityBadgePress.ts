@@ -1,0 +1,74 @@
+import type { TokenSecurityData } from '@metamask/assets-controllers';
+import { useCallback, useMemo } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import Routes from '../../../../constants/navigation/Routes';
+import { getResultTypeConfig } from '../../SecurityTrust/utils/securityUtils';
+import type { TokenDetailsRouteParams } from '../constants/constants';
+import type { TdpVersion } from '../analytics/getTdpAnalyticsBase';
+
+export const useTokenSecurityBadgePress = (
+  token: TokenDetailsRouteParams,
+  securityData: TokenSecurityData | null | undefined,
+  tdpVersion: TdpVersion = 'v2',
+) => {
+  const navigation = useNavigation<AppNavigationProp>();
+
+  const securityConfig = useMemo(
+    () => getResultTypeConfig(securityData?.resultType),
+    [securityData?.resultType],
+  );
+
+  const handleSecurityBadgePress = useCallback(() => {
+    if (
+      !securityData?.resultType ||
+      securityData.resultType === 'Benign' ||
+      !securityConfig.icon ||
+      !securityConfig.iconColor ||
+      !securityConfig.sheetTitle ||
+      !securityConfig.getSheetDescription
+    ) {
+      return;
+    }
+
+    const isVerified = securityData.resultType === 'Verified';
+    const displayIcon =
+      isVerified && securityConfig.badge
+        ? securityConfig.badge.icon
+        : securityConfig.icon;
+    const displayIconColor =
+      isVerified && securityConfig.badge
+        ? securityConfig.badge.iconColor
+        : securityConfig.iconColor;
+
+    navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.MODAL.SECURITY_BADGE_BOTTOM_SHEET,
+      params: {
+        icon: displayIcon,
+        iconColor: displayIconColor,
+        title: securityConfig.sheetTitle,
+        description: securityConfig.getSheetDescription(
+          token.symbol || token.name,
+        ),
+        source: 'badge',
+        severity: securityData.resultType,
+        tokenAddress: token.address,
+        tokenSymbol: token.symbol || token.name,
+        chainId: token.chainId,
+        features: securityData.features,
+        tdpVersion,
+      },
+    });
+  }, [
+    securityData,
+    securityConfig,
+    token.symbol,
+    token.name,
+    token.address,
+    token.chainId,
+    tdpVersion,
+    navigation,
+  ]);
+
+  return { securityConfig, handleSecurityBadgePress };
+};

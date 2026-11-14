@@ -1,4 +1,5 @@
 /* eslint-disable react/prop-types */
+
 import React from 'react';
 
 // External dependencies.
@@ -9,14 +10,22 @@ import ButtonSecondary from './variants/ButtonSecondary';
 // Internal dependencies.
 import { ButtonProps, ButtonVariants } from './Button.types';
 
+/**
+ * @deprecated Please update your code to use `Button` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/Button/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#button-component Migration docs}
+ */
 const Button = (buttonProps: ButtonProps) => {
-  switch (buttonProps.variant) {
+  const { variant, ...restProps } = buttonProps;
+
+  switch (variant) {
     case ButtonVariants.Link:
-      return <ButtonLink {...buttonProps} />;
+      return <ButtonLink {...restProps} />;
     case ButtonVariants.Primary:
-      return <ButtonPrimary {...buttonProps} />;
+      return <ButtonPrimary {...restProps} />;
     case ButtonVariants.Secondary:
-      return <ButtonSecondary {...buttonProps} />;
+      return <ButtonSecondary {...restProps} />;
     default:
       throw new Error('Invalid Button Variant');
   }

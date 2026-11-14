@@ -1,0 +1,533 @@
+import React, { useMemo } from 'react';
+import { TouchableOpacity, Platform, UIManager } from 'react-native';
+import { BigNumber } from 'bignumber.js';
+import { sumAmounts } from '@metamask/bridge-controller';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { strings } from '../../../../../../locales/i18n';
+import { useTheme } from '../../../../../util/theme';
+import createStyles from './QuoteDetailsCard.styles';
+import { IconName as IconNameLegacy } from '../../../../../component-library/components/Icons/Icon';
+import {
+  Box,
+  BoxFlexDirection,
+  BoxAlignItems,
+  BoxJustifyContent,
+  FontWeight,
+  Text,
+  TextVariant,
+  TextColor,
+  Icon,
+  IconName,
+  IconSize,
+  IconColor,
+  AvatarToken,
+  AvatarTokenSize,
+} from '@metamask/design-system-react-native';
+import Routes from '../../../../../constants/navigation/Routes';
+import { useBridgeQuoteDataContext } from '../../hooks/useBridgeQuoteData/BridgeQuoteDataContext';
+import { useSelector } from 'react-redux';
+import {
+  selectSourceAmount,
+  selectDestToken,
+  selectSourceToken,
+} from '../../../../../core/redux/slices/bridge';
+import { getNativeSourceToken } from '../../utils/tokenUtils';
+import { formatMinimumReceived } from '../../utils/currencyUtils';
+import { useRewards } from '../../hooks/useRewards';
+import RewardsAnimations, {
+  RewardAnimationState,
+} from '../../../Rewards/components/RewardPointsAnimation';
+import AddRewardsAccount from '../../../Rewards/components/AddRewardsAccount/AddRewardsAccount';
+import QuoteCountdownTimer from '../QuoteCountdownTimer';
+import QuoteDetailsRecipientKeyValueRow from '../QuoteDetailsRecipientKeyValueRow/QuoteDetailsRecipientKeyValueRow';
+import { toSentenceCase } from '../../../../../util/string';
+import TagColored, {
+  TagColor,
+} from '../../../../../component-library/components-temp/TagColored';
+import { useShouldRenderGasSponsoredBanner } from '../../hooks/useShouldRenderGasSponsoredBanner';
+import { isGaslessQuote } from '../../utils/isGaslessQuote';
+import { QuoteDetailsCardProps } from './QuoteDetailsCard.types';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  TextVariant as TextVariantLegacy,
+  TextColor as TextColorLegacy,
+} from '../../../../../component-library/components/Texts/Text';
+import KeyValueRow from '../../../../../component-library/components-temp/KeyValueRow';
+import { PriceImpactModalType } from '../PriceImpactModal/constants';
+import { formatPriceImpact } from '../../utils/formatPriceImpact';
+import TooltipLabel from '../TooltipLabel';
+import { usePriceImpactViewData } from '../../hooks/usePriceImpactViewData';
+import formatFiat from '../../../../../util/formatFiat';
+import { selectCurrentCurrency } from '../../../../../selectors/currencyRateController';
+import { BridgeViewSelectorsIDs } from '../../Views/BridgeView/BridgeView.testIds';
+if (
+  Platform.OS === 'android' &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+const QuoteDetailsCard: React.FC<QuoteDetailsCardProps> = ({
+  hasInsufficientBalance,
+  location,
+  gaslessFeeAsset,
+}) => {
+  const tw = useTailwind();
+  const theme = useTheme();
+  const navigation = useNavigation<AppNavigationProp>();
+  const styles = createStyles(theme);
+
+  const {
+    formattedQuoteData,
+    activeQuote,
+    isLoading: isQuoteLoading,
+    shouldShowPriceImpactWarning,
+    shouldShowPriceImpactError,
+  } = useBridgeQuoteDataContext();
+  const sourceToken = useSelector(selectSourceToken);
+  const destToken = useSelector(selectDestToken);
+  const sourceAmount = useSelector(selectSourceAmount);
+  const currency = useSelector(selectCurrentCurrency);
+  const {
+    estimatedPoints,
+    isLoading: isRewardsLoading,
+    shouldShowRewardsRow,
+    hasError: hasRewardsError,
+    accountOptedIn,
+    rewardsAccountScope,
+  } = useRewards({
+    activeQuote,
+    isQuoteLoading,
+  });
+
+  const priceImpactIsSafe =
+    !activeQuote?.quote.priceData?.priceImpact ||
+    (!shouldShowPriceImpactWarning && !shouldShowPriceImpactError);
+
+  const nativeTokenName = useMemo(() => {
+    const chainId = sourceToken?.chainId;
+    if (!chainId) return undefined;
+    const native = getNativeSourceToken(chainId);
+    return native?.symbol ?? sourceToken?.symbol ?? '';
+  }, [sourceToken?.chainId, sourceToken?.symbol]);
+
+  const shouldShowGasSponsored = useShouldRenderGasSponsoredBanner({
+    quoteGasSponsored: activeQuote?.quote?.gasSponsored ?? false,
+    hasInsufficientBalance,
+  });
+
+  const handleSlippagePress = () => {
+    navigation.navigate(Routes.BRIDGE.MODALS.ROOT, {
+      screen: Routes.BRIDGE.MODALS.SWAP_DEFAULT_SLIPPAGE_MODAL,
+      params: {
+        sourceChainId: sourceToken?.chainId,
+        destChainId: destToken?.chainId,
+      },
+    });
+  };
+
+  const handleRatePress = () => {
+    navigation.navigate(Routes.BRIDGE.QUOTE_SELECTOR_VIEW);
+  };
+
+  const handlePriceImpactPress = () => {
+    if (priceImpactIsSafe) {
+      return;
+    }
+
+    navigation.navigate(Routes.BRIDGE.MODALS.ROOT, {
+      screen: Routes.BRIDGE.MODALS.PRICE_IMPACT_MODAL,
+      params: {
+        type: PriceImpactModalType.Info,
+        location,
+      },
+    });
+  };
+
+  const isGasless = isGaslessQuote(activeQuote?.quote);
+
+  const relayerFee = activeQuote?.quote?.feeData?.relayer;
+  const formattedRelayerFee = useMemo(() => {
+    if (!relayerFee?.length) {
+      return '-';
+    }
+
+    const fee = sumAmounts(relayerFee);
+    const valueInCurrency = fee?.valueInCurrency;
+    if (valueInCurrency == null) {
+      return '-';
+    }
+
+    return formatFiat(new BigNumber(valueInCurrency), currency);
+  }, [currency, relayerFee]);
+
+  const formattedMinToTokenAmount = formatMinimumReceived(
+    activeQuote?.quote.dest?.minAmountNormalized || '0',
+  );
+
+  const priceImpactViewData = usePriceImpactViewData(
+    activeQuote?.quote.priceData?.priceImpact?.amount,
+  );
+  const shouldShowPriceImpactRow =
+    activeQuote?.quote.priceData?.priceImpact?.amount != null;
+
+  // Early return for invalid states
+  if (
+    !sourceToken?.chainId ||
+    !destToken?.chainId ||
+    !sourceAmount ||
+    !formattedQuoteData
+  ) {
+    return null;
+  }
+
+  return (
+    <Box>
+      <Box style={styles.container}>
+        <Box
+          flexDirection={BoxFlexDirection.Row}
+          alignItems={BoxAlignItems.Center}
+          gap={1}
+        >
+          <Box
+            flexDirection={BoxFlexDirection.Row}
+            alignItems={BoxAlignItems.Center}
+            gap={4}
+          >
+            <TooltipLabel
+              label={strings('bridge.rate')}
+              tooltipTitle={strings('bridge.quote_info_title')}
+              tooltipContent={strings('bridge.quote_info_content')}
+            />
+            <QuoteCountdownTimer
+              testID={BridgeViewSelectorsIDs.QUOTE_KEYPAD_DISMISS_TARGET}
+            />
+          </Box>
+          <TouchableOpacity
+            style={tw`flex-1 items-end`}
+            onPress={handleRatePress}
+            testID="rate-arrow-button"
+            activeOpacity={0.6}
+          >
+            <Box
+              flexDirection={BoxFlexDirection.Row}
+              alignItems={BoxAlignItems.Center}
+              gap={1}
+            >
+              <Text
+                variant={TextVariant.BodyMd}
+                color={TextColor.TextDefault}
+                style={tw`text-right`}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
+                {formattedQuoteData?.rate}
+              </Text>
+              <Icon
+                name={IconName.ArrowRight}
+                size={IconSize.Sm}
+                color={IconColor.IconAlternative}
+              />
+            </Box>
+          </TouchableOpacity>
+        </Box>
+        {shouldShowGasSponsored ? (
+          <KeyValueRow
+            field={{
+              label: (
+                <TooltipLabel
+                  label={strings('bridge.network_fee')}
+                  tooltipTitle={strings('bridge.network_fee_info_title')}
+                  tooltipContent={strings(
+                    'bridge.network_fee_info_content_sponsored',
+                    { nativeToken: nativeTokenName },
+                  )}
+                  color={TextColor.TextDefault}
+                  fontWeight={FontWeight.Medium}
+                />
+              ),
+            }}
+            value={{
+              label: (
+                <TagColored
+                  color={TagColor.Success}
+                  labelProps={{
+                    variant: TextVariantLegacy.BodySM,
+                    style: {
+                      textTransform: 'none',
+                      textAlign: 'center',
+                      bottom: 1,
+                      fontWeight: 'normal',
+                    },
+                  }}
+                >
+                  {strings('bridge.gas_fees_sponsored')}
+                </TagColored>
+              ),
+            }}
+          />
+        ) : isGasless ? (
+          <KeyValueRow
+            field={{
+              label: (
+                <TooltipLabel
+                  label={toSentenceCase(strings('bridge.network_fee'))}
+                  tooltipTitle={strings('bridge.network_fee_info_title')}
+                  tooltipContent={strings(
+                    'bridge.network_fee_info_content_gasless',
+                  )}
+                />
+              ),
+            }}
+            value={{
+              label: (
+                <Box
+                  flexDirection={BoxFlexDirection.Row}
+                  alignItems={BoxAlignItems.Center}
+                  gap={1}
+                  testID={BridgeViewSelectorsIDs.GASLESS_NETWORK_FEE}
+                >
+                  <Text
+                    variant={TextVariant.BodyMd}
+                    color={TextColor.TextDefault}
+                  >
+                    {formattedQuoteData?.networkFee}
+                  </Text>
+                  {gaslessFeeAsset ? (
+                    <Box
+                      flexDirection={BoxFlexDirection.Row}
+                      alignItems={BoxAlignItems.Center}
+                      gap={1}
+                      twClassName="rounded-md bg-muted px-1.5"
+                    >
+                      <AvatarToken
+                        name={gaslessFeeAsset.symbol}
+                        src={
+                          gaslessFeeAsset.iconUrl
+                            ? { uri: gaslessFeeAsset.iconUrl }
+                            : undefined
+                        }
+                        size={AvatarTokenSize.Xs}
+                      />
+                      <Text
+                        variant={TextVariant.BodyXs}
+                        color={TextColor.TextAlternative}
+                      >
+                        {gaslessFeeAsset.symbol}
+                      </Text>
+                    </Box>
+                  ) : null}
+                </Box>
+              ),
+            }}
+          />
+        ) : (
+          <KeyValueRow
+            field={{
+              label: (
+                <TooltipLabel
+                  label={toSentenceCase(strings('bridge.network_fee'))}
+                  tooltipTitle={strings('bridge.network_fee_info_title')}
+                  tooltipContent={strings('bridge.network_fee_info_content')}
+                />
+              ),
+            }}
+            value={{
+              label: {
+                text: formattedQuoteData.networkFee,
+                variant: TextVariantLegacy.BodyMD,
+                color: TextColorLegacy.Default,
+              },
+            }}
+          />
+        )}
+
+        {Boolean(relayerFee?.length) && (
+          <KeyValueRow
+            field={{
+              label: {
+                text: toSentenceCase(strings('bridge.relayer_fee')),
+                variant: TextVariantLegacy.BodyMD,
+                color: TextColorLegacy.Alternative,
+              },
+            }}
+            value={{
+              label: {
+                text: formattedRelayerFee,
+                variant: TextVariantLegacy.BodyMD,
+                color: TextColorLegacy.Default,
+              },
+            }}
+          />
+        )}
+
+        <KeyValueRow
+          field={{
+            label: (
+              <TooltipLabel
+                label={strings('bridge.slippage')}
+                tooltipTitle={strings('bridge.slippage_info_title')}
+                tooltipContent={strings('bridge.slippage_info_description')}
+              />
+            ),
+          }}
+          value={{
+            label: (
+              <TouchableOpacity
+                onPress={handleSlippagePress}
+                activeOpacity={0.6}
+                testID="edit-slippage-button"
+                style={styles.slippageButton}
+              >
+                <Text
+                  variant={TextVariant.BodyMd}
+                  color={TextColor.TextDefault}
+                >
+                  {formattedQuoteData.slippage}
+                </Text>
+                <Icon
+                  name={IconName.ArrowRight}
+                  size={IconSize.Sm}
+                  color={IconColor.IconAlternative}
+                />
+              </TouchableOpacity>
+            ),
+          }}
+        />
+
+        {activeQuote?.quote.dest?.minAmountNormalized && (
+          <KeyValueRow
+            field={{
+              label: (
+                <TooltipLabel
+                  label={toSentenceCase(strings('bridge.minimum_received'))}
+                  tooltipTitle={strings(
+                    'bridge.minimum_received_tooltip_title',
+                  )}
+                  tooltipContent={strings(
+                    'bridge.minimum_received_tooltip_content',
+                  )}
+                />
+              ),
+            }}
+            value={{
+              label: {
+                text: `${formattedMinToTokenAmount} ${destToken?.symbol}`,
+                variant: TextVariantLegacy.BodyMD,
+                color: TextColorLegacy.Default,
+              },
+            }}
+          />
+        )}
+
+        {shouldShowPriceImpactRow && (
+          <KeyValueRow
+            field={{
+              label: (
+                <TooltipLabel
+                  label={toSentenceCase(strings('bridge.price_impact'))}
+                  tooltipTitle={strings('bridge.price_impact_info_title')}
+                  tooltipContent={strings(
+                    'bridge.price_impact_info_description',
+                  )}
+                />
+              ),
+            }}
+            value={{
+              label: (
+                <TouchableOpacity
+                  testID="price-impact-info-button"
+                  onPress={handlePriceImpactPress}
+                  activeOpacity={priceImpactIsSafe ? 1 : 0.6}
+                >
+                  <Box
+                    flexDirection={BoxFlexDirection.Row}
+                    alignItems={BoxAlignItems.Center}
+                    gap={1}
+                  >
+                    {priceImpactViewData.icon && (
+                      <Icon
+                        name={priceImpactViewData.icon.name}
+                        size={IconSize.Sm}
+                        color={priceImpactViewData.icon.color}
+                        twClassName="mt-[2px]"
+                      />
+                    )}
+                    <Text
+                      variant={TextVariant.BodyMd}
+                      color={priceImpactViewData.textColor}
+                    >
+                      {formatPriceImpact(formattedQuoteData.priceImpact)}
+                    </Text>
+                  </Box>
+                </TouchableOpacity>
+              ),
+            }}
+          />
+        )}
+
+        <QuoteDetailsRecipientKeyValueRow />
+
+        {/* Estimated Points */}
+        {shouldShowRewardsRow && (
+          <Box testID="bridge-rewards-row">
+            <KeyValueRow
+              field={{
+                label: (
+                  <TooltipLabel
+                    label={toSentenceCase(strings('bridge.points'))}
+                    tooltipTitle={strings('bridge.points_tooltip')}
+                    tooltipContent={`${strings(
+                      'bridge.points_tooltip_content_1',
+                    )}\n\n${strings('bridge.points_tooltip_content_2')}`}
+                    color={TextColor.TextDefault}
+                  />
+                ),
+              }}
+              value={{
+                label: (
+                  <Box
+                    flexDirection={BoxFlexDirection.Row}
+                    alignItems={BoxAlignItems.Center}
+                    justifyContent={BoxJustifyContent.Center}
+                    gap={1}
+                  >
+                    {accountOptedIn ? (
+                      <RewardsAnimations
+                        value={estimatedPoints ?? 0}
+                        state={
+                          isRewardsLoading
+                            ? RewardAnimationState.Loading
+                            : hasRewardsError
+                              ? RewardAnimationState.ErrorState
+                              : RewardAnimationState.Idle
+                        }
+                      />
+                    ) : rewardsAccountScope ? (
+                      <AddRewardsAccount
+                        testID="bridge-add-rewards-account"
+                        account={rewardsAccountScope}
+                      />
+                    ) : (
+                      <></>
+                    )}
+                  </Box>
+                ),
+                ...(hasRewardsError && {
+                  tooltip: {
+                    title: strings('bridge.points_error'),
+                    content: strings('bridge.points_error_content'),
+                    iconName: IconNameLegacy.Info,
+                  },
+                }),
+              }}
+            />
+          </Box>
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+export default QuoteDetailsCard;

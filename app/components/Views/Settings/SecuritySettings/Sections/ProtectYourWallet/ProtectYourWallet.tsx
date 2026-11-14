@@ -1,28 +1,33 @@
 import React from 'react';
 import { View, Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import Button, {
+import type { AppNavigationProp } from '../../../../../../core/NavigationService/types';
+import { useSelector } from 'react-redux';
+import {
+  BannerAlert,
+  BannerAlertSeverity,
+  Button,
+  ButtonVariant,
   ButtonSize,
-  ButtonVariants,
-  ButtonWidthTypes,
-} from '../../../../../../component-library/components/Buttons/Button';
-import Text, {
-  TextVariant,
+  FontWeight,
+  Text,
+  TextButton,
   TextColor,
-} from '../../../../../../component-library/components/Texts/Text';
-import SeedPhraseVideo from '../../../../../UI/SeedPhraseVideo';
+  TextVariant,
+} from '@metamask/design-system-react-native';
 import { MetaMetricsEvents } from '../../../../../../core/Analytics';
-import { useTheme } from '../../../../../../util/theme';
 import { strings } from '../../../../../../../locales/i18n';
 import { LEARN_MORE_URL } from '../../../../../../constants/urls';
-import { SecurityPrivacyViewSelectorsIDs } from '../../../../../../../e2e/selectors/Settings/SecurityAndPrivacy/SecurityPrivacyView.selectors';
+import { SecurityPrivacyViewSelectorsIDs } from '../../SecurityPrivacyView.testIds';
 import { createStyles } from './styles';
 import Routes from '../../../../../../constants/navigation/Routes';
-import Banner, {
-  BannerVariant,
-  BannerAlertSeverity,
-} from '../../../../../../component-library/components/Banners/Banner';
-import { useMetrics } from '../../../../../../components/hooks/useMetrics';
+import { useAnalytics } from '../../../../../../components/hooks/useAnalytics/useAnalytics';
+import { hasMultipleHDKeyrings } from '../../../../../../selectors/keyringController';
+import {
+  selectSeedlessOnboardingAuthConnection,
+  selectSeedlessOnboardingLoginFlow,
+} from '../../../../../../selectors/seedlessOnboardingController';
+import { capitalize } from '../../../../../../util/general';
 
 interface IProtectYourWalletProps {
   srpBackedup: boolean;
@@ -35,99 +40,151 @@ const ProtectYourWallet = ({
   hintText,
   toggleHint,
 }: IProtectYourWalletProps) => {
-  const { colors } = useTheme();
-  const { trackEvent } = useMetrics();
-  const styles = createStyles(colors);
-  const navigation = useNavigation();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const styles = createStyles();
+  const navigation = useNavigation<AppNavigationProp>();
+  const shouldShowSRPList = useSelector(hasMultipleHDKeyrings);
+  const authConnection = useSelector(selectSeedlessOnboardingAuthConnection);
 
   const openSRPQuiz = () => {
+    navigation.navigate(Routes.SETTINGS.REVEAL_PRIVATE_CREDENTIAL, {
+      shouldUpdateNav: true,
+    });
+  };
+
+  const openSRPList = () => {
+    trackEvent(
+      createEventBuilder(
+        MetaMetricsEvents.SECRET_RECOVERY_PHRASE_PICKER_CLICKED,
+      )
+        .addProperties({
+          button_type: 'picker',
+        })
+        .build(),
+    );
     navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
-      screen: Routes.MODAL.SRP_REVEAL_QUIZ,
+      screen: Routes.SHEET.SELECT_SRP,
     });
   };
 
   const goToBackup = (): void => {
     navigation.navigate(Routes.ACCOUNT_BACKUP.STEP_1_B);
 
-    trackEvent(MetaMetricsEvents.WALLET_SECURITY_STARTED, {
-      source: 'Settings',
-    });
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.WALLET_SECURITY_STARTED)
+        .addProperties({
+          source: 'Settings',
+        })
+        .build(),
+    );
   };
 
-  const onBack = (): void => navigation.goBack();
+  const onRevealPressed = () => {
+    if (shouldShowSRPList) {
+      openSRPList();
+      return;
+    }
+    openSRPQuiz();
+  };
+
+  let oauthFlow = false;
+  oauthFlow = !!useSelector(selectSeedlessOnboardingLoginFlow);
+  const onProtectYourWalletPressed = () => {
+    navigation.navigate('WalletRecovery');
+  };
 
   return (
     <View style={[styles.setting, styles.firstSetting]}>
-      <Text variant={TextVariant.BodyLGMedium}>
+      <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
         {strings('app_settings.protect_title')}
       </Text>
-      <View style={styles.video}>
-        <SeedPhraseVideo onClose={onBack} />
-      </View>
-
       <Text
-        variant={TextVariant.BodyMD}
-        color={TextColor.Alternative}
+        variant={TextVariant.BodySm}
+        fontWeight={FontWeight.Medium}
+        color={TextColor.TextAlternative}
         style={styles.desc}
       >
-        {strings(
-          srpBackedup
-            ? 'app_settings.protect_desc'
-            : 'app_settings.protect_desc_no_backup',
+        {strings('app_settings.protect_desc')}
+        {!oauthFlow && !srpBackedup ? (
+          <Text
+            variant={TextVariant.BodySm}
+            fontWeight={FontWeight.Medium}
+            color={TextColor.PrimaryDefault}
+            onPress={() => Linking.openURL(LEARN_MORE_URL)}
+          >
+            {' '}
+            {strings('app_settings.learn_more')}
+          </Text>
+        ) : (
+          '.'
         )}
       </Text>
 
-      {!srpBackedup && (
-        <Button
-          variant={ButtonVariants.Link}
-          onPress={() => Linking.openURL(LEARN_MORE_URL)}
-          label={strings('app_settings.learn_more')}
-        />
-      )}
-      {srpBackedup ? (
-        <Banner
-          variant={BannerVariant.Alert}
+      {!oauthFlow &&
+        (srpBackedup ? (
+          <BannerAlert
+            severity={BannerAlertSeverity.Success}
+            title={strings('app_settings.seedphrase_backed_up')}
+            description={
+              hintText ? (
+                <TextButton variant={TextVariant.BodySm} onPress={toggleHint}>
+                  {strings('app_settings.view_hint')}
+                </TextButton>
+              ) : null
+            }
+            twClassName="mt-4"
+          />
+        ) : (
+          <BannerAlert
+            severity={BannerAlertSeverity.Danger}
+            title={strings('app_settings.seedphrase_not_backed_up')}
+            twClassName="mt-4"
+          />
+        ))}
+
+      {!oauthFlow &&
+        (!srpBackedup ? (
+          <Button
+            isFullWidth
+            variant={ButtonVariant.Primary}
+            size={ButtonSize.Lg}
+            onPress={goToBackup}
+            style={styles.accessory}
+          >
+            {strings('app_settings.back_up_now')}
+          </Button>
+        ) : (
+          <Button
+            isFullWidth
+            variant={ButtonVariant.Secondary}
+            size={ButtonSize.Lg}
+            onPress={onRevealPressed}
+            style={styles.accessory}
+            testID={SecurityPrivacyViewSelectorsIDs.REVEAL_SEED_BUTTON}
+          >
+            {strings('reveal_credential.seed_phrase_title')}
+          </Button>
+        ))}
+      {oauthFlow && authConnection && (
+        <BannerAlert
           severity={BannerAlertSeverity.Success}
-          title={strings('app_settings.seedphrase_backed_up')}
-          description={
-            hintText ? (
-              <Button
-                variant={ButtonVariants.Link}
-                style={styles.viewHint}
-                onPress={toggleHint}
-                label={strings('app_settings.view_hint')}
-              />
-            ) : null
-          }
-          style={styles.accessory}
-        />
-      ) : (
-        <Banner
-          variant={BannerVariant.Alert}
-          severity={BannerAlertSeverity.Error}
-          title={strings('app_settings.seedphrase_not_backed_up')}
-          style={styles.accessory}
+          title={strings('app_settings.banner_social_login_enabled', {
+            authConnection: capitalize(authConnection),
+          })}
+          twClassName="mt-4"
         />
       )}
-      {!srpBackedup ? (
+      {oauthFlow && (
         <Button
-          label={strings('app_settings.back_up_now')}
-          width={ButtonWidthTypes.Full}
-          variant={ButtonVariants.Primary}
+          isFullWidth
+          variant={ButtonVariant.Primary}
           size={ButtonSize.Lg}
-          onPress={goToBackup}
+          onPress={onProtectYourWalletPressed}
           style={styles.accessory}
-        />
-      ) : (
-        <Button
-          label={strings('reveal_credential.seed_phrase_title')}
-          width={ButtonWidthTypes.Full}
-          variant={ButtonVariants.Primary}
-          size={ButtonSize.Lg}
-          onPress={openSRPQuiz}
-          style={styles.accessory}
-          testID={SecurityPrivacyViewSelectorsIDs.REVEAL_SEED_BUTTON}
-        />
+          testID={SecurityPrivacyViewSelectorsIDs.PROTECT_YOUR_WALLET}
+        >
+          {strings('app_settings.manage_recovery_method')}
+        </Button>
       )}
     </View>
   );

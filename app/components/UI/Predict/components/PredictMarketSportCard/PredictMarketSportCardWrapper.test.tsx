@@ -1,0 +1,434 @@
+import React from 'react';
+import { TEST_HEX_COLORS } from '../../testUtils/mockColors';
+import { fireEvent } from '@testing-library/react-native';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import PredictMarketSportCardWrapper from './PredictMarketSportCardWrapper';
+import { PredictEventValues } from '../../constants/eventNames';
+import { usePredictMarket } from '../../hooks/usePredictMarket';
+import { usePredictGame } from '../../hooks/usePredictGame';
+import { Recurrence, PredictMarket as PredictMarketType } from '../../types';
+
+jest.mock('../../hooks/usePredictMarket');
+const mockUsePredictMarket = jest.mocked(usePredictMarket);
+
+jest.mock('../../hooks/usePredictGame');
+const mockUsePredictGame = usePredictGame as jest.MockedFunction<
+  typeof usePredictGame
+>;
+
+const mockNavigate = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    navigate: mockNavigate,
+  }),
+}));
+
+jest.mock('../../../Trending/services/TrendingFeedSessionManager', () => ({
+  __esModule: true,
+  default: {
+    getInstance: () => ({
+      get isFromTrending() {
+        return false;
+      },
+    }),
+  },
+}));
+
+jest.mock('../../contexts', () => ({
+  usePredictEntryPoint: () => undefined,
+  usePredictPreviewSheet: () => ({
+    openBuySheet: jest.fn(),
+  }),
+}));
+
+jest.mock('../../hooks/usePredictActionGuard', () => ({
+  usePredictActionGuard: () => ({
+    executeGuardedAction: (action: () => void) => action(),
+  }),
+}));
+
+const mockGetLivePrice = jest.fn();
+jest.mock('../../hooks/useLiveMarketPrices', () => ({
+  useLiveMarketPrices: jest.fn(() => ({
+    getPrice: mockGetLivePrice,
+  })),
+}));
+
+jest.mock('../../constants/sportLeagueConfigs', () => ({
+  getLeagueConfig: () => ({}),
+}));
+
+jest.mock('../PredictSportTeamLogo/PredictSportTeamLogo', () => {
+  const { View } = jest.requireActual('react-native');
+  return ({ testID }: { testID?: string }) => (
+    <View testID={testID ?? 'predict-sport-team-logo'} />
+  );
+});
+
+const mockMarket: PredictMarketType = {
+  id: 'test-market-id',
+  providerId: 'test-provider',
+  slug: 'super-bowl-lix',
+  title: 'Super Bowl LIX',
+  description: 'Who will win Super Bowl LIX?',
+  image: 'https://example.com/superbowl.png',
+  status: 'open',
+  recurrence: Recurrence.NONE,
+  category: 'sports',
+  tags: ['NFL', 'Super Bowl'],
+  outcomes: [
+    {
+      id: 'outcome-1',
+      providerId: 'test-provider',
+      marketId: 'test-market-id',
+      title: 'Team A',
+      description: 'Team A wins',
+      image: '',
+      status: 'open',
+      tokens: [{ id: 'token-1', title: 'Yes', price: 0.55 }],
+      volume: 1000000,
+      groupItemTitle: 'Team A',
+    },
+  ],
+  liquidity: 5000000,
+  volume: 10000000,
+  game: {
+    id: 'game-1',
+    startTime: '2025-02-09T23:30:00Z',
+    status: 'scheduled',
+    league: 'nfl',
+    elapsed: null,
+    period: null,
+    score: null,
+    awayTeam: {
+      id: 'team-a',
+      name: 'Team A',
+      logo: '',
+      abbreviation: 'TA',
+      color: TEST_HEX_COLORS.PURE_RED,
+      alias: 'Team A',
+    },
+    homeTeam: {
+      id: 'team-b',
+      name: 'Team B',
+      logo: '',
+      abbreviation: 'TB',
+      color: TEST_HEX_COLORS.PURE_BLUE,
+      alias: 'Team B',
+    },
+  },
+};
+
+const initialState = {
+  engine: {
+    backgroundState,
+  },
+};
+
+describe('PredictMarketSportCardWrapper', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetLivePrice.mockReturnValue(undefined);
+    mockUsePredictGame.mockImplementation((market) => ({
+      game: market?.game,
+      isConnected: false,
+      lastUpdateTime: null,
+    }));
+    mockUsePredictMarket.mockReturnValue({
+      data: null,
+      isLoading: false,
+      error: null,
+      refetch: jest.fn(),
+    } as unknown as ReturnType<typeof usePredictMarket>);
+  });
+
+  describe('loading state', () => {
+    it('returns null when fetching market data', () => {
+      mockUsePredictMarket.mockReturnValue({
+        data: null,
+        isLoading: true,
+        error: null,
+        refetch: jest.fn(),
+      } as unknown as ReturnType<typeof usePredictMarket>);
+
+      const { toJSON } = renderWithProvider(
+        <PredictMarketSportCardWrapper marketId="test-market-id" />,
+        { state: initialState },
+      );
+
+      expect(toJSON()).toBeNull();
+    });
+  });
+
+  describe('error state', () => {
+    it('returns null when error occurs', () => {
+      mockUsePredictMarket.mockReturnValue({
+        data: null,
+        isLoading: false,
+        error: new Error('Failed to fetch market'),
+        refetch: jest.fn(),
+      } as unknown as ReturnType<typeof usePredictMarket>);
+
+      const { toJSON } = renderWithProvider(
+        <PredictMarketSportCardWrapper marketId="test-market-id" />,
+        { state: initialState },
+      );
+
+      expect(toJSON()).toBeNull();
+    });
+  });
+
+  describe('no market data', () => {
+    it('returns null when market is null', () => {
+      mockUsePredictMarket.mockReturnValue({
+        data: null,
+        isLoading: false,
+        error: null,
+        refetch: jest.fn(),
+      } as unknown as ReturnType<typeof usePredictMarket>);
+
+      const { toJSON } = renderWithProvider(
+        <PredictMarketSportCardWrapper marketId="test-market-id" />,
+        { state: initialState },
+      );
+
+      expect(toJSON()).toBeNull();
+    });
+  });
+
+  describe('successful render', () => {
+    beforeEach(() => {
+      mockUsePredictMarket.mockReturnValue({
+        data: mockMarket,
+        isLoading: false,
+        error: null,
+        refetch: jest.fn(),
+      } as unknown as ReturnType<typeof usePredictMarket>);
+    });
+
+    it('renders PredictMarketSportCard when market data is available', () => {
+      const { getByText } = renderWithProvider(
+        <PredictMarketSportCardWrapper marketId="test-market-id" />,
+        { state: initialState },
+      );
+
+      expect(getByText('Super Bowl LIX')).toBeOnTheScreen();
+    });
+
+    it('calls usePredictMarket with correct marketId', () => {
+      renderWithProvider(
+        <PredictMarketSportCardWrapper marketId="custom-market-id" />,
+        { state: initialState },
+      );
+
+      expect(mockUsePredictMarket).toHaveBeenCalledWith({
+        id: 'custom-market-id',
+        enabled: true,
+      });
+    });
+
+    it('passes testID to PredictMarketSportCard', () => {
+      const { getByTestId } = renderWithProvider(
+        <PredictMarketSportCardWrapper
+          marketId="test-market-id"
+          testID="wrapper-test-id"
+        />,
+        { state: initialState },
+      );
+
+      expect(getByTestId('wrapper-test-id')).toBeOnTheScreen();
+    });
+
+    it('passes entryPoint to PredictMarketSportCard', () => {
+      const { getByTestId } = renderWithProvider(
+        <PredictMarketSportCardWrapper
+          marketId="test-market-id"
+          testID="wrapper-test-id"
+          entryPoint={PredictEventValues.ENTRY_POINT.CAROUSEL}
+        />,
+        { state: initialState },
+      );
+
+      expect(getByTestId('wrapper-test-id')).toBeOnTheScreen();
+    });
+
+    it('renders without Animated.View wrapper', () => {
+      const { toJSON } = renderWithProvider(
+        <PredictMarketSportCardWrapper marketId="test-market-id" />,
+        { state: initialState },
+      );
+
+      const tree = toJSON();
+      expect(tree).not.toBeNull();
+    });
+
+    it('renders close button when onDismiss is provided', () => {
+      const mockOnDismiss = jest.fn();
+
+      const { getByTestId } = renderWithProvider(
+        <PredictMarketSportCardWrapper
+          marketId="test-market-id"
+          testID="wrapper-card"
+          onDismiss={mockOnDismiss}
+        />,
+        { state: initialState },
+      );
+
+      expect(getByTestId('wrapper-card-close-button')).toBeOnTheScreen();
+    });
+
+    it('calls onDismiss when close button is pressed', () => {
+      const mockOnDismiss = jest.fn();
+
+      const { getByTestId } = renderWithProvider(
+        <PredictMarketSportCardWrapper
+          marketId="test-market-id"
+          testID="wrapper-card"
+          onDismiss={mockOnDismiss}
+        />,
+        { state: initialState },
+      );
+
+      fireEvent.press(getByTestId('wrapper-card-close-button'));
+
+      expect(mockOnDismiss).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not render close button when onDismiss is not provided', () => {
+      const { queryByTestId } = renderWithProvider(
+        <PredictMarketSportCardWrapper
+          marketId="test-market-id"
+          testID="wrapper-card"
+        />,
+        { state: initialState },
+      );
+
+      expect(queryByTestId('wrapper-card-close-button')).toBeNull();
+    });
+  });
+
+  describe('hook enabled state', () => {
+    it('disables hook when marketId is empty string', () => {
+      renderWithProvider(<PredictMarketSportCardWrapper marketId="" />, {
+        state: initialState,
+      });
+
+      expect(mockUsePredictMarket).toHaveBeenCalledWith({
+        id: '',
+        enabled: false,
+      });
+    });
+
+    it('enables hook when marketId is provided', () => {
+      renderWithProvider(
+        <PredictMarketSportCardWrapper marketId="valid-market-id" />,
+        { state: initialState },
+      );
+
+      expect(mockUsePredictMarket).toHaveBeenCalledWith({
+        id: 'valid-market-id',
+        enabled: true,
+      });
+    });
+  });
+
+  describe('onLoad callback', () => {
+    it('calls onLoad when market data is available', () => {
+      const mockOnLoad = jest.fn();
+      mockUsePredictMarket.mockReturnValue({
+        data: mockMarket,
+        isLoading: false,
+        error: null,
+        refetch: jest.fn(),
+      } as unknown as ReturnType<typeof usePredictMarket>);
+
+      renderWithProvider(
+        <PredictMarketSportCardWrapper
+          marketId="test-market-id"
+          onLoad={mockOnLoad}
+        />,
+        { state: initialState },
+      );
+
+      expect(mockOnLoad).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not call onLoad when fetching', () => {
+      const mockOnLoad = jest.fn();
+      mockUsePredictMarket.mockReturnValue({
+        data: null,
+        isLoading: true,
+        error: null,
+        refetch: jest.fn(),
+      } as unknown as ReturnType<typeof usePredictMarket>);
+
+      renderWithProvider(
+        <PredictMarketSportCardWrapper
+          marketId="test-market-id"
+          onLoad={mockOnLoad}
+        />,
+        { state: initialState },
+      );
+
+      expect(mockOnLoad).not.toHaveBeenCalled();
+    });
+
+    it('does not call onLoad when error occurs', () => {
+      const mockOnLoad = jest.fn();
+      mockUsePredictMarket.mockReturnValue({
+        data: null,
+        isLoading: false,
+        error: new Error('Failed to fetch'),
+        refetch: jest.fn(),
+      } as unknown as ReturnType<typeof usePredictMarket>);
+
+      renderWithProvider(
+        <PredictMarketSportCardWrapper
+          marketId="test-market-id"
+          onLoad={mockOnLoad}
+        />,
+        { state: initialState },
+      );
+
+      expect(mockOnLoad).not.toHaveBeenCalled();
+    });
+
+    it('does not call onLoad when market is null', () => {
+      const mockOnLoad = jest.fn();
+      mockUsePredictMarket.mockReturnValue({
+        data: null,
+        isLoading: false,
+        error: null,
+        refetch: jest.fn(),
+      } as unknown as ReturnType<typeof usePredictMarket>);
+
+      renderWithProvider(
+        <PredictMarketSportCardWrapper
+          marketId="test-market-id"
+          onLoad={mockOnLoad}
+        />,
+        { state: initialState },
+      );
+
+      expect(mockOnLoad).not.toHaveBeenCalled();
+    });
+
+    it('does not call onLoad when onLoad is not provided', () => {
+      mockUsePredictMarket.mockReturnValue({
+        data: mockMarket,
+        isLoading: false,
+        error: null,
+        refetch: jest.fn(),
+      } as unknown as ReturnType<typeof usePredictMarket>);
+
+      renderWithProvider(
+        <PredictMarketSportCardWrapper marketId="test-market-id" />,
+        { state: initialState },
+      );
+
+      expect(mockUsePredictMarket).toHaveBeenCalled();
+    });
+  });
+});

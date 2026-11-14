@@ -1,54 +1,111 @@
-import { renderHook, act } from '@testing-library/react-hooks';
+import {
+  renderHook,
+  act,
+  RenderHookResult,
+} from '@testing-library/react-hooks';
 import { useSelector } from 'react-redux';
 import useIsOriginalNativeTokenSymbol from './useIsOriginalNativeTokenSymbol';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
-import axios from 'axios';
+import { backgroundState } from '../../../../app/util/test/initial-root-state';
+import { useSafeChains } from '../useSafeChains';
+import type { RootState } from '../../../reducers';
 
 jest.mock('react-redux', () => ({
   ...jest.requireActual('react-redux'),
   useSelector: jest.fn(),
 }));
 
+jest.mock('../useSafeChains', () => ({
+  useSafeChains: jest.fn(),
+}));
+
+jest.mock('../../../core/Multichain/utils', () => ({
+  isNonEvmChainId: jest.fn().mockReturnValue(false),
+}));
+
+interface BackgroundStateWithNetworkController {
+  NetworkController?: {
+    networkConfigurationsByChainId?: Record<string, unknown>;
+  };
+  PreferencesController?: { useSafeChainsListValidation?: boolean };
+}
+
+// Build state so networkConfigurationsByChainId includes chainIds used in tests.
+// Hook returns true early when chainId is non-EVM or not in this state.
+const networkControllerWithChainIds = (chainIds: string[]) => {
+  const networkConfigurationsByChainId = chainIds.reduce<
+    Record<
+      string,
+      { chainId: string; nativeCurrency: string; rpcEndpoints: unknown[] }
+    >
+  >(
+    (acc, id) => ({
+      ...acc,
+      [id]: { chainId: id, nativeCurrency: 'ETH', rpcEndpoints: [] },
+    }),
+    {},
+  );
+  const bg = backgroundState as BackgroundStateWithNetworkController;
+  return {
+    ...bg.NetworkController,
+    networkConfigurationsByChainId: {
+      ...bg.NetworkController?.networkConfigurationsByChainId,
+      ...networkConfigurationsByChainId,
+    },
+  };
+};
+
 describe('useIsOriginalNativeTokenSymbol', () => {
   afterEach(() => {
     jest.clearAllMocks();
   });
 
-  const mockSelectorState = (state: any) => {
+  const mockSelectorState = (state: Partial<RootState>) => {
     (useSelector as jest.MockedFn<typeof useSelector>).mockImplementation(
       (selector) => selector(state),
     );
   };
-  it('should return the correct value when the native symbol matches the ticker', async () => {
-    mockSelectorState({
+
+  const mockStateWithNetworks = (
+    chainIds: string[],
+    preferences: { useSafeChainsListValidation: boolean },
+  ): Partial<RootState> => {
+    const bg = backgroundState as BackgroundStateWithNetworkController;
+    return {
       engine: {
         backgroundState: {
-          ...initialBackgroundState,
+          ...backgroundState,
+          NetworkController: networkControllerWithChainIds(
+            chainIds,
+          ) as RootState['engine']['backgroundState']['NetworkController'],
           PreferencesController: {
-            useSafeChainsListValidation: true,
-          },
+            ...bg.PreferencesController,
+            ...preferences,
+          } as RootState['engine']['backgroundState']['PreferencesController'],
         },
       },
-    });
+    };
+  };
+  it('returns true when native symbol matches the ticker', async () => {
+    mockSelectorState(
+      mockStateWithNetworks(['0x1'], { useSafeChainsListValidation: true }),
+    );
 
-    // Mock the safeChainsList response
     const safeChainsList = [
       {
         chainId: 1,
         nativeCurrency: {
           symbol: 'ETH',
         },
+        name: 'Ethereum',
+        rpc: [],
       },
     ];
 
-    // Mock the fetchWithCache function to return the safeChainsList
-    const spyFetch = jest.spyOn(axios, 'get').mockImplementation(() =>
-      Promise.resolve({
-        data: safeChainsList,
-      }),
-    );
+    (useSafeChains as jest.Mock).mockReturnValue({
+      safeChains: safeChainsList,
+    });
 
-    let result: any;
+    let result!: RenderHookResult<boolean | null, unknown>;
 
     await act(async () => {
       result = renderHook(() =>
@@ -56,40 +113,30 @@ describe('useIsOriginalNativeTokenSymbol', () => {
       );
     });
 
-    // Expect the hook to return true when the native symbol matches the ticker
     expect(result?.result.current).toBe(true);
-    expect(spyFetch).not.toHaveBeenCalled();
   });
 
-  it('should return the correct value when the native symbol does not match the ticker', async () => {
-    mockSelectorState({
-      engine: {
-        backgroundState: {
-          ...initialBackgroundState,
-          PreferencesController: {
-            useSafeChainsListValidation: true,
-          },
-        },
-      },
-    });
-    // Mock the safeChainsList response with a different native symbol
+  it('returns false when native symbol does not match the ticker', async () => {
+    mockSelectorState(
+      mockStateWithNetworks(['314'], { useSafeChainsListValidation: true }),
+    );
+
     const safeChainsList = [
       {
-        chainId: 1,
+        chainId: 314,
         nativeCurrency: {
           symbol: 'BTC',
         },
+        name: 'Filecoin',
+        rpc: [],
       },
     ];
 
-    // Mock the fetchWithCache function to return the safeChainsList
-    const spyFetch = jest.spyOn(axios, 'get').mockImplementation(() =>
-      Promise.resolve({
-        data: safeChainsList,
-      }),
-    );
+    (useSafeChains as jest.Mock).mockReturnValue({
+      safeChains: safeChainsList,
+    });
 
-    let result: any;
+    let result!: RenderHookResult<boolean | null, unknown>;
 
     await act(async () => {
       result = renderHook(() =>
@@ -97,29 +144,19 @@ describe('useIsOriginalNativeTokenSymbol', () => {
       );
     });
 
-    // Expect the hook to return false when the native symbol does not match the ticker
     expect(result.result.current).toBe(false);
-    expect(spyFetch).toHaveBeenCalled();
   });
 
-  it('should return false if fetch chain list throw an error', async () => {
-    mockSelectorState({
-      engine: {
-        backgroundState: {
-          ...initialBackgroundState,
-          PreferencesController: {
-            useSafeChainsListValidation: true,
-          },
-        },
-      },
+  it('returns false when fetch chain list throws an error', async () => {
+    mockSelectorState(
+      mockStateWithNetworks(['314'], { useSafeChainsListValidation: true }),
+    );
+
+    (useSafeChains as jest.Mock).mockReturnValue({
+      error: new Error('error'),
     });
 
-    // Mock the fetchWithCache function to throw an error
-    const spyFetch = jest.spyOn(axios, 'get').mockImplementation(() => {
-      throw new Error('error');
-    });
-
-    let result: any;
+    let result!: RenderHookResult<boolean | null, unknown>;
 
     await act(async () => {
       result = renderHook(() =>
@@ -127,83 +164,61 @@ describe('useIsOriginalNativeTokenSymbol', () => {
       );
     });
 
-    // Expect the hook to return false when the native symbol does not match the ticker
     expect(result.result.current).toBe(false);
-    expect(spyFetch).toHaveBeenCalled();
   });
 
-  it('should return the correct value when the chainId is in the CURRENCY_SYMBOL_BY_CHAIN_ID', async () => {
-    mockSelectorState({
-      engine: {
-        backgroundState: {
-          ...initialBackgroundState,
-          PreferencesController: {
-            useSafeChainsListValidation: true,
-          },
-        },
-      },
-    });
+  it('returns true when chainId is in CURRENCY_SYMBOL_BY_CHAIN_ID', async () => {
+    mockSelectorState(
+      mockStateWithNetworks(['0x5'], { useSafeChainsListValidation: true }),
+    );
 
-    // Mock the safeChainsList response with a different native symbol
     const safeChainsList = [
       {
         chainId: 1,
         nativeCurrency: {
           symbol: 'BTC',
         },
+        name: 'Ethereum',
+        rpc: [],
       },
     ];
 
-    // Mock the fetchWithCache function to return the safeChainsList
-    const spyFetch = jest.spyOn(axios, 'get').mockImplementation(() =>
-      Promise.resolve({
-        data: safeChainsList,
-      }),
-    );
+    (useSafeChains as jest.Mock).mockReturnValue({
+      safeChains: safeChainsList,
+    });
 
-    let result: any;
+    let result!: RenderHookResult<boolean | null, unknown>;
 
     await act(async () => {
       result = renderHook(() =>
         useIsOriginalNativeTokenSymbol('0x5', 'GoerliETH', 'goerli'),
       );
     });
-    // expect this to pass because the chainId is in the CURRENCY_SYMBOL_BY_CHAIN_ID
+
     expect(result.result.current).toBe(true);
-    // expect that the chainlist API was not called
-    expect(spyFetch).not.toHaveBeenCalled();
   });
 
-  it('should return the correct value when the chainId is not in the CURRENCY_SYMBOL_BY_CHAIN_ID', async () => {
-    mockSelectorState({
-      engine: {
-        backgroundState: {
-          ...initialBackgroundState,
-          PreferencesController: {
-            useSafeChainsListValidation: true,
-          },
-        },
-      },
-    });
+  it('returns true when chainId is not in CURRENCY_SYMBOL_BY_CHAIN_ID and matches safe chains', async () => {
+    mockSelectorState(
+      mockStateWithNetworks(['314'], { useSafeChainsListValidation: true }),
+    );
 
-    // Mock the safeChainsList response
     const safeChainsList = [
       {
         chainId: 314,
         nativeCurrency: {
           symbol: 'FIL',
         },
+        name: 'Filecoin',
+        rpc: [],
       },
     ];
 
-    // Mock the fetchWithCache function to return the safeChainsList
-    const spyFetch = jest.spyOn(axios, 'get').mockImplementation(() =>
-      Promise.resolve({
-        data: safeChainsList,
-      }),
-    );
+    (useSafeChains as jest.Mock).mockReturnValue({
+      safeChains: safeChainsList,
+    });
 
-    let result: any;
+    let result!: RenderHookResult<boolean | null, unknown>;
 
     await act(async () => {
       result = renderHook(() =>
@@ -211,42 +226,19 @@ describe('useIsOriginalNativeTokenSymbol', () => {
       );
     });
 
-    // Expect the hook to return true when the native symbol matches the ticker
     expect(result.result.current).toBe(true);
-    // Expect the chainslist API to have been called
-    expect(spyFetch).toHaveBeenCalled();
   });
 
-  it('should return true if chain safe validation is disabled', async () => {
-    mockSelectorState({
-      engine: {
-        backgroundState: {
-          ...initialBackgroundState,
-          PreferencesController: {
-            useSafeChainsListValidation: false,
-          },
-        },
-      },
-    });
-
-    // Mock the safeChainsList response with a different native symbol
-    const safeChainsList = [
-      {
-        chainId: 1,
-        nativeCurrency: {
-          symbol: 'ETH',
-        },
-      },
-    ];
-
-    // Mock the fetchWithCache function to return the safeChainsList
-    const spyFetch = jest.spyOn(axios, 'get').mockImplementation(() =>
-      Promise.resolve({
-        data: safeChainsList,
-      }),
+  it('returns true when chain safe validation is disabled', async () => {
+    mockSelectorState(
+      mockStateWithNetworks(['5'], { useSafeChainsListValidation: false }),
     );
 
-    let result: any;
+    (useSafeChains as jest.Mock).mockReturnValue({
+      safeChains: [],
+    });
+
+    let result!: RenderHookResult<boolean | null, unknown>;
 
     await act(async () => {
       result = renderHook(() =>
@@ -255,48 +247,83 @@ describe('useIsOriginalNativeTokenSymbol', () => {
     });
 
     expect(result.result.current).toBe(true);
-    expect(spyFetch).not.toHaveBeenCalled();
   });
 
-  it('should return the correct value for LineaGoerli testnet', async () => {
-    mockSelectorState({
-      engine: {
-        backgroundState: {
-          ...initialBackgroundState,
-          PreferencesController: {
-            useSafeChainsListValidation: true,
-          },
-        },
-      },
-    });
+  it('returns true for LineaGoerli testnet', async () => {
+    mockSelectorState(
+      mockStateWithNetworks(['0xe704'], { useSafeChainsListValidation: true }),
+    );
 
-    // Mock the safeChainsList response with a different native symbol
     const safeChainsList = [
       {
         chainId: 1,
         nativeCurrency: {
           symbol: 'BTC',
         },
+        name: 'Bitcoin',
+        rpc: [],
       },
     ];
 
-    // Mock the fetchWithCache function to return the safeChainsList
-    const spyFetch = jest.spyOn(axios, 'get').mockImplementation(() =>
-      Promise.resolve({
-        data: safeChainsList,
-      }),
-    );
+    (useSafeChains as jest.Mock).mockReturnValue({
+      safeChains: safeChainsList,
+    });
 
-    let result: any;
+    let result!: RenderHookResult<boolean | null, unknown>;
 
     await act(async () => {
       result = renderHook(() =>
         useIsOriginalNativeTokenSymbol('0xe704', 'LineaETH', 'linea'),
       );
     });
-    // expect this to pass because the chainId is in the CURRENCY_SYMBOL_BY_CHAIN_ID
+
     expect(result.result.current).toBe(true);
-    // expect that the chainlist API was not called
-    expect(spyFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns null when safe chains list is loading', async () => {
+    mockSelectorState(
+      mockStateWithNetworks(['314'], { useSafeChainsListValidation: true }),
+    );
+
+    (useSafeChains as jest.Mock).mockReturnValue({
+      safeChains: [],
+    });
+
+    let result!: RenderHookResult<boolean | null, unknown>;
+
+    await act(async () => {
+      result = renderHook(() =>
+        useIsOriginalNativeTokenSymbol('314', 'FIL', 'mainnet'),
+      );
+    });
+
+    expect(result.result.current).toBe(null);
+  });
+
+  it('returns true when chainId is not in networkConfigurationsByChainId (no scam warning)', async () => {
+    mockSelectorState(
+      mockStateWithNetworks([], { useSafeChainsListValidation: true }),
+    );
+
+    (useSafeChains as jest.Mock).mockReturnValue({
+      safeChains: [
+        {
+          chainId: 999,
+          nativeCurrency: { symbol: 'FAKE' },
+          name: 'Fake',
+          rpc: [],
+        },
+      ],
+    });
+
+    let result!: RenderHookResult<boolean | null, unknown>;
+
+    await act(async () => {
+      result = renderHook(() =>
+        useIsOriginalNativeTokenSymbol('999', 'FAKE', 'mainnet'),
+      );
+    });
+
+    expect(result.result.current).toBe(true);
   });
 });

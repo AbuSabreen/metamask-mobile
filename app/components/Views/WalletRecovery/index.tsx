@@ -1,0 +1,383 @@
+import React, { useCallback, useMemo, useEffect, useState } from 'react';
+import { View, StyleSheet, ScrollView } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useTheme } from '../../../util/theme';
+import { strings } from '../../../../locales/i18n';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import {
+  Icon,
+  IconName,
+  IconSize,
+  Text,
+  TextVariant,
+  TextColor,
+  FontWeight,
+} from '@metamask/design-system-react-native';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import SelectSRP from '../SelectSRP';
+import { useSelector } from 'react-redux';
+import {
+  selectSeedlessOnboardingAuthConnection,
+  selectSeedlessOnboardingUserEmail,
+  selectSeedlessOnboardingUserId,
+} from '../../../selectors/seedlessOnboardingController';
+import LegacyIcon, {
+  IconName as LegacyIconName,
+  IconSize as LegacyIconSize,
+  IconColor as LegacyIconColor,
+} from '../../../component-library/components/Icons/Icon';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import GoogleIcon from 'images/google.svg';
+import AppleIcon from 'images/apple.svg';
+import AppleWhiteIcon from 'images/apple-white.svg';
+import { AppThemeKey } from '../../../util/theme/models';
+import { AuthConnection } from '../../../core/OAuthService/OAuthInterface';
+import { capitalize } from 'lodash';
+import { colors as commonColors } from '../../../styles/common';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
+
+const SocialNotLinked = () => {
+  const { colors } = useTheme();
+  const styles = StyleSheet.create({
+    box: {
+      backgroundColor: colors.background.muted,
+      padding: 16,
+      borderRadius: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    boxRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      columnGap: 8,
+    },
+  });
+
+  return (
+    <View style={styles.box}>
+      <Text
+        variant={TextVariant.BodyMd}
+        color={TextColor.TextDefault}
+        fontWeight={FontWeight.Medium}
+      >
+        {strings('protect_your_wallet.login_with_social')}
+      </Text>
+      <View style={styles.boxRight}>
+        <Text
+          variant={TextVariant.BodyMd}
+          color={TextColor.ErrorDefault}
+          fontWeight={FontWeight.Medium}
+        >
+          {strings('protect_your_wallet.setup')}
+        </Text>
+        <LegacyIcon
+          name={LegacyIconName.ArrowRight}
+          size={LegacyIconSize.Lg}
+          color={LegacyIconColor.Alternative}
+        />
+      </View>
+    </View>
+  );
+};
+
+const SocialLinked = ({
+  email,
+  authConnection,
+}: {
+  email: string;
+  authConnection: string;
+}) => {
+  const { colors, themeAppearance } = useTheme();
+  const tw = useTailwind();
+  const styles = StyleSheet.create({
+    socialDetailsBoxRoot: {
+      width: '100%',
+    },
+    socialDetailsBoxRowLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      columnGap: 8,
+      flex: 1,
+    },
+    socialBoxContainer: {
+      backgroundColor: colors.background.muted,
+      padding: 16,
+      borderRadius: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'flex-start',
+      columnGap: 8,
+    },
+    iconContainer: {
+      marginRight: 8,
+    },
+    socialDetailsBoxContent: {
+      flexDirection: 'column',
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'flex-start',
+    },
+    emailText: {
+      width: '100%',
+    },
+  });
+
+  const isDark = themeAppearance === AppThemeKey.dark;
+
+  const maskedEmail = useMemo(() => {
+    if (!email.includes('@')) {
+      return email;
+    }
+    const [firstPart, secondPart] = email.split('@');
+    return `${firstPart.slice(0, 1)}********@${secondPart}`;
+  }, [email]);
+
+  const getSocialIcon = () => {
+    if (authConnection === AuthConnection.Google) {
+      return (
+        <GoogleIcon
+          name="google"
+          width={24}
+          height={24}
+          fill="currentColor"
+          color={colors.icon.default}
+        />
+      );
+    }
+
+    if (isDark && authConnection === AuthConnection.Apple) {
+      return (
+        <AppleWhiteIcon
+          fill="currentColor"
+          width={24}
+          height={24}
+          name={'apple-white'}
+        />
+      );
+    }
+
+    if (authConnection === AuthConnection.Telegram) {
+      return (
+        <Icon
+          name={IconName.Telegram}
+          size={IconSize.Lg}
+          style={tw.style({ color: commonColors.telegramBlue })}
+        />
+      );
+    }
+
+    return (
+      <AppleIcon fill="currentColor" width={24} height={24} name={'apple'} />
+    );
+  };
+
+  return (
+    <View style={styles.socialDetailsBoxRoot}>
+      <View style={styles.socialBoxContainer}>
+        <View style={styles.iconContainer}>{getSocialIcon()}</View>
+        <View style={styles.socialDetailsBoxContent}>
+          <Text
+            variant={TextVariant.BodyMd}
+            color={TextColor.TextDefault}
+            fontWeight={FontWeight.Medium}
+          >
+            {strings('protect_your_wallet.social_recovery_enable')}
+          </Text>
+          {!!email && (
+            <Text
+              variant={TextVariant.BodySm}
+              color={TextColor.TextAlternative}
+              style={styles.emailText}
+            >
+              {maskedEmail}
+            </Text>
+          )}
+        </View>
+      </View>
+    </View>
+  );
+};
+
+const WalletRecovery = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const { colors } = useTheme();
+  const navigation = useNavigation<AppNavigationProp>();
+  const authConnection = useSelector(selectSeedlessOnboardingAuthConnection);
+  const userEmail = useSelector(selectSeedlessOnboardingUserEmail);
+  const seedlessOnboardingUserId = useSelector(selectSeedlessOnboardingUserId);
+
+  const styles = StyleSheet.create({
+    safeArea: {
+      flex: 1,
+    },
+    root: {
+      flexDirection: 'column',
+      rowGap: 24,
+      paddingVertical: 8,
+    },
+    socialBox: {
+      padding: 16,
+      marginHorizontal: 8,
+    },
+    box: {
+      backgroundColor: colors.background.muted,
+      padding: 16,
+      borderRadius: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    boxRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      columnGap: 8,
+    },
+    socialTitle: {
+      marginBottom: 16,
+    },
+    socialContainer: {
+      paddingHorizontal: 16,
+      display: 'flex',
+      flexDirection: 'column',
+      rowGap: 8,
+    },
+    socialDetailsBox: {
+      flexDirection: 'column',
+      rowGap: 8,
+      backgroundColor: colors.background.muted,
+      padding: 16,
+      borderBottomLeftRadius: 8,
+      borderBottomRightRadius: 8,
+      borderTopWidth: 1,
+      borderTopColor: colors.border.muted,
+    },
+    socialDetailsBoxRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      columnGap: 8,
+    },
+
+    socialDetailsBoxRowRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      columnGap: 8,
+    },
+    lineBreak: {
+      height: 1,
+      backgroundColor: colors.border.muted,
+      paddingHorizontal: 16,
+    },
+    lineBreakContainer: {
+      paddingHorizontal: 16,
+    },
+    bottomContainer: {
+      paddingHorizontal: 24,
+    },
+    srpContainer: {
+      flexDirection: 'column',
+      rowGap: 6,
+    },
+    srpTitle: {
+      paddingHorizontal: 16,
+    },
+    srpListContainer: {
+      paddingVertical: 0,
+      paddingHorizontal: 16,
+      margin: 0,
+    },
+  });
+
+  const handleBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const [finalUserEmail, setFinalUserEmail] = useState(userEmail);
+  useEffect(() => {
+    if (userEmail) {
+      if (userEmail.endsWith('@privaterelay.appleid.com')) {
+        setFinalUserEmail('');
+      } else {
+        setFinalUserEmail(userEmail);
+      }
+    }
+  }, [userEmail]);
+
+  return (
+    <SafeAreaView edges={{ bottom: 'additive' }} style={styles.safeArea}>
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        title={strings('app_settings.manage_recovery_method')}
+        titleProps={{ color: TextColor.PrimaryDefault }}
+        onBack={handleBack}
+        includesTopInset
+        testID="wallet-recovery-header"
+        backButtonProps={{
+          testID: 'wallet-recovery-back-button',
+        }}
+      />
+      <ScrollView>
+        <View style={styles.root}>
+          {authConnection && (
+            <View style={styles.socialContainer}>
+              <Text
+                variant={TextVariant.BodySm}
+                color={TextColor.TextAlternative}
+                fontWeight={FontWeight.Medium}
+              >
+                {strings('protect_your_wallet.social_recovery_title', {
+                  authConnection: authConnection
+                    ? authConnection.toUpperCase()
+                    : 'GOOGLE OR APPLE',
+                })}
+              </Text>
+              {authConnection && seedlessOnboardingUserId ? (
+                <SocialLinked
+                  email={finalUserEmail || ''}
+                  authConnection={authConnection}
+                />
+              ) : (
+                <SocialNotLinked />
+              )}
+              <Text
+                variant={TextVariant.BodySm}
+                color={TextColor.TextAlternative}
+              >
+                {strings('protect_your_wallet.social_login_description', {
+                  authConnection: capitalize(authConnection) || 'Google',
+                })}
+              </Text>
+            </View>
+          )}
+
+          {authConnection && (
+            <View style={styles.lineBreakContainer}>
+              <View style={styles.lineBreak} />
+            </View>
+          )}
+
+          <View style={styles.srpContainer}>
+            <Text
+              variant={TextVariant.BodySm}
+              color={TextColor.TextAlternative}
+              style={styles.srpTitle}
+              fontWeight={FontWeight.Medium}
+            >
+              {strings('protect_your_wallet.srps_title')}
+            </Text>
+            <SelectSRP
+              containerStyle={StyleSheet.flatten(styles.srpListContainer)}
+              showArrowName={strings('protect_your_wallet.reveal')}
+            />
+          </View>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
+  );
+};
+
+export default WalletRecovery;

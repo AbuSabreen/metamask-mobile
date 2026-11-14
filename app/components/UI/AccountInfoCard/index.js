@@ -1,35 +1,37 @@
-import React, { PureComponent } from 'react';
+import isUrl from 'is-url';
 import PropTypes from 'prop-types';
-import { StyleSheet, View } from 'react-native';
-import { fontStyles } from '../../../styles/common';
-import { renderFromWei, weiToFiat, hexToBN } from '../../../util/number';
-import Identicon from '../Identicon';
-import { strings } from '../../../../locales/i18n';
+import React, { PureComponent } from 'react';
 import { connect } from 'react-redux';
-import {
-  renderAccountName,
-  renderShortAddress,
-  safeToChecksumAddress,
-  getLabelTextByAddress,
-} from '../../../util/address';
-import {
-  getActiveTabUrl,
-  getNormalizedTxState,
-  getTicker,
-} from '../../../util/transactions';
-import Device from '../../../util/device';
-import { ThemeContext, mockTheme } from '../../../util/theme';
-import { selectTicker } from '../../../selectors/networkController';
+import { StyleSheet, View } from 'react-native';
+import { strings } from '../../../../locales/i18n';
+import Text, {
+  TextVariant,
+} from '../../../component-library/components/Texts/Text';
+import SDKConnect from '../../../core/SDKConnect/SDKConnect';
+import { selectAccounts } from '../../../selectors/accountTrackerController';
 import {
   selectConversionRate,
   selectCurrentCurrency,
 } from '../../../selectors/currencyRateController';
-import { selectAccounts } from '../../../selectors/accountTrackerController';
-import { selectIdentities } from '../../../selectors/preferencesController';
-import ApproveTransactionHeader from '../../Views/confirmations/components/ApproveTransactionHeader';
-import Text, {
-  TextVariant,
-} from '../../../component-library/components/Texts/Text';
+import { selectEvmTicker } from '../../../selectors/networkController';
+import { fontStyles } from '../../../styles/common';
+import {
+  getLabelTextByAddress,
+  renderAccountName,
+  renderShortAddress,
+  safeToChecksumAddress,
+  getInternalAccountByAddress,
+  renderShortAccountName,
+} from '../../../util/address';
+import Device from '../../../util/device';
+import { hexToBN, renderFromWei, weiToFiat } from '../../../util/number';
+import { ThemeContext, mockTheme } from '../../../util/theme';
+import { getActiveTabUrl, getTicker } from '../../../util/transactions';
+import ApproveTransactionHeader from '../../Views/confirmations/legacy/components/ApproveTransactionHeader';
+import Identicon from '../Identicon';
+import { selectInternalAccounts } from '../../../selectors/accountsController';
+import { selectSignatureRequests } from '../../../selectors/signatureController';
+import { selectAccountToGroupMap } from '../../../selectors/multichainAccounts/accountTreeController';
 
 const createStyles = (colors) =>
   StyleSheet.create({
@@ -56,6 +58,7 @@ const createStyles = (colors) =>
       width: '100%',
       flexDirection: 'row',
       justifyContent: 'flex-start',
+      marginLeft: 8,
     },
     accountName: {
       maxWidth: Device.isMediumDevice() ? '35%' : '45%',
@@ -109,9 +112,9 @@ class AccountInfoCard extends PureComponent {
      */
     accounts: PropTypes.object,
     /**
-     * List of accounts from the PreferencesController
+     * List of accounts from the AccountsController
      */
-    identities: PropTypes.object,
+    internalAccounts: PropTypes.array,
     /**
      * A number that specifies the ETH/USD conversion rate
      */
@@ -132,26 +135,27 @@ class AccountInfoCard extends PureComponent {
      * Current selected ticker
      */
     ticker: PropTypes.string,
-    transaction: PropTypes.object,
-    activeTabUrl: PropTypes.string,
     origin: PropTypes.string,
+    signatureRequests: PropTypes.object,
+    accountToGroupMap: PropTypes.object,
   };
 
   render() {
     const {
       accounts,
-      identities,
+      internalAccounts,
       conversionRate,
       currentCurrency,
       operation,
       ticker,
       showFiatBalance = true,
       fromAddress: rawFromAddress,
-      transaction,
-      activeTabUrl,
       origin,
+      signatureRequests,
+      accountToGroupMap,
     } = this.props;
 
+    const signatureRequest = Object.values(signatureRequests || {})?.[0];
     const fromAddress = safeToChecksumAddress(rawFromAddress);
     const accountLabelTag = getLabelTextByAddress(fromAddress);
     const colors = this.context.colors || mockTheme.colors;
@@ -160,16 +164,44 @@ class AccountInfoCard extends PureComponent {
       ? hexToBN(accounts[fromAddress].balance)
       : 0;
     const balance = `${renderFromWei(weiBalance)} ${getTicker(ticker)}`;
-    const accountLabel = renderAccountName(fromAddress, identities);
+
+    const account = getInternalAccountByAddress(fromAddress);
+    const accountGroup =
+      account && accountToGroupMap ? accountToGroupMap[account.id] : undefined;
+
+    const accountLabel =
+      accountGroup?.metadata?.name ||
+      renderAccountName(fromAddress, internalAccounts);
     const address = renderShortAddress(fromAddress);
     const dollarBalance = showFiatBalance
       ? weiToFiat(weiBalance, conversionRate, currentCurrency, 2)?.toUpperCase()
       : undefined;
-    return operation === 'signing' && transaction !== undefined ? (
+
+    const sdkConnections = SDKConnect.getInstance().getConnections();
+
+    const currentConnection = sdkConnections[origin ?? ''];
+
+    const isOriginUrl = isUrl(origin);
+
+    const originatorInfo = currentConnection?.originatorInfo;
+
+    const sdkDappMetadata = {
+      url: isOriginUrl
+        ? origin
+        : (originatorInfo?.url ?? strings('sdk.unknown')),
+      icon: originatorInfo?.icon,
+    };
+    const actualOriginUrl = isOriginUrl
+      ? origin
+      : (originatorInfo?.url ?? strings('sdk.unknown'));
+
+    return operation === 'signing' && signatureRequest !== undefined ? (
       <ApproveTransactionHeader
-        origin={transaction.origin || origin}
-        url={activeTabUrl}
+        chainId={signatureRequest?.chainId}
+        origin={actualOriginUrl}
+        url={actualOriginUrl}
         from={rawFromAddress}
+        sdkDappMetadata={sdkDappMetadata}
       />
     ) : (
       <View style={styles.accountInformation}>
@@ -186,9 +218,12 @@ class AccountInfoCard extends PureComponent {
                 styles.accountName,
                 accountLabelTag ? styles.accountNameSmall : undefined,
               ]}
+              tooltip={accountLabel}
             >
-              {accountLabel}
+              {renderShortAccountName(accountLabel)}
             </Text>
+          </View>
+          <View style={styles.accountNameAndAddress}>
             <Text
               numberOfLines={1}
               style={[
@@ -196,26 +231,28 @@ class AccountInfoCard extends PureComponent {
                 accountLabelTag ? styles.accountAddressSmall : undefined,
               ]}
             >
-              ({address})
+              {address}
             </Text>
           </View>
-          <Text
-            numberOfLines={1}
-            style={[
-              styles.balanceText,
-              accountLabelTag ? styles.balanceTextSmall : undefined,
-            ]}
-          >
-            {strings('signature_request.balance_title')}{' '}
-            {dollarBalance !== undefined
-              ? `${dollarBalance} (${balance})`
-              : balance}
-          </Text>
+          <View style={styles.accountNameAndAddress}>
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.balanceText,
+                accountLabelTag ? styles.balanceTextSmall : undefined,
+              ]}
+            >
+              {strings('signature_request.balance_title')}{' '}
+              {dollarBalance !== undefined
+                ? `${dollarBalance} (${balance})`
+                : balance}
+            </Text>
+          </View>
         </View>
         {accountLabelTag && (
           <View style={styles.tag}>
             <Text variant={TextVariant.BodySMBold} style={styles.tagText}>
-              {strings(accountLabelTag)}
+              {accountLabelTag}
             </Text>
           </View>
         )}
@@ -226,12 +263,13 @@ class AccountInfoCard extends PureComponent {
 
 const mapStateToProps = (state) => ({
   accounts: selectAccounts(state),
-  identities: selectIdentities(state),
+  internalAccounts: selectInternalAccounts(state),
   conversionRate: selectConversionRate(state),
   currentCurrency: selectCurrentCurrency(state),
-  ticker: selectTicker(state),
-  transaction: getNormalizedTxState(state),
+  ticker: selectEvmTicker(state),
   activeTabUrl: getActiveTabUrl(state),
+  signatureRequests: selectSignatureRequests(state),
+  accountToGroupMap: selectAccountToGroupMap(state),
 });
 
 AccountInfoCard.contextType = ThemeContext;

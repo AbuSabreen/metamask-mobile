@@ -1,4 +1,5 @@
 import React, { useRef } from 'react';
+import { RouteProp, useRoute } from '@react-navigation/native';
 import { StyleSheet, View, Text } from 'react-native';
 import ReusableModal, { ReusableModalRef } from '../../UI/ReusableModal';
 import { fontStyles } from '../../../styles/common';
@@ -6,6 +7,8 @@ import StyledButton from '../../UI/StyledButton';
 import { strings } from '../../../../locales/i18n';
 import { useTheme } from '../../../util/theme';
 
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const createStyles = (colors: any) =>
   StyleSheet.create({
     fill: {
@@ -23,6 +26,8 @@ const createStyles = (colors: any) =>
     },
     headerLabel: {
       textAlign: 'center',
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ...(fontStyles.bold as any),
       fontSize: 24,
       marginBottom: 16,
@@ -31,6 +36,8 @@ const createStyles = (colors: any) =>
     description: {
       textAlign: 'center',
       fontSize: 16,
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ...(fontStyles.normal as any),
       color: colors.text.default,
     },
@@ -47,15 +54,15 @@ const createStyles = (colors: any) =>
     },
   });
 
-interface Props {
-  route: {
-    params: {
-      onConfirm: () => void;
-    };
-  };
+interface AssetHideConfirmationRouteParams {
+  onConfirm: () => void;
 }
 
-const AssetHideConfirmation = ({ route }: Props) => {
+const AssetHideConfirmation = () => {
+  const route =
+    useRoute<
+      RouteProp<{ params: AssetHideConfirmationRouteParams }, 'params'>
+    >();
   const { onConfirm } = route.params;
   const modalRef = useRef<ReusableModalRef>(null);
   const { colors } = useTheme();

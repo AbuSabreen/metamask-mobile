@@ -1,0 +1,811 @@
+/**
+ * Component view test mocks:
+ * - ONLY Engine (business) and minimal native mocks.
+ */
+
+jest.mock('expo-web-browser', () => ({
+  openAuthSessionAsync: jest.fn().mockResolvedValue({
+    type: 'success',
+    url: 'https://link.metamask.io/x-oauth-redirect?code=mock-code&state=mock-oauth-state',
+  }),
+  dismissAuthSession: jest.fn(),
+}));
+
+// Engine mock (singleton default export)
+jest.mock('../../app/core/Engine', () => {
+  const engine = {
+    acceptPendingApproval: jest.fn().mockResolvedValue(undefined),
+    rejectPendingApproval: jest.fn().mockResolvedValue(undefined),
+    context: {
+      KeyringController: {
+        state: {
+          keyrings: [],
+        },
+        removeAccount: jest.fn().mockResolvedValue(undefined),
+        verifyPassword: jest.fn().mockResolvedValue(undefined),
+        exportAccount: jest.fn().mockResolvedValue(''),
+        getAccountKeyringType: jest.fn().mockReturnValue('HD Key Tree'),
+      },
+      AccountsController: {
+        state: {
+          internalAccounts: {
+            accounts: {},
+            selectedAccount: '',
+          },
+          accountIdByAddress: {},
+        },
+        listAccounts: jest.fn().mockReturnValue([]),
+        listMultichainAccounts: jest.fn().mockReturnValue([]),
+        setAccountName: jest.fn(),
+      },
+      AccountTreeController: {
+        setAccountGroupName: jest.fn(),
+        setSelectedAccountGroup: jest.fn(),
+        getAccountsFromSelectedAccountGroup: jest.fn().mockReturnValue([
+          {
+            id: 'acc-1',
+            address: '0x0000000000000000000000000000000000000001',
+            type: 'eip155:eoa',
+          },
+        ]),
+      },
+      MultichainAccountService: {
+        alignWallets: jest.fn().mockResolvedValue(undefined),
+        createNextMultichainAccountGroup: jest.fn().mockResolvedValue({
+          id: 'entropy:wallet1/1',
+          metadata: { name: 'Account 2' },
+          accounts: [],
+        }),
+        setBasicFunctionality: jest.fn().mockResolvedValue(undefined),
+      },
+      UserStorageController: {
+        setIsBackupAndSyncFeatureEnabled: jest
+          .fn()
+          .mockResolvedValue(undefined),
+        syncContactsWithUserStorage: jest.fn().mockResolvedValue(undefined),
+      },
+      AddressBookController: {
+        set: jest.fn(),
+        delete: jest.fn(),
+      },
+      AccountTrackerController: {
+        state: {
+          accounts: {},
+        },
+        refresh() {
+          return undefined;
+        },
+      },
+      PermissionController: {
+        state: {
+          subjects: {},
+        },
+        revokePermission: jest.fn(),
+        updateCaveat: jest.fn(),
+      },
+      GasFeeController: {
+        startPolling() {
+          return undefined;
+        },
+        stopPollingByPollingToken() {
+          return undefined;
+        },
+        getGasFeeEstimatesAndStartPolling: jest
+          .fn()
+          .mockResolvedValue('poll-token'),
+        stopPolling: jest.fn(),
+        disconnectPoller: jest.fn(),
+      },
+      PreferencesController: {
+        state: {
+          securityAlertsEnabled: true,
+        },
+        setDismissSmartAccountSuggestionEnabled: jest.fn(),
+        setSmartTransactionsOptInStatus: jest.fn(),
+        setTokenNetworkFilter() {
+          return undefined;
+        },
+        setPrivacyMode: jest.fn(),
+      },
+      CardController: {
+        state: { activeProviderId: 'baanx' },
+        fetchCardHomeData: jest.fn().mockResolvedValue(undefined),
+        getContactDetails: jest.fn().mockResolvedValue({
+          email: 'cardholder@example.com',
+          phone: '+441234567890',
+        }),
+        patchContactDetails: jest.fn().mockResolvedValue(undefined),
+        logout: jest.fn().mockResolvedValue(undefined),
+        clearRedeemWithdrawal: jest.fn(),
+        withdrawRedeemable: jest.fn().mockResolvedValue({ txHash: '0xmock' }),
+        getCapabilities: jest.fn().mockReturnValue({
+          authMethod: 'otp',
+          supportsOTP: true,
+          supportsFundingApproval: true,
+          supportsFundingLimits: true,
+          fundingChains: ['eip155:59144'],
+          supportsFreeze: true,
+          pushProvisioning: { applePay: false, googlePay: false },
+          onboarding: { requiresEmail: true },
+          supportsPinView: true,
+          supportsCashback: true,
+          supportsCredit: true,
+          supportsSensitiveDetailsView: false,
+          supportsTravel: true,
+          supportsTransactionHistory: false,
+          supportsContactDetails: false,
+          supportsMoneyAccountLinking: false,
+          reportsVerificationStatus: true,
+        }),
+      },
+      PhishingController: {
+        checkAddressPoisoning: jest.fn().mockReturnValue([]),
+      },
+      TokensController: {
+        addTokens() {
+          return undefined;
+        },
+      },
+      NftDetectionController: {
+        detectNfts() {
+          return undefined;
+        },
+      },
+      CurrencyRateController: {
+        setCurrentCurrency: jest.fn(),
+        startPolling() {
+          return undefined;
+        },
+        stopPollingByPollingToken() {
+          return undefined;
+        },
+      },
+      AssetsController: {
+        setSelectedCurrency: jest.fn(),
+      },
+      TokenRatesController: {
+        startPolling() {
+          return undefined;
+        },
+        stopPollingByPollingToken() {
+          return undefined;
+        },
+      },
+      TokenBalancesController: {
+        startPolling() {
+          return undefined;
+        },
+        stopPollingByPollingToken() {
+          return undefined;
+        },
+      },
+      TokenDetectionController: {
+        startPolling() {
+          return undefined;
+        },
+        stopPollingByPollingToken() {
+          return undefined;
+        },
+      },
+      MultichainNetworkController: {
+        async setActiveNetwork() {
+          return undefined;
+        },
+      },
+      NetworkEnablementController: {
+        enableNetworkInNamespace() {
+          return undefined;
+        },
+        enableNetwork() {
+          return undefined;
+        },
+        disableNetwork() {
+          return undefined;
+        },
+        enableAllPopularNetworks() {
+          return undefined;
+        },
+        listPopularEvmNetworks() {
+          return [];
+        },
+        listPopularMultichainNetworks() {
+          return [];
+        },
+        listPopularNetworks() {
+          return [];
+        },
+      },
+      MultichainAssetsRatesController: {
+        startPolling() {
+          return undefined;
+        },
+        stopPollingByPollingToken() {
+          return undefined;
+        },
+      },
+      AuthenticationController: {
+        getBearerToken: jest.fn().mockResolvedValue('mock-bearer-token'),
+        getSessionProfile: jest.fn().mockResolvedValue(undefined),
+      },
+      ProfileController: {
+        state: {
+          profile: {
+            profileId: '',
+            username: '',
+            displayName: '',
+            bio: '',
+            linkedAddresses: [],
+            avatarUrl: '',
+            tradingPrivacy: 'public',
+            connectedToX: false,
+            createdAt: '',
+            updatedAt: '',
+          },
+        },
+        createProfile: jest
+          .fn()
+          .mockResolvedValue({ profileId: 'mock-profile-id' }),
+        updateProfile: jest.fn().mockResolvedValue(undefined),
+        checkUsernameAvailability: jest.fn().mockResolvedValue({
+          username: 'wen_cat',
+          available: true,
+          valid: true,
+          normalized: 'wen_cat',
+          errors: [],
+        }),
+        connectX: jest.fn().mockResolvedValue({
+          xUserId: 'x-user-1',
+          xProfileUrl: 'https://x.com/degangirl',
+          username: 'degangirl',
+          displayName: 'Degan Giri',
+          avatarUrl:
+            'https://pbs.twimg.com/profile_images/2079082606717779969/DcvmQxfE_400x400.jpg',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        }),
+        getXAuthorizationUrl: jest.fn().mockResolvedValue({
+          authorizationUrl: 'https://x.com/i/oauth2/authorize?mock=true',
+          state: 'mock-oauth-state',
+        }),
+        fetchAndUpdateProfile: jest.fn().mockResolvedValue({
+          profileId: '',
+          username: '',
+          displayName: '',
+          bio: '',
+          linkedAddresses: [],
+          avatarUrl: '',
+          tradingPrivacy: 'public',
+          connectedToX: false,
+          createdAt: '',
+          updatedAt: '',
+        }),
+        fetchAndUpdateXAccount: jest.fn().mockResolvedValue(undefined),
+        disconnectX: jest.fn().mockResolvedValue(undefined),
+      },
+      ProfileService: {
+        checkDisplayNameValidity: jest.fn().mockResolvedValue({ valid: true }),
+      },
+      GeolocationController: {
+        state: {
+          location: 'US',
+        },
+        refreshGeolocation: jest.fn().mockResolvedValue('US'),
+      },
+      KycService: {
+        getGeoCountry: jest.fn().mockResolvedValue('BR'),
+        // Fired, fire-and-forget, once the vendor-terms screen's initial
+        // disclaimers request settles (CreateVirtualBankAccount).
+        fetchIdosEnclaveJwks: jest.fn().mockResolvedValue({ keys: [] }),
+        fetchIdosRelayJwks: jest.fn().mockResolvedValue({ keys: [] }),
+      },
+      KycController: {
+        readSessionStatus: jest.fn().mockReturnValue(null),
+        // Reinstall recovery asks for the latest vendor session before hydrate.
+        // Null is a first-time user; tests that resume a session override this.
+        getSessionStatusForVendor: jest.fn().mockResolvedValue(null),
+        startSession: jest.fn().mockResolvedValue(undefined),
+        fetchVendorDisclaimers: jest.fn().mockResolvedValue([]),
+        recordVendorDisclaimers: jest.fn().mockResolvedValue(undefined),
+        // Fired, fire-and-forget, once the vendor-terms screen's initial
+        // disclaimers request settles (CreateVirtualBankAccount).
+        ensureLocalUserSecret: jest.fn().mockResolvedValue(undefined),
+      },
+      SeedlessOnboardingController: {
+        state: {
+          accessToken: undefined,
+        },
+      },
+      // Notifications: stubbed so notification view + settings flows can call
+      // controller methods (enable / disable / toggleFeatureAnnouncements /
+      // markMetamaskNotificationsAsRead / fetchAndUpdateMetamaskNotifications
+      // / enableAccounts / disableAccounts) without touching the real services.
+      NotificationServicesController: {
+        state: {
+          isNotificationServicesEnabled: true,
+          isFeatureAnnouncementsEnabled: true,
+          metamaskNotificationsList: [],
+          metamaskNotificationsReadList: [],
+        },
+        enableMetamaskNotifications: jest.fn().mockResolvedValue(undefined),
+        disableMetamaskNotifications: jest.fn().mockResolvedValue(undefined),
+        enableNotificationServices: jest.fn().mockResolvedValue(undefined),
+        disableNotificationServices: jest.fn().mockResolvedValue(undefined),
+        enablePushNotifications: jest.fn().mockResolvedValue(undefined),
+        disablePushNotifications: jest.fn().mockResolvedValue(undefined),
+        setFeatureAnnouncementsEnabled: jest.fn().mockResolvedValue(undefined),
+        toggleFeatureAnnouncements: jest.fn().mockResolvedValue(undefined),
+        markMetamaskNotificationsAsRead: jest.fn().mockResolvedValue(undefined),
+        fetchAndUpdateMetamaskNotifications: jest
+          .fn()
+          .mockResolvedValue(undefined),
+        enableAccounts: jest.fn().mockResolvedValue(undefined),
+        disableAccounts: jest.fn().mockResolvedValue(undefined),
+        createOnChainTriggers: jest.fn().mockResolvedValue(undefined),
+        checkAccountsPresence: jest
+          .fn()
+          .mockResolvedValue({} as Record<string, boolean>),
+      },
+      NotificationServicesPushController: {
+        state: { isPushEnabled: true, fcmToken: 'mock-fcm-token' },
+        enablePushNotifications: jest.fn().mockResolvedValue(undefined),
+        disablePushNotifications: jest.fn().mockResolvedValue(undefined),
+        updateTriggerPushNotifications: jest.fn().mockResolvedValue(undefined),
+      },
+      RemoteFeatureFlagController: {
+        state: {
+          remoteFeatureFlags: {
+            assetsNotificationsEnabled: true,
+          },
+        },
+      },
+      AiDigestController: {
+        fetchMarketInsights: jest.fn().mockResolvedValue(null),
+        fetchMarketOverview: jest.fn().mockResolvedValue(undefined),
+      },
+      RampsController: {
+        setSelectedToken: jest.fn(),
+        setSelectedProvider: jest.fn(),
+        setSelectedProviderForAsset: jest.fn().mockReturnValue(false),
+        setSelectedPaymentMethod: jest.fn(),
+        setUserRegion: jest.fn().mockResolvedValue(null),
+        // Default stubs — tests override via `.mockReset().mockResolvedValue(...)`.
+        // Stable resolved values let useRampsProviders / useRampsPaymentMethods
+        // react-query layers run for real in component-view tests.
+        getProviders: jest.fn().mockResolvedValue({ providers: [] }),
+        getPaymentMethods: jest.fn().mockResolvedValue({ payments: [] }),
+        getPaymentMethodsForContext: jest
+          .fn()
+          .mockResolvedValue({ methods: [], selected: null }),
+        getQuotes: jest.fn().mockResolvedValue({ success: [], error: [] }),
+        getBuyWidgetData: jest.fn().mockResolvedValue(null),
+        hydrateVbaOnboarding: jest.fn().mockResolvedValue({
+          sessionExists: false,
+          vendorDisclaimersComplete: false,
+          sessionDisclaimersComplete: false,
+          providerFlowStatus: 'not_started',
+          kycStatus: 'none',
+          autorampStatus: 'not_ready',
+        }),
+        transakSetApiKey: jest.fn(),
+      },
+      AssetsContractController: {
+        getTokenStandardAndDetails: jest.fn().mockResolvedValue({}),
+        getERC721AssetSymbol: jest.fn().mockResolvedValue(undefined),
+        getERC20BalanceOf: jest.fn().mockResolvedValue(null),
+      },
+      TransactionController: {
+        state: {
+          transactions: [],
+        },
+        addTransaction: jest.fn().mockResolvedValue({}),
+        addTransactionBatch: jest.fn().mockResolvedValue({}),
+        getTransactions: jest.fn().mockReturnValue([]),
+        updateEditableParams: jest.fn(),
+        updateIncomingTransactions: jest.fn().mockResolvedValue(undefined),
+        getNonceLock: jest
+          .fn()
+          .mockResolvedValue({ nextNonce: 0, releaseLock: jest.fn() }),
+      },
+      NetworkController: {
+        state: { networksMetadata: {}, networkConfigurationsByChainId: {} },
+        addNetwork: jest.fn().mockResolvedValue(undefined),
+        removeNetwork: jest.fn(),
+        getProviderAndBlockTracker() {
+          return {
+            provider: {
+              request: jest.fn().mockResolvedValue(null),
+              sendAsync: jest.fn(),
+            },
+            blockTracker: {
+              on: jest.fn(),
+              removeListener: jest.fn(),
+            },
+          };
+        },
+        findNetworkClientIdByChainId() {
+          return '';
+        },
+        getNetworkConfigurationByNetworkClientId() {
+          return null;
+        },
+        getNetworkClientById(id: string) {
+          const twoEthHex = '0x1bc16d674ec80000';
+          const hundredEthHex = '0x56BC75E2D63100000';
+          const pad32 = (hex: string) => {
+            const v = hex.startsWith('0x') ? hex.slice(2) : hex;
+            return `0x${v.padStart(64, '0')}`;
+          };
+          const provider = {
+            request: jest.fn(
+              async (args: { method: string; params?: unknown[] }) => {
+                if (args?.method === 'eth_chainId') return '0x1';
+                if (args?.method === 'net_version') return '1';
+                if (args?.method === 'eth_blockNumber') return '0xabcdef';
+                if (args?.method === 'eth_getBalance') {
+                  return hundredEthHex;
+                }
+                if (args?.method === 'eth_call') {
+                  return pad32(twoEthHex);
+                }
+                return null;
+              },
+            ),
+            on: jest.fn(),
+            removeListener: jest.fn(),
+          };
+          return { id, provider };
+        },
+      },
+      BridgeController: {
+        updateBridgeQuoteRequestParams: jest.fn().mockResolvedValue(undefined),
+        resetState: jest.fn(),
+        stopAllPolling: jest.fn(),
+        setLocation: jest.fn(),
+        setInputPrimaryDenomination: jest.fn(),
+        trackUnifiedSwapBridgeEvent: jest.fn(),
+        fetchQuotes: jest.fn().mockResolvedValue([]),
+      },
+      BridgeStatusController: {
+        submitTx: jest.fn().mockResolvedValue({ success: true }),
+      },
+      PredictMarketDataService: {},
+      PredictLiveDataService: {},
+      PredictPortfolioService: {},
+      PredictController: {
+        getMarkets: jest.fn().mockResolvedValue({
+          markets: [],
+          nextCursor: null,
+        }),
+        listMarkets: jest.fn().mockResolvedValue({
+          markets: [],
+          nextCursor: null,
+        }),
+        listFilterOptions: jest.fn().mockResolvedValue([]),
+        searchMarkets: jest
+          .fn()
+          .mockResolvedValue({ markets: [], totalResults: 0 }),
+        getMarket: jest.fn().mockResolvedValue(null),
+        getBalance: jest.fn().mockResolvedValue(0),
+        getAccountState: jest.fn().mockResolvedValue({
+          address: '0x0000000000000000000000000000000000000001',
+          walletType: 'metamask',
+        }),
+        getActivity: jest.fn().mockResolvedValue({
+          activities: [],
+          nextCursor: undefined,
+        }),
+        getPositions: jest.fn().mockResolvedValue([]),
+        getPrices: jest.fn().mockResolvedValue({ providerId: '', results: [] }),
+        getPriceHistory: jest.fn().mockResolvedValue([]),
+        getMarketSeries: jest.fn().mockResolvedValue([]),
+        getCryptoPriceHistory: jest.fn().mockResolvedValue([]),
+        getCryptoTargetPrice: jest.fn().mockResolvedValue(69000),
+        subscribeToMarketPrices: jest.fn(() => () => undefined),
+        subscribeToCryptoPrices: jest.fn(() => () => undefined),
+        subscribeToGameUpdates: jest.fn(() => () => undefined),
+        subscribeToConnectionStatus: jest.fn(() => () => undefined),
+        getConnectionStatus: jest.fn(() => ({
+          marketConnected: false,
+          sportsConnected: false,
+          rtdsConnected: false,
+        })),
+        trackFeedViewed: jest.fn(),
+        trackTabChanged: jest.fn(),
+        trackBannerAction: jest.fn(),
+        trackMarketDetailsOpened: jest.fn(),
+        trackGeoBlockTriggered: jest.fn(),
+        trackActivityViewed: jest.fn(),
+        trackSearchInteracted: jest.fn(),
+        trackHomeViewed: jest.fn(),
+        trackHomeSectionInteraction: jest.fn(),
+        trackFeedTabChanged: jest.fn(),
+        trackFeedFilterChanged: jest.fn(),
+        trackPortfolioPositionsButtonTapped: jest.fn(),
+        trackPortfolioTransactionInitiated: jest.fn(),
+        trackPositionsScreenViewed: jest.fn(),
+        trackPositionsTabViewed: jest.fn(),
+        trackPredictOrderEvent: jest.fn(),
+        trackBetslipDismissed: jest.fn(),
+        trackCategoryClicked: jest.fn(),
+        trackShareAction: jest.fn(),
+        refreshEligibility: jest.fn().mockResolvedValue(undefined),
+        claimWithConfirmation: jest.fn().mockResolvedValue(undefined),
+        depositWithConfirmation: jest.fn().mockResolvedValue(undefined),
+        prepareWithdraw: jest.fn().mockResolvedValue(undefined),
+        placeOrder: jest.fn().mockResolvedValue(undefined),
+        previewOrder: jest.fn().mockResolvedValue(undefined),
+        initPayWithAnyToken: jest.fn().mockResolvedValue(undefined),
+        getUnrealizedPnL: jest.fn().mockResolvedValue(undefined),
+      },
+      // Perps: stub so hooks (usePerpsClosePosition, usePerpsMarkets, etc.) do not throw
+      // getMarkets returns one market so explore sections render "See all perps"
+      PerpsController: {
+        state: { isTestnet: false },
+        getRecoveredDispatches: jest.fn().mockResolvedValue([]),
+        getPendingManualRecoveries: jest.fn().mockResolvedValue([]),
+        getScaleOrderGroups: jest.fn().mockResolvedValue([]),
+        reviewScaleOrderGroups: jest.fn().mockResolvedValue([]),
+        getScalePriceLadder: jest.fn().mockResolvedValue({
+          status: 'unavailable',
+          reason: 'not_implemented',
+        }),
+        reconcileRecoveredDispatches: jest.fn().mockResolvedValue([]),
+        acknowledgeRecoveredDispatch: jest.fn().mockResolvedValue(undefined),
+        reviewRecoveryVenue: jest.fn().mockResolvedValue({
+          status: 'unsupported',
+          providerId: 'hyperliquid',
+          reason: 'Recovery review is not supported by this provider',
+        }),
+        resolveRecoveryProtection: jest.fn().mockResolvedValue({
+          status: 'unsupported',
+          providerId: 'hyperliquid',
+          success: false,
+          error: 'Recovery protection is not supported by this provider',
+        }),
+        init: jest.fn().mockResolvedValue({ success: true }),
+        disconnect: jest.fn().mockResolvedValue(undefined),
+        getActiveProvider: jest.fn(() => ({
+          ping: jest.fn().mockResolvedValue(true),
+          getOrderFills: jest.fn().mockResolvedValue([]),
+        })),
+        getActiveProviderOrNull: jest.fn(() => null),
+        getBlockExplorerUrl: jest.fn((address?: string) =>
+          address
+            ? `https://app.hyperliquid.xyz/explorer/address/${address}`
+            : 'https://app.hyperliquid.xyz/explorer',
+        ),
+        switchProvider: jest.fn().mockResolvedValue({ success: true }),
+        getOrderCapabilities: jest.fn().mockResolvedValue({
+          status: 'ready',
+          providerId: 'hyperliquid',
+          supportedStrategies: ['twap', 'scale', 'chase'],
+        }),
+        getMarginModeLock: jest.fn().mockResolvedValue({
+          status: 'unlocked',
+          providerId: 'hyperliquid',
+        }),
+        previewPositionModify: jest.fn().mockResolvedValue({ status: 'none' }),
+        subscribeToPrices: jest.fn(() => () => undefined),
+        subscribeToOrderBook: jest.fn(() => () => undefined),
+        subscribeToOrderFills: jest.fn(() => () => undefined),
+        getOrderFills: jest.fn().mockResolvedValue([]),
+        closePosition: jest.fn().mockResolvedValue({
+          success: true,
+          orderId: 'component-view-close',
+        }),
+        cancelOrder: jest.fn().mockResolvedValue({ success: true }),
+        editOrder: jest.fn().mockResolvedValue({
+          success: true,
+          orderId: 'component-view-edit-order',
+        }),
+        getChaseOrders: jest.fn().mockResolvedValue([]),
+        suspendChaseOrders: jest.fn().mockResolvedValue([]),
+        getTwapOrders: jest.fn().mockResolvedValue([]),
+        subscribeToTwapOrders: jest.fn(() => () => undefined),
+        getPositions: jest.fn().mockResolvedValue([]),
+        getMarkets: jest.fn().mockResolvedValue([
+          {
+            symbol: 'ETH',
+            name: 'ETH',
+            maxLeverage: '50x',
+            price: '$2,500',
+            change24h: '$0',
+            change24hPercent: '0%',
+            volume: '$1M',
+            openInterest: '$500K',
+            szDecimals: 2,
+          },
+          {
+            symbol: 'BTC',
+            name: 'BTC',
+            maxLeverage: '50x',
+            price: '$50,000',
+            change24h: '$0',
+            change24hPercent: '0%',
+            volume: '$1M',
+            openInterest: '$500K',
+            szDecimals: 5,
+          },
+        ]),
+        getOrders: jest.fn().mockResolvedValue([]),
+        getFunding: jest.fn().mockResolvedValue([]),
+        getOpenOrders: jest.fn().mockResolvedValue([]),
+        getAccountState: jest.fn().mockResolvedValue(null),
+        depositWithOrder: jest.fn().mockResolvedValue({
+          result: Promise.resolve('0xcomponent-view-deposit'),
+        }),
+        depositWithConfirmation: jest.fn().mockResolvedValue({
+          result: Promise.resolve('0xcomponent-view-deposit'),
+        }),
+        placeOrder: jest.fn().mockResolvedValue({
+          success: true,
+          orderId: 'component-view-order',
+        }),
+        clearDepositResult: jest.fn(),
+        calculateFees: jest.fn().mockResolvedValue({}),
+        calculateLiquidationPrice: jest.fn().mockResolvedValue('0.00'),
+        calculateMaintenanceMargin: jest.fn().mockResolvedValue(100),
+        flipPosition: jest.fn().mockResolvedValue({ success: false }),
+        updatePositionTPSL: jest.fn().mockResolvedValue({ success: true }),
+        updateMargin: jest.fn().mockResolvedValue({ success: true }),
+        withdraw: jest.fn().mockResolvedValue({ success: true }),
+        validateOrder: jest.fn().mockResolvedValue({ isValid: true }),
+        validateClosePosition: jest
+          .fn()
+          .mockResolvedValue({ isValid: true, errors: [] }),
+        validateWithdrawal: jest.fn().mockResolvedValue({ isValid: true }),
+        cancelOrders: jest.fn().mockResolvedValue({
+          success: true,
+          successCount: 1,
+          failureCount: 0,
+        }),
+        closePositions: jest.fn().mockResolvedValue({
+          success: true,
+          successCount: 1,
+          failureCount: 0,
+        }),
+        savePendingTradeConfiguration: jest.fn(),
+        clearPendingTradeConfiguration: jest.fn(),
+        setSelectedPaymentToken: jest.fn(),
+        setPerpsMode: jest.fn(),
+        setProLayoutPreferences: jest.fn(),
+        setSelectedOrderType: jest.fn(),
+        setOrderBookPreferences: jest.fn(),
+        setVisibleCandleCount: jest.fn(),
+        saveTradeConfiguration: jest.fn(),
+        getTradeConfiguration: jest.fn().mockResolvedValue(null),
+        getMarketFilterPreferences: jest.fn().mockResolvedValue({}),
+        getOrderBookGrouping: jest.fn().mockResolvedValue(null),
+        saveOrderBookGrouping: jest.fn(),
+        getWithdrawalRoutes: jest.fn(() => [
+          {
+            assetId: 'usdc-mainnet',
+            constraints: { minAmount: 10 },
+          },
+        ]),
+        startMarketDataPreload: jest.fn(),
+        stopMarketDataPreload: jest.fn(),
+        isCurrentlyReinitializing: jest.fn().mockReturnValue(false),
+        markTutorialCompleted: jest.fn(),
+        resetFirstTimeUserState: jest.fn(),
+        clearPendingTransactionRequests: jest.fn(),
+        recordMarketViewed: jest.fn(),
+        getWatchlistMarkets: jest.fn(() => []),
+        toggleWatchlistMarket: jest.fn().mockResolvedValue(undefined),
+      },
+    },
+    controllerMessenger: {
+      subscribe: jest.fn(),
+      unsubscribe: jest.fn(),
+      call: jest.fn((action: string, ...args: unknown[]) => {
+        // Non-EVM (e.g. TRON) amount validation calls SnapController:handleRequest with onAmountInput
+        const params = args[0] as { request?: { method?: string } } | undefined;
+        if (action === 'MoneyAccountBalanceService:getVaultApy') {
+          return Promise.resolve({ apy: '0.042' });
+        }
+        if (
+          action === 'SnapController:handleRequest' &&
+          params?.request?.method === 'onAmountInput'
+        ) {
+          return Promise.resolve({ valid: true, errors: [] });
+        }
+        return Promise.resolve(undefined);
+      }),
+    },
+    getTotalEvmFiatAccountBalance() {
+      return { balance: '0', fiatBalance: '0' };
+    },
+    async lookupEnabledNetworks() {
+      return undefined;
+    },
+    setSelectedAddress: jest.fn(),
+  };
+  return { __esModule: true, default: engine };
+});
+
+// Minimal Engine/Engine singleton where needed
+jest.mock('../../app/core/Engine/Engine.ts', () => {
+  const singleton = {
+    get context() {
+      return {
+        MultichainNetworkController: {
+          async setActiveNetwork() {
+            return undefined;
+          },
+          async getNetworksWithTransactionActivityByAccounts() {
+            return undefined;
+          },
+        },
+      };
+    },
+    get controllerMessenger() {
+      return {
+        subscribe() {
+          return undefined;
+        },
+        unsubscribe() {
+          return undefined;
+        },
+        call(_action: string, ..._args: unknown[]) {
+          return Promise.resolve(undefined);
+        },
+      };
+    },
+  };
+  return { __esModule: true, default: singleton };
+});
+
+// Native deterministic version for gating logic
+jest.mock('react-native-device-info', () => ({
+  __esModule: true,
+  getVersion: jest.fn(() => '99.0.0'),
+  getBuildNumber: jest.fn(() => '999'),
+  getBrand: jest.fn(() => 'Apple'),
+  getApplicationName: jest.fn(() => Promise.resolve('MetaMask')),
+  getTotalMemorySync: jest.fn(() => 6 * 1024 ** 3),
+}));
+
+jest.mock(
+  '../../app/util/metrics/DeviceAnalyticsMetaData/generateDeviceAnalyticsMetaData',
+  () => ({
+    __esModule: true,
+    default: jest.fn(() => ({
+      platform: 'ios',
+      currentBuildNumber: '999',
+      applicationVersion: '99.0.0',
+      operatingSystemVersion: '17.0',
+      deviceBrand: 'Apple',
+    })),
+  }),
+);
+
+// Mock Animated Easing to avoid importing heavy bezier implementation during tests
+// and to prevent late imports after Jest environment teardown.
+jest.mock('react-native/Libraries/Animated/Easing', () => {
+  const identity = (t: number) => t;
+  const returnIdentity = () => identity;
+  const wrapIdentity = () => identity;
+
+  const easing = {
+    // Core easings
+    linear: identity,
+    ease: identity,
+    quad: identity,
+    cubic: identity,
+    poly: () => identity,
+    sin: identity,
+    circle: identity,
+    exp: identity,
+    elastic: returnIdentity,
+    back: returnIdentity,
+    bounce: identity,
+    // Bezier should return an easing function
+    bezier: returnIdentity,
+    // Composition helpers usually accept an easing and return easing
+    in: wrapIdentity,
+    out: wrapIdentity,
+    inOut: wrapIdentity,
+  };
+
+  return { __esModule: true, default: easing, ...easing };
+});

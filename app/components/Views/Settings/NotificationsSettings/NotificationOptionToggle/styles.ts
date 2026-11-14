@@ -1,4 +1,4 @@
-/* eslint-disable import/prefer-default-export */
+/* eslint-disable import-x/prefer-default-export */
 import { StyleSheet } from 'react-native';
 
 export const createStyles = () =>
@@ -6,17 +6,10 @@ export const createStyles = () =>
     container: {
       flexDirection: 'row',
       alignItems: 'center',
-      marginBottom: 24,
     },
     titleContainer: {
       alignItems: 'flex-start',
       flex: 1,
-    },
-    title: {
-      flex: 1,
-    },
-    switchElement: {
-      marginLeft: 16,
     },
     switch: {
       alignSelf: 'flex-start',

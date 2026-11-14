@@ -1,6 +1,2 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
-/* eslint-disable import/prefer-default-export */
-import InstallSnapSuccess from './InstallSnapSuccess';
-
-export { InstallSnapSuccess };
-///: END:ONLY_INCLUDE_IF
+/* eslint-disable import-x/prefer-default-export */
+export { default as InstallSnapSuccess } from './InstallSnapSuccess';

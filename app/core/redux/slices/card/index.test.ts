@@ -1,0 +1,368 @@
+import { RootState } from '../../../../reducers';
+import cardReducer, {
+  CardSliceState,
+  resetCardState,
+  initialState,
+  setOnboardingId,
+  setContactVerificationId,
+  setConsentSetId,
+  resetOnboardingState,
+  selectOnboardingId,
+  selectContactVerificationId,
+  selectConsentSetId,
+  setPendingMoneyAccountCardLink,
+  selectPendingMoneyAccountCardLink,
+  setImmersveFundingSettling,
+  selectImmersveFundingSettling,
+} from '.';
+import { CardEntryPoint } from '../../../../components/UI/Card/util/metrics';
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const CARD_STATE_MOCK: CardSliceState = {
+  isDaimoDemo: false,
+  onboarding: {
+    onboardingId: null,
+    contactVerificationId: null,
+    consentSetId: null,
+    immersveFundingSourceId: null,
+  },
+  pendingMoneyAccountCardLink: CardEntryPoint.MONEY_HOME_ONBOARDING_CARD,
+  immersveFundingSettling: false,
+  cardArrivalAnimationSeen: false,
+  cardArrivalPreviewRequested: false,
+  applePaySplashSeen: false,
+};
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const EMPTY_CARD_STATE_MOCK: CardSliceState = {
+  isDaimoDemo: false,
+  onboarding: {
+    onboardingId: null,
+    contactVerificationId: null,
+    consentSetId: null,
+    immersveFundingSourceId: null,
+  },
+  pendingMoneyAccountCardLink: null,
+  immersveFundingSettling: false,
+  cardArrivalAnimationSeen: false,
+  cardArrivalPreviewRequested: false,
+  applePaySplashSeen: false,
+};
+
+describe('Card Selectors', () => {
+  describe('selectPendingMoneyAccountCardLink', () => {
+    it('returns null by default from initial state', () => {
+      const mockRootState = { card: initialState } as unknown as RootState;
+      expect(selectPendingMoneyAccountCardLink(mockRootState)).toBe(null);
+    });
+
+    it('returns the pending Money Account Card link entrypoint', () => {
+      const stateWithEntryPoint: CardSliceState = {
+        ...initialState,
+        pendingMoneyAccountCardLink: CardEntryPoint.MONEY_HOME_ONBOARDING_CARD,
+      };
+      const mockRootState = {
+        card: stateWithEntryPoint,
+      } as unknown as RootState;
+      expect(selectPendingMoneyAccountCardLink(mockRootState)).toBe(
+        CardEntryPoint.MONEY_HOME_ONBOARDING_CARD,
+      );
+    });
+  });
+
+  describe('Onboarding Selectors', () => {
+    describe('selectOnboardingId', () => {
+      it('should return null by default from initial state', () => {
+        const mockRootState = { card: initialState } as unknown as RootState;
+        expect(selectOnboardingId(mockRootState)).toBe(null);
+      });
+
+      it('should return the onboarding ID when set', () => {
+        const onboardingId = 'test-onboarding-123';
+        const stateWithOnboardingId: CardSliceState = {
+          ...initialState,
+          onboarding: {
+            ...initialState.onboarding,
+            onboardingId,
+          },
+        };
+        const mockRootState = {
+          card: stateWithOnboardingId,
+        } as unknown as RootState;
+        expect(selectOnboardingId(mockRootState)).toBe(onboardingId);
+      });
+    });
+
+    describe('selectContactVerificationId', () => {
+      it('should return null by default from initial state', () => {
+        const mockRootState = { card: initialState } as unknown as RootState;
+        expect(selectContactVerificationId(mockRootState)).toBe(null);
+      });
+
+      it('should return the contact verification ID when set', () => {
+        const contactVerificationId = 'verification-456';
+        const stateWithVerificationId: CardSliceState = {
+          ...initialState,
+          onboarding: {
+            ...initialState.onboarding,
+            contactVerificationId,
+          },
+        };
+        const mockRootState = {
+          card: stateWithVerificationId,
+        } as unknown as RootState;
+        expect(selectContactVerificationId(mockRootState)).toBe(
+          contactVerificationId,
+        );
+      });
+    });
+
+    describe('selectConsentSetId', () => {
+      it('should return null by default from initial state', () => {
+        const mockRootState = { card: initialState } as unknown as RootState;
+        expect(selectConsentSetId(mockRootState)).toBe(null);
+      });
+
+      it('should return the consent set ID when set', () => {
+        const consentSetId = 'consent-789';
+        const stateWithConsentSetId: CardSliceState = {
+          ...initialState,
+          onboarding: {
+            ...initialState.onboarding,
+            consentSetId,
+          },
+        };
+        const mockRootState = {
+          card: stateWithConsentSetId,
+        } as unknown as RootState;
+        expect(selectConsentSetId(mockRootState)).toBe(consentSetId);
+      });
+    });
+  });
+});
+
+describe('Card Reducer', () => {
+  describe('reducers', () => {
+    it('should reset card state', () => {
+      const currentState: CardSliceState = {
+        isDaimoDemo: false,
+        onboarding: {
+          onboardingId: null,
+          contactVerificationId: null,
+          consentSetId: null,
+          immersveFundingSourceId: null,
+        },
+        pendingMoneyAccountCardLink: CardEntryPoint.MONEY_HOME_ONBOARDING_CARD,
+        immersveFundingSettling: false,
+        cardArrivalAnimationSeen: true,
+        cardArrivalPreviewRequested: false,
+        applePaySplashSeen: false,
+      };
+
+      const state = cardReducer(currentState, resetCardState());
+
+      expect(state).toEqual(initialState);
+    });
+
+    describe('setPendingMoneyAccountCardLink', () => {
+      it('stores the entrypoint for post-auth sheet resume', () => {
+        const state = cardReducer(
+          initialState,
+          setPendingMoneyAccountCardLink(
+            CardEntryPoint.MONEY_HOME_ONBOARDING_CARD,
+          ),
+        );
+
+        expect(state.pendingMoneyAccountCardLink).toBe(
+          CardEntryPoint.MONEY_HOME_ONBOARDING_CARD,
+        );
+      });
+
+      it('clears pending state when set to null', () => {
+        const current: CardSliceState = {
+          ...initialState,
+          pendingMoneyAccountCardLink:
+            CardEntryPoint.MONEY_HOME_ONBOARDING_CARD,
+        };
+        const state = cardReducer(
+          current,
+          setPendingMoneyAccountCardLink(null),
+        );
+        expect(state.pendingMoneyAccountCardLink).toBeNull();
+      });
+    });
+
+    describe('setImmersveFundingSettling', () => {
+      it('stores and clears the session settling flag', () => {
+        const settling = cardReducer(
+          initialState,
+          setImmersveFundingSettling(true),
+        );
+        expect(settling.immersveFundingSettling).toBe(true);
+        expect(
+          selectImmersveFundingSettling({
+            card: settling,
+          } as unknown as RootState),
+        ).toBe(true);
+
+        const cleared = cardReducer(
+          settling,
+          setImmersveFundingSettling(false),
+        );
+        expect(cleared.immersveFundingSettling).toBe(false);
+      });
+    });
+
+    describe('onboarding actions', () => {
+      describe('setOnboardingId', () => {
+        it('should set onboardingId', () => {
+          const onboardingId = 'test-onboarding-123';
+          const state = cardReducer(
+            initialState,
+            setOnboardingId(onboardingId),
+          );
+          expect(state.onboarding.onboardingId).toBe(onboardingId);
+          expect(state.onboarding.contactVerificationId).toBe(null);
+          expect(state.onboarding.consentSetId).toBe(null);
+        });
+
+        it('should update onboardingId when previously set', () => {
+          const current: CardSliceState = {
+            ...initialState,
+            onboarding: {
+              ...initialState.onboarding,
+              onboardingId: 'old-id',
+            },
+          };
+          const newId = 'new-onboarding-456';
+          const state = cardReducer(current, setOnboardingId(newId));
+          expect(state.onboarding.onboardingId).toBe(newId);
+        });
+
+        it('should set onboardingId to null', () => {
+          const current: CardSliceState = {
+            ...initialState,
+            onboarding: {
+              ...initialState.onboarding,
+              onboardingId: 'existing-id',
+            },
+          };
+          const state = cardReducer(current, setOnboardingId(null));
+          expect(state.onboarding.onboardingId).toBe(null);
+        });
+      });
+
+      describe('setContactVerificationId', () => {
+        it('should set contactVerificationId', () => {
+          const verificationId = 'verification-123';
+          const state = cardReducer(
+            initialState,
+            setContactVerificationId(verificationId),
+          );
+          expect(state.onboarding.contactVerificationId).toBe(verificationId);
+          expect(state.onboarding.onboardingId).toBe(null);
+          expect(state.onboarding.consentSetId).toBe(null);
+        });
+
+        it('should update contactVerificationId when previously set', () => {
+          const current: CardSliceState = {
+            ...initialState,
+            onboarding: {
+              ...initialState.onboarding,
+              contactVerificationId: 'old-verification',
+            },
+          };
+          const newVerificationId = 'new-verification-456';
+          const state = cardReducer(
+            current,
+            setContactVerificationId(newVerificationId),
+          );
+          expect(state.onboarding.contactVerificationId).toBe(
+            newVerificationId,
+          );
+        });
+
+        it('should set contactVerificationId to null', () => {
+          const current: CardSliceState = {
+            ...initialState,
+            onboarding: {
+              ...initialState.onboarding,
+              contactVerificationId: 'existing-verification',
+            },
+          };
+          const state = cardReducer(current, setContactVerificationId(null));
+          expect(state.onboarding.contactVerificationId).toBe(null);
+        });
+      });
+
+      describe('setConsentSetId', () => {
+        it('should set consentSetId', () => {
+          const consentSetId = 'consent-123';
+          const state = cardReducer(
+            initialState,
+            setConsentSetId(consentSetId),
+          );
+          expect(state.onboarding.consentSetId).toBe(consentSetId);
+          expect(state.onboarding.onboardingId).toBe(null);
+          expect(state.onboarding.contactVerificationId).toBe(null);
+        });
+
+        it('should update consentSetId when previously set', () => {
+          const current: CardSliceState = {
+            ...initialState,
+            onboarding: {
+              ...initialState.onboarding,
+              consentSetId: 'old-consent',
+            },
+          };
+          const newConsentSetId = 'new-consent-456';
+          const state = cardReducer(current, setConsentSetId(newConsentSetId));
+          expect(state.onboarding.consentSetId).toBe(newConsentSetId);
+        });
+
+        it('should set consentSetId to null', () => {
+          const current: CardSliceState = {
+            ...initialState,
+            onboarding: {
+              ...initialState.onboarding,
+              consentSetId: 'existing-consent',
+            },
+          };
+          const state = cardReducer(current, setConsentSetId(null));
+          expect(state.onboarding.consentSetId).toBe(null);
+        });
+      });
+
+      describe('resetOnboardingState', () => {
+        it('should reset all onboarding state to initial values', () => {
+          const current: CardSliceState = {
+            ...initialState,
+            onboarding: {
+              onboardingId: 'test-id',
+              contactVerificationId: 'verification-123',
+              consentSetId: 'consent-456',
+              immersveFundingSourceId: 'fs-456',
+            },
+          };
+          const state = cardReducer(current, resetOnboardingState());
+          expect(state.onboarding).toEqual({
+            onboardingId: null,
+            contactVerificationId: null,
+            consentSetId: null,
+            immersveFundingSourceId: null,
+          });
+        });
+
+        it('should reset onboarding state when already at initial values', () => {
+          const state = cardReducer(initialState, resetOnboardingState());
+          expect(state.onboarding).toEqual({
+            onboardingId: null,
+            contactVerificationId: null,
+            consentSetId: null,
+            immersveFundingSourceId: null,
+          });
+        });
+      });
+    });
+  });
+});

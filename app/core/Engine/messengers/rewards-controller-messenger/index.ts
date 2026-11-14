@@ -1,0 +1,288 @@
+import {
+  Messenger,
+  MessengerActions,
+  MessengerEvents,
+  type ActionConstraint,
+  type EventConstraint,
+} from '@metamask/messenger';
+
+import {
+  KeyringControllerSignPersonalMessageAction,
+  KeyringControllerUnlockEvent,
+} from '@metamask/keyring-controller';
+import type { GeolocationControllerGetGeolocationAction } from '@metamask/geolocation-controller';
+import {
+  RewardsDataServiceLoginAction,
+  RewardsDataServiceEstimatePointsAction,
+  RewardsDataServiceGetSeasonStatusAction,
+  RewardsDataServiceGetReferralDetailsAction,
+  RewardsDataServiceMobileOptinAction,
+  RewardsDataServiceLogoutAction,
+  RewardsDataServiceValidateBonusCodeAction,
+  RewardsDataServiceMobileJoinAction,
+  RewardsDataServiceOptOutAction,
+} from '../../controllers/rewards-controller/services';
+
+import type {
+  AccountTreeControllerGetAccountsFromSelectedAccountGroupAction,
+  AccountTreeControllerSelectedAccountGroupChangeEvent,
+} from '@metamask/account-tree-controller';
+import {
+  RewardsControllerActions,
+  RewardsControllerEvents,
+} from '../../controllers/rewards-controller/types';
+import {
+  AccountsControllerGetSelectedMultichainAccountAction,
+  AccountsControllerListMultichainAccountsAction,
+} from '@metamask/accounts-controller';
+import { RemoteFeatureFlagControllerGetStateAction } from '@metamask/remote-feature-flag-controller';
+import {
+  RewardsDataServiceGetOptInStatusAction,
+  RewardsDataServiceGetPointsEventsAction,
+  RewardsDataServiceGetActivePointsBoostsAction,
+  RewardsDataServiceGetUnlockedRewardsAction,
+  RewardsDataServiceClaimRewardAction,
+  RewardsDataServiceGetPointsEventsLastUpdatedAction,
+  RewardsDataServiceGetDiscoverSeasonsAction,
+  RewardsDataServiceGetSeasonMetadataAction,
+  RewardsDataServiceGetSeasonOneLineaRewardTokensAction,
+  RewardsDataServiceApplyBonusCodeAction,
+  RewardsDataServiceGetRewardsEnvUrlAction,
+  RewardsDataServiceCanChangeRewardsEnvUrlAction,
+  RewardsDataServiceSetRewardsEnvUrlAction,
+  RewardsDataServiceGetDefaultRewardsEnvUrlAction,
+  RewardsDataServiceGetSubscriptionAccountsAction,
+  RewardsDataServiceGetCampaignsAction,
+  RewardsDataServiceOptInToCampaignAction,
+  RewardsDataServiceGetCampaignParticipantStatusAction,
+  RewardsDataServiceGetBenefitsAction,
+  RewardsDataServiceGetVIPDashboardAction,
+  RewardsDataServiceGetVipEquityMultiplierAction,
+  RewardsDataServiceGetVipRefereeDashboardAction,
+  RewardsDataServiceGetTradingFeeGrantsAction,
+  RewardsDataServiceGetVipFeesAction,
+  RewardsDataServiceGetVipTransactionsAction,
+  RewardsDataServiceLookupVipTransactionAction,
+  RewardsDataServiceGetVipTransactionsLastUpdatedAction,
+  RewardsDataServicePostBenefitImpressionAction,
+  RewardsDataServiceGetClientVersionRequirementsAction,
+  RewardsDataServiceGetOndoCampaignLeaderboardAction,
+  RewardsDataServiceGetOndoCampaignLeaderboardPositionAction,
+  RewardsDataServiceGetOndoCampaignPortfolioPositionAction,
+  RewardsDataServiceGetOndoCampaignActivityAction,
+  RewardsDataServiceGetOndoCampaignActivityLastUpdatedAction,
+  RewardsDataServiceGetOndoCampaignDepositsAction,
+  RewardsDataServiceGetOndoCampaignParticipantOutcomeAction,
+  RewardsDataServiceGetPerpsTradingCampaignLeaderboardAction,
+  RewardsDataServiceGetPerpsTradingCampaignLeaderboardPositionAction,
+  RewardsDataServiceGetPerpsTradingCampaignVolumeAction,
+  RewardsDataServiceGetPerpsTradingCampaignPrizePoolAction,
+  RewardsDataServiceGetPerpsTradingCampaignParticipantOutcomeAction,
+  RewardsDataServiceGetPredictThePitchLeaderboardAction,
+  RewardsDataServiceGetPredictThePitchLeaderboardPositionAction,
+  RewardsDataServiceGetPredictThePitchPositionsAction,
+  RewardsDataServiceGetPredictThePitchParticipantOutcomeAction,
+  RewardsDataServiceGetPredictThePitchPrizePoolAction,
+  RewardsDataServiceGetMoneyAccountSweepstakesStatsMeAction,
+  RewardsDataServiceGetMoneyAccountSweepstakesPrizePoolAction,
+  RewardsDataServiceGetMoneyAccountSweepstakesVolumeStatsAction,
+  RewardsDataServiceGetMoneyAccountSweepstakesDrawProofAction,
+  RewardsDataServiceGetMoneyAccountSweepstakesParticipantOutcomeAction,
+  RewardsDataServiceRegisterMoneyAccountBindingAction,
+} from '../../controllers/rewards-controller/services/rewards-data-service';
+import { RootMessenger } from '../../types';
+import type { AuthenticationController } from '@metamask/profile-sync-controller';
+
+const name = 'RewardsController' as const;
+
+// Don't reexport as per guidelines
+type AllowedActions =
+  | AccountsControllerGetSelectedMultichainAccountAction
+  | AccountsControllerListMultichainAccountsAction
+  | AccountTreeControllerGetAccountsFromSelectedAccountGroupAction
+  | GeolocationControllerGetGeolocationAction
+  | KeyringControllerSignPersonalMessageAction
+  | RemoteFeatureFlagControllerGetStateAction
+  | RewardsDataServiceLoginAction
+  | RewardsDataServiceGetPointsEventsAction
+  | RewardsDataServiceGetPointsEventsLastUpdatedAction
+  | RewardsDataServiceEstimatePointsAction
+  | RewardsDataServiceGetSeasonStatusAction
+  | RewardsDataServiceGetReferralDetailsAction
+  | RewardsDataServiceMobileOptinAction
+  | RewardsDataServiceLogoutAction
+  | RewardsDataServiceValidateBonusCodeAction
+  | RewardsDataServiceMobileJoinAction
+  | RewardsDataServiceGetOptInStatusAction
+  | RewardsDataServiceOptOutAction
+  | RewardsDataServiceGetActivePointsBoostsAction
+  | RewardsDataServiceGetUnlockedRewardsAction
+  | RewardsDataServiceClaimRewardAction
+  | RewardsDataServiceGetDiscoverSeasonsAction
+  | RewardsDataServiceGetSeasonMetadataAction
+  | RewardsDataServiceGetSeasonOneLineaRewardTokensAction
+  | RewardsDataServiceGetRewardsEnvUrlAction
+  | RewardsDataServiceCanChangeRewardsEnvUrlAction
+  | RewardsDataServiceSetRewardsEnvUrlAction
+  | RewardsDataServiceGetDefaultRewardsEnvUrlAction
+  | RewardsDataServiceApplyBonusCodeAction
+  | RewardsDataServiceGetBenefitsAction
+  | RewardsDataServicePostBenefitImpressionAction
+  | RewardsDataServiceGetSubscriptionAccountsAction
+  | RewardsDataServiceGetCampaignsAction
+  | RewardsDataServiceOptInToCampaignAction
+  | RewardsDataServiceGetCampaignParticipantStatusAction
+  | RewardsDataServiceGetClientVersionRequirementsAction
+  | RewardsDataServiceGetOndoCampaignLeaderboardAction
+  | RewardsDataServiceGetOndoCampaignLeaderboardPositionAction
+  | RewardsDataServiceGetOndoCampaignPortfolioPositionAction
+  | RewardsDataServiceGetOndoCampaignActivityAction
+  | RewardsDataServiceGetOndoCampaignActivityLastUpdatedAction
+  | RewardsDataServiceGetOndoCampaignDepositsAction
+  | RewardsDataServiceGetOndoCampaignParticipantOutcomeAction
+  | RewardsDataServiceGetPerpsTradingCampaignLeaderboardAction
+  | RewardsDataServiceGetPerpsTradingCampaignLeaderboardPositionAction
+  | RewardsDataServiceGetPerpsTradingCampaignVolumeAction
+  | RewardsDataServiceGetPerpsTradingCampaignPrizePoolAction
+  | RewardsDataServiceGetVIPDashboardAction
+  | RewardsDataServiceGetVipEquityMultiplierAction
+  | RewardsDataServiceGetVipRefereeDashboardAction
+  | RewardsDataServiceGetTradingFeeGrantsAction
+  | RewardsDataServiceGetVipFeesAction
+  | RewardsDataServiceGetVipTransactionsAction
+  | RewardsDataServiceLookupVipTransactionAction
+  | RewardsDataServiceGetVipTransactionsLastUpdatedAction
+  | RewardsDataServiceGetPerpsTradingCampaignParticipantOutcomeAction
+  | RewardsDataServiceGetPredictThePitchLeaderboardAction
+  | RewardsDataServiceGetPredictThePitchLeaderboardPositionAction
+  | RewardsDataServiceGetPredictThePitchPositionsAction
+  | RewardsDataServiceGetPredictThePitchParticipantOutcomeAction
+  | RewardsDataServiceGetPredictThePitchPrizePoolAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesStatsMeAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesPrizePoolAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesVolumeStatsAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesDrawProofAction
+  | RewardsDataServiceGetMoneyAccountSweepstakesParticipantOutcomeAction
+  | RewardsDataServiceRegisterMoneyAccountBindingAction;
+
+// Don't reexport as per guidelines
+type AllowedEvents =
+  | AccountTreeControllerSelectedAccountGroupChangeEvent
+  | KeyringControllerUnlockEvent
+  | Extract<
+      AuthenticationController.Events,
+      { type: 'AuthenticationController:stateChange' }
+    >;
+
+export type RewardsControllerMessenger = Messenger<
+  typeof name,
+  RewardsControllerActions | AllowedActions,
+  RewardsControllerEvents | AllowedEvents
+>;
+
+export function getRewardsControllerMessenger(
+  rootMessenger: RootMessenger,
+): RewardsControllerMessenger {
+  const messenger = new Messenger<
+    typeof name,
+    MessengerActions<RewardsControllerMessenger>,
+    MessengerEvents<RewardsControllerMessenger>,
+    RootMessenger
+  >({
+    namespace: name,
+    parent: rootMessenger,
+  });
+
+  // Widen `messenger` to a generic `Messenger<...>` for the delegate call only.
+  // `delegate`'s constraint is `DelegatedActions extends (MessengerActions<Delegatee> & Action)['type'][]`,
+  // which performs an intersection between the delegatee's action union and the
+  // root messenger's action union. With ~46 actions on each side, this hits
+  // TypeScript's union-type-complexity ceiling (TS2590). Erasing the delegatee's
+  // specific action union to the open `ActionConstraint` short-circuits the
+  // intersection without affecting the runtime behavior — `delegate` only
+  // inspects the action/event name strings at runtime.
+  rootMessenger.delegate({
+    messenger: messenger as Messenger<
+      typeof name,
+      ActionConstraint,
+      EventConstraint,
+      RootMessenger
+    >,
+    actions: [
+      'AccountsController:getSelectedMultichainAccount',
+      'AccountTreeController:getAccountsFromSelectedAccountGroup',
+      'AccountsController:listMultichainAccounts',
+      'GeolocationController:getGeolocation',
+      'KeyringController:signPersonalMessage',
+      'RemoteFeatureFlagController:getState',
+      'RewardsDataService:login',
+      'RewardsDataService:getPointsEvents',
+      'RewardsDataService:getPointsEventsLastUpdated',
+      'RewardsDataService:estimatePoints',
+      'RewardsDataService:getSeasonStatus',
+      'RewardsDataService:getReferralDetails',
+      'RewardsDataService:mobileOptin',
+      'RewardsDataService:logout',
+      'RewardsDataService:validateBonusCode',
+      'RewardsDataService:mobileJoin',
+      'RewardsDataService:getOptInStatus',
+      'RewardsDataService:optOut',
+      'RewardsDataService:getActivePointsBoosts',
+      'RewardsDataService:getUnlockedRewards',
+      'RewardsDataService:claimReward',
+      'RewardsDataService:getDiscoverSeasons',
+      'RewardsDataService:getSeasonMetadata',
+      'RewardsDataService:getSeasonOneLineaRewardTokens',
+      'RewardsDataService:applyBonusCode',
+      'RewardsDataService:getSubscriptionAccounts',
+      'RewardsDataService:getCampaigns',
+      'RewardsDataService:optInToCampaign',
+      'RewardsDataService:getCampaignParticipantStatus',
+      'RewardsDataService:getRewardsEnvUrl',
+      'RewardsDataService:canChangeRewardsEnvUrl',
+      'RewardsDataService:setRewardsEnvUrl',
+      'RewardsDataService:getDefaultRewardsEnvUrl',
+      'RewardsDataService:getBenefits',
+      'RewardsDataService:getVIPDashboard',
+      'RewardsDataService:getVipEquityMultiplier',
+      'RewardsDataService:getVipRefereeDashboard',
+      'RewardsDataService:getTradingFeeGrants',
+      'RewardsDataService:getVipFees',
+      'RewardsDataService:getVipTransactions',
+      'RewardsDataService:lookupVipTransaction',
+      'RewardsDataService:getVipTransactionsLastUpdated',
+      'RewardsDataService:postBenefitImpression',
+      'RewardsDataService:getClientVersionRequirements',
+      'RewardsDataService:getOndoCampaignLeaderboard',
+      'RewardsDataService:getOndoCampaignLeaderboardPosition',
+      'RewardsDataService:getOndoCampaignPortfolioPosition',
+      'RewardsDataService:getOndoCampaignActivity',
+      'RewardsDataService:getOndoCampaignActivityLastUpdated',
+      'RewardsDataService:getOndoCampaignDeposits',
+      'RewardsDataService:getOndoCampaignParticipantOutcome',
+      'RewardsDataService:getPerpsTradingCampaignLeaderboard',
+      'RewardsDataService:getPerpsTradingCampaignLeaderboardPosition',
+      'RewardsDataService:getPerpsTradingCampaignVolume',
+      'RewardsDataService:getPerpsTradingCampaignPrizePool',
+      'RewardsDataService:getPerpsTradingCampaignParticipantOutcome',
+      'RewardsDataService:getPredictThePitchLeaderboard',
+      'RewardsDataService:getPredictThePitchLeaderboardPosition',
+      'RewardsDataService:getPredictThePitchPositions',
+      'RewardsDataService:getPredictThePitchParticipantOutcome',
+      'RewardsDataService:getPredictThePitchPrizePool',
+      'RewardsDataService:getMoneyAccountSweepstakesStatsMe',
+      'RewardsDataService:getMoneyAccountSweepstakesPrizePool',
+      'RewardsDataService:getMoneyAccountSweepstakesVolumeStats',
+      'RewardsDataService:getMoneyAccountSweepstakesDrawProof',
+      'RewardsDataService:getMoneyAccountSweepstakesParticipantOutcome',
+      'RewardsDataService:registerMoneyAccountBinding',
+    ],
+    events: [
+      'AccountTreeController:selectedAccountGroupChange',
+      'KeyringController:unlock',
+      'AuthenticationController:stateChange',
+    ],
+  } as Parameters<RootMessenger['delegate']>[0]);
+
+  return messenger;
+}

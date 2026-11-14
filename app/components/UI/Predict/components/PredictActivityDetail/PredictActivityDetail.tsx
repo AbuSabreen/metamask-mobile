@@ -1,0 +1,546 @@
+import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import React, { useMemo, useEffect } from 'react';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSelector } from 'react-redux';
+import { strings } from '../../../../../../locales/i18n';
+import Text, {
+  TextColor,
+  TextVariant,
+} from '../../../../../component-library/components/Texts/Text';
+import SensitiveText, {
+  SensitiveTextLength,
+} from '../../../../../component-library/components/Texts/SensitiveText';
+import { selectPrivacyMode } from '../../../../../selectors/preferencesController';
+import { selectPredictBrandRefreshEnabled } from '../../../../../selectors/featureFlagController/predictBrandRefresh';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import Routes from '../../../../../constants/navigation/Routes';
+import Engine from '../../../../../core/Engine';
+import { PredictNavigationParamList } from '../../types/navigation';
+import {
+  formatCurrencyValue,
+  formatPercentage,
+  formatPositionSize,
+  formatPrice,
+} from '../../utils/format';
+import { PredictActivityType } from '../../types';
+import { PredictEventValues } from '../../constants/eventNames';
+import {
+  Box,
+  BoxFlexDirection,
+  BoxAlignItems,
+  BoxJustifyContent,
+  Text as DesignSystemText,
+  TextColor as DesignSystemTextColor,
+  TextVariant as DesignSystemTextVariant,
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import UsdcIcon from './usdc.svg';
+import { PredictActivityDetailsSelectorsIDs } from '../../Predict.testIds';
+interface PredictActivityDetailProps {}
+
+const PredictActivityDetails: React.FC<PredictActivityDetailProps> = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const route =
+    useRoute<RouteProp<PredictNavigationParamList, 'PredictActivityDetail'>>();
+  const { activity } = route.params || {};
+  const tw = useTailwind();
+  const privacyMode = useSelector(selectPrivacyMode);
+  const isBrandRefresh = useSelector(selectPredictBrandRefreshEnabled) === true;
+
+  // Determine activity type for analytics
+  const activityType = useMemo(() => {
+    if (!activity) return PredictEventValues.ACTIVITY_TYPE.ACTIVITY_LIST;
+
+    switch (activity.type) {
+      case PredictActivityType.BUY:
+        return PredictEventValues.ACTIVITY_TYPE.PREDICTED;
+      case PredictActivityType.SELL:
+        return PredictEventValues.ACTIVITY_TYPE.CASHED_OUT;
+      case PredictActivityType.CLAIM:
+        return PredictEventValues.ACTIVITY_TYPE.CLAIMED;
+      default:
+        return PredictEventValues.ACTIVITY_TYPE.ACTIVITY_LIST;
+    }
+  }, [activity]);
+
+  // Track activity detail viewed
+  useEffect(() => {
+    if (!activity) return;
+
+    Engine.context.PredictController.trackActivityViewed({
+      activityType,
+    });
+  }, [activity, activityType]);
+
+  const handleBackPress = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate(Routes.PREDICT.ROOT);
+    }
+  };
+
+  interface DetailRow {
+    label: string;
+    value: string;
+    color?: TextColor;
+    isMonetary?: boolean;
+    isMarket?: boolean;
+  }
+
+  const activityDetails = useMemo(() => {
+    if (!activity) {
+      return null;
+    }
+
+    const entry = activity.entry;
+    const isBuy = activity.type === PredictActivityType.BUY;
+    const isSell = activity.type === PredictActivityType.SELL;
+    const isClaim = activity.type === PredictActivityType.CLAIM;
+
+    const headerTitle = (() => {
+      switch (activity.type) {
+        case PredictActivityType.BUY:
+          return strings('predict.transactions.buy_title');
+        case PredictActivityType.SELL:
+          return strings('predict.transactions.sell_title');
+        case PredictActivityType.CLAIM:
+          return strings('predict.transactions.claim_title');
+        default:
+          return strings('predict.transactions.activity_details');
+      }
+    })();
+
+    const amountDisplay = formatCurrencyValue(activity.amountUsd);
+    const showAmountBadge = Boolean(!isBuy && amountDisplay);
+
+    const rawTimestamp =
+      typeof entry === 'object' && 'timestamp' in entry
+        ? entry.timestamp
+        : undefined;
+    const timestampMs =
+      typeof rawTimestamp === 'number'
+        ? rawTimestamp > 1e12
+          ? rawTimestamp
+          : rawTimestamp * 1000
+        : undefined;
+    const formattedDate = timestampMs
+      ? new Date(timestampMs).toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        })
+      : strings('predict.transactions.not_available');
+
+    const marketTitleRaw =
+      activity.marketTitle?.trim() ||
+      strings('predict.transactions.not_available');
+    const outcomeTitle =
+      activity.outcome ?? strings('predict.transactions.not_available');
+
+    const marketRows: DetailRow[] = [
+      { label: strings('predict.transactions.date'), value: formattedDate },
+    ];
+
+    if (!isClaim) {
+      marketRows.push({
+        label: strings('predict.transactions.market'),
+        value: marketTitleRaw,
+        isMarket: true,
+      });
+      marketRows.push({ label: 'Outcome', value: outcomeTitle });
+    }
+
+    const entryAmount =
+      'amount' in entry && typeof entry.amount === 'number'
+        ? entry.amount
+        : activity.amountUsd;
+    const hasPrice =
+      'price' in entry &&
+      typeof entry.price === 'number' &&
+      Number.isFinite(entry.price);
+    const entrySize =
+      'size' in entry &&
+      typeof entry.size === 'number' &&
+      Number.isFinite(entry.size) &&
+      entry.size > 0
+        ? entry.size
+        : undefined;
+    const priceForTrade =
+      hasPrice && entry.price !== 0 ? entry.price : undefined;
+    const tradeAmount =
+      priceForTrade !== undefined && entrySize !== undefined
+        ? entrySize * priceForTrade
+        : entryAmount;
+
+    const predictedAmount = formatCurrencyValue(tradeAmount, {
+      showSign: isSell,
+    });
+
+    const pricePerShare = hasPrice
+      ? formatPrice(entry.price, {
+          minimumDecimals: entry.price >= 1 ? 2 : 4,
+          maximumDecimals: entry.price >= 1 ? 2 : 4,
+        })
+      : undefined;
+
+    const sharesCount =
+      entrySize ??
+      (priceForTrade !== undefined ? entryAmount / priceForTrade : undefined);
+    const formattedShares =
+      sharesCount !== undefined ? formatPositionSize(sharesCount) : undefined;
+    const bundledFee =
+      priceForTrade !== undefined && entrySize !== undefined
+        ? isSell
+          ? tradeAmount - entryAmount
+          : entryAmount - tradeAmount
+        : undefined;
+    if (bundledFee !== undefined && bundledFee < 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[PredictActivityDetail] negative bundledFee, suppressing row:',
+        bundledFee,
+      );
+    }
+    const formattedBundledFee =
+      bundledFee !== undefined && bundledFee > 0
+        ? formatCurrencyValue(bundledFee)
+        : undefined;
+
+    const priceImpact =
+      activity.priceImpactPercentage !== undefined
+        ? formatPercentage(activity.priceImpactPercentage)
+        : undefined;
+
+    const transactionRows: DetailRow[] = [];
+
+    if (isClaim) {
+      const totalNetPnlValue = formatCurrencyValue(
+        activity.totalNetPnlUsd ?? entryAmount,
+        { showSign: true },
+      );
+      if (totalNetPnlValue) {
+        transactionRows.push({
+          label: strings('predict.transactions.total_net_pnl'),
+          value: totalNetPnlValue,
+          color: TextColor.Success,
+          isMonetary: true,
+        });
+      }
+
+      const marketNetPnlValue = formatCurrencyValue(
+        activity.netPnlUsd ?? entryAmount,
+        { showSign: true },
+      );
+      if (marketNetPnlValue) {
+        const marketLabel =
+          marketTitleRaw !== strings('predict.transactions.not_available')
+            ? marketTitleRaw
+            : strings('predict.transactions.market_net_pnl');
+        transactionRows.push({
+          label: marketLabel,
+          value: marketNetPnlValue,
+          color: TextColor.Success,
+          isMonetary: true,
+        });
+      }
+    } else {
+      if (predictedAmount && !isSell) {
+        transactionRows.push({
+          label: strings('predict.transactions.predicted_amount'),
+          value: predictedAmount,
+          isMonetary: true,
+        });
+      }
+
+      if (formattedBundledFee) {
+        transactionRows.push({
+          label: strings('predict.fee_summary.fees'),
+          value: formattedBundledFee,
+          isMonetary: true,
+        });
+      }
+
+      if (formattedShares) {
+        transactionRows.push({
+          label: isSell
+            ? strings('predict.transactions.shares_sold')
+            : strings('predict.transactions.shares_bought'),
+          value: `${formattedShares}`,
+          isMonetary: true,
+        });
+      }
+
+      if (pricePerShare) {
+        transactionRows.push({
+          label: strings('predict.transactions.price_per_share'),
+          value: pricePerShare,
+          isMonetary: true,
+        });
+      }
+
+      if (!isSell && priceImpact) {
+        transactionRows.push({
+          label: strings('predict.transactions.price_impact'),
+          value: priceImpact,
+          isMonetary: true,
+        });
+      }
+    }
+
+    const netPnlRows: DetailRow[] = [];
+    const netPnlNumeric = isSell
+      ? (activity.netPnlUsd ?? entryAmount)
+      : activity.netPnlUsd;
+    const netPnlValue = formatCurrencyValue(netPnlNumeric, { showSign: true });
+    if (netPnlValue && isSell) {
+      const isNegative = typeof netPnlNumeric === 'number' && netPnlNumeric < 0;
+      netPnlRows.push({
+        label: strings('predict.transactions.net_pnl'),
+        value: netPnlValue,
+        color: isNegative ? TextColor.Error : TextColor.Success,
+        isMonetary: true,
+      });
+    }
+
+    return {
+      headerTitle,
+      amountDisplay,
+      showAmountBadge,
+      marketRows,
+      transactionRows,
+      netPnlRows,
+    };
+  }, [activity]);
+
+  const renderDetailRow = (
+    label: string,
+    value: string,
+    valueColor?: TextColor,
+    key?: React.Key,
+    isMonetary?: boolean,
+  ) => (
+    <Box
+      key={key ?? label}
+      flexDirection={BoxFlexDirection.Row}
+      alignItems={BoxAlignItems.Center}
+      justifyContent={BoxJustifyContent.Between}
+      twClassName="py-3 gap-2"
+    >
+      <Text
+        variant={TextVariant.BodyMD}
+        color={TextColor.Alternative}
+        style={tw.style('flex-1')}
+      >
+        {label}
+      </Text>
+      {isMonetary ? (
+        <SensitiveText
+          variant={TextVariant.BodyMD}
+          color={valueColor || TextColor.Default}
+          isHidden={privacyMode}
+          length={SensitiveTextLength.Medium}
+        >
+          {value}
+        </SensitiveText>
+      ) : (
+        <Text
+          variant={TextVariant.BodyMD}
+          color={valueColor || TextColor.Default}
+        >
+          {value}
+        </Text>
+      )}
+    </Box>
+  );
+
+  const renderMarketDetailRow = (label: string, value: string) => (
+    <Box
+      flexDirection={BoxFlexDirection.Row}
+      alignItems={BoxAlignItems.Start}
+      justifyContent={BoxJustifyContent.Between}
+      twClassName="py-3 gap-2"
+    >
+      <DesignSystemText
+        variant={DesignSystemTextVariant.BodyMd}
+        color={DesignSystemTextColor.TextAlternative}
+        numberOfLines={1}
+        twClassName="shrink-0"
+        testID={PredictActivityDetailsSelectorsIDs.MARKET_LABEL}
+      >
+        {label}
+      </DesignSystemText>
+      <DesignSystemText
+        variant={DesignSystemTextVariant.BodySm}
+        color={DesignSystemTextColor.TextDefault}
+        twClassName="flex-1 text-right"
+        testID={PredictActivityDetailsSelectorsIDs.MARKET_VALUE}
+      >
+        {value}
+      </DesignSystemText>
+    </Box>
+  );
+
+  const renderAmountDisplay = () => {
+    if (!activityDetails?.showAmountBadge || !activityDetails.amountDisplay) {
+      return null;
+    }
+
+    return (
+      // The icon is sized directly rather than centred inside a larger circle,
+      // so the section's top margin is the only space above it and the block
+      // sits evenly between the header and the first detail row.
+      <Box
+        twClassName="items-center gap-4 my-12"
+        testID={PredictActivityDetailsSelectorsIDs.AMOUNT_SECTION}
+      >
+        <UsdcIcon
+          name="Usdc"
+          width={48}
+          height={48}
+          accessibilityLabel="USDC"
+        />
+        <SensitiveText
+          variant={TextVariant.HeadingLG}
+          color={TextColor.Default}
+          isHidden={privacyMode}
+          length={SensitiveTextLength.Medium}
+          testID={PredictActivityDetailsSelectorsIDs.AMOUNT_DISPLAY}
+        >
+          {activityDetails.amountDisplay}
+        </SensitiveText>
+      </Box>
+    );
+  };
+
+  const renderPredictionMarketDetails = () => {
+    if (!activityDetails) {
+      return null;
+    }
+
+    const hasSectionDivider =
+      activity?.type === PredictActivityType.BUY ||
+      activity?.type === PredictActivityType.SELL;
+
+    return (
+      // When the divider is shown, the bottom margin matches the divider's top
+      // margin so the rule sits evenly between the last market row and the
+      // first transaction row.
+      <Box
+        twClassName={hasSectionDivider ? 'mb-3' : 'mb-6'}
+        testID={PredictActivityDetailsSelectorsIDs.MARKET_SECTION}
+      >
+        {activityDetails.marketRows.map((row, index) => (
+          <React.Fragment key={`${row.label}-${index}`}>
+            {row.isMarket
+              ? renderMarketDetailRow(row.label, row.value)
+              : renderDetailRow(
+                  row.label,
+                  row.value,
+                  row.color,
+                  undefined,
+                  row.isMonetary,
+                )}
+            {index < activityDetails.marketRows.length - 1 ? (
+              <Box twClassName="w-full h-px" />
+            ) : null}
+          </React.Fragment>
+        ))}
+        {hasSectionDivider ? (
+          <Box
+            twClassName="w-full border-t border-muted mt-3"
+            testID={PredictActivityDetailsSelectorsIDs.SECTION_DIVIDER}
+          />
+        ) : null}
+      </Box>
+    );
+  };
+
+  const renderTransactionDetails = () => {
+    if (!activityDetails || activityDetails.transactionRows.length === 0) {
+      return null;
+    }
+
+    const hasNetPnlDivider = activityDetails.netPnlRows.length > 0;
+
+    return (
+      // When Net P&L follows, the rule's top margin matches the section's
+      // bottom margin so both sides of the rule are 24px (same as Outcome/Fees).
+      <Box
+        twClassName={hasNetPnlDivider ? 'mb-3' : 'mb-6'}
+        testID={PredictActivityDetailsSelectorsIDs.TRANSACTION_SECTION}
+      >
+        {activityDetails.transactionRows.map((row, index) => {
+          const key = `${row.label}-${index}`;
+          const rowNode = renderDetailRow(
+            row.label,
+            row.value,
+            row.color,
+            key,
+            row.isMonetary,
+          );
+          return <React.Fragment key={key}>{rowNode}</React.Fragment>;
+        })}
+        {hasNetPnlDivider ? (
+          <Box
+            twClassName="w-full border-t border-muted mt-3"
+            testID={PredictActivityDetailsSelectorsIDs.NET_PNL_DIVIDER}
+          />
+        ) : null}
+      </Box>
+    );
+  };
+
+  const renderNetPnl = () => {
+    if (!activityDetails || activityDetails.netPnlRows.length === 0) {
+      return null;
+    }
+
+    return (
+      <Box>
+        {activityDetails.netPnlRows.map((row, index) =>
+          renderDetailRow(
+            row.label,
+            row.value,
+            row.color,
+            `${row.label}-${index}`,
+            row.isMonetary,
+          ),
+        )}
+      </Box>
+    );
+  };
+
+  return (
+    <SafeAreaView
+      style={tw.style('flex-1 bg-default')}
+      edges={['left', 'right', 'bottom']}
+      testID={PredictActivityDetailsSelectorsIDs.CONTAINER}
+    >
+      <Box twClassName="flex-1">
+        <HeaderStandardGlass
+          isGlass={isBrandRefresh}
+          isFloating={false}
+          title={
+            activityDetails?.headerTitle ??
+            strings('predict.transactions.activity_details')
+          }
+          onBack={handleBackPress}
+          backButtonProps={{
+            testID: PredictActivityDetailsSelectorsIDs.BACK_BUTTON,
+          }}
+          includesTopInset
+        />
+        <Box twClassName="px-4">
+          {renderAmountDisplay()}
+          {renderPredictionMarketDetails()}
+          {renderTransactionDetails()}
+          {renderNetPnl()}
+        </Box>
+      </Box>
+    </SafeAreaView>
+  );
+};
+
+export default PredictActivityDetails;

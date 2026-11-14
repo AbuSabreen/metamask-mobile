@@ -1,25 +1,109 @@
 'use strict';
 
-import notifee from '@notifee/react-native';
 import Engine from './Engine';
-import { hexToBN, renderFromWei } from '../util/number';
+import { hexToBN } from '../util/number';
 import Device from '../util/device';
-import { STORAGE_IDS } from '../util/notifications/settings/storage/constants';
 import { strings } from '../../locales/i18n';
 import { AppState } from 'react-native';
-
-import {
-  NotificationTransactionTypes,
-  isNotificationsFeatureEnabled,
-  requestPushNotificationsPermission,
-} from '../util/notifications';
+import NotificationsService from '../util/notifications/services/NotificationService';
+import { NotificationTransactionTypes, ChannelId } from '../util/notifications';
 import { safeToChecksumAddress } from '../util/address';
 import ReviewManager from './ReviewManager';
-import { selectChainId } from '../selectors/networkController';
+
 import { store } from '../store';
-const constructTitleAndMessage = (data) => {
+import { SmartTransactionStatuses } from '@metamask/smart-transactions-controller';
+
+import Logger from '../util/Logger';
+import {
+  TransactionStatus,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import { endTrace, trace, TraceName } from '../util/trace';
+import { hasTransactionType } from '../components/Views/confirmations/utils/transaction';
+import { decodeTransferData } from '../util/transactions';
+import TransactionTypes from './TransactionTypes';
+import { getNotificationSkipPredicates } from './notificationSkipPredicates';
+import { toEvmCaipChainId } from '@metamask/multichain-network-controller';
+import { FUNGIBLE_ASSET_TYPES } from './Assets/accountGroupAssetLoader';
+
+/**
+ * Resolves the real counterparty address a transaction affects, other than
+ * the sender.
+ *
+ * For plain value transfers (native ETH, contract calls, etc.) `txParams.to`
+ * already is the counterparty. For ERC-20/721/1155 transfer methods,
+ * however, `txParams.to` is the *token contract* address — the actual
+ * recipient is encoded in the call data — so it must be decoded instead.
+ *
+ * @param {object} transactionMeta - The confirmed transaction metadata.
+ * @returns {string | undefined} The recipient address, if one can be
+ * determined.
+ */
+function getTransactionRecipientAddress(transactionMeta) {
+  const { type, txParams } = transactionMeta;
+  const { to, data } = txParams ?? {};
+
+  const isErc20Transfer = type === TransactionType.tokenMethodTransfer;
+  const isErc721OrErc1155Transfer =
+    type === TransactionType.tokenMethodTransferFrom ||
+    type === TransactionType.tokenMethodSafeTransferFrom;
+
+  if (!data || (!isErc20Transfer && !isErc721OrErc1155Transfer)) {
+    return to;
+  }
+
+  try {
+    if (isErc20Transfer) {
+      const [decodedToAddress] = decodeTransferData('transfer', data);
+      return decodedToAddress ?? to;
+    }
+    // transferFrom(from, to, tokenId): recipient is the 2nd decoded value.
+    const [, decodedToAddress] = decodeTransferData('transferFrom', data);
+    return decodedToAddress ?? to;
+  } catch (error) {
+    // Calldata can be malformed/truncated; fall back to the token contract
+    // address rather than throwing, since the sender's balance should still
+    // be refreshed even if the recipient can't be determined.
+    Logger.error(
+      error,
+      'Failed to decode transfer recipient for post-transaction asset refresh',
+    );
+    return to;
+  }
+}
+
+export const SKIP_NOTIFICATION_TRANSACTION_TYPES = [
+  TransactionType.moneyAccountDeposit,
+  TransactionType.moneyAccountWithdraw,
+  TransactionType.musdClaim,
+  TransactionType.musdConversion,
+  TransactionType.perpsDeposit,
+  TransactionType.perpsDepositAndOrder,
+  TransactionType.perpsWithdraw,
+  TransactionType.predictDeposit,
+  TransactionType.predictDepositAndOrder,
+  TransactionType.predictClaim,
+  TransactionType.predictWithdraw,
+];
+
+export const IN_PROGRESS_SKIP_STATUS = [
+  TransactionStatus.unapproved,
+  TransactionStatus.approved,
+  TransactionStatus.signed,
+  TransactionStatus.submitted,
+];
+
+// Re-exported for convenience. The registry lives in its own dependency-free
+// module (`notificationSkipPredicates`) so feature code can register a predicate
+// without importing this heavy module and its transitive store/saga graph.
+export {
+  registerNotificationSkipPredicate,
+  clearNotificationSkipPredicates,
+} from './notificationSkipPredicates';
+
+export const constructTitleAndMessage = (notification) => {
   let title, message;
-  switch (data.type) {
+  switch (notification.type) {
     case NotificationTransactionTypes.pending:
       title = strings('notifications.pending_title');
       message = strings('notifications.pending_message');
@@ -33,16 +117,32 @@ const constructTitleAndMessage = (data) => {
       message = strings('notifications.pending_withdrawal_message');
       break;
     case NotificationTransactionTypes.success:
-      title = strings('notifications.success_title', {
-        nonce: data?.transaction?.nonce || '',
-      });
-      message = strings('notifications.success_message');
+      {
+        const nonce = notification?.transaction?.nonce;
+        if (nonce) {
+          title = strings('notifications.success_title', { nonce });
+        } else {
+          // For transactions without nonce (e.g., EIP-7702), show without nonce
+          title = strings('notifications.success_title', { nonce: '' })
+            .replace(' # ', ' ')
+            .trim();
+        }
+        message = strings('notifications.success_message');
+      }
       break;
     case NotificationTransactionTypes.speedup:
-      title = strings('notifications.speedup_title', {
-        nonce: data?.transaction?.nonce || '',
-      });
-      message = strings('notifications.speedup_message');
+      {
+        const nonce = notification?.transaction?.nonce;
+        if (nonce) {
+          title = strings('notifications.speedup_title', { nonce });
+        } else {
+          // For transactions without nonce, show without nonce
+          title = strings('notifications.speedup_title', { nonce: '' })
+            .replace(' #', '')
+            .trim();
+        }
+        message = strings('notifications.speedup_message');
+      }
       break;
     case NotificationTransactionTypes.success_withdrawal:
       title = strings('notifications.success_withdrawal_title');
@@ -62,16 +162,24 @@ const constructTitleAndMessage = (data) => {
       break;
     case NotificationTransactionTypes.received:
       title = strings('notifications.received_title', {
-        amount: data.transaction.amount,
-        assetType: data.transaction.assetType,
+        amount: notification.transaction.amount,
+        assetType: notification.transaction.assetType,
       });
       message = strings('notifications.received_message');
       break;
     case NotificationTransactionTypes.received_payment:
       title = strings('notifications.received_payment_title');
       message = strings('notifications.received_payment_message', {
-        amount: data.transaction.amount,
+        amount: notification.transaction.amount,
       });
+      break;
+    default:
+      title =
+        notification?.data?.title ||
+        strings('notifications.default_message_title');
+      message =
+        notification?.data?.shortDescription ||
+        strings('notifications.default_message_description');
       break;
   }
   return { title, message };
@@ -102,6 +210,12 @@ class NotificationManager {
    */
   _transactionsWatchTable = {};
 
+  _transactionFailedListener;
+
+  _transactionConfirmedListener;
+
+  _transactionSpeedupListener;
+
   _handleAppStateChange = (appState) => {
     this._backgroundMode = appState === 'background';
   };
@@ -111,42 +225,39 @@ class NotificationManager {
     this.goTo('TransactionsHome');
   };
 
-  _removeListeners = (transactionId) => {
-    const { TransactionController } = Engine.context;
-    TransactionController.hub.removeAllListeners(`${transactionId}:confirmed`);
-    TransactionController.hub.removeAllListeners(`${transactionId}:finished`);
+  _removeListeners = () => {
+    Engine.controllerMessenger.tryUnsubscribe(
+      'TransactionController:transactionConfirmed',
+      this._transactionConfirmedListener,
+    );
+
+    Engine.controllerMessenger.tryUnsubscribe(
+      'TransactionController:transactionFailed',
+      this._transactionFailedListener,
+    );
+
+    Engine.controllerMessenger.tryUnsubscribe(
+      'TransactionController:speedupTransactionAdded',
+      this._transactionSpeedupListener,
+    );
   };
 
-  // TODO: Refactor this method to use notifee's channels in combination with MM auth
-  _showNotification(data, channelId = STORAGE_IDS.ANDROID_DEFAULT_CHANNEL_ID) {
+  _showNotification = async (data) => {
     if (this._backgroundMode) {
       const { title, message } = constructTitleAndMessage(data);
-      const id = data?.transaction?.id || '';
+      const id = data?.transaction?.id;
       if (id) {
         this._transactionToView.push(id);
       }
 
       const pushData = {
+        channelId: ChannelId.DEFAULT_NOTIFICATION_CHANNEL_ID,
         title,
         body: message,
-        android: {
-          lightUpScreen: false,
-          channelId,
-          smallIcon: 'ic_notification_small',
-          largeIcon: 'ic_notification',
-          pressAction: {
-            id: 'default',
-            launchActivity: 'com.metamask.ui.MainActivity',
-          },
-        },
-        ios: {
-          foregroundPresentationOptions: {
-            alert: false,
-            sound: false,
-            badge: false,
-            banner: false,
-            list: false,
-          },
+        data: {
+          ...data?.transaction,
+          action: 'tx',
+          id,
         },
       };
 
@@ -155,10 +266,9 @@ class NotificationManager {
       if (Device.isAndroid()) {
         pushData.tag = JSON.stringify(extraData);
       } else {
-        pushData.userInfo = extraData; // check if is still needed
+        pushData.userInfo = extraData;
       }
-
-      isNotificationsFeatureEnabled() && notifee.displayNotification(pushData);
+      await NotificationsService.displayNotification(pushData);
     } else {
       this._showTransactionNotification({
         autodismiss: data.duration,
@@ -166,9 +276,9 @@ class NotificationManager {
         status: data.type,
       });
     }
-  }
+  };
 
-  _finishedCallback = (transactionMeta) => {
+  _failedCallback = (transactionMeta) => {
     // If it fails we hide the pending tx notification
     this._removeNotificationById(transactionMeta.id);
     const transaction =
@@ -177,12 +287,14 @@ class NotificationManager {
       transaction.length &&
       setTimeout(() => {
         // Then we show the error notification
-        this._showNotification({
-          type: transactionMeta.status === 'cancelled' ? 'cancelled' : 'error',
-          autoHide: true,
-          transaction: { id: transactionMeta.id },
-          duration: 5000,
-        });
+        !this.#shouldSkipNotification(transactionMeta) &&
+          this._showNotification({
+            type:
+              transactionMeta.status === 'cancelled' ? 'cancelled' : 'error',
+            autoHide: true,
+            transaction: { id: transactionMeta.id },
+            duration: 5000,
+          });
         // Clean up
         this._removeListeners(transactionMeta.id);
         delete this._transactionsWatchTable[transactionMeta.txParams.nonce];
@@ -192,52 +304,87 @@ class NotificationManager {
   _confirmedCallback = (transactionMeta, originalTransaction) => {
     // Once it's confirmed we hide the pending tx notification
     this._removeNotificationById(transactionMeta.id);
-    this._transactionsWatchTable[transactionMeta.txParams.nonce].length &&
+    const nonce = transactionMeta.txParams?.nonce;
+    const hasNonce = nonce !== undefined && nonce !== null;
+    const shouldShowNotification =
+      !hasNonce ||
+      (this._transactionsWatchTable[nonce]?.length &&
+        this._transactionsWatchTable[nonce].length);
+    shouldShowNotification &&
       setTimeout(() => {
         // Then we show the success notification
-        this._showNotification({
-          type: 'success',
-          autoHide: true,
-          transaction: {
-            id: transactionMeta.id,
-            nonce: `${hexToBN(transactionMeta.txParams.nonce).toString()}`,
-          },
-          duration: 5000,
-        });
+        !this.#shouldSkipNotification(transactionMeta) &&
+          this._showNotification({
+            type: 'success',
+            autoHide: true,
+            transaction: {
+              id: transactionMeta.id,
+              nonce: hasNonce ? `${hexToBN(nonce).toString()}` : undefined,
+            },
+            duration: 5000,
+          });
         // Clean up
         this._removeListeners(transactionMeta.id);
 
-        const {
-          TokenBalancesController,
-          TokenDetectionController,
-          NftDetectionController,
-          AccountTrackerController,
-        } = Engine.context;
-        // account balances for ETH txs
-        // Detect assets and tokens for ERC20 txs
-        // Detect assets for ERC721 txs
-        // right after a transaction was confirmed
-        const pollPromises = [AccountTrackerController.refresh()];
-        switch (originalTransaction.assetType) {
-          case 'ERC20': {
-            pollPromises.push(
-              ...[
-                TokenBalancesController.poll(),
-                TokenDetectionController.start(),
-              ],
-            );
-            break;
-          }
-          case 'ERC721':
-            pollPromises.push(NftDetectionController.start());
-            break;
-        }
-        Promise.all(pollPromises);
+        trace({
+          name: TraceName.TransactionConfirmed,
+          data: {
+            chainId: transactionMeta.chainId,
+            assetType: originalTransaction.assetType,
+          },
+        });
+        const { AssetsController, AccountsController } = Engine.context;
 
-        Device.isIos() &&
-          setTimeout(() => {
-            requestPushNotificationsPermission();
-          }, 5000);
+        // Force-refresh balances and detected tokens for the affected chain
+        // right after a transaction was confirmed. AssetsController is the
+        // sole source of truth for asset balances and detection.
+        //
+        // Refresh both the sender and (if the tx recipient is also one of the
+        // user's own wallet accounts, e.g. a send between own accounts) the
+        // recipient, so neither is left showing a stale balance until the
+        // next poll. For token transfers, `txParams.to` is the token
+        // contract, not the recipient, so it must be decoded separately.
+        const { from } = transactionMeta.txParams;
+        const recipient = getTransactionRecipientAddress(transactionMeta);
+        const accountsToRefresh = [from, recipient]
+          .filter(Boolean)
+          .map((address) => AccountsController.getAccountByAddress(address))
+          .filter(Boolean);
+        const uniqueAccountsToRefresh = [
+          ...new Map(
+            accountsToRefresh.map((account) => [account.id, account]),
+          ).values(),
+        ];
+        if (uniqueAccountsToRefresh.length > 0) {
+          try {
+            const caipChainId = toEvmCaipChainId(transactionMeta.chainId);
+            AssetsController.getAssets(uniqueAccountsToRefresh, {
+              forceUpdate: true,
+              bypassServerCache: true,
+              chainIds: [caipChainId],
+              assetTypes: FUNGIBLE_ASSET_TYPES,
+            }).catch((error) => {
+              Logger.error(error, 'Failed to refresh assets after transaction');
+            });
+          } catch (error) {
+            // transactionMeta.chainId can be missing/malformed on legacy or
+            // partially-hydrated transaction metadata; toEvmCaipChainId
+            // throws synchronously in that case, and this callback also
+            // runs endTrace/ReviewManager/listener cleanup below, so a
+            // throw here must never be allowed to skip them.
+            Logger.error(
+              error,
+              'Failed to build CAIP chain ID for post-transaction asset refresh',
+            );
+          }
+        }
+        endTrace({
+          name: TraceName.TransactionConfirmed,
+          data: {
+            chainId: transactionMeta.chainId,
+            assetType: originalTransaction.assetType,
+          },
+        });
 
         // Prompt review
         ReviewManager.promptReview();
@@ -250,14 +397,15 @@ class NotificationManager {
   _speedupCallback = (transactionMeta) => {
     this.watchSubmittedTransaction(transactionMeta, true);
     setTimeout(() => {
-      this._showNotification({
-        autoHide: false,
-        type: 'speedup',
-        transaction: {
-          id: transactionMeta.id,
-          nonce: `${hexToBN(transactionMeta.txParams.nonce).toString()}`,
-        },
-      });
+      !this.#shouldSkipNotification(transactionMeta) &&
+        this._showNotification({
+          autoHide: false,
+          type: 'speedup',
+          transaction: {
+            id: transactionMeta.id,
+            nonce: `${hexToBN(transactionMeta.txParams.nonce).toString()}`,
+          },
+        });
     }, 2000);
   };
 
@@ -341,6 +489,7 @@ class NotificationManager {
     const nonce = transactionMeta.txParams.nonce;
     // First we show the pending tx notification if is not an speed up tx
     !speedUp &&
+      !this.#shouldSkipNotification(transactionMeta) &&
       this._showNotification({
         type: 'pending',
         autoHide: false,
@@ -353,73 +502,124 @@ class NotificationManager {
       ? this._transactionsWatchTable[nonce].push(transactionMeta.id)
       : (this._transactionsWatchTable[nonce] = [transactionMeta.id]);
 
-    TransactionController.hub.once(
-      `${transaction.id}:confirmed`,
-      (transactionMeta) => {
-        this._confirmedCallback(transactionMeta, transaction);
-      },
-    );
-    TransactionController.hub.once(
-      `${transaction.id}:finished`,
-      (transactionMeta) => {
-        this._finishedCallback(transactionMeta);
-      },
-    );
-    TransactionController.hub.once(
-      `${transaction.id}:speedup`,
-      (transactionMeta) => {
-        this._speedupCallback(transactionMeta);
-      },
+    this._transactionConfirmedListener =
+      Engine.controllerMessenger.subscribeOnceIf(
+        'TransactionController:transactionConfirmed',
+        (transactionMeta) => {
+          this._confirmedCallback(transactionMeta, transaction);
+        },
+        (transactionMeta) => transactionMeta.id === transaction.id,
+      );
+
+    this._transactionFailedListener =
+      Engine.controllerMessenger.subscribeOnceIf(
+        'TransactionController:transactionFailed',
+        (transactionMeta) => {
+          this._failedCallback(transactionMeta);
+        },
+        (transactionMeta) => transactionMeta.id === transaction.id,
+      );
+
+    this._transactionSpeedupListener =
+      Engine.controllerMessenger.subscribeOnceIf(
+        'TransactionController:speedupTransactionAdded',
+        (transactionMeta) => {
+          this._speedupCallback(transactionMeta);
+        },
+        (transactionMeta) => transactionMeta.id === transaction.id,
+      );
+
+    const smartTransactionListener = async (smartTransaction) => {
+      if (smartTransaction.status === SmartTransactionStatuses.PENDING) {
+        return;
+      }
+      Engine.controllerMessenger.unsubscribe(
+        'SmartTransactionsController:smartTransaction',
+        smartTransactionListener,
+      );
+      if (smartTransaction.status !== SmartTransactionStatuses.CANCELLED) {
+        // If the smart transaction is not cancelled, notifications are already handled.
+        return;
+      }
+      const transactions = TransactionController.getTransactions({
+        filterToCurrentNetwork: false,
+      });
+      const foundTransaction = transactions.find(
+        (tx) => tx.id === smartTransaction.transactionId,
+      );
+      !this.#shouldSkipNotification(foundTransaction) &&
+        this._showNotification({
+          type: 'cancelled',
+          autoHide: true,
+          transaction: { id: foundTransaction?.id },
+          duration: 5000,
+        });
+    };
+
+    Engine.controllerMessenger.subscribe(
+      'SmartTransactionsController:smartTransaction',
+      smartTransactionListener,
     );
   }
 
-  /**
-   * Generates a notification for an incoming transaction
-   */
-  gotIncomingTransaction = async (lastBlock) => {
-    const {
-      AccountTrackerController,
-      TransactionController,
-      PreferencesController,
-    } = Engine.context;
-    const { selectedAddress } = PreferencesController.state;
-    const chainId = selectChainId(store.getState());
-
-    /// Find the incoming TX
+  #shouldSkipNotification(transactionMeta) {
+    const { TransactionController } = Engine.context;
     const { transactions } = TransactionController.state;
 
-    // If a TX has been confirmed more than 10 min ago, it's considered old
-    const oldestTimeAllowed = Date.now() - 1000 * 60 * 10;
+    if (
+      hasTransactionType(
+        transactionMeta,
+        SKIP_NOTIFICATION_TRANSACTION_TYPES,
+      ) ||
+      transactionMeta.origin === TransactionTypes.MMM_CARD
+    ) {
+      return true;
+    }
 
-    if (transactions.length) {
-      const txs = transactions
-        .reverse()
-        .filter(
-          (tx) =>
-            safeToChecksumAddress(tx.txParams?.to) === selectedAddress &&
-            safeToChecksumAddress(tx.txParams?.from) !== selectedAddress &&
-            tx.chainId === chainId &&
-            tx.status === 'confirmed' &&
-            lastBlock <= parseInt(tx.blockNumber, 10) &&
-            tx.time > oldestTimeAllowed,
-        );
-      if (txs.length > 0) {
-        this._showNotification({
-          type: 'received',
-          transaction: {
-            nonce: `${hexToBN(txs[0].txParams.nonce).toString()}`,
-            amount: `${renderFromWei(hexToBN(txs[0].txParams.value))}`,
-            id: txs[0]?.id,
-            assetType: strings('unit.eth'),
-          },
-          autoHide: true,
-          duration: 7000,
-        });
+    const isSkippedInProgress = transactions.some(
+      (tx) =>
+        hasTransactionType(tx, SKIP_NOTIFICATION_TRANSACTION_TYPES) &&
+        IN_PROGRESS_SKIP_STATUS.includes(tx.status),
+    );
+
+    if (isSkippedInProgress) {
+      return true;
+    }
+
+    const isRequired = transactions.some((tx) =>
+      tx.requiredTransactionIds?.includes(transactionMeta?.id),
+    );
+
+    if (isRequired) {
+      return true;
+    }
+
+    const isSameBatch = transactions.some(
+      (tx) =>
+        hasTransactionType(tx, SKIP_NOTIFICATION_TRANSACTION_TYPES) &&
+        tx.batchId &&
+        tx.batchId === transactionMeta?.batchId,
+    );
+
+    if (isSameBatch) {
+      return true;
+    }
+
+    // Feature-registered predicates (e.g. QuickBuy surfaces its own toasts and
+    // opts its transactions out of the generic notification). A throwing
+    // predicate must never break notifications.
+    for (const predicate of getNotificationSkipPredicates()) {
+      try {
+        if (predicate(transactionMeta)) {
+          return true;
+        }
+      } catch (error) {
+        Logger.error(error, 'Notification skip predicate threw');
       }
     }
-    // Update balance upon detecting a new incoming transaction
-    AccountTrackerController.refresh();
-  };
+
+    return false;
+  }
 }
 
 let instance;
@@ -449,12 +649,6 @@ export default {
   },
   setTransactionToView(id) {
     return instance?.setTransactionToView(id);
-  },
-  gotIncomingTransaction(lastBlock) {
-    return instance?.gotIncomingTransaction(lastBlock);
-  },
-  requestPushNotificationsPermission() {
-    return instance?.requestPushNotificationsPermission();
   },
   showSimpleNotification(data) {
     return instance?.showSimpleNotification(data);

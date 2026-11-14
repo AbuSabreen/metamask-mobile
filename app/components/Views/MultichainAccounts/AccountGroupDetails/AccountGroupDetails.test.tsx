@@ -1,0 +1,557 @@
+import React from 'react';
+import { fireEvent } from '@testing-library/react-native';
+import {
+  BackHandler,
+  HardwareBackPressEvent,
+  NativeEventSubscription,
+} from 'react-native';
+import { SolScope } from '@metamask/keyring-api';
+import renderWithProvider from '../../../../util/test/renderWithProvider';
+import { AccountGroupDetails } from './AccountGroupDetails';
+
+import { AccountDetailsIds } from '../AccountDetails.testIds';
+
+import {
+  isHDOrFirstPartySnapAccount,
+  isHardwareAccount,
+} from '../../../../util/address';
+import {
+  createMockAccountGroup,
+  createMockInternalAccount,
+  createMockWallet,
+  createMockInternalAccountsFromGroups,
+  createMockState,
+} from '../../../../component-library/components-temp/MultichainAccounts/test-utils';
+import { AvatarAccountVariant } from '@metamask/design-system-react-native';
+import { KeyringTypes } from '@metamask/keyring-controller';
+import { endTrace, TraceName } from '../../../../util/trace';
+
+const mockGoBack = jest.fn();
+const mockNavigate = jest.fn();
+
+const mockAccountGroup = createMockAccountGroup(
+  'keyring:test-wallet/0',
+  'Test Account Group',
+  ['account-1'],
+);
+const mockAccount = createMockInternalAccount(
+  'account-1',
+  '0x1234567890123456789012345678901234567890',
+  'Test Account',
+);
+mockAccount.options.entropySource = 'keyring:test-wallet';
+const groups = [mockAccountGroup];
+const mockWallet = createMockWallet(
+  'keyring:test-wallet',
+  'Test Wallet',
+  groups,
+);
+const internalAccounts = createMockInternalAccountsFromGroups(groups);
+const baseState = createMockState([mockWallet], internalAccounts);
+
+let mockRouteParams = { accountGroup: mockAccountGroup };
+
+jest.mock('@metamask/design-system-react-native', () => {
+  const ReactActual = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  const actual = jest.requireActual('@metamask/design-system-react-native');
+
+  return {
+    ...actual,
+    AvatarAccount: ({ testID }: { testID?: string }) =>
+      ReactActual.createElement(View, { testID }),
+  };
+});
+
+jest.mock('../../../../selectors/multichainAccounts/accounts', () => {
+  const actual = jest.requireActual(
+    '../../../../selectors/multichainAccounts/accounts',
+  );
+  return {
+    ...actual,
+    selectIconSeedAddressByAccountGroupId: jest.fn(() =>
+      jest.fn(() => '0xseed'),
+    ),
+  };
+});
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    goBack: mockGoBack,
+    navigate: mockNavigate,
+  }),
+  useRoute: () => ({
+    params: mockRouteParams,
+  }),
+}));
+
+jest.mock('../../../../util/address', () => ({
+  isHDOrFirstPartySnapAccount: jest.fn(),
+  isHardwareAccount: jest.fn(),
+  toFormattedAddress: jest.fn((address) => address),
+  areAddressesEqual: jest.fn((addr1, addr2) => addr1 === addr2),
+}));
+
+jest.mock('../../../../util/trace', () => ({
+  ...jest.requireActual('../../../../util/trace'),
+  endTrace: jest.fn(),
+  trace: jest.fn(),
+}));
+
+const mockNetworkControllerState = {
+  networkConfigurationsByChainId: {
+    0x1: {
+      chainId: '0x1',
+      name: 'Ethereum',
+    },
+    0xaa36a7: {
+      chainId: '0xaa36a7',
+      name: 'Sepolia Test Network',
+    },
+    0x2105: {
+      chainId: '0x2105',
+      name: 'Base',
+    },
+    0xa4b1: {
+      chainId: '0xa4b1',
+      name: 'Arbitrum One',
+    },
+  },
+};
+
+const mockMultichainNetworkController = {
+  multichainNetworkConfigurationsByChainId: {
+    [SolScope.Mainnet]: {
+      name: 'Solana Mainnet',
+      chainId: SolScope.Mainnet,
+      isTestnet: false,
+    },
+    [SolScope.Testnet]: {
+      name: 'Solana Testnet',
+      chainId: SolScope.Testnet,
+      isTestnet: true,
+    },
+    [SolScope.Devnet]: {
+      name: 'Solana Devnet',
+      chainId: SolScope.Devnet,
+      isTestnet: true,
+    },
+  },
+};
+
+describe('AccountGroupDetails', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRouteParams = { accountGroup: mockAccountGroup };
+    (isHDOrFirstPartySnapAccount as jest.Mock).mockReturnValue(true);
+    (isHardwareAccount as jest.Mock).mockReturnValue(false);
+  });
+
+  const mockState = {
+    ...baseState,
+    settings: {
+      avatarAccountType: AvatarAccountVariant.Maskicon,
+    },
+    user: {
+      seedphraseBackedUp: false,
+    },
+    engine: {
+      ...baseState.engine,
+      backgroundState: {
+        ...baseState.engine.backgroundState,
+        NetworkController: mockNetworkControllerState,
+        MultichainNetworkController: mockMultichainNetworkController,
+      },
+    },
+  };
+
+  it('renders correctly with account group details', () => {
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    expect(
+      getByTestId(AccountDetailsIds.ACCOUNT_DETAILS_CONTAINER),
+    ).toBeTruthy();
+    const headerTitle = getByTestId('header-title');
+    expect(headerTitle).toHaveProp('numberOfLines', 1);
+    expect(headerTitle).toHaveProp('ellipsizeMode', 'tail');
+    expect(headerTitle).toHaveStyle({
+      width: '100%',
+      minWidth: 0,
+      flexShrink: 1,
+    });
+    expect(
+      getByTestId(AccountDetailsIds.ACCOUNT_GROUP_DETAILS_AVATAR_CONTAINER),
+    ).toHaveStyle({
+      width: '100%',
+    });
+    expect(getByTestId(AccountDetailsIds.ACCOUNT_NAME_LINK)).toBeTruthy();
+    expect(getByTestId(AccountDetailsIds.NETWORKS_LINK)).toBeTruthy();
+    expect(getByTestId(AccountDetailsIds.PRIVATE_KEYS_LINK)).toBeTruthy();
+    expect(getByTestId(AccountDetailsIds.SMART_ACCOUNT_LINK)).toBeTruthy();
+  });
+
+  it('navigates back when back button is pressed', () => {
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    const backButton = getByTestId(AccountDetailsIds.BACK_BUTTON);
+    fireEvent.press(backButton);
+
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles hardware back press by navigating back and prevents default', () => {
+    const removeMock = jest.fn();
+    const addListenerSpy = jest
+      .spyOn(BackHandler, 'addEventListener')
+      .mockImplementation(
+        (
+          event: 'hardwareBackPress',
+          _handler: (
+            event: HardwareBackPressEvent,
+          ) => boolean | null | undefined,
+        ): NativeEventSubscription => {
+          expect(event).toBe('hardwareBackPress');
+          return { remove: removeMock } as unknown as NativeEventSubscription;
+        },
+      );
+
+    const { unmount } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    // Multiple subscriptions may exist. Invoke handlers until we find the one that triggers goBack.
+    let foundHandlerCalledGoBack = false;
+    let observedResult: boolean | null | undefined;
+    for (const call of addListenerSpy.mock.calls) {
+      const maybeHandler = call?.[1] as
+        | (() => boolean | null | undefined)
+        | undefined;
+      if (!maybeHandler) {
+        continue;
+      }
+      mockGoBack.mockClear();
+      observedResult = maybeHandler();
+      if (mockGoBack.mock.calls.length > 0) {
+        foundHandlerCalledGoBack = true;
+        break;
+      }
+    }
+
+    expect(foundHandlerCalledGoBack).toBe(true);
+    expect(observedResult).toBe(true);
+
+    unmount();
+    expect(removeMock).toHaveBeenCalled();
+
+    addListenerSpy.mockRestore();
+  });
+
+  it('displays unlock to reveal text for private keys', () => {
+    const { getByText } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    expect(getByText('Unlock to reveal')).toBeTruthy();
+  });
+
+  it('displays set up text for smart account', () => {
+    const { getByText } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    expect(getByText('Set up')).toBeTruthy();
+  });
+
+  it('renders Wallet component when wallet exists', () => {
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    expect(getByTestId(AccountDetailsIds.WALLET_NAME_LINK)).toBeTruthy();
+  });
+
+  it('does not render SecretRecoveryPhrase when account cannot export mnemonic', () => {
+    (isHDOrFirstPartySnapAccount as jest.Mock).mockReturnValue(false);
+
+    const { queryByText, queryByTestId } = renderWithProvider(
+      <AccountGroupDetails />,
+      { state: mockState },
+    );
+
+    expect(queryByText('Secret Recovery Phrase')).toBeNull();
+    expect(
+      queryByTestId(AccountDetailsIds.SECRET_RECOVERY_PHRASE_LINK),
+    ).toBeNull();
+  });
+
+  it('renders RemoveAccount for single account type', () => {
+    const singleAccountGroup = createMockAccountGroup(
+      'keyring:test-wallet/0',
+      'Test Account Group',
+    );
+
+    mockRouteParams = { accountGroup: singleAccountGroup };
+
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    expect(
+      getByTestId(AccountDetailsIds.ACCOUNT_DETAILS_CONTAINER),
+    ).toBeTruthy();
+  });
+
+  it('does not render RemoveAccount for non-single account type', () => {
+    const multiAccountGroup = createMockAccountGroup(
+      'keyring:test-wallet/0',
+      'Test Account Group',
+      ['account-1', 'account-2'],
+    );
+
+    // Create a new mock state with the multi-account group
+    const multiAccountGroups = [multiAccountGroup];
+    const multiAccountWallet = createMockWallet(
+      'keyring:test-wallet',
+      'Test Wallet',
+      multiAccountGroups,
+    );
+    const multiAccountInternalAccounts =
+      createMockInternalAccountsFromGroups(multiAccountGroups);
+    const multiAccountState = createMockState(
+      [multiAccountWallet],
+      multiAccountInternalAccounts,
+    );
+
+    mockRouteParams = { accountGroup: multiAccountGroup };
+
+    const { queryByText, queryByTestId } = renderWithProvider(
+      <AccountGroupDetails />,
+      { state: multiAccountState },
+    );
+
+    expect(queryByText('Remove account')).toBeNull();
+    expect(queryByTestId(AccountDetailsIds.REMOVE_ACCOUNT_BUTTON)).toBeNull();
+  });
+
+  it('handles missing data gracefully', () => {
+    const stateWithoutWallet = {
+      ...mockState,
+      engine: {
+        backgroundState: {
+          ...mockState.engine.backgroundState,
+          AccountTreeController: { accountTree: { wallets: {} } },
+        },
+      },
+    };
+    const stateWithoutAccount = {
+      ...mockState,
+      engine: {
+        backgroundState: {
+          ...mockState.engine.backgroundState,
+          AccountsController: {
+            internalAccounts: { accounts: {}, selectedAccount: undefined },
+          },
+        },
+      },
+    };
+
+    const { getByTestId: getByTestId1 } = renderWithProvider(
+      <AccountGroupDetails />,
+      { state: stateWithoutWallet },
+    );
+    const { getByTestId: getByTestId2 } = renderWithProvider(
+      <AccountGroupDetails />,
+      { state: stateWithoutAccount },
+    );
+
+    expect(
+      getByTestId1(AccountDetailsIds.ACCOUNT_DETAILS_CONTAINER),
+    ).toBeTruthy();
+    expect(
+      getByTestId2(AccountDetailsIds.ACCOUNT_DETAILS_CONTAINER),
+    ).toBeTruthy();
+  });
+
+  it('navigates to Address List when Networks link is pressed', () => {
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    const networksLink = getByTestId(AccountDetailsIds.NETWORKS_LINK);
+    fireEvent.press(networksLink);
+
+    expect(mockNavigate).toHaveBeenCalledWith(expect.any(String), {
+      groupId: mockAccountGroup.id,
+      title: `Addresses / ${mockAccountGroup.metadata.name}`,
+      source: 'account_details',
+      onLoad: expect.any(Function),
+    });
+  });
+
+  it('ends the address list trace when the Address List onLoad callback is invoked', () => {
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    const networksLink = getByTestId(AccountDetailsIds.NETWORKS_LINK);
+    fireEvent.press(networksLink);
+
+    const navigationParams = mockNavigate.mock.calls[0][1];
+    navigationParams.onLoad();
+
+    expect(endTrace).toHaveBeenCalledWith({
+      name: TraceName.ShowAccountAddressList,
+    });
+  });
+
+  it('ends the address list trace if navigating to Address List throws', () => {
+    const navigationError = new Error('navigation failed');
+    mockNavigate.mockImplementationOnce(() => {
+      throw navigationError;
+    });
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    const networksLink = getByTestId(AccountDetailsIds.NETWORKS_LINK);
+
+    expect(() => fireEvent.press(networksLink)).toThrow(navigationError);
+    expect(endTrace).toHaveBeenCalledWith({
+      name: TraceName.ShowAccountAddressList,
+    });
+  });
+
+  it('navigates to Smart Account Details when Smart Account link is pressed', () => {
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    const smartAccountLink = getByTestId(AccountDetailsIds.SMART_ACCOUNT_LINK);
+    fireEvent.press(smartAccountLink);
+
+    expect(mockNavigate).toHaveBeenCalledWith('SmartAccountDetails', {
+      account: expect.any(Object),
+    });
+  });
+
+  it('navigates to edit account name when account name is pressed', () => {
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+    const accountNameLink = getByTestId(AccountDetailsIds.ACCOUNT_NAME_LINK);
+    fireEvent.press(accountNameLink);
+
+    expect(mockNavigate).toHaveBeenCalledWith('EditMultichainAccountName', {
+      accountGroup: mockAccountGroup,
+    });
+  });
+
+  it('uses the group icon seed address to render the avatar', () => {
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: mockState,
+    });
+
+    // Assert that the selector selectIconSeedAddressByAccountGroupId was called
+    const { selectIconSeedAddressByAccountGroupId: mockedFactory } =
+      jest.requireMock('../../../../selectors/multichainAccounts/accounts');
+    expect(mockedFactory).toHaveBeenCalledWith(mockAccountGroup.id);
+
+    // Assert that the avatar is rendered
+    expect(
+      getByTestId(AccountDetailsIds.ACCOUNT_GROUP_DETAILS_AVATAR),
+    ).toBeTruthy();
+  });
+
+  it('hides private key button for hardware wallet accounts', () => {
+    (isHardwareAccount as jest.Mock).mockReturnValue(true);
+
+    const mockLedgerAccount = createMockInternalAccount(
+      'ledger-account-1',
+      '0x1234567890123456789012345678901234567890',
+      'Ledger Account',
+    );
+    mockLedgerAccount.metadata.keyring.type = KeyringTypes.ledger;
+
+    const mockLedgerAccountGroup = createMockAccountGroup(
+      'keyring:ledger-wallet/0',
+      'Ledger Account Group',
+      ['ledger-account-1'],
+    );
+
+    const ledgerState = {
+      ...mockState,
+      engine: {
+        backgroundState: {
+          ...mockState.engine.backgroundState,
+          AccountsController: {
+            internalAccounts: {
+              accounts: {
+                'ledger-account-1': mockLedgerAccount,
+              },
+              selectedAccount: 'ledger-account-1',
+            },
+          },
+        },
+      },
+    };
+
+    mockRouteParams = { accountGroup: mockLedgerAccountGroup };
+
+    const { queryByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: ledgerState,
+    });
+
+    // Verify that the private key button is NOT visible for hardware wallet accounts
+    expect(queryByTestId(AccountDetailsIds.PRIVATE_KEYS_LINK)).toBeNull();
+  });
+
+  it('shows private key button for non-hardware wallet accounts', () => {
+    // Mock isHardwareAccount to return false for non-hardware wallets
+    (isHardwareAccount as jest.Mock).mockReturnValue(false);
+
+    // Create a mock HD account (non-hardware wallet)
+    const mockHDAccount = createMockInternalAccount(
+      'hd-account-1',
+      '0x1234567890123456789012345678901234567890',
+      'HD Account',
+    );
+    mockHDAccount.metadata.keyring.type = KeyringTypes.hd;
+
+    const mockHDAccountGroup = createMockAccountGroup(
+      'keyring:hd-wallet/0',
+      'HD Account Group',
+      ['hd-account-1'],
+    );
+
+    const hdState = {
+      ...mockState,
+      engine: {
+        backgroundState: {
+          ...mockState.engine.backgroundState,
+          AccountsController: {
+            internalAccounts: {
+              accounts: {
+                'hd-account-1': mockHDAccount,
+              },
+              selectedAccount: 'hd-account-1',
+            },
+          },
+        },
+      },
+    };
+
+    mockRouteParams = { accountGroup: mockHDAccountGroup };
+
+    const { getByTestId } = renderWithProvider(<AccountGroupDetails />, {
+      state: hdState,
+    });
+
+    // Verify that the private key button IS visible for non-hardware wallet accounts
+    expect(getByTestId(AccountDetailsIds.PRIVATE_KEYS_LINK)).toBeTruthy();
+  });
+});

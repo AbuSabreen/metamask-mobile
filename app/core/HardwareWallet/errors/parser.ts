@@ -1,0 +1,507 @@
+import {
+  ErrorCode,
+  HardwareWalletError,
+  LEDGER_ERROR_MAPPINGS,
+  HardwareWalletType,
+  getDmkErrorFromTag,
+  DMK_MESSAGE_PATTERNS,
+} from '@metamask/hw-wallet-sdk';
+import { add0x } from '@metamask/utils';
+import { LedgerCommunicationErrors } from '../../Ledger/ledgerErrors';
+import { createHardwareWalletError } from './factory';
+import { ERROR_NAME_MAPPINGS } from './mappings';
+
+const USER_REJECTED_STATUS_CODE = Object.entries(LEDGER_ERROR_MAPPINGS).find(
+  ([_, mapping]) => mapping.code === ErrorCode.UserRejected,
+)?.[0];
+
+/**
+ * Convert a numeric status code to hex string format used by SDK mappings
+ */
+function toHexStatusCode(statusCode: number): string {
+  return add0x(statusCode.toString(16).padStart(4, '0'));
+}
+
+/**
+ * Extract status code from an error
+ */
+function extractStatusCode(error: unknown): number | null {
+  if (!error) return null;
+
+  // Check for statusCode property (TransportStatusError)
+  // Use try/catch and direct property access for cross-realm errors
+  if (typeof error === 'object' && error !== null) {
+    const errorObj = error as Record<string, unknown>;
+    if (typeof errorObj.statusCode === 'number') {
+      return errorObj.statusCode;
+    }
+  }
+
+  // Check in error message for hex status code
+  let message: string;
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    message = String((error as Error).message);
+  } else if (error instanceof Error) {
+    message = error.message;
+  } else {
+    message = String(error);
+  }
+
+  // Match exactly 4 hex digits, not followed by more hex digits
+  // (prevents matching beginning of Ethereum addresses like 0x6985abc...)
+  const hexMatch = message.match(/0x[0-9a-fA-F]{4}(?![0-9a-fA-F])/);
+  if (hexMatch) {
+    return parseInt(hexMatch[0], 16);
+  }
+
+  return null;
+}
+
+/**
+ * Parse a LedgerCommunicationErrors enum value to HardwareWalletError.
+ */
+function parseLedgerCommunicationError(
+  error: LedgerCommunicationErrors,
+  walletType?: HardwareWalletType | null,
+): HardwareWalletError {
+  switch (error) {
+    case LedgerCommunicationErrors.LedgerDisconnected:
+      return createHardwareWalletError(
+        ErrorCode.DeviceDisconnected,
+        walletType,
+      );
+
+    case LedgerCommunicationErrors.LedgerHasPendingConfirmation:
+      return createHardwareWalletError(
+        ErrorCode.UserConfirmationRequired,
+        walletType,
+      );
+
+    case LedgerCommunicationErrors.EthAppNotOpen:
+    case LedgerCommunicationErrors.FailedToOpenApp:
+    case LedgerCommunicationErrors.FailedToCloseApp:
+      return createHardwareWalletError(
+        ErrorCode.DeviceStateEthAppClosed,
+        walletType,
+      );
+
+    case LedgerCommunicationErrors.UserRefusedConfirmation:
+      return createHardwareWalletError(ErrorCode.UserRejected, walletType);
+
+    case LedgerCommunicationErrors.AppIsNotInstalled:
+      return createHardwareWalletError(
+        ErrorCode.DeviceMissingCapability,
+        walletType,
+      );
+
+    case LedgerCommunicationErrors.LedgerIsLocked:
+      return createHardwareWalletError(
+        ErrorCode.AuthenticationDeviceLocked,
+        walletType,
+      );
+
+    case LedgerCommunicationErrors.BlindSignError:
+      return createHardwareWalletError(
+        ErrorCode.DeviceStateBlindSignNotSupported,
+        walletType,
+      );
+
+    case LedgerCommunicationErrors.DeviceUnresponsive:
+      return createHardwareWalletError(
+        ErrorCode.DeviceUnresponsive,
+        walletType,
+      );
+
+    case LedgerCommunicationErrors.NotSupported:
+    case LedgerCommunicationErrors.UnknownError:
+    default:
+      return createHardwareWalletError(ErrorCode.Unknown, walletType);
+  }
+}
+
+/**
+ * Parse a Ledger status code to HardwareWalletError.
+ */
+function parseLedgerStatusCode(
+  statusCode: number,
+  walletType: HardwareWalletType | null | undefined,
+  originalError?: Error,
+): HardwareWalletError {
+  const hexCode = toHexStatusCode(statusCode);
+  const mapping = LEDGER_ERROR_MAPPINGS[hexCode];
+
+  if (mapping) {
+    // Special handling for ErrorCode.UserRejected which can mean user rejected OR blind signing
+    if (hexCode === USER_REJECTED_STATUS_CODE && originalError) {
+      const message = originalError.message?.toLowerCase() || '';
+      if (message.includes('blind sign') || message.includes('contract data')) {
+        return createHardwareWalletError(
+          ErrorCode.DeviceStateBlindSignNotSupported,
+          walletType,
+          undefined,
+          { cause: originalError, metadata: { statusCode, hexCode } },
+        );
+      }
+    }
+
+    return createHardwareWalletError(mapping.code, walletType, undefined, {
+      cause: originalError,
+      metadata: { statusCode, hexCode },
+    });
+  }
+
+  // Unknown status code
+  return createHardwareWalletError(
+    ErrorCode.Unknown,
+    walletType,
+    `Unknown Ledger error (status: ${hexCode})`,
+    { cause: originalError, metadata: { statusCode, hexCode } },
+  );
+}
+
+function parseTransportStatusError(
+  error: object,
+  walletType?: HardwareWalletType | null,
+): HardwareWalletError | null {
+  const statusCode = extractStatusCode(error);
+  if (statusCode === null) {
+    return null;
+  }
+
+  return parseLedgerStatusCode(
+    statusCode,
+    walletType,
+    isErrorLike(error) ? error : undefined,
+  );
+}
+
+/**
+ * Extract a DMK device status word from an error's `errorCode` field.
+ *
+ * DMK `DeviceExchangeError` subclasses carry the raw APDU status word as a
+ * 4-hex-digit string WITHOUT the `0x` prefix (e.g. `'6a80'`), unlike legacy
+ * `TransportStatusError.statusCode` (a number). Only well-formed 4-hex-digit
+ * strings are treated as status words; command-specific symbolic error codes
+ * (e.g. `'invalidAddress'`) are ignored.
+ */
+function getDmkErrorCode(error: object): string | null {
+  if (!('errorCode' in error)) {
+    return null;
+  }
+  const errorCode = (error as Record<string, unknown>).errorCode;
+  if (typeof errorCode !== 'string') {
+    return null;
+  }
+  return /^[0-9a-fA-F]{4}$/.test(errorCode) ? errorCode : null;
+}
+
+function parseDmkError(
+  error: object,
+  walletType?: HardwareWalletType | null,
+): HardwareWalletError | null {
+  const dmk = getDmkErrorFromTag(error);
+  if (dmk) {
+    return createHardwareWalletError(dmk.code, walletType, undefined, {
+      cause: isErrorLike(error) ? error : undefined,
+      metadata: { errorName: dmk.tag },
+    });
+  }
+
+  // Unrecognized DMK tag: a DeviceExchangeError subclass still carries the
+  // device status word in `errorCode`. Classify through the Ledger status
+  // table so sign refusals (e.g. 0x6a80 blind signing disabled) surface as
+  // actionable codes instead of generic Unknown errors.
+  const dmkErrorCode = getDmkErrorCode(error);
+  if (dmkErrorCode !== null) {
+    const statusCode = parseInt(dmkErrorCode, 16);
+    return parseLedgerStatusCode(
+      statusCode,
+      walletType,
+      isErrorLike(error) ? error : undefined,
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Parse error by checking its `name` property, then DMK `_tag` as fallback.
+ *
+ * Legacy @ledgerhq/errors identify themselves via the standard JS `error.name`
+ * (e.g. 'DisconnectedDevice', 'TransportStatusError'). DMK errors do not set
+ * `name`; those are resolved via SDK `getDmkErrorFromTag` when no legacy
+ * `name` is present. This preserves "name over _tag" precedence: when both
+ * fields are present, `name` wins and `_tag` is ignored.
+ */
+function parseErrorByName(
+  error: unknown,
+  walletType?: HardwareWalletType | null,
+): HardwareWalletError | null {
+  if (error === null || typeof error !== 'object') {
+    return null;
+  }
+
+  const name =
+    'name' in error && typeof error.name === 'string' ? error.name : null;
+
+  // DMK errors do not have a legacy name. A present name always takes precedence.
+  if (!name) {
+    return parseDmkError(error, walletType);
+  }
+
+  // TransportStatusError requires its status code to determine the error.
+  if (name === 'TransportStatusError') {
+    return parseTransportStatusError(error, walletType);
+  }
+
+  const errorCode = ERROR_NAME_MAPPINGS[name];
+  if (!errorCode) {
+    return null;
+  }
+
+  return createHardwareWalletError(errorCode, walletType, undefined, {
+    cause: isErrorLike(error) ? error : undefined,
+    metadata: { errorName: name },
+  });
+}
+
+/**
+ * Mobile-owned message→ErrorCode patterns for {@link parseErrorByMessage}.
+ *
+ * Fallback: evaluated AFTER the SDK-owned `DMK_MESSAGE_PATTERNS`, so these
+ * only handle legacy/BLE/OS errors DMK doesn't recognise. MUST stay
+ * substring-disjoint from `DMK_MESSAGE_PATTERNS` — overlap would let DMK
+ * shadow these and misroute legacy errors. Guarded by the collision-invariant
+ * test in parser.test.ts.
+ */
+export const LOCAL_MESSAGE_PATTERNS: {
+  patterns: string[];
+  code: ErrorCode;
+  condition?: (msg: string) => boolean;
+}[] = [
+  {
+    // Ledger devices can only sign EIP-712 typed data with version V4.
+    // The keyring throws "Ledger: Only version 4 of typed data signing is
+    // supported" for V1/V3 requests.
+    patterns: ['version 4 of typed data', 'only version 4'],
+    code: ErrorCode.DeviceStateOnlyV4Supported,
+  },
+  {
+    patterns: ['disconnected', 'disconnect', 'connection lost'],
+    code: ErrorCode.DeviceDisconnected,
+  },
+  {
+    // Legacy BLE adapter: TransportBLE.open returned null — the Ledger is not
+    // currently connectable (locked, screen off, out of range, cold BLE cache
+    // after app restart).
+    patterns: ['failed to open transport'],
+    code: ErrorCode.BluetoothConnectionFailed,
+  },
+  {
+    // DMK adapter: direct connect attempted with a stored deviceId but no
+    // device-discovery session has run this app launch.
+    patterns: ['no cached discovereddevice'],
+    code: ErrorCode.DeviceDisconnected,
+  },
+  { patterns: ['timeout', 'timed out'], code: ErrorCode.ConnectionTimeout },
+  { patterns: ['unresponsive'], code: ErrorCode.DeviceUnresponsive },
+  {
+    patterns: ['locked', 'unlock'],
+    code: ErrorCode.AuthenticationDeviceLocked,
+  },
+  {
+    patterns: ['blind signing', 'blind sign', 'contract data'],
+    code: ErrorCode.DeviceStateBlindSignNotSupported,
+  },
+  {
+    patterns: ['eth app', 'ethereum app'],
+    code: ErrorCode.DeviceStateEthAppClosed,
+    condition: (msg) =>
+      msg.includes('open') || msg.includes('launch') || msg.includes('start'),
+  },
+  {
+    patterns: ['rejected', 'cancelled', 'refused'],
+    code: ErrorCode.UserRejected,
+  },
+  {
+    patterns: ['not authorized', 'unauthorized'],
+    code: ErrorCode.PermissionNearbyDevicesDenied,
+    condition: (msg) => msg.includes('bluetooth'),
+  },
+  {
+    patterns: ['bluetooth'],
+    code: ErrorCode.BluetoothDisabled,
+    condition: (msg) => msg.includes('off') || msg.includes('disabled'),
+  },
+  {
+    patterns: ['bluetooth'],
+    code: ErrorCode.BluetoothScanFailed,
+    condition: (msg) => msg.includes('scan'),
+  },
+  { patterns: ['bluetooth'], code: ErrorCode.BluetoothConnectionFailed },
+];
+
+/**
+ * Parse error by checking common patterns in error messages
+ */
+function parseErrorByMessage(
+  error: Error,
+  walletType?: HardwareWalletType | null,
+): HardwareWalletError | null {
+  const message = error.message.toLowerCase();
+  const name = error.name?.toLowerCase() ?? '';
+
+  // Check for BLE errors first
+  // BleError with "Operation was cancelled" is a Bluetooth connection issue
+  if (name === 'bleerror' || message.includes('bleerror')) {
+    return createHardwareWalletError(
+      ErrorCode.BluetoothConnectionFailed,
+      walletType,
+      undefined,
+      { cause: error },
+    );
+  }
+
+  // SDK-owned DMK patterns first (DMK is source of truth), local fallback.
+  const messagePatterns: {
+    patterns: string[];
+    code: ErrorCode;
+    condition?: (msg: string) => boolean;
+  }[] = [...DMK_MESSAGE_PATTERNS, ...LOCAL_MESSAGE_PATTERNS];
+
+  for (const { patterns, code, condition } of messagePatterns) {
+    const matchesPattern = patterns.some((p) => message.includes(p));
+    const meetsCondition = !condition || condition(message);
+
+    if (matchesPattern && meetsCondition) {
+      return createHardwareWalletError(code, walletType, undefined, {
+        cause: error,
+      });
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Main error parser function
+ *
+ * Attempts to parse any error into a structured HardwareWalletError.
+ * Uses SDK mappings where possible, with Mobile-specific fallbacks.
+ *
+ * @param error - The error to parse
+ * @param walletType - The type of hardware wallet
+ * @returns A structured HardwareWalletError
+ */
+export function parseErrorByType(
+  error: unknown,
+  walletType?: HardwareWalletType | null,
+): HardwareWalletError {
+  if (error instanceof HardwareWalletError) {
+    return error;
+  }
+
+  if (isErrorCodeObject(error)) {
+    if (error.code === ErrorCode.Unknown && isErrorLike(error)) {
+      const reParsed = parseErrorByMessage(error, walletType);
+      if (reParsed) {
+        return reParsed;
+      }
+    }
+    const message =
+      typeof error.message === 'string' ? error.message : undefined;
+    return createHardwareWalletError(error.code, walletType, message);
+  }
+
+  if (isLedgerCommunicationError(error)) {
+    const code = typeof error === 'string' ? error : error.code;
+    return parseLedgerCommunicationError(code, walletType);
+  }
+
+  const parsedByName = parseErrorByName(error, walletType);
+  if (parsedByName) {
+    return parsedByName;
+  }
+
+  if (isErrorLike(error)) {
+    const parsedByMessage = parseErrorByMessage(error, walletType);
+    if (parsedByMessage) {
+      return parsedByMessage;
+    }
+
+    return createHardwareWalletError(
+      ErrorCode.Unknown,
+      walletType,
+      error.message,
+      { cause: error },
+    );
+  }
+
+  // Handle plain string errors
+  if (typeof error === 'string') {
+    return createHardwareWalletError(ErrorCode.Unknown, walletType, error);
+  }
+
+  // Ultimate fallback
+  return createHardwareWalletError(
+    ErrorCode.Unknown,
+    walletType,
+    'An unexpected error occurred',
+  );
+}
+
+/**
+ * Type guard: error is an object with an explicit ErrorCode (e.g. { code: ErrorCode.BluetoothDisabled, message?: string }).
+ * Accepts both number and string so it works whether ErrorCode is a numeric or string enum.
+ */
+function isErrorCodeObject(
+  error: unknown,
+): error is { code: ErrorCode; message?: string } {
+  if (error === null || typeof error !== 'object' || !('code' in error)) {
+    return false;
+  }
+  const { code } = error;
+  const validCodes = Object.values(ErrorCode);
+  return (
+    (typeof code === 'number' || typeof code === 'string') &&
+    validCodes.includes(code as ErrorCode)
+  );
+}
+
+/**
+ * Type guard: error has Error-like shape (for cross-realm errors).
+ */
+function isErrorLike(error: unknown): error is Error {
+  return (
+    error instanceof Error ||
+    (error !== null &&
+      typeof error === 'object' &&
+      'message' in error &&
+      typeof error.message === 'string')
+  );
+}
+
+/**
+ * Type guard: error is a LedgerCommunicationErrors value (string or object with .code).
+ */
+function isLedgerCommunicationError(
+  error: unknown,
+): error is LedgerCommunicationErrors | { code: LedgerCommunicationErrors } {
+  if (
+    typeof error === 'string' &&
+    Object.values(LedgerCommunicationErrors).includes(
+      error as LedgerCommunicationErrors,
+    )
+  ) {
+    return true;
+  }
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    Object.values(LedgerCommunicationErrors).includes(
+      (error as { code: LedgerCommunicationErrors }).code,
+    )
+  );
+}

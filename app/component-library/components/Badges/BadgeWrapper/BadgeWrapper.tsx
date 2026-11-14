@@ -1,4 +1,5 @@
 /* eslint-disable react/prop-types */
+
 // Third library dependencies.
 import React from 'react';
 import { View } from 'react-native';
@@ -15,15 +16,21 @@ import {
   BADGE_WRAPPER_BADGE_TEST_ID,
 } from './BadgeWrapper.constants';
 
+/**
+ * @deprecated Please update your code to use `BadgeWrapper` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/BadgeWrapper/README.md}
+ */
 const BadgeWrapper: React.FC<BadgeWrapperProps> = ({
   anchorElementShape = DEFAULT_BADGEWRAPPER_BADGEANCHORELEMENTSHAPE,
   badgePosition = DEFAULT_BADGEWRAPPER_BADGEPOSITION,
   children,
   badgeElement,
   style,
+  anchorSize,
 }) => {
   const { size: containerSize, onLayout: onLayoutContainerSize } =
-    useComponentSize();
+    useComponentSize(anchorSize);
 
   const { styles } = useStyles(styleSheet, {
     style,
@@ -44,4 +51,4 @@ const BadgeWrapper: React.FC<BadgeWrapperProps> = ({
   );
 };
 
-export default BadgeWrapper;
+export default React.memo(BadgeWrapper);

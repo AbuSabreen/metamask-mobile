@@ -1,33 +1,26 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import { getBuildNumber } from 'react-native-device-info';
-import { useAppConfig } from '../AppConfig';
 import { createUpdateNeededNavDetails } from '../../UI/UpdateNeeded/UpdateNeeded';
 import { useSelector } from 'react-redux';
 import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
 import { InteractionManager } from 'react-native';
+import { RootState } from '../../../reducers';
+import { selectAppMinimumBuild } from '../../../selectors/featureFlagController/minimumAppVersion';
+import { navigateWithDetails } from '../../../util/navigation/navUtils';
 
 const useMinimumVersions = () => {
-  const allowAutomaticSecurityChecks = useSelector(
-    (state: any) => state.security.automaticSecurityChecksEnabled,
+  const appMinimumBuild = useSelector((state: RootState) =>
+    selectAppMinimumBuild(state),
   );
-  const minimumValues = useAppConfig(allowAutomaticSecurityChecks);
   const currentBuildNumber = Number(getBuildNumber());
-  const navigation = useNavigation();
-  const shouldTriggerUpdateFlow = useMemo(
-    () =>
-      !!(
-        allowAutomaticSecurityChecks &&
-        minimumValues.data &&
-        minimumValues.data.security.minimumVersions.appMinimumBuild >
-          currentBuildNumber
-      ),
-    [allowAutomaticSecurityChecks, currentBuildNumber, minimumValues.data],
-  );
+  const navigation = useNavigation<AppNavigationProp>();
+  const shouldTriggerUpdateFlow = appMinimumBuild > currentBuildNumber;
 
   useEffect(() => {
     if (shouldTriggerUpdateFlow) {
       InteractionManager.runAfterInteractions(() => {
-        navigation.navigate(...createUpdateNeededNavDetails());
+        navigateWithDetails(navigation, createUpdateNeededNavDetails());
       });
     }
   }, [navigation, shouldTriggerUpdateFlow]);

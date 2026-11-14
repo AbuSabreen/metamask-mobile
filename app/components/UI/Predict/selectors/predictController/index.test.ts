@@ -1,0 +1,1574 @@
+import {
+  selectPredictControllerState,
+  selectPredictClaimablePositions,
+  selectPredictPendingDeposits,
+  selectPredictWonPositions,
+  selectPredictWinFiat,
+  selectPredictWinPnl,
+  selectPredictBalances,
+  selectPredictBalanceByAddress,
+  selectPredictAccountMeta,
+  selectPredictAccountMetaByAddress,
+  selectPredictWithdrawTransaction,
+  selectPredictActiveBuyOrder,
+  selectPredictSelectedPaymentToken,
+} from './index';
+import { PredictPosition, PredictPositionStatus } from '../../types';
+
+import { POLYMARKET_PROVIDER_ID } from '../../providers/polymarket/constants';
+
+const FIXED_VALID_UNTIL = 9999999999999;
+
+const makeWonPosition = (
+  overrides: Partial<PredictPosition> = {},
+): PredictPosition =>
+  ({
+    id: 'pos-1',
+    providerId: POLYMARKET_PROVIDER_ID,
+    marketId: 'market-1',
+    outcomeId: 'outcome-1',
+    outcome: 'Yes',
+    outcomeTokenId: '123',
+    currentValue: 100,
+    title: 'Test Market',
+    icon: 'icon-url',
+    amount: 50,
+    price: 0.5,
+    status: PredictPositionStatus.WON,
+    size: 100,
+    outcomeIndex: 0,
+    percentPnl: 50,
+    cashPnl: 25,
+    claimable: true,
+    initialValue: 75,
+    avgPrice: 0.75,
+    endDate: '2024-12-31',
+    ...overrides,
+  }) as PredictPosition;
+
+const makeClaimablePositionsState = (
+  claimablePositions: Record<string, PredictPosition[]>,
+) => ({
+  engine: {
+    backgroundState: {
+      PredictController: {
+        claimablePositions,
+      },
+    },
+  },
+});
+
+describe('Predict Controller Selectors', () => {
+  describe('selectPredictControllerState', () => {
+    it('selects the PredictController state', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              eligibility: {},
+              lastError: null,
+              lastUpdateTimestamp: 0,
+              claimTransaction: null,
+              depositTransaction: null,
+              accountMeta: {},
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictControllerState(mockState as any);
+
+      expect(result).toEqual(
+        mockState.engine.backgroundState.PredictController,
+      );
+    });
+  });
+
+  describe('selectPredictPendingDeposits', () => {
+    it('returns deposit transaction when it exists', () => {
+      const pendingDeposits = {
+        '0x123': true,
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              pendingDeposits,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictPendingDeposits(mockState as any);
+
+      expect(result).toEqual(pendingDeposits);
+    });
+
+    it('returns empty object when pending deposits do not exist', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              pendingDeposits: {},
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictPendingDeposits(mockState as any);
+
+      expect(result).toEqual({});
+    });
+
+    it('returns empty object when PredictController state is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: undefined,
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictPendingDeposits(mockState as any);
+
+      expect(result).toEqual({});
+    });
+  });
+
+  describe('selectPredictWithdrawTransaction', () => {
+    it('returns withdraw transaction when it exists', () => {
+      const withdrawTransaction = {
+        amount: 100,
+        chainId: 137,
+        status: 'pending',
+        providerId: 'polymarket',
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              withdrawTransaction,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictWithdrawTransaction(mockState as any);
+
+      expect(result).toEqual(withdrawTransaction);
+    });
+
+    it('returns null when withdraw transaction does not exist', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              withdrawTransaction: null,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictWithdrawTransaction(mockState as any);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('selectPredictActiveBuyOrder', () => {
+    const mockAccountsController = {
+      internalAccounts: {
+        selectedAccount: 'acct-1',
+        accounts: {
+          'acct-1': {
+            address: '0xabc123',
+            type: 'eip155:eoa',
+            id: 'acct-1',
+            metadata: {
+              name: 'Account 1',
+              keyring: { type: 'HD Key Tree' },
+              importTime: 0,
+              lastSelected: 0,
+            },
+            options: {},
+            methods: [],
+            scopes: [],
+          },
+        },
+      },
+    };
+
+    it('returns active buy order for the selected account address', () => {
+      const activeBuyOrder = {
+        state: 'preview',
+        transactionId: 'tx-1',
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              activeBuyOrders: { '0xabc123': activeBuyOrder },
+            },
+            AccountsController: mockAccountsController,
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictActiveBuyOrder(mockState as any);
+
+      expect(result).toEqual(activeBuyOrder);
+    });
+
+    it('returns null when no order exists for the selected address', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              activeBuyOrders: {},
+            },
+            AccountsController: mockAccountsController,
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictActiveBuyOrder(mockState as any);
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when PredictController state is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: undefined,
+            AccountsController: mockAccountsController,
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictActiveBuyOrder(mockState as any);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('selectPredictClaimablePositions', () => {
+    it('returns claimable positions when they exist', () => {
+      const testAddress = '0x123';
+      const claimablePositions = {
+        [testAddress]: [
+          {
+            id: 'pos-1',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-1',
+            outcomeId: 'outcome-1',
+            outcome: 'Yes',
+            outcomeTokenId: '123',
+            currentValue: 100,
+            title: 'Test Market',
+            icon: 'icon-url',
+            amount: 50,
+            price: 0.5,
+            status: PredictPositionStatus.WON,
+            size: 100,
+            outcomeIndex: 0,
+            percentPnl: 50,
+            cashPnl: 25,
+            claimable: true,
+            initialValue: 75,
+            avgPrice: 0.75,
+            endDate: '2024-12-31',
+          },
+        ],
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictClaimablePositions(mockState as any);
+
+      expect(result).toEqual(claimablePositions);
+    });
+
+    it('returns empty object when claimable positions do not exist', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions: null,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictClaimablePositions(mockState as any);
+
+      expect(result).toEqual({});
+    });
+
+    it('returns empty object when PredictController state is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: undefined,
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictClaimablePositions(mockState as any);
+
+      expect(result).toEqual({});
+    });
+  });
+
+  describe('selectPredictWonPositions', () => {
+    it('filters positions with WON or REDEEMABLE status', () => {
+      const testAddress = '0x123';
+      const claimablePositions = {
+        [testAddress]: [
+          {
+            id: 'pos-1',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-1',
+            outcomeId: 'outcome-1',
+            outcome: 'Yes',
+            outcomeTokenId: '123',
+            currentValue: 100,
+            title: 'Test Market',
+            icon: 'icon-url',
+            amount: 50,
+            price: 0.5,
+            status: PredictPositionStatus.WON,
+            size: 100,
+            outcomeIndex: 0,
+            percentPnl: 50,
+            cashPnl: 25,
+            claimable: true,
+            initialValue: 75,
+            avgPrice: 0.75,
+            endDate: '2024-12-31',
+          },
+          {
+            id: 'pos-push',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-push',
+            outcomeId: 'outcome-push',
+            outcome: 'Yes',
+            outcomeTokenId: '789',
+            currentValue: 50,
+            title: 'Pushed Market',
+            icon: 'icon-url-push',
+            amount: 50,
+            price: 0.5,
+            status: PredictPositionStatus.REDEEMABLE,
+            size: 100,
+            outcomeIndex: 0,
+            percentPnl: 0,
+            cashPnl: 0,
+            claimable: true,
+            initialValue: 50,
+            avgPrice: 0.5,
+            endDate: '2024-12-31',
+          },
+          {
+            id: 'pos-2',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-2',
+            outcomeId: 'outcome-2',
+            outcome: 'No',
+            outcomeTokenId: '456',
+            currentValue: 0,
+            title: 'Test Market 2',
+            icon: 'icon-url-2',
+            amount: 30,
+            price: 0.3,
+            status: PredictPositionStatus.LOST,
+            size: 100,
+            outcomeIndex: 1,
+            percentPnl: -100,
+            cashPnl: -30,
+            claimable: false,
+            initialValue: 30,
+            avgPrice: 0.3,
+            endDate: '2024-12-31',
+          },
+        ],
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictWonPositions(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        testAddress,
+      ) as PredictPosition[];
+
+      expect(result).toHaveLength(2);
+      expect(result[0].status).toBe(PredictPositionStatus.WON);
+      expect(result[0].id).toBe('pos-1');
+      expect(result[1].status).toBe(PredictPositionStatus.REDEEMABLE);
+      expect(result[1].id).toBe('pos-push');
+    });
+
+    it('returns empty array when no positions have WON status', () => {
+      const testAddress = '0x123';
+      const claimablePositions = {
+        [testAddress]: [
+          {
+            id: 'pos-1',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-1',
+            outcomeId: 'outcome-1',
+            outcome: 'Yes',
+            outcomeTokenId: '123',
+            currentValue: 0,
+            title: 'Test Market',
+            icon: 'icon-url',
+            amount: 50,
+            price: 0.5,
+            status: PredictPositionStatus.LOST,
+            size: 100,
+            outcomeIndex: 0,
+            percentPnl: -100,
+            cashPnl: -50,
+            claimable: false,
+            initialValue: 50,
+            avgPrice: 0.5,
+            endDate: '2024-12-31',
+          },
+        ],
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictWonPositions(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        testAddress,
+      );
+
+      expect(result).toEqual([]);
+    });
+
+    it('returns empty array when claimable positions is empty', () => {
+      const testAddress = '0x123';
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions: {
+                [testAddress]: [],
+              },
+            },
+          },
+        },
+      };
+
+      const result = selectPredictWonPositions(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        testAddress,
+      );
+
+      expect(result).toEqual([]);
+    });
+
+    it('matches the address case-insensitively', () => {
+      const checksumAddress = '0xAbC123';
+      const mockState = makeClaimablePositionsState({
+        [checksumAddress]: [makeWonPosition({ id: 'pos-a' })],
+      });
+
+      const result = selectPredictWonPositions(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        checksumAddress.toLowerCase(),
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('pos-a');
+    });
+
+    it('prefers a populated entry over an exact-case empty one', () => {
+      const checksumAddress = '0xAbC123';
+      const mockState = makeClaimablePositionsState({
+        [checksumAddress.toLowerCase()]: [],
+        [checksumAddress]: [makeWonPosition({ id: 'pos-a' })],
+      });
+
+      const result = selectPredictWonPositions(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        checksumAddress.toLowerCase(),
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('pos-a');
+    });
+
+    it('retains memoized results across different addresses', () => {
+      const addressA = '0xaaa';
+      const addressB = '0xbbb';
+      const mockState = makeClaimablePositionsState({
+        [addressA]: [makeWonPosition({ id: 'pos-a' })],
+        [addressB]: [makeWonPosition({ id: 'pos-b', marketId: 'market-2' })],
+      });
+
+      selectPredictWonPositions.resetRecomputations();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resultA1 = selectPredictWonPositions(mockState as any, addressA);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resultB = selectPredictWonPositions(mockState as any, addressB);
+      const recomputationsAfterTwoAddresses =
+        selectPredictWonPositions.recomputations();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const resultA2 = selectPredictWonPositions(mockState as any, addressA);
+
+      // A → B → A must not recompute A again (weakMap multi-arg cache).
+      // Default createSelector LRU (maxSize: 1) would recompute on the third call.
+      expect(resultA2).toBe(resultA1);
+      expect(resultB).not.toBe(resultA1);
+      expect(selectPredictWonPositions.recomputations()).toBe(
+        recomputationsAfterTwoAddresses,
+      );
+    });
+  });
+
+  describe('selectPredictWinFiat', () => {
+    it('calculates total current value from winning positions', () => {
+      const testAddress = '0x123';
+      const claimablePositions = {
+        [testAddress]: [
+          {
+            id: 'pos-1',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-1',
+            outcomeId: 'outcome-1',
+            outcome: 'Yes',
+            outcomeTokenId: '123',
+            currentValue: 100,
+            title: 'Test Market',
+            icon: 'icon-url',
+            amount: 50,
+            price: 0.5,
+            status: PredictPositionStatus.WON,
+            size: 100,
+            outcomeIndex: 0,
+            percentPnl: 50,
+            cashPnl: 25,
+            claimable: true,
+            initialValue: 75,
+            avgPrice: 0.75,
+            endDate: '2024-12-31',
+          },
+          {
+            id: 'pos-2',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-2',
+            outcomeId: 'outcome-2',
+            outcome: 'Yes',
+            outcomeTokenId: '456',
+            currentValue: 200,
+            title: 'Test Market 2',
+            icon: 'icon-url-2',
+            amount: 150,
+            price: 0.75,
+            status: PredictPositionStatus.WON,
+            size: 200,
+            outcomeIndex: 0,
+            percentPnl: 33.33,
+            cashPnl: 50,
+            claimable: true,
+            initialValue: 150,
+            avgPrice: 0.75,
+            endDate: '2024-12-31',
+          },
+        ],
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictWinFiat(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        testAddress,
+      );
+
+      expect(result).toBe(300);
+    });
+
+    it('returns zero when no winning positions exist', () => {
+      const testAddress = '0x123';
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions: {
+                [testAddress]: [],
+              },
+            },
+          },
+        },
+      };
+
+      const result = selectPredictWinFiat(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        testAddress,
+      );
+
+      expect(result).toBe(0);
+    });
+
+    it('returns zero when only LOST positions exist', () => {
+      const testAddress = '0x123';
+      const claimablePositions = {
+        [testAddress]: [
+          {
+            id: 'pos-1',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-1',
+            outcomeId: 'outcome-1',
+            outcome: 'Yes',
+            outcomeTokenId: '123',
+            currentValue: 0,
+            title: 'Test Market',
+            icon: 'icon-url',
+            amount: 50,
+            price: 0.5,
+            status: PredictPositionStatus.LOST,
+            size: 100,
+            outcomeIndex: 0,
+            percentPnl: -100,
+            cashPnl: -50,
+            claimable: false,
+            initialValue: 50,
+            avgPrice: 0.5,
+            endDate: '2024-12-31',
+          },
+        ],
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictWinFiat(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        testAddress,
+      );
+
+      expect(result).toBe(0);
+    });
+  });
+
+  describe('selectPredictWinPnl', () => {
+    it('calculates total cash PnL from winning positions', () => {
+      const testAddress = '0x123';
+      const claimablePositions = {
+        [testAddress]: [
+          {
+            id: 'pos-1',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-1',
+            outcomeId: 'outcome-1',
+            outcome: 'Yes',
+            outcomeTokenId: '123',
+            currentValue: 100,
+            title: 'Test Market',
+            icon: 'icon-url',
+            amount: 50,
+            price: 0.5,
+            status: PredictPositionStatus.WON,
+            size: 100,
+            outcomeIndex: 0,
+            percentPnl: 50,
+            cashPnl: 25,
+            claimable: true,
+            initialValue: 75,
+            avgPrice: 0.75,
+            endDate: '2024-12-31',
+          },
+          {
+            id: 'pos-2',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-2',
+            outcomeId: 'outcome-2',
+            outcome: 'Yes',
+            outcomeTokenId: '456',
+            currentValue: 200,
+            title: 'Test Market 2',
+            icon: 'icon-url-2',
+            amount: 150,
+            price: 0.75,
+            status: PredictPositionStatus.WON,
+            size: 200,
+            outcomeIndex: 0,
+            percentPnl: 33.33,
+            cashPnl: 50,
+            claimable: true,
+            initialValue: 150,
+            avgPrice: 0.75,
+            endDate: '2024-12-31',
+          },
+        ],
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictWinPnl(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        testAddress,
+      );
+
+      expect(result).toBe(75);
+    });
+
+    it('returns zero when no winning positions exist', () => {
+      const testAddress = '0x123';
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions: {
+                [testAddress]: [],
+              },
+            },
+          },
+        },
+      };
+
+      const result = selectPredictWinPnl(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        testAddress,
+      );
+
+      expect(result).toBe(0);
+    });
+
+    it('calculates negative PnL when winning positions have negative cash PnL', () => {
+      const testAddress = '0x123';
+      const claimablePositions = {
+        [testAddress]: [
+          {
+            id: 'pos-1',
+            providerId: POLYMARKET_PROVIDER_ID,
+            marketId: 'market-1',
+            outcomeId: 'outcome-1',
+            outcome: 'Yes',
+            outcomeTokenId: '123',
+            currentValue: 100,
+            title: 'Test Market',
+            icon: 'icon-url',
+            amount: 50,
+            price: 0.5,
+            status: PredictPositionStatus.WON,
+            size: 100,
+            outcomeIndex: 0,
+            percentPnl: -10,
+            cashPnl: -10,
+            claimable: true,
+            initialValue: 110,
+            avgPrice: 1.1,
+            endDate: '2024-12-31',
+          },
+        ],
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              claimablePositions,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictWinPnl(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        testAddress,
+      );
+
+      expect(result).toBe(-10);
+    });
+  });
+
+  describe('selectPredictBalances', () => {
+    it('returns balances when they exist', () => {
+      const balances = {
+        '0x123': {
+          balance: 1000,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+        '0x456': {
+          balance: 2000,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+        '0xabc': {
+          balance: 500,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              balances,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictBalances(mockState as any);
+
+      expect(result).toEqual(balances);
+    });
+
+    it('returns empty object when balances do not exist', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              balances: null,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictBalances(mockState as any);
+
+      expect(result).toEqual({});
+    });
+
+    it('returns empty object when PredictController state is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: undefined,
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictBalances(mockState as any);
+
+      expect(result).toEqual({});
+    });
+
+    it('returns empty object when balances is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {},
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictBalances(mockState as any);
+
+      expect(result).toEqual({});
+    });
+  });
+
+  describe('selectPredictBalanceByAddress', () => {
+    it('returns balance for specified address', () => {
+      const balances = {
+        '0x123': {
+          balance: 1000,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+        '0x456': {
+          balance: 2000,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+        '0xabc': {
+          balance: 500,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              balances,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictBalanceByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        '0x123',
+      );
+
+      expect(result).toBe(1000);
+    });
+
+    it('returns balance for existing address', () => {
+      const balances = {
+        '0x123': {
+          balance: 1000,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              balances,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictBalanceByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        '0x123',
+      );
+
+      expect(result).toBe(1000);
+    });
+
+    it('returns zero when address does not exist', () => {
+      const balances = {
+        '0x123': {
+          balance: 1000,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              balances,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictBalanceByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        '0xnonexistent',
+      );
+
+      expect(result).toBe(0);
+    });
+
+    it('returns zero when balances is empty object', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              balances: {},
+            },
+          },
+        },
+      };
+
+      const result = selectPredictBalanceByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        '0x123',
+      );
+
+      expect(result).toBe(0);
+    });
+
+    it('returns zero when PredictController state is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: undefined,
+          },
+        },
+      };
+
+      const result = selectPredictBalanceByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        '0x123',
+      );
+
+      expect(result).toBe(0);
+    });
+
+    it('returns correct balance for different addresses', () => {
+      const balances = {
+        '0x123': {
+          balance: 1000,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+        '0x456': {
+          balance: 2000,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+        '0xabc': {
+          balance: 500,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+        '0xdef': {
+          balance: 750,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              balances,
+            },
+          },
+        },
+      };
+
+      const result1 = selectPredictBalanceByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        '0x456',
+      );
+
+      const result2 = selectPredictBalanceByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        '0xdef',
+      );
+
+      expect(result1).toBe(2000);
+      expect(result2).toBe(750);
+    });
+
+    it('returns zero for balance with value of zero', () => {
+      const balances = {
+        '0x123': {
+          balance: 0,
+          validUntil: FIXED_VALID_UNTIL,
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              balances,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictBalanceByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        '0x123',
+      );
+
+      expect(result).toBe(0);
+    });
+  });
+
+  describe('selectPredictAccountMeta', () => {
+    it('returns account meta object when it exists', () => {
+      const accountMeta = {
+        polymarket: {
+          '0x123': {
+            isOnboarded: true,
+          },
+        },
+        kalshi: {
+          '0xabc': {
+            isOnboarded: false,
+          },
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictAccountMeta(mockState as any);
+
+      expect(result).toEqual(accountMeta);
+    });
+
+    it('returns empty object when accountMeta does not exist', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta: {},
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictAccountMeta(mockState as any);
+
+      expect(result).toEqual({});
+    });
+
+    it('returns empty object when PredictController state is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: undefined,
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictAccountMeta(mockState as any);
+
+      expect(result).toEqual({});
+    });
+
+    it('returns multiple provider account metadata', () => {
+      const accountMeta = {
+        polymarket: {
+          '0x123': {
+            isOnboarded: true,
+          },
+          '0x456': {
+            isOnboarded: false,
+          },
+        },
+        kalshi: {
+          '0xabc': {
+            isOnboarded: true,
+          },
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictAccountMeta(mockState as any);
+
+      expect(result).toEqual(accountMeta);
+    });
+  });
+
+  describe('selectPredictAccountMetaByAddress', () => {
+    it('returns account meta when it exists for provider and address', () => {
+      const accountMeta = {
+        polymarket: {
+          '0x123': {
+            isOnboarded: true,
+          },
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictAccountMetaByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        POLYMARKET_PROVIDER_ID,
+        '0x123',
+      );
+
+      expect(result).toEqual({ isOnboarded: true });
+    });
+
+    it('returns account meta with false values when not onboarded or accepted', () => {
+      const accountMeta = {
+        polymarket: {
+          '0x123': {
+            isOnboarded: false,
+          },
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictAccountMetaByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        POLYMARKET_PROVIDER_ID,
+        '0x123',
+      );
+
+      expect(result).toEqual({ isOnboarded: false });
+    });
+
+    it('returns empty object when provider does not exist', () => {
+      const accountMeta = {
+        polymarket: {
+          '0x123': {
+            isOnboarded: true,
+          },
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictAccountMetaByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        'kalshi',
+        '0x123',
+      );
+
+      expect(result).toEqual({});
+    });
+
+    it('returns empty object when address does not exist for provider', () => {
+      const accountMeta = {
+        polymarket: {
+          '0x123': {
+            isOnboarded: true,
+          },
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictAccountMetaByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        POLYMARKET_PROVIDER_ID,
+        '0xNonExistent',
+      );
+
+      expect(result).toEqual({});
+    });
+
+    it('returns empty object when PredictController state is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: undefined,
+          },
+        },
+      };
+
+      const result = selectPredictAccountMetaByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        POLYMARKET_PROVIDER_ID,
+        '0x123',
+      );
+
+      expect(result).toEqual({});
+    });
+
+    it('returns correct value for different provider and address combinations', () => {
+      const accountMeta = {
+        polymarket: {
+          '0x123': {
+            isOnboarded: true,
+          },
+          '0x456': {
+            isOnboarded: false,
+          },
+        },
+        kalshi: {
+          '0xabc': {
+            isOnboarded: true,
+          },
+          '0xdef': {
+            isOnboarded: false,
+          },
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta,
+            },
+          },
+        },
+      };
+
+      const result1 = selectPredictAccountMetaByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        POLYMARKET_PROVIDER_ID,
+        '0x456',
+      );
+
+      const result2 = selectPredictAccountMetaByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        'kalshi',
+        '0xabc',
+      );
+
+      expect(result1).toEqual({ isOnboarded: false });
+      expect(result2).toEqual({ isOnboarded: true });
+    });
+
+    it('returns account meta with partial onboarding', () => {
+      const accountMeta = {
+        polymarket: {
+          '0x123': {
+            isOnboarded: true,
+          },
+        },
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta,
+            },
+          },
+        },
+      };
+
+      const result = selectPredictAccountMetaByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        POLYMARKET_PROVIDER_ID,
+        '0x123',
+      );
+
+      expect(result).toEqual({ isOnboarded: true });
+    });
+
+    it('returns empty object when accountMeta object is empty', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              accountMeta: {},
+            },
+          },
+        },
+      };
+
+      const result = selectPredictAccountMetaByAddress(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockState as any,
+        POLYMARKET_PROVIDER_ID,
+        '0x123',
+      );
+
+      expect(result).toEqual({});
+    });
+  });
+
+  describe('selectPredictSelectedPaymentToken', () => {
+    it('returns null when selectedPaymentToken is null', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              selectedPaymentToken: null,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictSelectedPaymentToken(mockState as any);
+
+      expect(result).toBeNull();
+    });
+
+    it('returns token object when selectedPaymentToken is set', () => {
+      const selectedPaymentToken = {
+        address: '0x1234567890123456789012345678901234567890',
+        chainId: '0x1',
+        symbol: 'USDC',
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              selectedPaymentToken,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictSelectedPaymentToken(mockState as any);
+
+      expect(result).toEqual(selectedPaymentToken);
+    });
+
+    it('returns null when PredictController state is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: undefined,
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictSelectedPaymentToken(mockState as any);
+
+      expect(result).toBeNull();
+    });
+
+    it('returns null when selectedPaymentToken property is missing', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {},
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictSelectedPaymentToken(mockState as any);
+
+      expect(result).toBeNull();
+    });
+
+    it('returns token with all properties', () => {
+      const selectedPaymentToken = {
+        address: '0xabcdef1234567890abcdef1234567890abcdef12',
+        chainId: '0x89',
+        symbol: 'DAI',
+      };
+
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PredictController: {
+              selectedPaymentToken,
+            },
+          },
+        },
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = selectPredictSelectedPaymentToken(mockState as any);
+
+      expect(result).toEqual(selectedPaymentToken);
+      expect(result?.address).toBe(selectedPaymentToken.address);
+      expect(result?.chainId).toBe(selectedPaymentToken.chainId);
+      expect(result?.symbol).toBe(selectedPaymentToken.symbol);
+    });
+  });
+});

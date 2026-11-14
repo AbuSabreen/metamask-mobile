@@ -1,172 +1,119 @@
-import React, { useCallback, useEffect } from 'react';
-import { SafeAreaView, View } from 'react-native';
+import React, { useMemo, useRef, useState } from 'react';
+
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import { useSelector } from 'react-redux';
-import DefaultTabBar from 'react-native-scrollable-tab-view/DefaultTabBar';
-import AddCustomToken from '../../UI/AddCustomToken';
-import SearchTokenAutocomplete from '../../UI/SearchTokenAutocomplete';
-import ScrollableTabView from 'react-native-scrollable-tab-view';
 import { strings } from '../../../../locales/i18n';
-import AddCustomCollectible from '../../UI/AddCustomCollectible';
-import {
-  getImportTokenNavbarOptions,
-  getNetworkNavbarOptions,
-} from '../../UI/Navbar';
-import { isTokenDetectionSupportedForNetwork } from '@metamask/assets-controllers/dist/assetsUtil';
-import {
-  selectChainId,
-  selectProviderConfig,
-} from '../../../selectors/networkController';
-import { selectNetworkName } from '../../../selectors/networkInfos';
-import { selectDisplayNftMedia } from '../../../selectors/preferencesController';
-import Banner from '../../../component-library/components/Banners/Banner/Banner';
-import {
-  BannerAlertSeverity,
-  BannerVariant,
-} from '../../../component-library/components/Banners/Banner';
-import Text from '../../../component-library/components/Texts/Text/Text';
-import { TextVariant } from '../../../component-library/components/Texts/Text';
-import { ButtonVariants } from '../../../component-library/components/Buttons/Button';
+import { selectNetworkConfigurations } from '../../../selectors/networkController';
 import { useNavigation } from '@react-navigation/native';
-import { useParams } from '../../../util/navigation/navUtils';
-import { useStyles } from '../../../component-library/hooks';
-import styleSheet from './AddAsset.styles';
-import { AddAssetParams } from './AddAsset.types';
+import { IconName } from '@metamask/design-system-react-native';
 import Routes from '../../../constants/navigation/Routes';
-import { NFT_TITLE, TOKEN, TOKEN_TITLE } from './AddAsset.constants';
-import { AddAssetViewSelectorsIDs } from '../../../../e2e/selectors/AddAssetView.selectors';
+import { ImportTokenViewSelectorsIDs } from './ImportAssetView.testIds';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import { useParams } from '../../../util/navigation/navUtils';
+import { BottomSheetRef } from '../../../component-library/components/BottomSheets/BottomSheet';
+import { Hex } from '@metamask/utils';
+import { SupportedCaipChainId } from '@metamask/multichain-network-controller';
+import { useNetworkEnablement } from '../../hooks/useNetworkEnablement/useNetworkEnablement';
+import NetworkListBottomSheet from './components/NetworkListBottomSheet/NetworkListBottomSheet';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import TokenView from './Views/TokenView/TokenView';
+import NFTView from './Views/NFTView/NFTView';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
+
+export interface AddAssetParams {
+  assetType: 'token' | 'collectible';
+  collectibleContract?: {
+    address: string;
+  };
+}
 
 const AddAsset = () => {
-  const navigation = useNavigation();
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
   const { assetType, collectibleContract } = useParams<AddAssetParams>();
 
-  const {
-    styles,
-    theme: { colors },
-  } = useStyles(styleSheet, {});
+  const tw = useTailwind();
+  const insets = useSafeAreaInsets();
 
-  const providerConfig = useSelector(selectProviderConfig);
-  const chainId = useSelector(selectChainId);
-  const displayNftMedia = useSelector(selectDisplayNftMedia);
-
-  const isTokenDetectionSupported =
-    isTokenDetectionSupportedForNetwork(chainId);
-
-  const networkName = useSelector(selectNetworkName);
-
-  const updateNavBar = useCallback(() => {
-    navigation.setOptions(
-      assetType === TOKEN
-        ? getImportTokenNavbarOptions(
-            `add_asset.${TOKEN_TITLE}`,
-            true,
-            navigation,
-            colors,
-            true,
-            0,
-          )
-        : getNetworkNavbarOptions(
-            `add_asset.${assetType === TOKEN ? TOKEN_TITLE : NFT_TITLE}`,
-            true,
-            navigation,
-            colors,
-          ),
-    );
-  }, [assetType, colors, navigation]);
-
-  useEffect(() => {
-    updateNavBar();
-  }, [updateNavBar]);
-
-  const goToSecuritySettings = () => {
-    navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
-      screen: Routes.SHEET.SHOW_NFT_DISPLAY_MEDIA,
-    });
-  };
-
-  const renderTabBar = (props) => (
-    <View style={styles.base}>
-      <DefaultTabBar
-        underlineStyle={styles.tabUnderlineStyle}
-        activeTextColor={colors.primary.default}
-        inactiveTextColor={colors.text.alternative}
-        backgroundColor={colors.background.default}
-        tabStyle={styles.tabStyle}
-        textStyle={styles.textStyle}
-        tabPadding={32}
-        style={styles.tabBar}
-        {...props}
-      />
-    </View>
+  const networkConfigurations = useSelector(selectNetworkConfigurations);
+  const [openNetworkSelector, setOpenNetworkSelector] = useState(false);
+  const { enabledNetworksForAllNamespaces } = useNetworkEnablement();
+  const enabledChainId = useMemo(
+    () =>
+      Object.keys(enabledNetworksForAllNamespaces).find(
+        (chainId) => enabledNetworksForAllNamespaces[chainId as Hex] === true,
+      ) ?? '0x1', // Fallback to Ethereum Mainnet if no networks are enabled
+    [enabledNetworksForAllNamespaces],
   );
+  const [selectedNetwork, setSelectedNetwork] = useState<
+    SupportedCaipChainId | Hex | null
+  >(assetType === 'token' ? null : (enabledChainId as Hex));
+
+  const sheetRef = useRef<BottomSheetRef>(null);
 
   return (
-    <SafeAreaView style={styles.wrapper} testID={`add-${assetType}-screen`}>
-      {assetType !== 'token' && (
-        <View style={styles.infoWrapper}>
-          <Banner
-            variant={BannerVariant.Alert}
-            description={
-              !displayNftMedia ? (
-                <>
-                  <Text variant={TextVariant.BodyMD}>
-                    {strings('wallet.display_nft_media_cta_new_1')}
-                    <Text variant={TextVariant.BodyMDBold}>
-                      {' '}
-                      {strings('wallet.display_nft_media_cta_new_2')}
-                    </Text>
-                  </Text>
-                </>
-              ) : (
-                <Text
-                  variant={TextVariant.BodyMD}
-                  testID={AddAssetViewSelectorsIDs.WARNING_ENABLE_DISPLAY_MEDIA}
-                >
-                  {strings('wallet.display_media_nft_warning')}
-                </Text>
-              )
-            }
-            severity={
-              !displayNftMedia
-                ? BannerAlertSeverity.Info
-                : BannerAlertSeverity.Warning
-            }
-            actionButtonProps={
-              !displayNftMedia
-                ? {
-                    variant: ButtonVariants.Link,
-                    onPress: goToSecuritySettings,
-                    textVariant: TextVariant.BodyMD,
-                    label: strings('wallet.display_nft_media_cta'),
-                  }
-                : undefined
-            }
-          />
-        </View>
-      )}
-      {assetType === 'token' ? (
-        <ScrollableTabView key={chainId} renderTabBar={renderTabBar}>
-          {isTokenDetectionSupported && (
-            <SearchTokenAutocomplete
-              navigation={navigation}
-              tabLabel={strings('add_asset.search_token')}
-            />
-          )}
-          <AddCustomToken
-            chainId={chainId}
-            networkName={networkName}
-            ticker={providerConfig.ticker}
-            type={providerConfig.type}
-            navigation={navigation}
-            tabLabel={strings('add_asset.custom_token')}
-            isTokenDetectionSupported={isTokenDetectionSupported}
-          />
-        </ScrollableTabView>
-      ) : (
-        <AddCustomCollectible
-          navigation={navigation}
-          collectibleContract={collectibleContract}
+    <SafeAreaView
+      edges={['left', 'right', 'bottom']}
+      style={tw.style('flex-1 bg-default', { paddingTop: insets.top })}
+      testID={`add-${assetType}-screen`}
+    >
+      {/* Header */}
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        title={strings(
+          `add_asset.${assetType === 'token' ? 'title' : 'title_nft'}`,
+        )}
+        onBack={() => navigation.goBack()}
+        endButtonIconProps={
+          assetType === 'token'
+            ? [
+                {
+                  iconName: IconName.Add,
+                  onPress: () =>
+                    navigation.navigate(Routes.WALLET.ADD_CUSTOM_TOKEN),
+                  accessibilityLabel: strings('add_asset.custom_token'),
+                  testID: ImportTokenViewSelectorsIDs.CUSTOM_TOKEN_BUTTON,
+                },
+              ]
+            : undefined
+        }
+      />
+
+      {assetType === 'token' && (
+        <TokenView
+          openNetworkSelector={() => setOpenNetworkSelector(true)}
+          selectedNetwork={selectedNetwork}
         />
       )}
+
+      {assetType === 'collectible' && (
+        <NFTView
+          collectibleContract={collectibleContract}
+          selectedNetwork={selectedNetwork}
+          openNetworkSelector={() => setOpenNetworkSelector(true)}
+          networkConfigurations={networkConfigurations}
+        />
+      )}
+
+      {openNetworkSelector ? (
+        <NetworkListBottomSheet
+          selectedNetwork={selectedNetwork}
+          setSelectedNetwork={setSelectedNetwork}
+          setOpenNetworkSelector={setOpenNetworkSelector}
+          sheetRef={sheetRef}
+          displayEvmNetworksOnly={assetType === 'collectible'}
+          hideTestnets={assetType === 'token'}
+          onSelectAll={
+            assetType === 'token' ? () => setSelectedNetwork(null) : undefined
+          }
+          allNetworksLabel={strings('trending.all_networks')}
+        />
+      ) : null}
     </SafeAreaView>
   );
 };

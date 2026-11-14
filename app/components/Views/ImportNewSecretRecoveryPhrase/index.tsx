@@ -1,0 +1,373 @@
+import React, {
+  useState,
+  useCallback,
+  useMemo,
+  useEffect,
+  useRef,
+} from 'react';
+import { Alert, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import { ScreenshotDeterrent } from '../../UI/ScreenshotDeterrent';
+import {
+  KeyboardAwareScrollView,
+  KeyboardStickyView,
+  useKeyboardState,
+} from 'react-native-keyboard-controller';
+import { strings } from '../../../../locales/i18n';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+  Button,
+  ButtonIcon,
+  ButtonIconSize,
+  ButtonSize,
+  ButtonVariant,
+  IconName,
+  IconColor,
+  IconSize,
+  Text,
+  TextColor,
+  TextVariant,
+  toast,
+  ToastSeverity,
+} from '@metamask/design-system-react-native';
+import { ImportSRPIDs } from './SRPImport.testIds';
+import { importNewSecretRecoveryPhrase } from '../../../actions/multiSrp';
+import { DUPLICATE_MNEMONIC_ERROR_MESSAGES } from '../../../core/QrSync/duplicateMnemonicError';
+import TitleStandard from '../../../component-library/components-temp/TitleStandard';
+import { useSelector } from 'react-redux';
+import { selectHDKeyrings } from '../../../selectors/keyringController';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { useAccountsWithNetworkActivitySync } from '../../hooks/useAccountsWithNetworkActivitySync';
+import { Authentication } from '../../../core';
+import Routes from '../../../constants/navigation/Routes';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { QRTabSwitcherScreens } from '../QRTabSwitcher';
+import Logger from '../../../util/Logger';
+import { v4 as uuidv4 } from 'uuid';
+import SrpInputGrid, { SrpInputGridRef } from '../../UI/SrpInputGrid';
+import SrpWordSuggestions from '../../UI/SrpWordSuggestions';
+import {
+  getTrimmedSeedPhraseWords,
+  isSRPLengthValid,
+  SPACE_CHAR,
+} from '../../../util/srp/srpInputUtils';
+import {
+  validateSRP,
+  validateCompleteness,
+  validateCase,
+  validateWords,
+  validateMnemonic,
+} from './validation';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
+
+async function checkSeedlessPasswordOutdated(): Promise<boolean> {
+  return Authentication.checkIsSeedlessPasswordOutdated({
+    skipCache: true,
+    captureSentryError: true,
+  });
+}
+
+function showImportSrpErrorAlert(errorMessage: string): void {
+  switch (errorMessage) {
+    case DUPLICATE_MNEMONIC_ERROR_MESSAGES[0]:
+    case DUPLICATE_MNEMONIC_ERROR_MESSAGES[1]:
+      Alert.alert(
+        strings('import_new_secret_recovery_phrase.error_duplicate_srp'),
+      );
+      break;
+    case 'KeyringController - The account you are trying to import is a duplicate':
+      Alert.alert(
+        strings('import_new_secret_recovery_phrase.error_duplicate_account'),
+      );
+      break;
+    default:
+      Alert.alert(
+        strings('import_new_secret_recovery_phrase.error_title'),
+        strings('import_new_secret_recovery_phrase.error_message'),
+      );
+  }
+}
+
+/**
+ * View that's displayed when the user is trying to import a new secret recovery phrase
+ */
+const ImportNewSecretRecoveryPhrase = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
+  const tw = useTailwind();
+  const insets = useSafeAreaInsets();
+  const footerStyle = useMemo(
+    () => tw.style('px-4 py-4 bg-default', { marginBottom: insets.bottom }),
+    [insets, tw],
+  );
+  const srpInputGridRef = useRef<SrpInputGridRef>(null);
+
+  // State
+  const [seedPhrase, setSeedPhrase] = useState<string[]>(['']);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [currentInputWord, setCurrentInputWord] = useState('');
+
+  const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
+
+  const hdKeyrings = useSelector(selectHDKeyrings);
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const { fetchAccountsWithActivity } = useAccountsWithNetworkActivitySync({
+    onFirstLoad: false,
+    onTransactionComplete: false,
+  });
+
+  const uniqueId = useMemo(() => uuidv4(), []);
+
+  // Check if continue button should be disabled
+  const isSRPContinueButtonDisabled = useMemo(
+    () => !isSRPLengthValid(seedPhrase),
+    [seedPhrase],
+  );
+
+  // Clear validation errors whenever the seed phrase changes.
+  // Always calling setError('') is safe — React bails out when value is unchanged.
+  useEffect(() => {
+    setError('');
+  }, [seedPhrase]);
+
+  const dismiss = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const showWhatIsSeedPhrase = useCallback(() => {
+    navigation.navigate(Routes.SHEET.SEEDPHRASE_MODAL);
+  }, [navigation]);
+
+  const onQrCodePress = useCallback(() => {
+    navigation.navigate(Routes.QR_TAB_SWITCHER, {
+      initialScreen: QRTabSwitcherScreens.Scanner,
+      disableTabber: true,
+      onScanSuccess: (data: { seed?: string }, content?: string) => {
+        const seed = data?.seed || content;
+
+        if (seed) {
+          srpInputGridRef.current?.handleSeedPhraseChange(seed);
+        } else {
+          Alert.alert(
+            strings('import_new_secret_recovery_phrase.invalid_qr_code_title'),
+            strings(
+              'import_new_secret_recovery_phrase.invalid_qr_code_message',
+            ),
+          );
+        }
+      },
+      onScanError: (scanError: unknown) => {
+        Logger.error(scanError as Error, 'QR scan error');
+      },
+    });
+  }, [navigation]);
+
+  useEffect(() => {
+    navigation.setOptions({
+      headerShown: false,
+    });
+  }, [navigation]);
+
+  const trackDiscoveryEvent = useCallback(
+    (discoveredAccountsCount: number) => {
+      trackEvent(
+        createEventBuilder(
+          MetaMetricsEvents.IMPORT_SECRET_RECOVERY_PHRASE_COMPLETED,
+        )
+          .addProperties({
+            number_of_solana_accounts_discovered: discoveredAccountsCount,
+          })
+          .build(),
+      );
+    },
+    [trackEvent, createEventBuilder],
+  );
+
+  const onSubmit = useCallback(async () => {
+    const trimmedWords = getTrimmedSeedPhraseWords(seedPhrase);
+    const phrase = trimmedWords.join(SPACE_CHAR);
+
+    setError('');
+
+    const invalidWords = Array(trimmedWords.length).fill(false);
+    let validationResult = validateSRP(trimmedWords, invalidWords);
+    validationResult = validateCompleteness(validationResult, trimmedWords);
+    validationResult = validateCase(validationResult, phrase);
+    validationResult = validateWords(validationResult);
+    validationResult = validateMnemonic(validationResult, phrase);
+
+    if (validationResult.error) {
+      setError(validationResult.error);
+      return;
+    }
+
+    setLoading(true);
+
+    let isSeedlessPwdOutdated = false;
+    try {
+      isSeedlessPwdOutdated = await checkSeedlessPasswordOutdated();
+    } catch (e) {
+      showImportSrpErrorAlert((e as Error)?.message);
+      setLoading(false);
+      return;
+    }
+
+    if (isSeedlessPwdOutdated) {
+      // Password outdated state will trigger modal that force user to log out
+      setLoading(false);
+      return;
+    }
+
+    try {
+      await importNewSecretRecoveryPhrase(
+        phrase,
+        undefined,
+        async ({ discoveredAccountsCount }) => {
+          trackDiscoveryEvent(discoveredAccountsCount);
+        },
+      );
+    } catch (e) {
+      showImportSrpErrorAlert((e as Error)?.message);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(false);
+    setSeedPhrase(['']);
+
+    toast({
+      title: `${strings('import_new_secret_recovery_phrase.success_1')} ${
+        hdKeyrings.length + 1
+      } ${strings('import_new_secret_recovery_phrase.success_2')}`,
+      severity: ToastSeverity.Success,
+      hasNoTimeout: false,
+      showCloseButton: false,
+    });
+
+    fetchAccountsWithActivity();
+
+    navigation.navigate('WalletView');
+  }, [
+    seedPhrase,
+    trackDiscoveryEvent,
+    hdKeyrings.length,
+    fetchAccountsWithActivity,
+    navigation,
+  ]);
+
+  return (
+    <Box twClassName="flex-1 bg-default">
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        includesTopInset
+        backButtonProps={{
+          onPress: dismiss,
+          testID: ImportSRPIDs.BACK,
+        }}
+        endButtonIconProps={[
+          {
+            iconName: IconName.Scan,
+            onPress: onQrCodePress,
+            testID: 'qr-code-button',
+          },
+        ]}
+      />
+      <TitleStandard
+        testID={ImportSRPIDs.SCREEN_TITLE_ID}
+        title={strings('import_new_secret_recovery_phrase.import_wallet_title')}
+        bottomAccessory={
+          <Box
+            flexDirection={BoxFlexDirection.Row}
+            alignItems={BoxAlignItems.Center}
+            twClassName="gap-0.5"
+          >
+            <Text
+              variant={TextVariant.BodyMd}
+              color={TextColor.TextAlternative}
+            >
+              {strings('import_new_secret_recovery_phrase.enter_srp_subtitle')}
+            </Text>
+            <ButtonIcon
+              iconName={IconName.Info}
+              size={ButtonIconSize.Xs}
+              iconProps={{
+                color: IconColor.IconAlternative,
+                size: IconSize.Sm,
+              }}
+              onPress={showWhatIsSeedPhrase}
+              testID="info-icon"
+            />
+          </Box>
+        }
+        twClassName="px-4 pt-3 pb-6"
+      />
+      <KeyboardAwareScrollView
+        contentContainerStyle={tw.style(
+          'flex-grow px-4',
+          Platform.OS !== 'android' && 'pb-4',
+        )}
+        testID={ImportSRPIDs.CONTAINER}
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="none"
+        bottomOffset={180}
+        showsVerticalScrollIndicator={false}
+      >
+        <Box twClassName="flex-1">
+          <SrpInputGrid
+            ref={srpInputGridRef}
+            seedPhrase={seedPhrase}
+            onSeedPhraseChange={setSeedPhrase}
+            onError={setError}
+            externalError={error}
+            testIdPrefix={ImportSRPIDs.SEED_PHRASE_INPUT_ID}
+            placeholderText={strings(
+              'import_new_secret_recovery_phrase.textarea_placeholder',
+            )}
+            uniqueId={uniqueId}
+            onCurrentWordChange={setCurrentInputWord}
+            autoFocus={false}
+            includeTopMargin={false}
+          />
+        </Box>
+      </KeyboardAwareScrollView>
+      <Box style={footerStyle}>
+        <Button
+          variant={ButtonVariant.Primary}
+          size={ButtonSize.Lg}
+          isFullWidth
+          onPress={onSubmit}
+          isDisabled={isSRPContinueButtonDisabled || loading}
+          isLoading={loading}
+          testID={ImportSRPIDs.IMPORT_BUTTON}
+        >
+          {strings('import_new_secret_recovery_phrase.cta_text')}
+        </Button>
+      </Box>
+      {isKeyboardVisible && (
+        <KeyboardStickyView
+          offset={{ closed: 0, opened: 0 }}
+          style={tw.style('absolute bottom-0 left-0 right-0')}
+        >
+          <SrpWordSuggestions
+            currentInputWord={currentInputWord}
+            onSuggestionSelect={(word) => {
+              srpInputGridRef.current?.handleSuggestionSelect(word);
+            }}
+          />
+        </KeyboardStickyView>
+      )}
+      <ScreenshotDeterrent enabled isSRP />
+    </Box>
+  );
+};
+
+export default ImportNewSecretRecoveryPhrase;

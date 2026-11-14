@@ -1,0 +1,279 @@
+import {
+  CaipAssetId,
+  CaipChainId,
+  Hex,
+  isCaipAssetType,
+  parseCaipAssetType,
+} from '@metamask/utils';
+import { RootState } from '../../../../reducers';
+import React, { useEffect, useMemo, useState } from 'react';
+import { View } from 'react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import { useSelector } from 'react-redux';
+import i18n from '../../../../../locales/i18n';
+import { safeToChecksumAddress } from '../../../../util/address';
+import {
+  selectConversionRateBySymbol,
+  selectCurrentCurrency,
+} from '../../../../selectors/currencyRateController';
+import { selectNativeCurrencyByChainId } from '../../../../selectors/networkController';
+import Logger from '../../../../util/Logger';
+import TokenDetailsList from './TokenDetailsList';
+import MarketDetailsList from './MarketDetailsList';
+import { TokenI } from '../../Tokens/types';
+import {
+  isAssetFromSearch,
+  selectTokenDisplayData,
+} from '../../../../selectors/tokenSearchDiscoveryDataController';
+import { selectTokenMarketData } from '../../../../selectors/tokenRatesController';
+import { selectMultichainAssetsRates } from '../../../../selectors/multichain';
+import { MarketDataDetails } from '@metamask/assets-controllers';
+import type { FungibleAssetPrice } from '@metamask/assets-controller';
+import { formatMarketDetails } from '../utils/marketDetails';
+import { getTokenDetails } from '../utils/getTokenDetails';
+import { formatChainIdToCaip } from '@metamask/bridge-controller';
+import { handleFetch } from '@metamask/controller-utils';
+import { isNonEvmChainId } from '../../../../core/Multichain/utils';
+import { toAssetId } from '../../Bridge/hooks/useAssetMetadata/utils';
+
+export interface TokenDetails {
+  contractAddress: string | null;
+  tokenDecimal: number | null;
+  tokenList: string | null;
+}
+
+export interface MarketDetails {
+  marketCap: string | null;
+  totalVolume: string | null;
+  volumeToMarketCap: string | null;
+  circulatingSupply: string | null;
+  allTimeHigh: string | null;
+  allTimeLow: string | null;
+  fullyDiluted: string | null;
+}
+
+interface TokenDetailsProps {
+  asset: TokenI;
+  onCopyAddress?: () => void;
+  /**
+   * Market data resolved by the caller, already in the user's selected
+   * currency. When supplied the component renders it directly and skips both
+   * its own cache lookup and its fetch.
+   *
+   * TODO: interim. Token Details V1 passes this so the screen does not fetch
+   * the same market data twice, once here and once in `useTokenMarketData`.
+   * Once V1 stops reusing this legacy component and renders its own list
+   * straight from that hook, this prop and the fetch below can both go.
+   */
+  marketData?: FungibleAssetPrice | null;
+}
+
+const toCaipChainId = (chainId: string, isNonEvm: boolean): CaipChainId =>
+  isNonEvm
+    ? (chainId as `${string}:${string}`)
+    : formatChainIdToCaip(chainId as Hex);
+
+const getSpotPriceEntry = (
+  response: Record<string, Record<string, unknown>> | null | undefined,
+  assetId: string,
+): Record<string, unknown> | undefined => response?.[assetId];
+
+const TokenDetails: React.FC<TokenDetailsProps> = ({
+  asset,
+  onCopyAddress,
+  marketData: providedMarketData,
+}) => {
+  // For non evm assets, the resultChainId is equal to the asset.chainId; while for evm assets; the resultChainId === "eip155:1" !== asset.chainId
+  const resultChainId = formatChainIdToCaip(asset.chainId as Hex);
+  const isNonEvmAsset = resultChainId === asset.chainId;
+  const tw = useTailwind();
+
+  const nativeCurrency = useSelector((state: RootState) =>
+    selectNativeCurrencyByChainId(state, asset.chainId as Hex),
+  );
+  const conversionRateBySymbol = useSelector((state: RootState) =>
+    selectConversionRateBySymbol(state, nativeCurrency),
+  );
+  const currentCurrency = useSelector(selectCurrentCurrency);
+
+  const tokenContractAddress = !isNonEvmAsset
+    ? safeToChecksumAddress(asset.address)
+    : asset.address;
+
+  const tokenSearchResult = useSelector((state: RootState) =>
+    selectTokenDisplayData(state, asset.chainId as Hex, asset.address as Hex),
+  );
+
+  const allMultichainAssetsRates = useSelector(selectMultichainAssetsRates);
+
+  const multichainAssetRates =
+    allMultichainAssetsRates[asset.address as CaipAssetId];
+
+  const nonEvmMarketData = multichainAssetRates?.marketData;
+
+  const evmMarketData = useSelector((state: RootState) =>
+    !isNonEvmAsset && tokenContractAddress
+      ? (selectTokenMarketData(state)?.[asset.chainId as Hex]?.[
+          tokenContractAddress as Hex
+        ] ?? null)
+      : null,
+  ) as MarketDataDetails | null;
+
+  const conversionRate = isAssetFromSearch(asset) ? 1 : conversionRateBySymbol;
+
+  let cachedMarketData: MarketDataDetails | undefined;
+
+  if (
+    isAssetFromSearch(asset) &&
+    tokenSearchResult?.found &&
+    tokenSearchResult.price
+  ) {
+    // Search results have market data
+    cachedMarketData = tokenSearchResult.price;
+  } else {
+    cachedMarketData = !isNonEvmAsset
+      ? (evmMarketData ?? undefined)
+      : (nonEvmMarketData as MarketDataDetails | undefined);
+  }
+
+  // Fetch market data from API if not in cache
+  const [fetchedMarketData, setFetchedMarketData] = useState<
+    Record<string, unknown> | undefined
+  >();
+
+  // Presence, not truthiness: the caller passes `null` while its own request is
+  // still in flight, and treating that as "nothing supplied" would fire the
+  // duplicate fetch this prop exists to avoid. Only `undefined` means no caller
+  // is driving this.
+  const isMarketDataProvided = providedMarketData !== undefined;
+
+  useEffect(() => {
+    if (isMarketDataProvided || cachedMarketData) return;
+
+    const plainTokenAddress = isCaipAssetType(asset.address)
+      ? parseCaipAssetType(asset.address).assetReference
+      : asset.address;
+
+    if (!plainTokenAddress || !asset.chainId) return;
+
+    const fetchData = async () => {
+      try {
+        const isNonEvm = isNonEvmChainId(asset.chainId as string);
+
+        // Convert chainId to CAIP format for both EVM and non-EVM chains
+        const caipChainId = toCaipChainId(asset.chainId as string, isNonEvm);
+
+        const assetId = toAssetId(plainTokenAddress, caipChainId);
+        if (!assetId) return;
+
+        // Use v3 API for all chains
+        const url = `https://price.api.cx.metamask.io/v3/spot-prices?${new URLSearchParams(
+          {
+            assetIds: assetId,
+            includeMarketData: 'true',
+            vsCurrency: currentCurrency.toLowerCase(),
+          },
+        )}`;
+        const response = (await handleFetch(url)) as Record<
+          string,
+          Record<string, unknown>
+        >;
+        setFetchedMarketData(getSpotPriceEntry(response, assetId));
+      } catch (error) {
+        console.error('Failed to fetch market data:', error);
+      }
+    };
+
+    fetchData();
+  }, [
+    asset.address,
+    asset.chainId,
+    cachedMarketData,
+    currentCurrency,
+    isMarketDataProvided,
+  ]);
+
+  const marketData =
+    providedMarketData ?? cachedMarketData ?? fetchedMarketData;
+
+  // Determine if we're using cached data (which is in native units for ALL EVM assets)
+  const isUsingCachedData = !providedMarketData && Boolean(cachedMarketData);
+
+  // ALL cached EVM data (native AND ERC20) is in native units and needs conversion
+  // API-fetched data (with vsCurrency param) is already in fiat, as is anything
+  // passed in via `marketData`
+  const needsConversion = isUsingCachedData && !isNonEvmAsset;
+
+  const tokenDetails = useMemo(
+    () => getTokenDetails(asset, isNonEvmAsset, tokenContractAddress),
+    [asset, isNonEvmAsset, tokenContractAddress],
+  );
+
+  const marketDetails = useMemo(() => {
+    if (!marketData) return;
+
+    // For cached EVM data, we need a valid conversion rate
+    if (needsConversion && (!conversionRate || conversionRate < 0)) {
+      Logger.log('invalid conversion rate for cached EVM data');
+      return;
+    }
+
+    return formatMarketDetails(
+      {
+        marketCap: marketData.marketCap
+          ? Number(marketData.marketCap)
+          : undefined,
+        totalVolume: marketData.totalVolume
+          ? Number(marketData.totalVolume)
+          : undefined,
+        circulatingSupply: marketData.circulatingSupply
+          ? Number(marketData.circulatingSupply)
+          : undefined,
+        allTimeHigh: marketData.allTimeHigh
+          ? Number(marketData.allTimeHigh)
+          : undefined,
+        allTimeLow: marketData.allTimeLow
+          ? Number(marketData.allTimeLow)
+          : undefined,
+        dilutedMarketCap: (marketData as MarketDataDetails)?.dilutedMarketCap
+          ? Number((marketData as MarketDataDetails).dilutedMarketCap)
+          : undefined,
+      },
+      {
+        locale: i18n.locale,
+        currentCurrency,
+        needsConversion,
+        conversionRate: conversionRate ?? undefined,
+      },
+    );
+  }, [marketData, currentCurrency, needsConversion, conversionRate]);
+
+  const hasAddressAndDecimals =
+    tokenDetails.contractAddress !== null && tokenDetails.tokenDecimal !== null;
+  const showTokenDetails =
+    asset.isETH || isNonEvmAsset || hasAddressAndDecimals;
+  const showMarketDetails = Boolean(marketData && marketDetails);
+  return (
+    <View>
+      {showTokenDetails && (
+        <TokenDetailsList
+          tokenDetails={tokenDetails}
+          onCopyAddress={onCopyAddress}
+        />
+      )}
+      {showMarketDetails && marketDetails && (
+        <View
+          style={
+            showTokenDetails
+              ? tw`-mx-4 mt-6 border-t border-muted px-4 pt-6`
+              : undefined
+          }
+        >
+          <MarketDetailsList marketDetails={marketDetails} />
+        </View>
+      )}
+    </View>
+  );
+};
+
+export default TokenDetails;

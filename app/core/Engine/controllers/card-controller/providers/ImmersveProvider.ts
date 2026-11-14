@@ -1,0 +1,1960 @@
+import { parseCaipChainId, type CaipChainId } from '@metamask/utils';
+import { ethers } from 'ethers';
+import { areAddressesEqual } from '../../../../../util/address';
+import Logger from '../../../../../util/Logger';
+import {
+  isMoneyAccountFundingChannel,
+  type ImmersveFundingChannel,
+  type ImmersveProgramConfig,
+} from '../../../../../selectors/featureFlagController/card';
+import {
+  ARBITRUM_SEPOLIA_RPC_URL,
+  BASE_MAINNET_RPC_URL,
+  BASE_SEPOLIA_RPC_URL,
+  KYC_REDIRECT_URL,
+  MONAD_MAINNET_RPC_URL,
+} from '../../../../../components/UI/Card/constants';
+import {
+  immersveNetworkToFundingToken,
+  type ImmersveFundingTokenInfo,
+} from '../../../../../components/UI/Card/util/immersveFunding';
+import { deriveNextImmersveAction } from '../../../../../components/UI/Card/util/immersvePrerequisites';
+import { readErc20AllowanceAndBalance } from '../../../../../components/UI/Card/util/onChainAllowance';
+import { CardApiError } from '../services/BaanxService';
+import type { ImmersveService } from '../services/ImmersveService';
+import type { ImmersveProviderConfig } from '../services/immersve-config';
+import {
+  AuthTokenValidity,
+  CardAccountLookupResult,
+  CardAction,
+  CardAuthResult,
+  CardAuthSession,
+  CardAuthTokens,
+  CardContactDetails,
+  CardCreateResult,
+  CardCredentials,
+  CardDetails,
+  CardMfaMethod,
+  CardMfaOption,
+  CardFundingAsset,
+  CardFundingSourceResult,
+  ApplePayProvisioningParams,
+  ApplePayProvisioningResponse,
+  CardHomeData,
+  CardInitiateAuthOptions,
+  CardProviderCapabilities,
+  CardWalletProvisioningInfo,
+  CardProviderError,
+  CardProviderErrorCode,
+  CardProviderIds,
+  CardSensitiveDetails,
+  CardSpendingPrerequisitesParams,
+  CardSpendingPrerequisitesResult,
+  CompleteMoneyAccountLinkParams,
+  MoneyAccountLinkPreparation,
+  PrepareMoneyAccountLinkParams,
+  CardStatus,
+  CardTransaction,
+  CardTransactionDetails,
+  CardTransactionListParams,
+  CardTransactionPage,
+  CardTransactionStatus,
+  CardTransactionType,
+  CardType,
+  emptyCardHomeData,
+  FundingAssetStatus,
+  ICardProvider,
+  isCardAuthTokenError,
+} from '../provider-types';
+import { decodeCardCursor, encodeCardCursor } from '../utils/transactionCursor';
+import { minorUnitsToDecimal } from './utils/currencyMinorUnits';
+
+const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
+const REFRESH_EXPIRY_BUFFER_MS = 60 * 60 * 1000;
+
+const DEFAULT_NETWORK = 'base-sepolia';
+const IMMERSVE_LOCATION = 'international';
+
+export const IMMERSVE_NO_ACCOUNT_ERROR_CODES: ReadonlySet<string> = new Set([
+  'ACCOUNT_DOES_NOT_EXIST',
+]);
+
+/** Synthetic code when MFA is required but the account has no verified contact. */
+export const IMMERSVE_NO_VERIFIED_CONTACT_CODE = 'NO_VERIFIED_CONTACT';
+
+const IMMERSVE_MFA_FORBIDDEN_CODES: Readonly<
+  Record<string, CardProviderErrorCode>
+> = {
+  MFA_CODE_INVALID: CardProviderErrorCode.InvalidOtp,
+  MFA_METHOD_MISMATCH: CardProviderErrorCode.MfaDestinationMismatch,
+  MFA_CODE_EXPIRED: CardProviderErrorCode.AuthRestartRequired,
+  MFA_ATTEMPTS_EXCEEDED: CardProviderErrorCode.AuthRestartRequired,
+  CHALLENGE_EXPIRED: CardProviderErrorCode.AuthRestartRequired,
+  LOGIN_STEP_INVALID: CardProviderErrorCode.AuthRestartRequired,
+};
+
+function mapMfaForbiddenError(error: unknown): CardProviderError | null {
+  if (
+    !(error instanceof CardApiError) ||
+    error.statusCode !== 403 ||
+    typeof error.errorCode !== 'string'
+  ) {
+    return null;
+  }
+  const code = error.errorCode;
+  const mapped = IMMERSVE_MFA_FORBIDDEN_CODES[code];
+  if (!mapped) return null;
+
+  let message = `Login must be restarted (${code})`;
+  if (mapped === CardProviderErrorCode.InvalidOtp) {
+    message = 'Invalid MFA code';
+  } else if (mapped === CardProviderErrorCode.MfaDestinationMismatch) {
+    message = 'MFA destination does not match';
+  }
+
+  return new CardProviderError(mapped, message, 403, code);
+}
+
+const IMMERSVE_KYC_TYPE = 'immersve-conducted';
+const IMMERSVE_KYC_HIDDEN_STEPS = ['region', 'contact-channels'];
+const IMMERSVE_SPENDABLE_CURRENCY = 'USD';
+
+const IMMERSVE_FUNDING_NETWORK_RPC: Record<
+  string,
+  { chainId: number; primaryRpcUrl: string; publicFallback: string }
+> = {
+  'base-mainnet': {
+    chainId: 8453,
+    primaryRpcUrl: BASE_MAINNET_RPC_URL,
+    publicFallback: 'https://mainnet.base.org',
+  },
+  'base-sepolia': {
+    chainId: 84532,
+    primaryRpcUrl: BASE_SEPOLIA_RPC_URL,
+    publicFallback: 'https://sepolia.base.org',
+  },
+  'arbitrum-sepolia': {
+    chainId: 421614,
+    primaryRpcUrl: ARBITRUM_SEPOLIA_RPC_URL,
+    publicFallback: 'https://sepolia-rollup.arbitrum.io/rpc',
+  },
+  'monad-mainnet': {
+    chainId: 143,
+    primaryRpcUrl: MONAD_MAINNET_RPC_URL,
+    publicFallback: 'https://rpc.monad.xyz',
+  },
+};
+
+function spenderFromPrerequisites(
+  prerequisites: CardSpendingPrerequisitesResult['prerequisites'],
+): string | undefined {
+  const funding = prerequisites.find(
+    (item) => item.actionType === 'smart_contract_write',
+  );
+  const write = funding?.params as
+    | { params?: { _spender?: unknown } }
+    | undefined;
+  const spender = write?.params?._spender;
+  return typeof spender === 'string' && spender.length > 0
+    ? spender
+    : undefined;
+}
+
+const USD_STABLECOIN_SYMBOLS = new Set(['USDC', 'USDT']);
+
+/** Immersve always settles transactions in USDC. */
+const IMMERSVE_SETTLEMENT_CURRENCY = 'USDC';
+
+function isUsdStablecoin(symbol: string): boolean {
+  return USD_STABLECOIN_SYMBOLS.has(symbol.toUpperCase());
+}
+
+function getErrorContext(method: string, extra?: Record<string, unknown>) {
+  return {
+    tags: { feature: 'card', provider: 'immersve' },
+    context: { name: 'ImmersveProvider', data: { method, ...extra } },
+  };
+}
+
+/**
+ * Report non-auth API failures to Sentry, then rethrow as CardProviderError.
+ * Auth-token / 401 errors are intentionally excluded to avoid Sentry noise
+ * (matching setCardPin / getCardHomeData).
+ */
+function reportAndMap(
+  error: unknown,
+  method: string,
+  extra?: Record<string, unknown>,
+): never {
+  const isAuthFailure =
+    isCardAuthTokenError(error) ||
+    (error instanceof CardApiError && error.statusCode === 401);
+  if (!isAuthFailure) {
+    Logger.error(
+      error as Error,
+      getErrorContext(method, {
+        httpStatus:
+          error instanceof CardApiError ? error.statusCode : undefined,
+        errorCode: error instanceof CardApiError ? error.errorCode : undefined,
+        ...extra,
+      }),
+    );
+  }
+  throw mapApiError(error, method);
+}
+
+function mapApiError(error: unknown, operation: string): CardProviderError {
+  if (error instanceof CardProviderError) return error;
+  if (error instanceof CardApiError) {
+    if (error.statusCode === 400) {
+      return new CardProviderError(
+        CardProviderErrorCode.InvalidRequest,
+        `Invalid request on ${operation}`,
+        400,
+        error.errorCode,
+      );
+    }
+
+    if (error.statusCode === 401) {
+      return new CardProviderError(
+        CardProviderErrorCode.InvalidCredentials,
+        `Authentication failed on ${operation}`,
+        error.statusCode,
+      );
+    }
+
+    if (error.statusCode === 403) {
+      return new CardProviderError(
+        CardProviderErrorCode.Forbidden,
+        `Forbidden on ${operation}`,
+        403,
+        error.errorCode,
+      );
+    }
+    if (error.statusCode === 404) {
+      return new CardProviderError(
+        CardProviderErrorCode.NotFound,
+        `Not found: ${operation}`,
+        404,
+      );
+    }
+    if (error.statusCode === 409) {
+      return new CardProviderError(
+        CardProviderErrorCode.Conflict,
+        `Conflict on ${operation}`,
+        409,
+      );
+    }
+    if (error.statusCode >= 500) {
+      return new CardProviderError(
+        CardProviderErrorCode.ServerError,
+        `Server error on ${operation}`,
+        error.statusCode,
+      );
+    }
+    if (error.statusCode === 408) {
+      return new CardProviderError(
+        CardProviderErrorCode.Timeout,
+        `Request timeout on ${operation}`,
+        408,
+      );
+    }
+    if (error.statusCode === 0) {
+      return new CardProviderError(
+        CardProviderErrorCode.Network,
+        `Network error on ${operation}`,
+        0,
+      );
+    }
+  }
+  return new CardProviderError(
+    CardProviderErrorCode.Unknown,
+    (error as Error).message ?? `Unknown error on ${operation}`,
+  );
+}
+
+function decodeJwtExpiryMs(token: string): number | null {
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const json = Buffer.from(normalized, 'base64').toString('utf8');
+    const exp = (JSON.parse(json) as { exp?: number }).exp;
+    return typeof exp === 'number' ? exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+interface ImmersveLoginInitResponse {
+  id: string;
+  signingChallenge: {
+    message: string;
+    description?: string;
+    createdAt?: string;
+    expiresAt?: string;
+  };
+}
+
+interface ImmersveLoginTokensResponse {
+  accessToken: string;
+  refreshToken?: string;
+  cardholderAccountId: string;
+}
+
+interface ImmersveMfaOptionPayload {
+  method?: string;
+  maskedDestination?: string;
+}
+
+interface ImmersveMfaStepPayload {
+  type?: string;
+  mfaOptions?: ImmersveMfaOptionPayload[];
+  mfaOption?: ImmersveMfaOptionPayload;
+  expiresAt?: string;
+}
+
+/**
+ * Immersve returns the step as an object (`nextStep.type`); the flat shape
+ * (`nextStep` as a string, fields at the root) is still accepted.
+ */
+interface ImmersveMfaStepResponse extends Omit<ImmersveMfaStepPayload, 'type'> {
+  loginRequestId?: string;
+  nextStep: string | ImmersveMfaStepPayload;
+}
+
+type ImmersveLoginCompleteResponse =
+  | ImmersveLoginTokensResponse
+  | ImmersveMfaStepResponse;
+
+function isCardMfaMethod(value: string | undefined): value is CardMfaMethod {
+  return value === 'phone' || value === 'email';
+}
+
+function toCardMfaOption(
+  raw: ImmersveMfaOptionPayload | undefined,
+): CardMfaOption | null {
+  if (!raw || !isCardMfaMethod(raw.method)) return null;
+  if (
+    typeof raw.maskedDestination !== 'string' ||
+    raw.maskedDestination.length === 0
+  ) {
+    return null;
+  }
+  return { method: raw.method, maskedDestination: raw.maskedDestination };
+}
+
+function parseExpiresAt(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function readMfaStep(
+  response: ImmersveLoginCompleteResponse,
+): ImmersveMfaStepPayload | null {
+  if (!('nextStep' in response) || !response.nextStep) return null;
+  const { nextStep, ...rest } = response;
+  if (typeof nextStep === 'string') {
+    return { ...rest, type: nextStep };
+  }
+  return nextStep;
+}
+
+function isLoginTokens(
+  response: ImmersveLoginCompleteResponse,
+): response is ImmersveLoginTokensResponse {
+  return 'accessToken' in response && typeof response.accessToken === 'string';
+}
+
+function buildImmersveTokenSet(
+  response: ImmersveLoginTokensResponse,
+  session: CardAuthSession,
+): CardAuthTokens {
+  return {
+    accessToken: response.accessToken,
+    refreshToken: response.refreshToken,
+    accessTokenExpiresAt: decodeJwtExpiryMs(response.accessToken) ?? 0,
+    refreshTokenExpiresAt: response.refreshToken
+      ? (decodeJwtExpiryMs(response.refreshToken) ?? undefined)
+      : undefined,
+    location: IMMERSVE_LOCATION,
+    providerUserId: response.cardholderAccountId,
+    cardholderAccountId: response.cardholderAccountId,
+    accountAddress: session._metadata.address as string | undefined,
+  };
+}
+
+function loginCompleteRequest(
+  session: CardAuthSession,
+  credentials: CardCredentials,
+  mfaEnabled: boolean,
+): { path: string; body: Record<string, string> } {
+  const loginRequestId = session.id;
+  switch (credentials.type) {
+    case 'siwe':
+      return {
+        path: mfaEnabled
+          ? '/auth/login-complete?mfa=true'
+          : '/auth/login-complete',
+        body: { loginRequestId, signature: credentials.signature },
+      };
+    case 'mfa_method':
+      return {
+        path: '/auth/login-complete',
+        body: {
+          loginRequestId,
+          mfaMethod: credentials.method,
+          mfaDestination: credentials.destination,
+        },
+      };
+    case 'mfa_code':
+      return {
+        path: '/auth/login-complete',
+        body: { loginRequestId, mfaCode: credentials.code },
+      };
+    default:
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        `Unsupported credential type: ${credentials.type}`,
+      );
+  }
+}
+
+function readLoginRequestId(
+  response: ImmersveLoginCompleteResponse,
+): string | undefined {
+  if (
+    'loginRequestId' in response &&
+    typeof response.loginRequestId === 'string' &&
+    response.loginRequestId.length > 0
+  ) {
+    return response.loginRequestId;
+  }
+  return undefined;
+}
+
+function mapLoginCompleteResponse(
+  response: ImmersveLoginCompleteResponse,
+  session: CardAuthSession,
+): CardAuthResult {
+  const step = readMfaStep(response);
+  const nextSessionId = readLoginRequestId(response);
+
+  if (step?.type === 'select-mfa-method') {
+    const options = (step.mfaOptions ?? [])
+      .map(toCardMfaOption)
+      .filter((option): option is CardMfaOption => option !== null);
+    if (options.length === 0) {
+      throw new CardProviderError(
+        CardProviderErrorCode.AuthRestartRequired,
+        'No verified contact is available for verification',
+        undefined,
+        IMMERSVE_NO_VERIFIED_CONTACT_CODE,
+      );
+    }
+    return {
+      done: false,
+      nextStep: { type: 'mfa_select', options },
+      ...(nextSessionId ? { nextSessionId } : {}),
+    };
+  }
+
+  if (step?.type === 'submit-mfa-code') {
+    const option = toCardMfaOption(step.mfaOption);
+    if (!option) {
+      throw new CardProviderError(
+        CardProviderErrorCode.AuthRestartRequired,
+        'Login must be restarted',
+        undefined,
+        'LOGIN_STEP_INVALID',
+      );
+    }
+    return {
+      done: false,
+      ...(nextSessionId ? { nextSessionId } : {}),
+      nextStep: {
+        type: 'mfa_code',
+        method: option.method,
+        maskedDestination: option.maskedDestination,
+        expiresAt: parseExpiresAt(step.expiresAt),
+      },
+    };
+  }
+
+  if (isLoginTokens(response)) {
+    return { done: true, tokenSet: buildImmersveTokenSet(response, session) };
+  }
+
+  throw new CardProviderError(
+    CardProviderErrorCode.Unknown,
+    'Unexpected login-complete response',
+  );
+}
+
+interface ImmersveTokenResponse {
+  accessToken: string;
+  refreshToken?: string;
+}
+
+interface ImmersveFundingSourceResponse {
+  id: string;
+  balance?: string;
+  balanceCurrency?: string;
+  network?: string;
+}
+
+interface ImmersveFundingSourceListItem {
+  id: string;
+  balance?: string;
+  balanceCurrency?: string;
+  network?: string;
+  fundingChannelId?: string;
+  fundingAddress?: string;
+  /** On-chain funding address. Immersve's list response uses this, not fundingAddress. */
+  externalId?: string;
+}
+
+interface ImmersveFundingSourcesResponse {
+  items?: ImmersveFundingSourceListItem[];
+}
+
+interface ImmersveContactDetailsResponse {
+  email?: { emailAddress?: string };
+  phone?: { phoneNumber?: string };
+}
+
+type ImmersveCardApiStatus = 'active' | 'cancelled' | 'created' | 'shipped';
+
+interface ImmersveCardListItem {
+  id: string;
+  accountId: string;
+  type: string;
+  createdAt: string;
+  modifiedAt: string;
+  expiresAt: string;
+  isBlocked: boolean;
+  status: ImmersveCardApiStatus;
+  fundingSourceIds: string[];
+  cardProgramId?: string;
+  panLast4?: string;
+  /** Opaque reissuance-lineage id. Shared by every card in a reissue chain. */
+  seriesId?: string;
+  network?: string;
+  regionCode?: string;
+}
+
+interface ImmersveCardListResponse {
+  items?: ImmersveCardListItem[];
+  pageInfo?: { nextCursor?: string };
+}
+
+interface ImmersveCardDetail extends ImmersveCardListItem {
+  panFirst6?: string;
+  currency?: string;
+  expiry?: string;
+  cardholderName?: string;
+  unfreezeAllowed?: boolean;
+}
+
+interface ImmersveFundingSourceDetail {
+  id: string;
+  accountId: string;
+  balance?: string;
+  balanceCurrency?: string;
+  fundingChannelId?: string;
+  /** Address Immersve debits. Distinct from the SIWE wallet for Money account. */
+  fundingAddress?: string;
+  externalId?: string;
+  purpose?: string;
+  network?: string;
+}
+
+interface ImmersvePanTokenResponse {
+  tokenId: string;
+  callbackUrl: string;
+}
+
+interface ImmersveCardAcceptor {
+  name: string;
+  city: string;
+  countryCode: string;
+}
+
+interface ImmersveTransactionRaw {
+  id: string;
+  description: string;
+  accountId: string;
+  status: 'init' | 'holding' | 'cleared' | 'reversed';
+  cardId: string;
+  amount: string;
+  currency: string;
+  acquirerAmount?: string;
+  acquirerCurrency?: string;
+  feeAmount?: string;
+  transactionDate: string;
+  processedDate?: string;
+  reference: string;
+  cardAcceptor: ImmersveCardAcceptor;
+  creditDebitIndicator?: 'credit' | 'debit';
+  paymentType: 'purchase' | 'refund' | 'adjustment';
+  relatedPaymentId?: string;
+  securityChallenge?: { ref?: string; outcome?: string };
+  failureReason?: string;
+  panFirst6?: string;
+  panLast6?: string;
+}
+
+interface ImmersveTransactionListResponse {
+  items?: ImmersveTransactionRaw[];
+  pageInfo?: { nextCursor?: string };
+}
+
+interface ImmersveCursorPayload {
+  c: string;
+}
+
+function mapImmersveStatus(
+  status: ImmersveTransactionRaw['status'],
+  failureReason?: string,
+): CardTransactionStatus {
+  if (failureReason) {
+    return CardTransactionStatus.Failed;
+  }
+  switch (status) {
+    case 'init':
+      return CardTransactionStatus.Pending;
+    case 'reversed':
+      return CardTransactionStatus.Reversed;
+    case 'holding':
+    case 'cleared':
+    default:
+      return CardTransactionStatus.Completed;
+  }
+}
+
+/** Minor-unit amounts arrive as numeric strings. `"0"` is present but not a charge. */
+function hasNonZeroMinorAmount(amount?: string): amount is string {
+  if (!amount) {
+    return false;
+  }
+  const numeric = Number(amount);
+  return Number.isFinite(numeric) && numeric !== 0;
+}
+
+function mapImmersveType(
+  paymentType: ImmersveTransactionRaw['paymentType'],
+): CardTransactionType {
+  switch (paymentType) {
+    case 'refund':
+      return CardTransactionType.Refund;
+    case 'adjustment':
+      return CardTransactionType.Adjustment;
+    case 'purchase':
+    default:
+      return CardTransactionType.Purchase;
+  }
+}
+
+export interface CardResumeInfo {
+  cardProgramId?: string;
+  fundingSourceIds: string[];
+}
+
+export class ImmersveProvider implements ICardProvider {
+  readonly id = CardProviderIds.Immersve;
+
+  private readonly baseCapabilities: CardProviderCapabilities = {
+    authMethod: 'siwe',
+    supportsOTP: false,
+    supportsFundingApproval: true,
+    supportsFundingLimits: false,
+    fundingChains: ['eip155:8453', 'eip155:84532'],
+    supportsFreeze: true,
+    pushProvisioning: { applePay: true, googlePay: false },
+    onboarding: { type: 'webview', url: '' },
+    supportsPinView: false,
+    supportsPinSet: true,
+    supportsCashback: false,
+    supportsCredit: false,
+    supportsSensitiveDetailsView: true,
+    supportsTravel: false,
+    supportsTransactionHistory: true,
+    supportsContactDetails: true,
+    supportsMoneyAccountLinking: false,
+    usesMoneyAccountDelegationSettings: false,
+    reportsVerificationStatus: false,
+  };
+
+  get capabilities(): CardProviderCapabilities {
+    const channel = this.fundingChannel;
+    if (!channel) {
+      return this.baseCapabilities;
+    }
+    const fundingChains = this.baseCapabilities.fundingChains.includes(
+      channel.caipChainId,
+    )
+      ? this.baseCapabilities.fundingChains
+      : [...this.baseCapabilities.fundingChains, channel.caipChainId];
+    return {
+      ...this.baseCapabilities,
+      supportsMoneyAccountLinking: isMoneyAccountFundingChannel(channel),
+      fundingChains,
+    };
+  }
+
+  private readonly service: ImmersveService;
+  private readonly config: ImmersveProviderConfig;
+  private readonly getProgramConfig: () => ImmersveProgramConfig;
+  private readonly getFundingChannel: () => ImmersveFundingChannel | null;
+  private readonly findFundingChannelById: (
+    channelId: string,
+  ) => ImmersveFundingChannel | null;
+  private readonly hasFundingChannelLookup: boolean;
+  private readonly getSelectedCountry: () => string | null;
+  private readonly isMfaEnabled: () => boolean;
+  /** Card list requests in flight, by cardholder account. Concurrent callers share one. */
+  private readonly currentCardRequests = new Map<
+    string,
+    Promise<ImmersveCardListItem | null>
+  >();
+
+  constructor({
+    service,
+    config,
+    getProgramConfig,
+    getFundingChannel,
+    findFundingChannelById,
+    getSelectedCountry,
+    isMfaEnabled,
+  }: {
+    service: ImmersveService;
+    config: ImmersveProviderConfig;
+    getProgramConfig?: () => ImmersveProgramConfig | null | undefined;
+    getFundingChannel?: () => ImmersveFundingChannel | null;
+    findFundingChannelById?: (
+      channelId: string,
+    ) => ImmersveFundingChannel | null;
+    getSelectedCountry?: () => string | null;
+    isMfaEnabled?: () => boolean;
+  }) {
+    this.service = service;
+    this.config = config;
+    this.getProgramConfig = () => getProgramConfig?.() ?? {};
+    this.getFundingChannel = getFundingChannel ?? (() => null);
+    this.findFundingChannelById = findFundingChannelById ?? (() => null);
+    this.hasFundingChannelLookup = getFundingChannel !== undefined;
+    this.getSelectedCountry = getSelectedCountry ?? (() => null);
+    this.isMfaEnabled = isMfaEnabled ?? (() => false);
+  }
+
+  private get programConfig(): ImmersveProgramConfig {
+    return this.getProgramConfig();
+  }
+
+  private get fundingChannel(): ImmersveFundingChannel | null {
+    return this.getFundingChannel();
+  }
+
+  private get network(): string {
+    return (
+      this.fundingChannel?.network ??
+      this.programConfig.network ??
+      DEFAULT_NETWORK
+    );
+  }
+
+  private get clientApplicationId(): string {
+    return (
+      this.programConfig.clientApplicationId || this.config.clientApplicationId
+    );
+  }
+
+  private get appUrl(): string {
+    return this.programConfig.appUrl || this.config.appUrl;
+  }
+
+  private get secureApiBaseUrl(): string {
+    const url =
+      this.programConfig.secureApiBaseUrl || this.config.secureBaseUrl;
+    if (!url) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'Immersve secureApiBaseUrl is not configured',
+      );
+    }
+    return url;
+  }
+
+  private requireCardProgramId(): string {
+    const value =
+      this.fundingChannel?.cardProgramId || this.programConfig.cardProgramId;
+    if (!value) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'Immersve cardProgramId is not configured',
+      );
+    }
+    return value;
+  }
+
+  /**
+   * Channel id for a newly created funding source. The selected country's
+   * channel wins. The top-level flag field is the fallback when that channel
+   * is absent (no country yet, or a build that only has the top-level fields).
+   */
+  private requireFundingChannelId(): string {
+    const value =
+      (this.hasFundingChannelLookup
+        ? this.fundingChannel?.fundingChannelId
+        : undefined) || this.programConfig.fundingChannelId;
+    if (!value) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'Immersve funding channel is not configured',
+      );
+    }
+    return value;
+  }
+
+  async initiateAuth(
+    country: string,
+    options?: CardInitiateAuthOptions,
+  ): Promise<CardAuthSession> {
+    const address = options?.address;
+    if (!address) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'Immersve initiateAuth requires an account address',
+      );
+    }
+
+    try {
+      const response = await this.service.post<ImmersveLoginInitResponse>(
+        '/auth/login-init',
+        {
+          loginMethod: 'siwe',
+          network: this.network,
+          clientApplicationId: this.clientApplicationId,
+          scopes: ['cardholder-partner'],
+          address,
+          url: this.appUrl,
+          autoSignup: options?.autoSignup ?? true,
+        },
+      );
+
+      return {
+        id: response.id,
+        currentStep: {
+          type: 'siwe',
+          message: response.signingChallenge.message,
+        },
+        _metadata: {
+          loginRequestId: response.id,
+          address,
+          country,
+        },
+      };
+    } catch (error) {
+      if (
+        error instanceof CardApiError &&
+        typeof error.errorCode === 'string' &&
+        IMMERSVE_NO_ACCOUNT_ERROR_CODES.has(error.errorCode)
+      ) {
+        throw new CardProviderError(
+          CardProviderErrorCode.NotFound,
+          `Account does not exist for ${address}`,
+          error.statusCode,
+          error.errorCode,
+        );
+      }
+      reportAndMap(error, 'initiateAuth', {
+        network: this.network,
+        country,
+      });
+    }
+  }
+
+  async lookupAccount(address: string): Promise<CardAccountLookupResult> {
+    try {
+      await this.service.post<ImmersveLoginInitResponse>('/auth/login-init', {
+        loginMethod: 'siwe',
+        network: this.network,
+        clientApplicationId: this.clientApplicationId,
+        scopes: ['cardholder-partner'],
+        address,
+        url: this.appUrl,
+        autoSignup: false,
+      });
+      return 'found';
+    } catch (error) {
+      if (
+        error instanceof CardApiError &&
+        typeof error.errorCode === 'string' &&
+        IMMERSVE_NO_ACCOUNT_ERROR_CODES.has(error.errorCode)
+      ) {
+        return 'not_found';
+      }
+      return 'unknown';
+    }
+  }
+
+  async submitCredentials(
+    session: CardAuthSession,
+    credentials: CardCredentials,
+  ): Promise<CardAuthResult> {
+    const request = loginCompleteRequest(
+      session,
+      credentials,
+      this.isMfaEnabled(),
+    );
+
+    let response: ImmersveLoginCompleteResponse;
+    try {
+      response = await this.service.post<ImmersveLoginCompleteResponse>(
+        request.path,
+        request.body,
+      );
+    } catch (error) {
+      const mfaError = mapMfaForbiddenError(error);
+      if (mfaError) {
+        throw mfaError;
+      }
+      reportAndMap(error, 'submitCredentials', {
+        network: this.network,
+        country:
+          typeof session._metadata?.country === 'string'
+            ? session._metadata.country
+            : undefined,
+      });
+    }
+
+    return mapLoginCompleteResponse(response, session);
+  }
+
+  async refreshTokens(tokens: CardAuthTokens): Promise<CardAuthTokens> {
+    if (!tokens.refreshToken) {
+      throw new CardProviderError(
+        CardProviderErrorCode.InvalidCredentials,
+        'No refresh token available',
+        401,
+      );
+    }
+
+    let response: ImmersveTokenResponse;
+    try {
+      response = await this.service.post<ImmersveTokenResponse>(
+        '/auth/token',
+        {
+          refreshToken: tokens.refreshToken,
+          clientApplicationId: this.clientApplicationId,
+        },
+        undefined,
+        { origin: this.appUrl },
+      );
+    } catch (error) {
+      // Auth refresh rejection (400/401/403) is expected session expiry —
+      // do not report to Sentry.
+      if (
+        error instanceof CardApiError &&
+        [400, 401, 403].includes(error.statusCode)
+      ) {
+        throw new CardProviderError(
+          CardProviderErrorCode.InvalidCredentials,
+          'Refresh token rejected',
+          error.statusCode,
+        );
+      }
+      reportAndMap(error, 'refreshTokens');
+    }
+
+    const refreshToken = response.refreshToken ?? tokens.refreshToken;
+    return {
+      accessToken: response.accessToken,
+      refreshToken,
+      accessTokenExpiresAt: decodeJwtExpiryMs(response.accessToken) ?? 0,
+      refreshTokenExpiresAt: refreshToken
+        ? (decodeJwtExpiryMs(refreshToken) ?? undefined)
+        : undefined,
+      location: tokens.location,
+      providerUserId: tokens.providerUserId ?? tokens.cardholderAccountId,
+      cardholderAccountId: tokens.cardholderAccountId,
+      accountAddress: tokens.accountAddress,
+      keyringId: tokens.keyringId,
+    };
+  }
+
+  validateTokens(tokens: CardAuthTokens): AuthTokenValidity {
+    const now = Date.now();
+    const accessExpiry = decodeJwtExpiryMs(tokens.accessToken);
+
+    if (accessExpiry !== null && accessExpiry > now + TOKEN_EXPIRY_BUFFER_MS) {
+      return 'valid';
+    }
+
+    if (!tokens.refreshToken) {
+      return 'expired';
+    }
+
+    const refreshExpiry = decodeJwtExpiryMs(tokens.refreshToken);
+    const refreshUsable =
+      refreshExpiry === null || refreshExpiry > now + REFRESH_EXPIRY_BUFFER_MS;
+
+    return refreshUsable ? 'needs_refresh' : 'expired';
+  }
+
+  async logout(tokens: CardAuthTokens): Promise<void> {
+    try {
+      await this.service.post('/auth/logout', {}, tokens);
+    } catch (error) {
+      Logger.error(error as Error, getErrorContext('logout'));
+    }
+  }
+
+  /**
+   * Finds the funding source for this Money account address on the current
+   * channel, or creates one. Matching is case-insensitive on the address.
+   */
+  async resolveMoneyAccountFundingSource(
+    moneyAccountAddress: string,
+    tokens: CardAuthTokens,
+  ): Promise<CardFundingSourceResult> {
+    const moneyAccount = this.fundingChannel;
+    if (!isMoneyAccountFundingChannel(moneyAccount)) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'Money account card delegation is not supported for this provider',
+      );
+    }
+
+    const existing = await this.getFundingSources(tokens);
+    const match = existing.find(
+      (source) =>
+        source.fundingChannelId === moneyAccount.fundingChannelId &&
+        Boolean(
+          source.fundingAddress &&
+            areAddressesEqual(source.fundingAddress, moneyAccountAddress),
+        ),
+    );
+    return (
+      match ?? (await this.createFundingSource(tokens, moneyAccountAddress))
+    );
+  }
+
+  async createFundingSource(
+    tokens: CardAuthTokens,
+    fundingAddressOverride?: string,
+  ): Promise<CardFundingSourceResult> {
+    const accountId = tokens.cardholderAccountId;
+    const fundingAddress = fundingAddressOverride ?? tokens.accountAddress;
+    if (!accountId || !fundingAddress) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'createFundingSource: missing cardholder account id or address',
+      );
+    }
+
+    try {
+      const fundingChannelId = this.requireFundingChannelId();
+      const response = await this.service.post<ImmersveFundingSourceResponse>(
+        '/api/funding-sources',
+        {
+          accountId,
+          fundingChannelId,
+          fundingAddress,
+        },
+        tokens,
+      );
+      return {
+        id: response.id,
+        network: response.network,
+        balance: response.balance,
+        balanceCurrency: response.balanceCurrency,
+        fundingChannelId,
+      };
+    } catch (error) {
+      reportAndMap(error, 'createFundingSource', { network: this.network });
+    }
+  }
+
+  async prepareMoneyAccountLink(
+    params: PrepareMoneyAccountLinkParams,
+    tokens: CardAuthTokens,
+  ): Promise<MoneyAccountLinkPreparation> {
+    const moneyAccount = this.fundingChannel;
+    if (!isMoneyAccountFundingChannel(moneyAccount)) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'Money account card delegation is not supported for this provider',
+      );
+    }
+
+    const match = await this.resolveMoneyAccountFundingSource(
+      params.moneyAccountAddress,
+      tokens,
+    );
+
+    const { prerequisites } = await this.getSpendingPrerequisites(
+      match.id,
+      {
+        kycRegion: this.getSelectedCountry() ?? undefined,
+        kycRedirectUrl: KYC_REDIRECT_URL,
+      },
+      tokens,
+    );
+    const reportedSpender = spenderFromPrerequisites(prerequisites);
+    if (
+      reportedSpender &&
+      !areAddressesEqual(reportedSpender, moneyAccount.spenderAddress)
+    ) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'Money account approve spender does not match the funding channel',
+      );
+    }
+
+    return {
+      tokenAddress: moneyAccount.tokenAddress,
+      spender: moneyAccount.spenderAddress,
+      decimals: moneyAccount.decimals,
+      caipChainId: moneyAccount.caipChainId,
+      context: { fundingSourceId: match.id },
+    };
+  }
+
+  /**
+   * Card creation here is best effort. Immersve may not have indexed the
+   * allowance yet, and KYC or contact details can still be pending. The
+   * onboarding approval screen and Card Home's useImmersveCardProvisioning
+   * create the card once spending prerequisites are active.
+   */
+  async completeMoneyAccountLink(
+    params: CompleteMoneyAccountLinkParams,
+    tokens: CardAuthTokens,
+  ): Promise<void> {
+    const fundingSourceId = params.context.fundingSourceId;
+    if (!fundingSourceId) {
+      Logger.error(
+        new Error('completeMoneyAccountLink: missing funding source id'),
+        getErrorContext('completeMoneyAccountLink'),
+      );
+      return;
+    }
+
+    const { prerequisites } = await this.getSpendingPrerequisites(
+      fundingSourceId,
+      {
+        kycRegion: this.getSelectedCountry() ?? undefined,
+        kycRedirectUrl: KYC_REDIRECT_URL,
+      },
+      tokens,
+    );
+    if (deriveNextImmersveAction(prerequisites).type !== 'active') {
+      return;
+    }
+
+    try {
+      await this.createCard(fundingSourceId, tokens);
+    } catch (error) {
+      if (
+        error instanceof CardProviderError &&
+        error.code === CardProviderErrorCode.Conflict
+      ) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async getFundingSources(
+    tokens: CardAuthTokens,
+  ): Promise<CardFundingSourceResult[]> {
+    const accountId = tokens.cardholderAccountId;
+    if (!accountId) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'getFundingSources: missing cardholder account id',
+      );
+    }
+
+    try {
+      const { items } = await this.service.get<ImmersveFundingSourcesResponse>(
+        `/api/accounts/${accountId}/funding-sources`,
+        tokens,
+      );
+      return (items ?? []).map((item) => {
+        const fundingAddress = item.fundingAddress ?? item.externalId;
+        return {
+          id: item.id,
+          network: item.network,
+          balance: item.balance,
+          balanceCurrency: item.balanceCurrency,
+          fundingChannelId: item.fundingChannelId,
+          ...(fundingAddress ? { fundingAddress } : {}),
+        };
+      });
+    } catch (error) {
+      reportAndMap(error, 'getFundingSources');
+    }
+  }
+
+  async getContactDetails(tokens: CardAuthTokens): Promise<CardContactDetails> {
+    const accountId = tokens.cardholderAccountId;
+    if (!accountId) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'getContactDetails: missing cardholder account id',
+      );
+    }
+
+    try {
+      const response = await this.service.get<ImmersveContactDetailsResponse>(
+        `/api/accounts/${accountId}/contact-details`,
+        tokens,
+      );
+      return {
+        email: response.email?.emailAddress,
+        phone: response.phone?.phoneNumber,
+      };
+    } catch (error) {
+      reportAndMap(error, 'getContactDetails');
+    }
+  }
+
+  async patchContactDetails(
+    details: CardContactDetails,
+    tokens: CardAuthTokens,
+  ): Promise<void> {
+    const accountId = tokens.cardholderAccountId;
+    if (!accountId) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'patchContactDetails: missing cardholder account id',
+      );
+    }
+
+    const body: {
+      email?: { emailAddress: string };
+      phone?: { phoneNumber: string };
+    } = {};
+    if (details.email) body.email = { emailAddress: details.email };
+    if (details.phone) body.phone = { phoneNumber: details.phone };
+
+    try {
+      await this.service.patch(
+        `/api/accounts/${accountId}/contact-details`,
+        body,
+        tokens,
+      );
+    } catch (error) {
+      reportAndMap(error, 'patchContactDetails');
+    }
+  }
+
+  async getSpendingPrerequisites(
+    fundingSourceId: string,
+    params: CardSpendingPrerequisitesParams,
+    tokens: CardAuthTokens,
+  ): Promise<CardSpendingPrerequisitesResult> {
+    try {
+      return await this.service.post<CardSpendingPrerequisitesResult>(
+        '/api/spending-prerequisites',
+        {
+          cardProgramId: this.requireCardProgramId(),
+          fundingSourceId,
+          spendableAmount: '1',
+          spendableCurrency: IMMERSVE_SPENDABLE_CURRENCY,
+          kycType: IMMERSVE_KYC_TYPE,
+          kycRedirectUrl: params.kycRedirectUrl,
+          kycRegion: params.kycRegion,
+          kycHiddenSteps: IMMERSVE_KYC_HIDDEN_STEPS,
+        },
+        tokens,
+      );
+    } catch (error) {
+      reportAndMap(error, 'getSpendingPrerequisites', {
+        fundingSourceId,
+        kycRegion: params.kycRegion,
+      });
+    }
+  }
+
+  async createCard(
+    fundingSourceId: string,
+    tokens: CardAuthTokens,
+  ): Promise<CardCreateResult> {
+    const existing = await this.resolveCurrentCard(tokens);
+    if (existing) {
+      return { cardId: existing.id };
+    }
+
+    try {
+      return await this.service.post<CardCreateResult>(
+        '/api/cards',
+        {
+          cardProgramId: this.requireCardProgramId(),
+          fundingSourceId,
+        },
+        tokens,
+      );
+    } catch (error) {
+      reportAndMap(error, 'createCard', { fundingSourceId });
+    }
+  }
+
+  async getResumeCardInfo(
+    tokens: CardAuthTokens,
+  ): Promise<CardResumeInfo | null> {
+    try {
+      const card = await this.resolveCurrentCard(tokens);
+      if (!card) {
+        return null;
+      }
+      const detail = await this.service.get<ImmersveCardDetail>(
+        `/api/cards/${card.id}`,
+        tokens,
+      );
+      return {
+        cardProgramId: detail.cardProgramId,
+        fundingSourceIds: detail.fundingSourceIds ?? [],
+      };
+    } catch (error) {
+      reportAndMap(error, 'getResumeCardInfo');
+    }
+  }
+
+  private async resolveCurrentCard(
+    tokens: CardAuthTokens,
+  ): Promise<ImmersveCardListItem | null> {
+    const accountId = tokens.cardholderAccountId;
+    if (!accountId) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'resolveCurrentCard: missing cardholder account id',
+      );
+    }
+
+    let request = this.currentCardRequests.get(accountId);
+    if (!request) {
+      request = this.service
+        .get<ImmersveCardListResponse>(
+          `/api/accounts/${accountId}/cards?excludeExpired=true`,
+          tokens,
+        )
+        .then(({ items }) => this.pickCurrentCard(items ?? []))
+        .finally(() => {
+          this.currentCardRequests.delete(accountId);
+        });
+      this.currentCardRequests.set(accountId, request);
+    }
+    return request;
+  }
+
+  private pickCurrentCard(
+    items: ImmersveCardListItem[],
+  ): ImmersveCardListItem | null {
+    const candidates = items.filter((card) => card.status !== 'cancelled');
+    if (candidates.length === 0) return null;
+
+    const statusRank = (card: ImmersveCardListItem): number =>
+      card.status === 'active' ? 0 : 1;
+
+    return [...candidates].sort((a, b) => {
+      const rankDiff = statusRank(a) - statusRank(b);
+      if (rankDiff !== 0) return rankDiff;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    })[0];
+  }
+
+  private provisioningHomeData(): CardHomeData {
+    return {
+      ...emptyCardHomeData(),
+      alerts: [{ type: 'card_provisioning', dismissable: false }],
+    };
+  }
+
+  /**
+   * True only when spendingCap is a known numeric zero. Empty string means the
+   * on-chain read was skipped/failed — do not treat that as revoked.
+   */
+  private isRevokedAllowance(
+    asset: CardFundingAsset | null,
+  ): asset is CardFundingAsset {
+    if (!asset?.spendingCap) {
+      return false;
+    }
+    const cap = Number(asset.spendingCap);
+    return Number.isFinite(cap) && cap === 0;
+  }
+
+  async getCardHomeData(
+    _address: string,
+    tokens: CardAuthTokens,
+  ): Promise<CardHomeData> {
+    try {
+      const card = await this.resolveCurrentCard(tokens);
+
+      if (!card) {
+        return this.provisioningHomeData();
+      }
+
+      if (card.status === 'created') {
+        return this.provisioningHomeData();
+      }
+
+      const detail = await this.service.get<ImmersveCardDetail>(
+        `/api/cards/${card.id}`,
+        tokens,
+      );
+      // LIST is the AC source for regionCode; detail may omit it.
+      const mergedDetail = {
+        ...detail,
+        regionCode: detail.regionCode ?? card.regionCode,
+      };
+      const cardDetails = this.mapImmersveCard(mergedDetail);
+      const fundingAssets = await this.fetchFundingAssets(
+        detail.fundingSourceIds ?? [],
+        tokens,
+      );
+      const primaryFundingAsset = fundingAssets[0] ?? null;
+
+      const walletProvisioning = this.mapWalletProvisioning(mergedDetail);
+
+      if (this.isRevokedAllowance(primaryFundingAsset)) {
+        return {
+          ...emptyCardHomeData(),
+          card: cardDetails,
+          walletProvisioning,
+          primaryFundingAsset,
+          fundingAssets,
+          availableFundingAssets: fundingAssets,
+          alerts: [{ type: 'allowance_revoked', dismissable: false }],
+        };
+      }
+
+      const actions: CardAction[] =
+        cardDetails.status === CardStatus.ACTIVE && primaryFundingAsset
+          ? [{ type: 'add_funds', enabled: true }]
+          : [];
+
+      return {
+        ...emptyCardHomeData(),
+        card: cardDetails,
+        walletProvisioning,
+        primaryFundingAsset,
+        fundingAssets,
+        availableFundingAssets: fundingAssets,
+        actions,
+      };
+    } catch (error) {
+      if (!isCardAuthTokenError(error)) {
+        Logger.error(error as Error, getErrorContext('getCardHomeData'));
+      }
+      throw error;
+    }
+  }
+
+  async getCardDetails(tokens: CardAuthTokens): Promise<CardDetails> {
+    const card = await this.resolveCurrentCard(tokens);
+    if (!card) {
+      throw new CardProviderError(
+        CardProviderErrorCode.NoCard,
+        'User has no card',
+        404,
+      );
+    }
+
+    try {
+      const detail = await this.service.get<ImmersveCardDetail>(
+        `/api/cards/${card.id}`,
+        tokens,
+      );
+      return this.mapImmersveCard({
+        ...detail,
+        regionCode: detail.regionCode ?? card.regionCode,
+      });
+    } catch (error) {
+      reportAndMap(error, 'getCardDetails');
+    }
+  }
+
+  async listTransactions(
+    params: CardTransactionListParams,
+    tokens: CardAuthTokens,
+  ): Promise<CardTransactionPage> {
+    const accountId = tokens.cardholderAccountId;
+    if (!accountId) {
+      throw new CardProviderError(
+        CardProviderErrorCode.Unknown,
+        'listTransactions: missing cardholder account id',
+      );
+    }
+
+    const limit = params.limit ?? 50;
+    const cursor = params.cursor
+      ? decodeCardCursor<ImmersveCursorPayload>(params.cursor, this.id)?.c
+      : undefined;
+
+    try {
+      const query = new URLSearchParams({
+        statuses: 'all',
+        limit: String(limit),
+      });
+      if (cursor) {
+        query.set('cursor', cursor);
+      }
+      if (params.fromDate != null) {
+        query.set('fromUTC', new Date(params.fromDate).toISOString());
+      }
+      if (params.toDate != null) {
+        query.set('toUTC', new Date(params.toDate).toISOString());
+      }
+
+      const response = await this.service.get<ImmersveTransactionListResponse>(
+        `/api/accounts/${accountId}/transactions?${query.toString()}`,
+        tokens,
+      );
+
+      const items = (response.items ?? []).map((raw) =>
+        this.mapImmersveTransaction(raw),
+      );
+      const nextApiCursor = response.pageInfo?.nextCursor;
+      const nextCursor = nextApiCursor
+        ? encodeCardCursor(this.id, {
+            c: nextApiCursor,
+          } satisfies ImmersveCursorPayload)
+        : undefined;
+
+      return { items, nextCursor };
+    } catch (error) {
+      throw mapApiError(error, 'listTransactions');
+    }
+  }
+
+  async getTransaction(
+    id: string,
+    tokens: CardAuthTokens,
+  ): Promise<CardTransactionDetails> {
+    try {
+      const raw = await this.service.get<ImmersveTransactionRaw>(
+        `/api/transactions/${id}`,
+        tokens,
+      );
+      return this.mapImmersveTransactionDetails(raw);
+    } catch (error) {
+      throw mapApiError(error, 'getTransaction');
+    }
+  }
+
+  async freezeCard(cardId: string, tokens: CardAuthTokens): Promise<void> {
+    try {
+      await this.service.post(`/api/cards/${cardId}/freeze`, {}, tokens);
+    } catch (error) {
+      reportAndMap(error, 'freezeCard');
+    }
+  }
+
+  async unfreezeCard(cardId: string, tokens: CardAuthTokens): Promise<void> {
+    try {
+      await this.service.post(`/api/cards/${cardId}/unfreeze`, {}, tokens);
+    } catch (error) {
+      reportAndMap(error, 'unfreezeCard');
+    }
+  }
+
+  async setCardPin(
+    cardId: string,
+    newPin: string,
+    tokens: CardAuthTokens,
+  ): Promise<void> {
+    try {
+      await this.service.request(`/api/cards/${cardId}/set-pin`, {
+        method: 'POST',
+        body: { newPin },
+        tokenSet: tokens,
+        baseURL: this.secureApiBaseUrl,
+      });
+    } catch (error) {
+      reportAndMap(error, 'setCardPin');
+    }
+  }
+
+  async getCardSensitiveDetails(
+    tokens: CardAuthTokens,
+  ): Promise<CardSensitiveDetails> {
+    const card = await this.resolveCurrentCard(tokens);
+    if (!card) {
+      throw new CardProviderError(
+        CardProviderErrorCode.NoCard,
+        'User has no card',
+        404,
+      );
+    }
+
+    try {
+      const { callbackUrl } = await this.service.post<ImmersvePanTokenResponse>(
+        `/api/cards/${card.id}/pan-token`,
+        {},
+        tokens,
+      );
+      return await this.service.get<CardSensitiveDetails>(callbackUrl);
+    } catch (error) {
+      reportAndMap(error, 'getCardSensitiveDetails');
+    }
+  }
+
+  async createApplePayProvisioningRequest(
+    params: ApplePayProvisioningParams,
+    tokens: CardAuthTokens,
+  ): Promise<ApplePayProvisioningResponse> {
+    const card = await this.resolveCurrentCard(tokens);
+    if (!card) {
+      throw new CardProviderError(
+        CardProviderErrorCode.NoCard,
+        'User has no card',
+        404,
+      );
+    }
+
+    try {
+      const response = await this.service.post<ApplePayProvisioningResponse>(
+        `/api/cards/${card.id}/provision/apple-pay`,
+        {
+          certChain: params.certificates,
+          nonce: params.nonce,
+          nonceSignature: params.nonceSignature,
+        },
+        tokens,
+      );
+      if (
+        !response.encryptedPassData ||
+        !response.activationData ||
+        !response.ephemeralPublicKey
+      ) {
+        throw new CardProviderError(
+          CardProviderErrorCode.ServerError,
+          'Apple Pay provisioning response missing required fields',
+        );
+      }
+      return {
+        encryptedPassData: response.encryptedPassData,
+        activationData: response.activationData,
+        ephemeralPublicKey: response.ephemeralPublicKey,
+      };
+    } catch (error) {
+      reportAndMap(error, 'createApplePayProvisioningRequest');
+    }
+  }
+
+  private mapWalletProvisioning(
+    detail: ImmersveCardDetail,
+  ): CardWalletProvisioningInfo {
+    const region = detail.regionCode?.trim();
+    return {
+      eligible: this.mapImmersveCardStatus(detail) === CardStatus.ACTIVE,
+      cardholderName: detail.cardholderName ?? '',
+      lastFour: detail.panLast4 ?? '',
+      network: 'MASTERCARD',
+      primaryAccountIdentifier: detail.seriesId,
+      ...(region ? { countryCode: region.toUpperCase() } : {}),
+    };
+  }
+
+  private mapImmersveCard(detail: ImmersveCardDetail): CardDetails {
+    const status = this.mapImmersveCardStatus(detail);
+    return {
+      id: detail.id,
+      status,
+      type: detail.type === 'virtual' ? CardType.VIRTUAL : CardType.PHYSICAL,
+      lastFour: detail.panLast4 ?? '',
+      holderName: detail.cardholderName,
+      isFreezable: status === CardStatus.ACTIVE || status === CardStatus.FROZEN,
+      regionCode: detail.regionCode,
+      hasPin: true,
+    };
+  }
+
+  private mapImmersveTransaction(raw: ImmersveTransactionRaw): CardTransaction {
+    const isDebit = raw.creditDebitIndicator !== 'credit';
+    const billingCurrency = raw.currency;
+    const feeValue =
+      raw.feeAmount && raw.feeAmount !== '0'
+        ? minorUnitsToDecimal(raw.feeAmount, billingCurrency)
+        : undefined;
+
+    return {
+      id: raw.id,
+      providerId: this.id,
+      timestamp: new Date(raw.transactionDate).getTime(),
+      processedAt: raw.processedDate
+        ? new Date(raw.processedDate).getTime()
+        : undefined,
+      status: mapImmersveStatus(raw.status, raw.failureReason),
+      type: mapImmersveType(raw.paymentType),
+      isDebit,
+      billingAmount: {
+        value: minorUnitsToDecimal(raw.amount, billingCurrency),
+        currency: billingCurrency,
+      },
+      originalAmount:
+        raw.acquirerCurrency &&
+        hasNonZeroMinorAmount(raw.acquirerAmount) &&
+        raw.acquirerCurrency !== billingCurrency
+          ? {
+              value: minorUnitsToDecimal(
+                raw.acquirerAmount,
+                raw.acquirerCurrency,
+              ),
+              currency: raw.acquirerCurrency,
+            }
+          : undefined,
+      feeAmount: feeValue
+        ? { value: feeValue, currency: IMMERSVE_SETTLEMENT_CURRENCY }
+        : undefined,
+      merchant: {
+        name: raw.cardAcceptor.name,
+        city: raw.cardAcceptor.city,
+        countryCode: raw.cardAcceptor.countryCode,
+      },
+      description: raw.description,
+      reference: raw.reference,
+      cardLastFour: raw.panLast6?.slice(-4),
+      declineReason: raw.failureReason
+        ? { code: raw.failureReason }
+        : undefined,
+      fundingSources: [],
+    };
+  }
+
+  private mapImmersveTransactionDetails(
+    raw: ImmersveTransactionRaw,
+  ): CardTransactionDetails {
+    return {
+      ...this.mapImmersveTransaction(raw),
+      cardFirstSix: raw.panFirst6,
+      cardLastFour: raw.panLast6?.slice(-4) ?? undefined,
+      securityChallengeOutcome: raw.securityChallenge?.outcome,
+      relatedTransactionId: raw.relatedPaymentId,
+    };
+  }
+
+  private mapImmersveCardStatus(detail: ImmersveCardDetail): CardStatus {
+    if (detail.status === 'cancelled') {
+      return CardStatus.BLOCKED;
+    }
+    if (detail.isBlocked) {
+      return detail.unfreezeAllowed ? CardStatus.FROZEN : CardStatus.BLOCKED;
+    }
+    return CardStatus.ACTIVE;
+  }
+
+  private async fetchFundingAssets(
+    fundingSourceIds: string[],
+    tokens: CardAuthTokens,
+  ): Promise<CardFundingAsset[]> {
+    if (fundingSourceIds.length === 0) return [];
+
+    const details = await Promise.all(
+      fundingSourceIds.map((id) =>
+        this.service
+          .get<ImmersveFundingSourceDetail>(`/api/funding-source/${id}`, tokens)
+          .catch((error) => {
+            if (!isCardAuthTokenError(error)) {
+              Logger.error(
+                error as Error,
+                getErrorContext('fetchFundingAssets', { fundingSourceId: id }),
+              );
+            }
+            throw error;
+          }),
+      ),
+    );
+
+    const assets = await Promise.all(
+      details.map((detail) =>
+        detail ? this.mapFundingSource(detail) : Promise.resolve(null),
+      ),
+    );
+
+    return assets.filter((asset): asset is CardFundingAsset => asset !== null);
+  }
+
+  private async mapFundingSource(
+    fundingSource: ImmersveFundingSourceDetail,
+  ): Promise<CardFundingAsset | null> {
+    const channel = fundingSource.fundingChannelId
+      ? this.findFundingChannelById(fundingSource.fundingChannelId)
+      : null;
+
+    let tokenInfo: ImmersveFundingTokenInfo;
+    try {
+      tokenInfo = channel
+        ? {
+            caipChainId: channel.caipChainId,
+            tokenAddress: channel.tokenAddress,
+            decimals: channel.decimals,
+          }
+        : immersveNetworkToFundingToken(fundingSource.network);
+    } catch (error) {
+      Logger.error(
+        error as Error,
+        getErrorContext('mapFundingSource', { network: fundingSource.network }),
+      );
+      return null;
+    }
+
+    const symbol = channel?.symbol ?? fundingSource.balanceCurrency ?? 'USDC';
+    // The allowance lives on the registered funding address. Immersve returns
+    // it as fundingAddress, or as externalId when the detail omits it.
+    const walletAddress =
+      fundingSource.fundingAddress ?? fundingSource.externalId ?? '';
+    if (isMoneyAccountFundingChannel(channel) && !walletAddress) {
+      Logger.error(
+        new Error(
+          'mapFundingSource: Money account funding source has no funding address',
+        ),
+        getErrorContext('mapFundingSource', {
+          fundingSourceId: fundingSource.id,
+        }),
+      );
+    }
+
+    const { spendableBalance, spendingCap } =
+      await this.resolveOnChainSpendableBalance(
+        walletAddress,
+        tokenInfo,
+        channel?.network ?? fundingSource.network,
+        channel,
+      );
+
+    return {
+      symbol,
+      name: symbol,
+      address: tokenInfo.tokenAddress,
+      walletAddress,
+      decimals: tokenInfo.decimals,
+      chainId: tokenInfo.caipChainId as CaipChainId,
+      spendableBalance,
+      spendingCap,
+      priority: 0,
+      status: FundingAssetStatus.Active,
+      assumeUsdParity: isUsdStablecoin(symbol),
+      ...(channel ? { fundingSourceType: channel.source } : {}),
+    };
+  }
+
+  private async resolveOnChainSpendableBalance(
+    walletAddress: string,
+    tokenInfo: ImmersveFundingTokenInfo,
+    network: string | undefined,
+    channel: ImmersveFundingChannel | null,
+  ): Promise<{ spendableBalance: string; spendingCap: string }> {
+    const empty = { spendableBalance: '', spendingCap: '' };
+    const spender =
+      channel?.spenderAddress ?? this.programConfig.spenderAddress;
+    if (!spender) {
+      Logger.error(
+        new Error(
+          'resolveOnChainSpendableBalance: funding channel is missing a spender',
+        ),
+        getErrorContext('resolveOnChainSpendableBalance', {
+          fundingChannelId: channel?.fundingChannelId,
+        }),
+      );
+      return empty;
+    }
+    if (!walletAddress || !ethers.utils.isAddress(walletAddress)) {
+      return empty;
+    }
+
+    try {
+      const provider = await this.createFundingNetworkProvider(
+        network,
+        channel,
+      );
+      if (!provider) return empty;
+
+      const { spendableBalance, allowance } =
+        await readErc20AllowanceAndBalance(
+          provider,
+          tokenInfo.tokenAddress,
+          walletAddress,
+          spender,
+          tokenInfo.decimals,
+        );
+
+      return { spendableBalance, spendingCap: allowance };
+    } catch (error) {
+      Logger.error(
+        error as Error,
+        getErrorContext('resolveOnChainSpendableBalance', {
+          walletAddress,
+          network,
+          token: tokenInfo.tokenAddress,
+        }),
+      );
+      return empty;
+    }
+  }
+
+  /**
+   * Built-in networks keep their keyed RPC first. Any other network (e.g. a
+   * Linea channel) uses the RPCs from its `cardImmersveChains` entry.
+   */
+  private async createFundingNetworkProvider(
+    network: string | undefined,
+    channel?: ImmersveFundingChannel | null,
+  ): Promise<ethers.providers.StaticJsonRpcProvider | null> {
+    const resolvedNetwork = network ?? this.network;
+    const rpcConfig = IMMERSVE_FUNDING_NETWORK_RPC[resolvedNetwork];
+    const chainId =
+      rpcConfig?.chainId ??
+      (channel ? Number(parseCaipChainId(channel.caipChainId).reference) : NaN);
+    const rpcCandidates = Array.from(
+      new Set(
+        [
+          rpcConfig?.primaryRpcUrl,
+          channel?.rpcUrl,
+          channel?.fallbackRpcUrl,
+          rpcConfig?.publicFallback,
+        ].filter(
+          (url): url is string => typeof url === 'string' && url.length > 0,
+        ),
+      ),
+    );
+
+    if (!Number.isInteger(chainId) || rpcCandidates.length === 0) {
+      Logger.error(
+        new Error(`Unsupported Immersve funding network: ${resolvedNetwork}`),
+        getErrorContext('createFundingNetworkProvider', {
+          network: resolvedNetwork,
+        }),
+      );
+      return null;
+    }
+
+    let lastRpcError: unknown;
+    for (const rpcUrl of rpcCandidates) {
+      try {
+        const candidate = new ethers.providers.StaticJsonRpcProvider(
+          { url: rpcUrl, skipFetchSetup: true },
+          { name: resolvedNetwork, chainId },
+        );
+        await candidate.getBlockNumber();
+        return candidate;
+      } catch (error) {
+        lastRpcError = error;
+      }
+    }
+
+    if (lastRpcError) {
+      Logger.error(
+        lastRpcError as Error,
+        getErrorContext('createFundingNetworkProvider', {
+          network: resolvedNetwork,
+        }),
+      );
+    }
+    return null;
+  }
+}

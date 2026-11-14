@@ -1,0 +1,64 @@
+import type { BridgeState } from '../../../../core/redux/slices/bridge';
+import { initialHardwareWalletsSwapsState } from '../../HardwareWallet/Swaps/HardwareWalletsSwaps.state';
+import { BridgeViewMode } from '../types';
+import { initialRecurringState } from '../utils/recurringSchedule';
+
+export const mockBridgeReducerState: BridgeState = {
+  sourceAmount: '1000000000000000000',
+  destAmount: undefined,
+  sourceToken: {
+    address: '0x0000000000000000000000000000000000000000',
+    decimals: 18,
+    image: 'https://example.com/image.png',
+    name: 'Ethereum',
+    symbol: 'ETH',
+    balance: '1.0',
+    balanceFiat: '$2000',
+    chainId: '0x1',
+  },
+  destToken: {
+    address: '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359',
+    decimals: 6,
+    image: 'https://example.com/image.png',
+    name: 'USD Coin',
+    symbol: 'USDC',
+    balance: '0',
+    balanceFiat: '$0',
+    chainId: '0xa',
+  },
+  destAddress: undefined,
+  selectedSourceChainIds: ['0x1'],
+  selectedDestChainId: '0xa',
+  slippage: undefined,
+  isSlippageUserOverride: false,
+  isSubmittingTx: false,
+  isGasIncludedSTXSendBundleSupported: false,
+  isGasIncluded7702Supported: false,
+  isNativeGasIncludedSupported: false,
+  bridgeViewMode: BridgeViewMode.Bridge,
+  isSelectingRecipient: false,
+  isSelectingToken: false,
+  isDestTokenManuallySet: false,
+  tokenSelectorNetworkFilter: undefined,
+  visiblePillChainIds: undefined,
+  selectedQuoteRequestId: undefined,
+  balanceRefreshKey: 0,
+  hardwareWalletsSwaps: initialHardwareWalletsSwapsState,
+
+  // Batch Sell
+  batchSellSourceTokens: [],
+  batchSellSourceTokenAmounts: {},
+  batchSellDestToken: undefined,
+  batchSellSlippages: {},
+
+  // Recurring
+  recurring: initialRecurringState,
+
+  // Limit orders
+  limitOrderCostTolerance: undefined,
+  limitOrderExpirationMinutes: undefined,
+  limitOrderMarketComparison: undefined,
+
+  // Orders (Limit + Recurring, Open + History)
+  ordersNetworkFilter: undefined,
+};

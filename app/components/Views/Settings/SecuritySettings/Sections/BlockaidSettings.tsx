@@ -1,43 +1,61 @@
 import React from 'react';
-import Text, {
-  TextVariant,
+import {
+  FontWeight,
+  Text,
   TextColor,
-} from '../../../../../component-library/components/Texts/Text';
+  TextVariant,
+} from '@metamask/design-system-react-native';
 import { useTheme } from '../../../../../util/theme';
 import { strings } from '../../../../../../locales/i18n';
-import { Switch, View } from 'react-native';
+import { Linking, Switch, View } from 'react-native';
 import { useSelector } from 'react-redux';
 import { selectIsSecurityAlertsEnabled } from '../../../../../selectors/preferencesController';
 import Engine from '../../../../../core/Engine';
 import { MetaMetricsEvents } from '../../../../../core/Analytics';
 import SECURITY_ALERTS_TOGGLE_TEST_ID from '../constants';
 import createStyles from './BlockaidSettings.styles';
-import { useMetrics } from '../../../../../components/hooks/useMetrics';
+import { useAnalytics } from '../../../../../components/hooks/useAnalytics/useAnalytics';
+import { UserProfileProperty } from '../../../../../util/metrics/UserSettingsAnalyticsMetaData/UserProfileAnalyticsMetaData.types';
+import { SECURITY_ALERTS_URL } from '../../../../../constants/urls';
 
 const BlockaidSettings = () => {
   const theme = useTheme();
   const { colors } = useTheme();
-  const { trackEvent } = useMetrics();
+  const { trackEvent, createEventBuilder, identify } = useAnalytics();
   const styles = createStyles();
   const securityAlertsEnabled = useSelector(selectIsSecurityAlertsEnabled);
 
   const toggleSecurityAlertsEnabled = () => {
-    const { PreferencesController } = Engine.context;
+    const newSecurityAlertsEnabledState = !securityAlertsEnabled;
 
-    if (securityAlertsEnabled) {
-      PreferencesController?.setSecurityAlertsEnabled(false);
-      trackEvent(MetaMetricsEvents.SETTINGS_SECURITY_ALERTS_ENABLED, {
-        security_alerts_enabled: false,
-      });
-    } else {
-      PreferencesController?.setSecurityAlertsEnabled(true);
-    }
+    const { PreferencesController } = Engine.context;
+    PreferencesController?.setSecurityAlertsEnabled(
+      newSecurityAlertsEnabledState,
+    );
+
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.SETTINGS_SECURITY_ALERTS_ENABLED)
+        .addProperties({
+          security_alerts_enabled: newSecurityAlertsEnabledState,
+        })
+        .build(),
+    );
+
+    identify({
+      [UserProfileProperty.SECURITY_PROVIDERS]: newSecurityAlertsEnabledState
+        ? 'blockaid'
+        : '',
+    });
   };
 
   return (
     <>
       <View style={styles.marginedSwitchElement}>
-        <Text color={TextColor.Default} variant={TextVariant.BodyLGMedium}>
+        <Text
+          color={TextColor.TextDefault}
+          variant={TextVariant.BodyMd}
+          fontWeight={FontWeight.Medium}
+        >
           {strings('app_settings.security_alerts')}
         </Text>
         <Switch
@@ -47,7 +65,7 @@ const BlockaidSettings = () => {
             true: colors.primary.default,
             false: colors.border.muted,
           }}
-          thumbColor={theme.brandColors.white000}
+          thumbColor={theme.brandColors.white}
           style={styles.switch}
           ios_backgroundColor={colors.border.muted}
           testID={SECURITY_ALERTS_TOGGLE_TEST_ID}
@@ -55,11 +73,20 @@ const BlockaidSettings = () => {
       </View>
 
       <Text
-        color={TextColor.Alternative}
-        variant={TextVariant.BodyMD}
+        color={TextColor.TextAlternative}
+        variant={TextVariant.BodySm}
+        fontWeight={FontWeight.Medium}
         style={styles.desc}
       >
-        {strings('app_settings.blockaid_desc')}
+        {strings('app_settings.blockaid_desc')}{' '}
+        <Text
+          color={TextColor.TextAlternative}
+          variant={TextVariant.BodySm}
+          fontWeight={FontWeight.Medium}
+          onPress={() => Linking.openURL(SECURITY_ALERTS_URL)}
+        >
+          {strings('app_settings.learn_more')}
+        </Text>
       </Text>
     </>
   );

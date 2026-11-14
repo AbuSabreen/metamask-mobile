@@ -5,7 +5,7 @@ import { StyleSheet } from 'react-native';
 import { Theme } from '../../../util/theme/models';
 
 /**
- * Style sheet function for SheetBottom component.
+ * Style sheet function for ReusableModal component.
  *
  * @param params Style sheet params.
  * @param params.theme App theme from ThemeContext.
@@ -16,10 +16,10 @@ const styleSheet = (params: { theme: Theme }) => {
   const { colors } = theme;
   return StyleSheet.create({
     absoluteFill: {
-      ...StyleSheet.absoluteFillObject,
+      ...StyleSheet.absoluteFill,
     },
     overlay: {
-      ...StyleSheet.absoluteFillObject,
+      ...StyleSheet.absoluteFill,
       backgroundColor: colors.overlay.default,
     },
   });

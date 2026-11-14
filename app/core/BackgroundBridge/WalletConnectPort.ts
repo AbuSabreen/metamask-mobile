@@ -1,34 +1,30 @@
 import Engine from '../Engine';
 import AppConstants from '../AppConstants';
-import { selectChainId } from '../../selectors/networkController';
-import { store } from '../../store';
 
-// eslint-disable-next-line import/no-nodejs-modules, import/no-commonjs, @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+// eslint-disable-next-line import-x/no-nodejs-modules, import-x/no-commonjs, @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
 const EventEmitter = require('events').EventEmitter;
 
 const { NOTIFICATION_NAMES } = AppConstants;
 
 class WalletConnectPort extends EventEmitter {
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   constructor(wcRequestActions: any) {
     super();
     this._wcRequestActions = wcRequestActions;
   }
 
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   postMessage = (msg: any) => {
     try {
       if (msg?.data?.method === NOTIFICATION_NAMES.chainChanged) {
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-        // @ts-ignore
-        const { selectedAddress } = Engine.datamodel.flatState;
+        const { internalAccounts } = Engine.context.AccountsController.state;
+        const selectedAddress =
+          internalAccounts.accounts[internalAccounts.selectedAccount]?.address;
         this._wcRequestActions?.updateSession?.({
           chainId: parseInt(msg.data.params.chainId, 16),
           accounts: [selectedAddress],
-        });
-      } else if (msg?.data?.method === NOTIFICATION_NAMES.accountsChanged) {
-        const chainId = selectChainId(store.getState());
-        this._wcRequestActions?.updateSession?.({
-          chainId: parseInt(chainId, 10),
-          accounts: msg.data.params,
         });
       } else if (msg?.data?.method === NOTIFICATION_NAMES.unlockStateChanged) {
         // WC DOESN'T NEED THIS EVENT

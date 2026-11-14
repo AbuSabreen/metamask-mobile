@@ -27,26 +27,17 @@ const styleSheet = (params: {
       {
         position: 'relative',
         opacity: isDisabled ? 0.5 : 1,
-        padding: 16,
         borderRadius: 4,
-        backgroundColor: colors.background.default,
       } as ViewStyle,
       style,
     ) as ViewStyle,
     underlay: {
-      ...StyleSheet.absoluteFillObject,
+      ...StyleSheet.absoluteFill,
       flexDirection: 'row',
-      backgroundColor: colors.primary.muted,
+      backgroundColor: colors.background.muted,
     },
     listItem: {
-      padding: 0,
-    },
-    underlayBar: {
-      marginVertical: 4,
-      marginLeft: 4,
-      width: 4,
-      borderRadius: 2,
-      backgroundColor: colors.primary.default,
+      padding: 16,
     },
   });
 };

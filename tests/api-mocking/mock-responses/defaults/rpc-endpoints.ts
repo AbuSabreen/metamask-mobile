@@ -1,0 +1,85 @@
+import { MockEventsObject } from '../../../framework';
+
+/**
+ * Mock data for external RPC endpoints used in E2E testing.
+ * Blocks actual requests to external RPC providers that are not needed for testing.
+ */
+export const DEFAULT_RPC_ENDPOINT_MOCKS: MockEventsObject = {
+  POST: [
+    // Direct (non-proxy) LlamaRPC calls leak into fixture cleanup when a
+    // network is configured with eth.llamarpc.com and CUSTOM_RPC_PROVIDER_MOCKS
+    // is not wired for the spec. Match other catch-all RPC stubs below.
+    {
+      urlEndpoint: 'https://eth.llamarpc.com',
+      responseCode: 200,
+      response: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x0',
+      },
+    },
+    {
+      urlEndpoint: 'https://carrot.megaeth.com/rpc',
+      responseCode: 200,
+      response: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x0',
+      },
+    },
+    {
+      urlEndpoint: 'https://polygon-rpc.com',
+      responseCode: 200,
+      response: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x0',
+      },
+    },
+    {
+      urlEndpoint: 'https://api.avax.network/ext/bc/C/rpc',
+      responseCode: 200,
+      response: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x0',
+      },
+    },
+    {
+      urlEndpoint: 'https://rpc.linea.build',
+      responseCode: 200,
+      response: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x0',
+      },
+    },
+    {
+      urlEndpoint: 'https://arb1.arbitrum.io/rpc',
+      responseCode: 200,
+      response: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x0',
+      },
+    },
+    {
+      urlEndpoint: /^https:\/\/virtual\.mainnet\.rpc\.tenderly\.co\/.+$/,
+      responseCode: 200,
+      response: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x0',
+      },
+    },
+    {
+      urlEndpoint: 'https://testnet-rpc.monad.xyz/',
+      responseCode: 200,
+      response: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: '0x0',
+      },
+    },
+  ],
+};

@@ -1,0 +1,97 @@
+import { test as perfTest } from '../../framework/fixtures/playwright';
+import TimerHelper from '../../framework/TimerHelper';
+import UniswapDapp from '../../page-objects/MMConnect/UniswapDapp';
+import DappConnectionModal from '../../page-objects/MMConnect/DappConnectionModal';
+import { PerformanceLogin } from '../../tags.performance.js';
+import {
+  loginToAppPlaywright,
+  unlockIfLockScreenVisible,
+} from '../../flows/wallet.flow';
+import AppiumContextHelpers from '../../framework/AppiumContextHelpers';
+import {
+  launchMobileBrowser,
+  navigateToDapp,
+  switchToMobileBrowser,
+} from '../../flows/native-browser.flow';
+import { enableHermesAppProfiling } from '../helpers/appProfiling';
+
+const UNISWAP_URL = 'https://app.uniswap.org';
+
+perfTest.describe(`${PerformanceLogin}`, () => {
+  perfTest.setTimeout(20 * 60 * 1000);
+
+  perfTest.skip(
+    'Connect to Uniswap dapp, edit accounts, choose another account, and skip Solana popup',
+    { tag: '@metamask-mobile-platform' },
+    async ({ currentDeviceDetails, driver: _driver, performanceTracker }) => {
+      const { platform } = currentDeviceDetails;
+
+      const metamaskTimer = new TimerHelper(
+        'Time since the user selects Metamask until Metamask app is opened',
+        { ios: 18000, android: 22000 },
+        platform,
+      );
+
+      const connectTimer = new TimerHelper(
+        'Time since the user taps Connect in MetaMask until Uniswap is displayed',
+        { ios: 15000, android: 5000 },
+        platform,
+      );
+      await loginToAppPlaywright();
+
+      await AppiumContextHelpers.withNativeAction(async () => {
+        await launchMobileBrowser();
+        await navigateToDapp(UNISWAP_URL);
+      });
+
+      // Wait for Uniswap to fully load before interacting
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      if (platform === 'android') {
+        await AppiumContextHelpers.withWebAction(async () => {
+          await UniswapDapp.connectWithMetaMask();
+        }, UNISWAP_URL);
+      } else {
+        await AppiumContextHelpers.withNativeAction(async () => {
+          await UniswapDapp.connectIOS();
+          await UniswapDapp.selectWalletConnectOption();
+        });
+      }
+
+      await enableHermesAppProfiling();
+      // Android comes from a webAction so needs to be in native context
+      if (platform === 'android') {
+        await AppiumContextHelpers.withNativeAction(async () => {
+          await UniswapDapp.tapOnMetaMaskWalletOptionAndOpenDeeplink();
+        });
+      } else {
+        // iOS comes from a nativeAction so no need to change context
+        await UniswapDapp.tapOnMetaMaskWalletOptionAndOpenDeeplink();
+      }
+
+      metamaskTimer.start();
+      // Still on Native Context
+      await unlockIfLockScreenVisible();
+      metamaskTimer.stop();
+      await DappConnectionModal.tapEditAccountsButton();
+      await DappConnectionModal.tapUpdateAccountsButton();
+
+      await DappConnectionModal.tapConnectButton({
+        shouldCooldown: true,
+        timeToCooldown: 2000,
+      });
+
+      connectTimer.start();
+
+      await switchToMobileBrowser();
+
+      if (platform === 'android') {
+        await UniswapDapp.isUniswapDisplayed();
+      }
+
+      connectTimer.stop();
+
+      performanceTracker.addTimers(metamaskTimer, connectTimer);
+    },
+  );
+});

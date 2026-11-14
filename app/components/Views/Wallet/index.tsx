@@ -1,101 +1,246 @@
-import React, { useEffect, useRef, useCallback, useContext } from 'react';
+import { AccountGroupId } from '@metamask/account-api';
+import type { Theme } from '@metamask/design-tokens';
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import type { SectionRefreshHandle } from '../Homepage/types';
+import {
+  useArcUsageNoticeToast,
+  useBalanceRefresh,
+  useHomepageEntryPoint,
+} from './hooks';
+
 import {
   ActivityIndicator,
-  StyleSheet,
-  View,
-  TextStyle,
-  InteractionManager,
+  DeviceEventEmitter,
   Linking,
+  RefreshControl,
+  ScrollView,
+  StyleSheet as RNStyleSheet,
+  unstable_batchedUpdates,
+  View,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
-import type { Theme } from '@metamask/design-tokens';
-import { connect, useSelector } from 'react-redux';
-import ScrollableTabView from 'react-native-scrollable-tab-view';
-import DefaultTabBar from 'react-native-scrollable-tab-view/DefaultTabBar';
-import { baseStyles } from '../../../styles/common';
-import Tokens from '../../UI/Tokens';
-import { getWalletNavbarOptions } from '../../UI/Navbar';
-import { strings } from '../../../../locales/i18n';
-import { renderFromWei, weiToFiat, hexToBN } from '../../../util/number';
+import HeaderGlass, {
+  useHeaderGlassInset,
+} from '../../../component-library/components-temp/HeaderGlass';
+import { useSharedValue } from 'react-native-reanimated';
 import {
-  isPastPrivacyPolicyDate,
-  shouldShowNewPrivacyToastSelector,
-  storePrivacyPolicyShownDate as storePrivacyPolicyShownDateAction,
-  storePrivacyPolicyClickedOrClosed as storePrivacyPolicyClickedOrClosedAction,
-} from '../../../reducers/legalNotices';
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
+import { connect, useDispatch, useSelector } from 'react-redux';
+import { strings } from '../../../../locales/i18n';
 import { CONSENSYS_PRIVACY_POLICY } from '../../../constants/urls';
+import { isPastPrivacyPolicyDate } from '../../../reducers/legalNotices';
+import { shouldShowNewPrivacyToastSelector } from '../../../selectors/legalNotices';
+import {
+  storePrivacyPolicyClickedOrClosed as storePrivacyPolicyClickedOrClosedAction,
+  storePrivacyPolicyShownDate as storePrivacyPolicyShownDateAction,
+} from '../../../actions/legalNotices';
+import StorageWrapper from '../../../store/storage-wrapper';
+import { HOMEPAGE_APP_SESSION_ID } from '../../../util/analytics/homepageSessionId';
+import { baseStyles } from '../../../styles/common';
+import { PERPS_GTM_MODAL_SHOWN } from '../../../constants/storage';
+import {
+  selectIsMoneyDepositBrazeCampaignEnabledFlag,
+  selectMoneyEnableMoneyAccountFlag,
+} from '../../UI/Money/selectors/featureFlags';
+import { selectIsMoneyAccountVisible } from '../../UI/Money/selectors/visibility';
+import MoneyBalanceCard from '../../UI/Money/components/MoneyBalanceCard';
+import MoneyDepositBrazeCampaignObserver from '../../UI/Money/components/MoneyDepositBrazeCampaignObserver/MoneyDepositBrazeCampaignObserver';
+import WalletHeader from './components/WalletHeader/WalletHeader';
+import WalletHeaderAccountPickerRow from './components/WalletHeader/WalletHeaderAccountPickerRow';
+import WalletHeaderCompact from './components/WalletHeader/WalletHeaderCompact';
+import { useWalletHeaderNativeHeader } from './components/WalletHeader/useWalletHeaderNativeHeader';
+import { NATIVE_HEADER_BAR_HEIGHT } from '../../hooks/useNativeHeader';
+import HomepageSearchReturnTransition from './components/HomepageSearchReturnTransition/HomepageSearchReturnTransition';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
+import {
+  BannerAlert,
+  BannerAlertSeverity,
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+  ButtonAnimated,
+  FontWeight,
+  Icon as MMDSIcon,
+  IconColor as MMDSIconColor,
+  IconName as MMDSIconName,
+  IconSize as MMDSIconSize,
+  Text as CustomText,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+
+import {
+  NavigationProp,
+  ParamListBase,
+  RouteProp,
+  useFocusEffect,
+  useIsFocused,
+  useNavigation,
+  useRoute,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import { WalletViewSelectorsIDs } from './WalletView.testIds';
 import {
   ToastContext,
   ToastVariants,
+  ButtonIconVariant,
 } from '../../../component-library/components/Toast';
-import Engine from '../../../core/Engine';
-import CollectibleContracts from '../../UI/CollectibleContracts';
-import { MetaMetricsEvents } from '../../../core/Analytics';
-import { getTicker } from '../../../util/transactions';
-import OnboardingWizard from '../../UI/OnboardingWizard';
-import ErrorBoundary from '../ErrorBoundary';
-import { useTheme } from '../../../util/theme';
-import {
-  shouldShowSmartTransactionsOptInModal,
-  shouldShowWhatsNewModal,
-} from '../../../util/onboarding';
-import Logger from '../../../util/Logger';
+import ConditionalScrollView from '../../../component-library/components-temp/ConditionalScrollView';
+import { useIsGlassSurfaceEnabled } from '../../hooks/useIsGlassSurfaceEnabled';
+import { selectHomeBrandRefreshSurfacesEnabled } from '../../../selectors/featureFlagController/homeBrandRefreshSurfaces';
+import { useFloatingTabBarInset } from '../../../component-library/components/Navigation/TabBarFloating';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
 import Routes from '../../../constants/navigation/Routes';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { ActivityScreenEntryPoint } from '../../../core/Analytics/events/activity';
 import {
-  getDecimalChainId,
-  getIsNetworkOnboarded,
-} from '../../../util/networks';
-import generateTestId from '../../../../wdio/utils/generateTestId';
-import {
-  selectProviderConfig,
-  selectTicker,
-} from '../../../selectors/networkController';
-import {
-  selectNetworkName,
-  selectNetworkImageSource,
-} from '../../../selectors/networkInfos';
-import { selectTokens } from '../../../selectors/tokensController';
-import { useNavigation } from '@react-navigation/native';
-import { WalletAccount } from '../../../components/UI/WalletAccount';
-import {
-  selectConversionRate,
-  selectCurrentCurrency,
-} from '../../../selectors/currencyRateController';
-import BannerAlert from '../../../component-library/components/Banners/Banner/variants/BannerAlert/BannerAlert';
-import { BannerAlertSeverity } from '../../../component-library/components/Banners/Banner/variants/BannerAlert/BannerAlert.types';
-import Text, {
-  TextColor,
-} from '../../../component-library/components/Texts/Text';
-import { useMetrics } from '../../../components/hooks/useMetrics';
+  trackActionButtonClick,
+  ActionButtonType,
+  ActionLocation,
+  ActionPosition,
+} from '../../../util/analytics/actionButtonTracking';
 import { RootState } from '../../../reducers';
-import usePrevious from '../../hooks/usePrevious';
-import { selectSelectedInternalAccountChecksummedAddress } from '../../../selectors/accountsController';
-import { selectAccountBalanceByChainId } from '../../../selectors/accountTrackerController';
+import { selectSelectedInternalAccount } from '../../../selectors/accountsController';
+import {
+  selectChainId,
+  selectProviderConfig,
+} from '../../../selectors/networkController';
+import { selectSelectedAccountGroupId } from '../../../selectors/multichainAccounts/accountTreeController';
+import {
+  selectShouldShowWalletHomeOnboardingSteps,
+  selectWalletHomeOnboardingSteps,
+} from '../../../selectors/onboarding';
+import { selectIsAccountGroupFunded } from '../../../selectors/assets/balances';
+import { selectAvatarAccountType } from '../../../selectors/settings';
+import NotificationsService from '../../../util/notifications/services/NotificationService';
+import { useTheme } from '../../../util/theme';
+import { useAccountGroupName } from '../../hooks/multichainAccounts/useAccountGroupName';
+import { useAccountName } from '../../hooks/useAccountName';
+import { PERFORMANCE_CONFIG } from '@metamask/perps-controller';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import ErrorBoundary from '../ErrorBoundary';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { createAccountSelectorNavDetails } from '../AccountSelector';
 
-const createStyles = ({ colors, typography }: Theme) =>
-  StyleSheet.create({
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import Homepage from '../Homepage';
+import {
+  HOMEPAGE_ACTION_BUTTONS_GRID_AB_KEY,
+  HOMEPAGE_ACTION_BUTTONS_GRID_AB_TEST_EXPOSURE_OPTIONS,
+  HOMEPAGE_ACTION_BUTTONS_GRID_VARIANTS,
+  HOMEPAGE_BALANCE_BREAKDOWN_AB_KEY,
+  HOMEPAGE_BALANCE_BREAKDOWN_AB_TEST_EXPOSURE_OPTIONS,
+  HOMEPAGE_BALANCE_BREAKDOWN_VARIANTS,
+  getHomepageBalanceBreakdownTransactionActiveAbTests,
+  HOMEPAGE_DISCOVERY_PILLS_AB_KEY,
+  HOMEPAGE_DISCOVERY_PILLS_AB_TEST_EXPOSURE_OPTIONS,
+  HOMEPAGE_DISCOVERY_PILLS_VARIANTS,
+  // eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+} from '../Homepage/abTestConfig';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { HomepageDiscoveryPills } from '../Homepage/components/HomepageDiscoveryPills';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { HomepageActionButtonsGrid } from '../Homepage/components/HomepageActionButtonsGrid';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { useHomepageSearchPaste } from '../TrendingView/search/useHomepageSearchPaste';
+import {
+  consumeHomepageSearchReturnTransition,
+  subscribeToHomepageSearchReturnTransition,
+  type HomepageSearchReturnTransition as HomepageSearchReturnTransitionState,
+  type SearchOrigin,
+} from '../../../util/homepageSearchTransition';
+import { navigateToExploreSearch } from './walletSearchNavigation';
+import { useABTest } from '../../../hooks';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { HomepageScrollContext } from '../Homepage/context/HomepageScrollContext';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import type { HomeSectionName } from '../Homepage/hooks/useHomeViewedEvent';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { useHomeNavBarConfig } from '../Homepage/hooks/useHomeNavBarConfig';
+import AccountGroupBalance from '../../UI/Assets/components/Balance/AccountGroupBalance';
+import useCheckNftAutoDetectionModal from '../../hooks/useCheckNftAutoDetectionModal';
+import useCheckMultiRpcModal from '../../hooks/useCheckMultiRpcModal';
+import { useMultichainAccountsIntroModal } from '../../hooks/useMultichainAccountsIntroModal';
+import { useAccountsWithNetworkActivitySync } from '../../hooks/useAccountsWithNetworkActivitySync';
+import Logger from '../../../util/Logger';
+import BrazeBanner from '../../UI/BrazeBanner';
+import ComponentErrorBoundary from '../../UI/ComponentErrorBoundary';
+import { BRAZE_BANNER_WALLET_HOME_PLACEMENT_ID } from '../../../core/Braze/constants';
+import { NetworkConnectionBannerContent } from '../../UI/NetworkConnectionBanner';
+import { useNetworkConnectionBanner } from '../../hooks/useNetworkConnectionBanner';
+
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import AssetDetailsActions from '../AssetDetails/AssetDetailsActions';
+import AppConstants from '../../../core/AppConstants';
+import { useSendNonEvmAsset } from '../../hooks/useSendNonEvmAsset';
+import { suppressWalletHomeOnboardingSteps } from '../../../actions/onboarding';
+import { useWalletHomeOnboardingChecklistTradePress } from '../../UI/WalletHomeOnboardingSteps/useWalletHomeOnboardingChecklistTradePress';
+import {
+  IconColor,
+  IconName,
+} from '../../../component-library/components/Icons/Icon';
+import { setIsConnectionRemoved } from '../../../actions/user';
+import { selectIsConnectionRemoved } from '../../../reducers/user';
+import { selectSeedlessOnboardingLoginFlow } from '../../../selectors/seedlessOnboardingController';
+import {
+  selectPerpsEnabledFlag,
+  selectPerpsGtmOnboardingModalEnabledFlag,
+} from '../../UI/Perps';
+import { PerpsAlwaysOnProvider } from '../../UI/Perps/providers/PerpsAlwaysOnProvider';
+import { useGetPerpsHomeNavigationTarget } from '../../UI/Perps/utils/perpsModeSwitch';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { InitSendLocation } from '../confirmations/constants/send';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { useSendNavigation } from '../confirmations/hooks/useSendNavigation';
+import { Carousel } from '../../UI/Carousel';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { createAddressListNavigationDetails } from '../../Views/MultichainAccounts/AddressList';
+import { selectIsSocialV1Enabled } from '../../../selectors/featureFlagController/socialV1';
+import { AddressListViewedSource } from '../../../util/analytics/addressListViewedTracking';
+import { navigateWithDetails } from '../../../util/navigation/navUtils';
+import { AssetPollingProvider } from '../../hooks/AssetPolling/AssetPollingProvider';
+import { usePna25BottomSheet } from '../../hooks/usePna25BottomSheet';
+import { useSafeChains } from '../../hooks/useSafeChains';
+import { useNetworkEnablement } from '../../hooks/useNetworkEnablement/useNetworkEnablement';
+import { useHomeGrowthBanner } from './hooks/useHomeGrowthBanner';
+
+// Extra space under the account pill. The 40px capsule is already centered
+// in the 56px bar, which leaves 8px, so 16px here makes a 24px gap.
+// This is the only gap: the portfolio cluster must not add another inset.
+const FLOATING_HEADER_BALANCE_TOP_GAP = 16;
+
+const createStyles = ({ colors }: Theme) =>
+  RNStyleSheet.create({
     base: {
       paddingHorizontal: 16,
     },
     wrapper: {
       flex: 1,
       backgroundColor: colors.background.default,
+      flexDirection: 'column',
     },
-    walletAccount: { marginTop: 28 },
-    tabUnderlineStyle: {
-      height: 2,
-      backgroundColor: colors.primary.default,
+    portfolioHeaderCluster: {
+      flexDirection: 'column',
+      gap: 16,
+      paddingBottom: 12,
     },
-    tabStyle: {
-      paddingBottom: 0,
-      paddingVertical: 8,
+    treatmentBannerContainer: {
+      paddingBottom: 16,
     },
-    tabBar: {
-      borderColor: colors.background.default,
-      marginTop: 16,
-    },
-    textStyle: {
-      ...(typography.sBodyMD as TextStyle),
-      fontWeight: '500',
+    tabContainer: {
+      flex: 1,
     },
     loader: {
       backgroundColor: colors.background.default,
@@ -104,11 +249,108 @@ const createStyles = ({ colors, typography }: Theme) =>
       alignItems: 'center',
     },
     banner: {
-      widht: '80%',
-      marginTop: 20,
+      flexDirection: 'column',
+      gap: 16,
       paddingHorizontal: 16,
     },
+    carousel: {
+      overflow: 'hidden', // Allow for smooth height animations
+    },
+    headerActionButtonsContainer: {
+      flexDirection: 'row',
+      gap: 8,
+    },
+    headerAccountPickerStyle: {
+      marginRight: 16,
+      backgroundColor: 'transparent',
+    },
+    compactHeaderAccountName: {
+      marginTop: 12,
+      marginHorizontal: 16,
+      marginBottom: 4,
+      maxWidth: '70%',
+    },
   });
+
+interface WalletProps {
+  navigation: NavigationProp<ParamListBase>;
+  storePrivacyPolicyShownDate: () => void;
+  shouldShowNewPrivacyToast: boolean;
+  currentRouteName: string;
+  storePrivacyPolicyClickedOrClosed: () => void;
+}
+
+interface WalletRouteParams {
+  openNetworkSelector?: boolean | null;
+  shouldSelectPerpsTab?: boolean | null;
+  initialTab?: string | null;
+}
+
+export const useHomeDeepLinkEffects = (opts: {
+  isPerpsEnabled: boolean;
+  onPerpsTabSelected: () => void;
+  onNetworkSelectorSelected: () => void;
+  navigation: NavigationProp<ParamListBase>;
+}) => {
+  const {
+    isPerpsEnabled,
+    onPerpsTabSelected,
+    onNetworkSelectorSelected,
+    navigation,
+  } = opts;
+
+  const route = useRoute<RouteProp<{ params: WalletRouteParams }, 'params'>>();
+
+  // Handle tab selection from navigation params (e.g., from deeplinks)
+  // This uses useFocusEffect to ensure the tab selection happens when the screen receives focus
+  useFocusEffect(
+    useCallback(() => {
+      const params = route.params;
+
+      const clearParams = () => {
+        if (navigation?.setParams) {
+          // React-Navigation shallow merges params, so we need to set each param to null to clear them
+          const nullParams: Record<string, null> = {};
+          Object.keys(params).forEach((key) => {
+            nullParams[key] = null;
+          });
+          navigation.setParams(nullParams);
+        }
+      };
+
+      const handleDelayedDeeplinkAction = (action: () => void) => {
+        const timer = setTimeout(() => {
+          // Call action
+          action();
+
+          // Clear all deeplink params
+          clearParams();
+          return;
+        }, PERFORMANCE_CONFIG.NavigationParamsDelayMs);
+
+        return () => clearTimeout(timer);
+      };
+
+      // Perps Tab Selection Deeplink
+      const shouldSelectPerpsTab = params?.shouldSelectPerpsTab;
+      const initialTab = params?.initialTab;
+      if ((shouldSelectPerpsTab || initialTab === 'perps') && isPerpsEnabled) {
+        return handleDelayedDeeplinkAction(() => onPerpsTabSelected());
+      }
+
+      // Network Picker Deeplink
+      if (params?.openNetworkSelector) {
+        return handleDelayedDeeplinkAction(() => onNetworkSelectorSelected());
+      }
+    }, [
+      route.params,
+      isPerpsEnabled,
+      navigation,
+      onPerpsTabSelected,
+      onNetworkSelectorSelected,
+    ]),
+  );
+};
 
 /**
  * Main view for the wallet
@@ -118,51 +360,202 @@ const Wallet = ({
   storePrivacyPolicyShownDate,
   shouldShowNewPrivacyToast,
   storePrivacyPolicyClickedOrClosed,
-}: any) => {
-  const { navigate } = useNavigation();
-  const walletRef = useRef(null);
+}: WalletProps) => {
+  const appNavigation = useNavigation<AppNavigationProp>();
+  const { navigate } = appNavigation;
+  const scrollViewRef = useRef<ScrollView>(null);
+  const isMountedRef = useRef(true);
+  const refreshInProgressRef = useRef(false);
+  const shouldShowWalletHomeOnboardingSteps = useSelector(
+    selectShouldShowWalletHomeOnboardingSteps,
+  );
+
+  const walletHomeOnboardingStepIndex =
+    useSelector(selectWalletHomeOnboardingSteps).stepIndex ?? 0;
+  const isAccountGroupFunded = useSelector(selectIsAccountGroupFunded);
+
+  const inWalletHomePostOnboardingFlow = shouldShowWalletHomeOnboardingSteps;
+
+  const showWalletHomeMainActions = !inWalletHomePostOnboardingFlow;
+
+  const [refreshing, setRefreshing] = useState(false);
+  /** Pauses checklist Rive while Wallet finishes the coordinated post-onboarding handoff. */
+  const [postOnboardingExitAnimating, setPostOnboardingExitAnimating] =
+    useState(false);
+  const walletHomePostOnboardingExitInProgressRef = useRef(false);
+  const { refreshBalance } = useBalanceRefresh();
   const theme = useTheme();
+
+  // ─── Homepage scroll context state ───────────────────────────────────────
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [containerScreenY, setContainerScreenY] = useState(0);
+  const { entryPoint, visitId } = useHomepageEntryPoint(navigation);
+
+  // Ref to the scroll container View — used to measure its absolute screen Y
+  // position so the visibility check in sections can use correct bounds.
+  const containerViewRef = useRef<View>(null);
+  // Timestamp of the last scroll event — used for JS-level throttling.
+  const lastScrollTickTimeRef = useRef(0);
+  // Callbacks registered by sections to be notified of scroll events.
+  // Using a ref+Set avoids any React state updates (and re-renders) on scroll.
+  const scrollSubscribersRef = useRef<Set<() => void>>(new Set());
+  // Tracks which sections have been viewed this visit (reset on each focus).
+  const viewedSectionsRef = useRef<Set<string>>(new Set());
+  // Max section index reached this visit (reset on each focus).
+  const maxDepthThisVisitRef = useRef<number>(-1);
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const isPerpsFlagEnabled = useSelector(selectPerpsEnabledFlag);
+  const isSocialV1Enabled = useSelector(selectIsSocialV1Enabled);
+  const isPerpsGTMModalEnabled = useSelector(
+    selectPerpsGtmOnboardingModalEnabledFlag,
+  );
+
   const { toastRef } = useContext(ToastContext);
-  const { trackEvent } = useMetrics();
-  const styles = createStyles(theme);
+  useArcUsageNoticeToast();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const { colors } = theme;
+  const dispatch = useDispatch();
+  const { navigateToSendPage } = useSendNavigation();
 
-  /**
-   * Object containing the balance of the current selected account
-   */
-  const accountBalanceByChainId = useSelector(selectAccountBalanceByChainId);
+  const { popularEvmNetworks: evmChainIds } = useNetworkEnablement();
 
-  /**
-   * ETH to current currency conversion rate
-   */
-  const conversionRate = useSelector(selectConversionRate);
-  /**
-   * Currency code of the currently-active currency
-   */
-  const currentCurrency = useSelector(selectCurrentCurrency);
   /**
    * A string that represents the selected address
    */
-  const selectedAddress = useSelector(
-    selectSelectedInternalAccountChecksummedAddress,
+  const selectedInternalAccount = useSelector(selectSelectedInternalAccount);
+
+  const isMoneyAccountEnabled = useSelector(selectMoneyEnableMoneyAccountFlag);
+  const isMoneyDepositBrazeCampaignEnabled = useSelector(
+    selectIsMoneyDepositBrazeCampaignEnabledFlag,
   );
+  const isMoneyAccountVisible = useSelector(selectIsMoneyAccountVisible);
+  const showMoneyBalanceCard =
+    isMoneyAccountEnabled && !inWalletHomePostOnboardingFlow;
+
+  const chainId = useSelector(selectChainId);
+
+  const selectedAccountGroupId = useSelector(selectSelectedAccountGroupId);
+
+  const onTradePrimaryPress = useWalletHomeOnboardingChecklistTradePress();
+  const handleWalletHomeOnboardingNotificationsPrimary = useCallback(() => {
+    navigation.navigate(Routes.SETTINGS_VIEW, {
+      screen: Routes.SETTINGS.NOTIFICATIONS,
+    });
+  }, [navigation]);
+
+  // Hook for handling non-EVM asset sending. `useSendNonEvmAsset` stabilizes
+  // `asset` internally, so `sendNonEvmAsset`'s identity stays stable across
+  // `Wallet` re-renders without needing to memoize this object here.
+  const { sendNonEvmAsset } = useSendNonEvmAsset({
+    asset: {
+      chainId: chainId as string,
+      address: undefined,
+    },
+  });
+
+  const displayBuyButton = true;
+  const displaySwapsButton = AppConstants.SWAPS.ACTIVE;
+
   /**
-   * An array that represents the user tokens
+   * After the last-step checklist fade: complete the flow and show actions. Homepage uses
+   * `WALLET_HOME_MAIN_BELOW_CLUSTER_LAYOUT` on the main column below the cluster.
    */
-  const tokens = useSelector(selectTokens);
-  /**
-   * Current provider ticker
-   */
-  const ticker = useSelector(selectTicker);
-  /**
-   * Current onboarding wizard step
-   */
-  const wizardStep = useSelector((state: any) => state.wizard.step);
-  /**
-   * Provider configuration for the current selected network
-   */
-  const providerConfig = useSelector(selectProviderConfig);
-  const prevChainId = usePrevious(providerConfig.chainId);
+  const runWalletHomePostOnboardingComplete = useCallback(async () => {
+    if (walletHomePostOnboardingExitInProgressRef.current) {
+      return;
+    }
+    walletHomePostOnboardingExitInProgressRef.current = true;
+    setPostOnboardingExitAnimating(true);
+
+    try {
+      unstable_batchedUpdates(() => {
+        dispatch(suppressWalletHomeOnboardingSteps('flow_completed'));
+      });
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    } catch (error) {
+      setPostOnboardingExitAnimating(false);
+      walletHomePostOnboardingExitInProgressRef.current = false;
+      throw error;
+    }
+    setPostOnboardingExitAnimating(false);
+    walletHomePostOnboardingExitInProgressRef.current = false;
+  }, [dispatch]);
+
+  /** Navigation-only receive for AB treatment buttons (they own ACTION_BUTTON_CLICKED). */
+  const onReceiveWithoutTracking = useCallback(() => {
+    if (selectedAccountGroupId) {
+      navigateWithDetails(
+        appNavigation,
+        createAddressListNavigationDetails({
+          groupId: selectedAccountGroupId as AccountGroupId,
+          title: `${strings(
+            'multichain_accounts.address_list.receiving_address',
+          )}`,
+          source: AddressListViewedSource.RECEIVE_BUTTON,
+        }),
+      );
+    } else {
+      Logger.error(
+        new Error('Wallet::onReceive - Missing selectedAccountGroupId'),
+      );
+    }
+  }, [appNavigation, selectedAccountGroupId]);
+
+  const onReceive = useCallback(() => {
+    trackActionButtonClick(trackEvent, createEventBuilder, {
+      action_name: ActionButtonType.RECEIVE,
+      action_position: ActionPosition.FOURTH_POSITION,
+      button_label: strings('asset_overview.receive_button'),
+      location: ActionLocation.HOME,
+    });
+
+    onReceiveWithoutTracking();
+  }, [trackEvent, createEventBuilder, onReceiveWithoutTracking]);
+
+  const onSend = useCallback(async () => {
+    try {
+      trackActionButtonClick(trackEvent, createEventBuilder, {
+        action_name: ActionButtonType.SEND,
+        action_position: ActionPosition.THIRD_POSITION,
+        button_label: strings('asset_overview.send_button'),
+        location: ActionLocation.HOME,
+      });
+
+      // Try non-EVM first, if handled, return early
+      const wasHandledAsNonEvm = await sendNonEvmAsset(
+        InitSendLocation.HomePage,
+      );
+      if (wasHandledAsNonEvm) {
+        return;
+      }
+
+      navigateToSendPage({ location: InitSendLocation.HomePage });
+    } catch (error) {
+      console.error('Error initiating send flow:', error);
+      navigateToSendPage({ location: InitSendLocation.HomePage });
+    }
+  }, [trackEvent, createEventBuilder, navigateToSendPage, sendNonEvmAsset]);
+
+  /** Navigation-only send for AB treatment buttons (they own ACTION_BUTTON_CLICKED). */
+  const onSendWithoutTracking = useCallback(async () => {
+    try {
+      const wasHandledAsNonEvm = await sendNonEvmAsset(
+        InitSendLocation.HomePage,
+      );
+      if (wasHandledAsNonEvm) {
+        return;
+      }
+
+      navigateToSendPage({ location: InitSendLocation.HomePage });
+    } catch (error) {
+      console.error('Error initiating send flow:', error);
+      navigateToSendPage({ location: InitSendLocation.HomePage });
+    }
+  }, [navigateToSendPage, sendNonEvmAsset]);
 
   const isDataCollectionForMarketingEnabled = useSelector(
     (state: RootState) => state.security.dataCollectionForMarketing,
@@ -174,11 +567,27 @@ const Wallet = ({
     (state: RootState) => state.settings.basicFunctionalityEnabled,
   );
 
-  const { isEnabled: getParticipationInMetaMetrics } = useMetrics();
+  const { isEnabled: getParticipationInMetaMetrics } = useAnalytics();
 
   const isParticipatingInMetaMetrics = getParticipationInMetaMetrics();
 
-  const currentToast = toastRef?.current;
+  const accountName = useAccountName();
+  const accountGroupName = useAccountGroupName();
+
+  useSafeChains();
+
+  const displayName = accountGroupName || accountName;
+  useAccountsWithNetworkActivitySync();
+
+  const isSocialLogin = useSelector(selectSeedlessOnboardingLoginFlow);
+
+  // Track component mount state to prevent state updates after unmount
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (
@@ -196,30 +605,71 @@ const Wallet = ({
     navigate,
   ]);
 
+  const checkAndNavigateToPerpsGTM = useCallback(async () => {
+    const hasSeenModal = await StorageWrapper.getItem(PERPS_GTM_MODAL_SHOWN);
+
+    if (hasSeenModal !== 'true') {
+      navigate(Routes.PERPS.MODALS.ROOT, {
+        screen: Routes.PERPS.MODALS.GTM_MODAL,
+      });
+    }
+  }, [navigate]);
+
+  useEffect(() => {
+    if (isPerpsFlagEnabled && isPerpsGTMModalEnabled) {
+      checkAndNavigateToPerpsGTM();
+    }
+  }, [isPerpsFlagEnabled, isPerpsGTMModalEnabled, checkAndNavigateToPerpsGTM]);
+
+  const isConnectionRemoved = useSelector(selectIsConnectionRemoved);
+
+  useEffect(() => {
+    if (isConnectionRemoved && isSocialLogin) {
+      navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+        screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+        params: {
+          title: strings('connection_removed_modal.title'),
+          description: strings('connection_removed_modal.content'),
+          primaryButtonLabel: strings('connection_removed_modal.tryAgain'),
+          type: 'error',
+          icon: IconName.Danger,
+          iconColor: IconColor.Warning,
+          isInteractable: false,
+          closeOnPrimaryButtonPress: true,
+          onPrimaryButtonPress: () => {
+            dispatch(setIsConnectionRemoved(false));
+          },
+        },
+      });
+    }
+  }, [navigation, isConnectionRemoved, dispatch, isSocialLogin]);
+
   useEffect(() => {
     if (!shouldShowNewPrivacyToast) return;
 
+    const toast = toastRef?.current;
     storePrivacyPolicyShownDate();
-    currentToast?.showToast({
+    toast?.showToast({
       variant: ToastVariants.Plain,
       labelOptions: [
         {
           label: strings(`privacy_policy.toast_message`),
-          isBold: false,
+          isBold: true,
         },
       ],
       closeButtonOptions: {
-        label: strings(`privacy_policy.toast_action_button`),
+        variant: ButtonIconVariant.Icon,
+        iconName: IconName.Close,
         onPress: () => {
           storePrivacyPolicyClickedOrClosed();
-          currentToast?.closeToast();
+          toast?.closeToast();
         },
       },
       linkButtonOptions: {
         label: strings(`privacy_policy.toast_read_more`),
         onPress: () => {
           storePrivacyPolicyClickedOrClosed();
-          currentToast?.closeToast();
+          toast?.closeToast();
           Linking.openURL(CONSENSYS_PRIVACY_POLICY);
         },
       },
@@ -229,169 +679,308 @@ const Wallet = ({
     storePrivacyPolicyShownDate,
     shouldShowNewPrivacyToast,
     storePrivacyPolicyClickedOrClosed,
-    currentToast,
+    toastRef,
   ]);
 
+  const homeGrowthBanner = useHomeGrowthBanner();
+
   /**
-   * Network onboarding state
+   * Shows Nft auto detect modal if the user is on mainnet, never saw the modal and have nft detection off
    */
-  const networkOnboardingState = useSelector(
-    (state: any) => state.networkOnboarded.networkOnboardedState,
-  );
-
-  const isNotificationEnabled = useSelector(
-    (state: any) => state.notification?.notificationsSettings?.isEnabled,
-  );
-
-  const networkName = useSelector(selectNetworkName);
-
-  const networkImageSource = useSelector(selectNetworkImageSource);
+  useCheckNftAutoDetectionModal();
 
   /**
-   * Callback to trigger when pressing the navigation title.
+   * Show multi rpc modal if there are networks duplicated and if never showed before
    */
-  const onTitlePress = useCallback(() => {
-    navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
-      screen: Routes.SHEET.NETWORK_SELECTOR,
-    });
-    trackEvent(MetaMetricsEvents.NETWORK_SELECTOR_PRESSED, {
-      chain_id: getDecimalChainId(providerConfig.chainId),
-    });
-  }, [navigate, providerConfig.chainId, trackEvent]);
+  useCheckMultiRpcModal();
 
   /**
-   * Check to see if we need to show What's New modal and Smart Transactions Opt In modal
+   * Show multichain accounts intro modal if state 2 is enabled and never showed before
+   */
+  useMultichainAccountsIntroModal();
+
+  /**
+   * Show PNA25 bottom sheet if remote feature flag is enabled and never showed before
+   */
+  usePna25BottomSheet();
+
+  /**
+   * Check to see if notifications are enabled
    */
   useEffect(() => {
-    const networkOnboarded = getIsNetworkOnboarded(
-      providerConfig.chainId,
-      networkOnboardingState,
+    async function checkIfNotificationsAreEnabled() {
+      await NotificationsService.isDeviceNotificationEnabled();
+    }
+    checkIfNotificationsAreEnabled();
+  });
+
+  const { variant: discoveryPillsVariant } = useABTest(
+    HOMEPAGE_DISCOVERY_PILLS_AB_KEY,
+    HOMEPAGE_DISCOVERY_PILLS_VARIANTS,
+    HOMEPAGE_DISCOVERY_PILLS_AB_TEST_EXPOSURE_OPTIONS,
+  );
+
+  const { variant: actionButtonsGridVariant } = useABTest(
+    HOMEPAGE_ACTION_BUTTONS_GRID_AB_KEY,
+    HOMEPAGE_ACTION_BUTTONS_GRID_VARIANTS,
+    HOMEPAGE_ACTION_BUTTONS_GRID_AB_TEST_EXPOSURE_OPTIONS,
+  );
+
+  const {
+    variant: balanceBreakdownVariant,
+    variantName: balanceBreakdownVariantName,
+    isActive: isBalanceBreakdownExperimentActive,
+  } = useABTest(
+    HOMEPAGE_BALANCE_BREAKDOWN_AB_KEY,
+    HOMEPAGE_BALANCE_BREAKDOWN_VARIANTS,
+    HOMEPAGE_BALANCE_BREAKDOWN_AB_TEST_EXPOSURE_OPTIONS,
+  );
+  const isBalanceBreakdownEnabled =
+    isBalanceBreakdownExperimentActive &&
+    balanceBreakdownVariant.showBalanceBreakdown;
+  const balanceBreakdownTransactionActiveAbTests =
+    getHomepageBalanceBreakdownTransactionActiveAbTests(
+      isBalanceBreakdownEnabled,
+      balanceBreakdownVariantName,
     );
 
-    if (
-      wizardStep > 0 ||
-      (!networkOnboarded && prevChainId !== providerConfig.chainId)
-    ) {
-      // Do not check since it will conflict with the onboarding wizard and/or network onboarding
-      return;
-    }
+  const {
+    isCompactHeader,
+    isInterimHeader,
+    isSocialHeader,
+    isHeaderSearchEnabled,
+  } = useHomeNavBarConfig({ trackExposure: true });
+  const isHomeGlass = useIsGlassSurfaceEnabled(
+    selectHomeBrandRefreshSurfacesEnabled,
+  );
+  const avatarAccountType = useSelector(selectAvatarAccountType);
 
-    const checkWhatsNewModal = async () => {
-      try {
-        const shouldShowWhatsNew = await shouldShowWhatsNewModal();
-        if (shouldShowWhatsNew) {
-          navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
-            screen: Routes.MODAL.WHATS_NEW,
-          });
-        }
-      } catch (error) {
-        Logger.log(error, "Error while checking What's New modal!");
-      }
-    };
-
-    // Show STX opt in modal before What's New modal
-    // Fired on the first load of the wallet and also on network switch
-    const checkSmartTransactionsOptInModal = async () => {
-      try {
-        const showShowStxOptInModal =
-          await shouldShowSmartTransactionsOptInModal(
-            providerConfig.chainId,
-            providerConfig.rpcUrl,
-          );
-        if (showShowStxOptInModal) {
-          navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
-            screen: Routes.MODAL.SMART_TRANSACTIONS_OPT_IN,
-          });
-        } else {
-          await checkWhatsNewModal();
-        }
-      } catch (error) {
-        Logger.log(
-          error,
-          'Error while checking Smart Tranasctions Opt In modal!',
-        );
-      }
-    };
-
-    InteractionManager.runAfterInteractions(() => {
-      checkSmartTransactionsOptInModal();
-    });
-  }, [
-    wizardStep,
-    navigation,
-    providerConfig.chainId,
-    providerConfig.rpcUrl,
-    networkOnboardingState,
-    prevChainId,
-  ]);
+  const homepageScrollY = useSharedValue(0);
+  const accountNameSectionBottom = useSharedValue(0);
+  const [homepageSearchReturnTransition, setHomepageSearchReturnTransition] =
+    useState<HomepageSearchReturnTransitionState>();
 
   useEffect(
-    () => {
-      requestAnimationFrame(async () => {
-        const {
-          TokenDetectionController,
-          NftDetectionController,
-          AccountTrackerController,
-        } = Engine.context as any;
-        TokenDetectionController.detectTokens();
-        NftDetectionController.detectNfts();
-        AccountTrackerController.refresh();
-      });
+    () =>
+      subscribeToHomepageSearchReturnTransition((transition) => {
+        setHomepageSearchReturnTransition(transition);
+      }),
+    [],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      const pendingTransition = consumeHomepageSearchReturnTransition();
+      if (pendingTransition) {
+        setHomepageSearchReturnTransition(pendingTransition);
+      }
+    }, []),
+  );
+
+  const handleHomepageSearchReturnComplete = useCallback(() => {
+    setHomepageSearchReturnTransition(undefined);
+  }, []);
+
+  const handleAccountNameLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      accountNameSectionBottom.value =
+        event.nativeEvent.layout.y + event.nativeEvent.layout.height;
     },
-    /* eslint-disable-next-line */
-    [navigation, providerConfig.chainId],
+    [accountNameSectionBottom],
   );
 
-  useEffect(() => {
-    navigation.setOptions(
-      getWalletNavbarOptions(
-        networkName,
-        networkImageSource,
-        onTitlePress,
-        navigation,
-        colors,
-        isNotificationEnabled,
-      ),
-    );
-    /* eslint-disable-next-line */
-  }, [
+  const discoveryPillsIconStyle = discoveryPillsVariant.iconStyle;
+  const showDiscoveryPills =
+    discoveryPillsVariant.showPills &&
+    showWalletHomeMainActions &&
+    discoveryPillsIconStyle !== null;
+
+  const isPerpsEnabled = isPerpsFlagEnabled;
+
+  const getPerpsHomeNavigationTarget = useGetPerpsHomeNavigationTarget();
+
+  const handlePerpsTabDeepLink = useCallback(() => {
+    const { screen, params } = getPerpsHomeNavigationTarget({
+      source: 'deeplink',
+    });
+    navigation.navigate(Routes.PERPS.ROOT, { screen, params });
+  }, [navigation, getPerpsHomeNavigationTarget]);
+
+  const handleNetworkSelectorDeepLink = useCallback(() => {
+    navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.SHEET.NETWORK_SELECTOR,
+    });
+  }, [navigation]);
+
+  useHomeDeepLinkEffects({
     navigation,
-    colors,
-    networkName,
-    networkImageSource,
-    onTitlePress,
-    isNotificationEnabled,
-  ]);
+    isPerpsEnabled,
+    onPerpsTabSelected: handlePerpsTabDeepLink,
+    onNetworkSelectorSelected: handleNetworkSelectorDeepLink,
+  });
 
-  const renderTabBar = useCallback(
-    (props) => (
-      <View style={styles.base}>
-        <DefaultTabBar
-          underlineStyle={styles.tabUnderlineStyle}
-          activeTextColor={colors.primary.default}
-          inactiveTextColor={colors.text.default}
-          backgroundColor={colors.background.default}
-          tabStyle={styles.tabStyle}
-          textStyle={styles.textStyle}
-          tabPadding={16}
-          style={styles.tabBar}
-          {...props}
-        />
-      </View>
-    ),
-    [styles, colors],
-  );
+  const isFocused = useIsFocused();
 
-  const onChangeTab = useCallback(
-    (obj) => {
-      if (obj.ref.props.tabLabel === strings('wallet.tokens')) {
-        trackEvent(MetaMetricsEvents.WALLET_TOKENS);
-      } else {
-        trackEvent(MetaMetricsEvents.WALLET_COLLECTIBLES);
+  const homepageRef = useRef<SectionRefreshHandle>(null);
+
+  // Notifies scroll subscribers directly (no React state update = no re-renders).
+  const handleHomepageScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      // Drives the compact header and the floating header's backdrop.
+      if (isCompactHeader || isInterimHeader) {
+        homepageScrollY.value = event.nativeEvent.contentOffset.y;
+      }
+      const now = Date.now();
+      if (now - lastScrollTickTimeRef.current >= 100) {
+        lastScrollTickTimeRef.current = now;
+        scrollSubscribersRef.current.forEach((cb) => cb());
       }
     },
-    [trackEvent],
+    [homepageScrollY, isCompactHeader, isInterimHeader],
   );
+
+  const touchAreaSlop = useMemo(
+    () => ({ top: 12, bottom: 12, left: 12, right: 12 }),
+    [],
+  );
+
+  const handleHamburgerPress = useCallback(() => {
+    trackEvent(
+      AnalyticsEventBuilder.createEventBuilder(
+        MetaMetricsEvents.NAVIGATION_TAPS_SETTINGS,
+      )
+        .addProperties({ action: 'Navigation Drawer', name: 'Settings' })
+        .build(),
+    );
+    navigation.navigate(Routes.SETTINGS_VIEW);
+  }, [navigation, trackEvent]);
+
+  const handleCardPress = useCallback(() => {
+    trackEvent(
+      AnalyticsEventBuilder.createEventBuilder(
+        MetaMetricsEvents.CARD_HOME_CLICKED,
+      ).build(),
+    );
+    navigation.navigate(Routes.CARD.ROOT);
+  }, [navigation, trackEvent]);
+
+  const handleActivityPress = useCallback(() => {
+    trackEvent(
+      AnalyticsEventBuilder.createEventBuilder(
+        MetaMetricsEvents.ACTIVITY_CLICKED,
+      ).build(),
+    );
+    navigation.navigate(Routes.TRANSACTIONS_VIEW, {
+      screen: Routes.TRANSACTIONS_VIEW,
+      params: { entryPoint: ActivityScreenEntryPoint.WalletHomeHeader },
+    });
+  }, [navigation, trackEvent]);
+
+  const handleAccountHubPress = useCallback(() => {
+    navigation.navigate(Routes.ACCOUNT_HUB_VIEW);
+  }, [navigation]);
+
+  // Social V1 hides the account name in the header, so switching accounts moves
+  // to this row pinned under the header.
+  const handleHeaderAccountPickerPress = useCallback(() => {
+    navigation.navigate(...createAccountSelectorNavDetails({}));
+  }, [navigation]);
+
+  const handleAccountSelectorPress = useCallback(() => {
+    navigation.navigate(...createAccountSelectorNavDetails({}));
+  }, [navigation]);
+
+  const handleRewardsPress = useCallback(() => {
+    navigation.navigate(Routes.REWARDS_VIEW);
+  }, [navigation]);
+
+  const {
+    isSearchHeaderEnabled: isHomepageSearchHeaderEnabled,
+    showPastePill,
+    handlePastePress,
+  } = useHomepageSearchPaste({
+    enabled: !isSocialHeader,
+    onPaste: (initialQuery, searchOrigin) => {
+      navigation.navigate(Routes.EXPLORE_SEARCH, {
+        entryPoint: 'home',
+        initialQuery,
+        initialQuerySource: 'clipboard',
+        ...(searchOrigin ? { searchOrigin } : {}),
+      });
+    },
+  });
+  const isSearchHeaderEnabled =
+    isHomepageSearchHeaderEnabled && !isSocialHeader;
+
+  const handleSearchPress = useCallback(
+    (
+      initialQuery?: string,
+      searchOrigin?: SearchOrigin,
+      pastePillVisible?: boolean,
+    ) => {
+      navigateToExploreSearch(
+        navigation,
+        isSearchHeaderEnabled,
+        initialQuery,
+        searchOrigin,
+        pastePillVisible,
+      );
+    },
+    [isSearchHeaderEnabled, navigation],
+  );
+
+  // iOS 26 only; elsewhere the JS `WalletHeader` renders the interim layout.
+  const isNativeHeader = useWalletHeaderNativeHeader({
+    displayName,
+    isMoneyAccountVisible,
+    handleActivityPress,
+    handleSearchPress,
+    handleHamburgerPress,
+    touchAreaSlop,
+    isEnabled:
+      isInterimHeader &&
+      !isSocialHeader &&
+      !isSearchHeaderEnabled &&
+      Boolean(selectedInternalAccount),
+  });
+  const safeAreaInsets = useSafeAreaInsets();
+  // Content scrolls under the transparent bar, so sections behind it are not in view.
+  const nativeHeaderInset = isNativeHeader
+    ? safeAreaInsets.top + NATIVE_HEADER_BAR_HEIGHT
+    : 0;
+  // Without the native bar (Android, iOS < 26) the interim header floats over the content on a fade.
+  const isFloatingJsHeader =
+    isInterimHeader && !isNativeHeader && !isSearchHeaderEnabled;
+  const { inset: floatingHeaderInset, onLayout: handleFloatingHeaderLayout } =
+    useHeaderGlassInset(isFloatingJsHeader, safeAreaInsets.top);
+  const contentPaddingTop =
+    floatingHeaderInset +
+    (isFloatingJsHeader || isNativeHeader
+      ? FLOATING_HEADER_BALANCE_TOP_GAP
+      : 0);
+  const viewportTopInset = nativeHeaderInset + floatingHeaderInset;
+
+  // Listen for scroll-to-token events (e.g., after claiming mUSD rewards)
+  // This handles scrolling in the homepage .map() mode where TokenList can't scroll directly
+  useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener(
+      'scrollToTokenIndex',
+      ({ offset }: { index: number; offset: number }) => {
+        // Add offset for content above tokens (balance, carousel, etc.)
+        // Approximate: AccountGroupBalance (~200px) + Carousel (~150px) + padding
+        const CONTENT_OFFSET_ABOVE_TOKENS = 400;
+        scrollViewRef.current?.scrollTo({
+          // Content offsets include the bar's automatic inset, so land below it.
+          y: CONTENT_OFFSET_ABOVE_TOKENS + offset - nativeHeaderInset,
+          animated: true,
+        });
+      },
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, [nativeHeaderInset]);
 
   const turnOnBasicFunctionality = useCallback(() => {
     navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
@@ -399,91 +988,363 @@ const Wallet = ({
     });
   }, [navigation]);
 
-  const renderContent = useCallback(() => {
-    let balance: any = 0;
-    let assets = tokens;
+  const floatingTabBarInset = useFloatingTabBarInset();
 
-    if (accountBalanceByChainId) {
-      balance = renderFromWei(accountBalanceByChainId.balance);
+  const scrollViewContentStyle = useMemo(
+    () => [
+      styles.wrapper,
+      {
+        flex: undefined,
+        flexGrow: 0,
+        overflow: 'visible' as const,
+        paddingBottom: floatingTabBarInset,
+        paddingTop: contentPaddingTop,
+      },
+    ],
+    [styles.wrapper, floatingTabBarInset, contentPaddingTop],
+  );
 
-      assets = [
-        {
-          // TODO: Add name property to Token interface in controllers.
-          name: getTicker(ticker) === 'ETH' ? 'Ethereum' : ticker,
-          symbol: getTicker(ticker),
-          isETH: true,
-          balance,
-          balanceFiat: weiToFiat(
-            hexToBN(accountBalanceByChainId.balance) as any,
-            conversionRate,
-            currentCurrency,
-          ),
-          logo: '../images/eth-logo-new.png',
-        } as any,
-        ...(tokens || []),
-      ];
-    } else {
-      assets = tokens;
+  const handleRefresh = useCallback(async () => {
+    // Prevent concurrent refreshes
+    if (refreshInProgressRef.current) {
+      return;
     }
-    return (
-      <View style={styles.wrapper}>
-        {!basicFunctionalityEnabled ? (
-          <View style={styles.banner}>
-            <BannerAlert
-              severity={BannerAlertSeverity.Error}
-              title={strings('wallet.banner.title')}
-              description={
-                <Text color={TextColor.Info} onPress={turnOnBasicFunctionality}>
-                  {strings('wallet.banner.link')}
-                </Text>
-              }
-            />
-          </View>
-        ) : null}
-        {selectedAddress ? (
-          <WalletAccount style={styles.walletAccount} ref={walletRef} />
-        ) : null}
-        <ScrollableTabView
-          renderTabBar={renderTabBar}
-          // eslint-disable-next-line react/jsx-no-bind
-          onChangeTab={onChangeTab}
-        >
-          <Tokens
-            tabLabel={strings('wallet.tokens')}
-            key={'tokens-tab'}
-            navigation={navigation}
-            // TODO - Consolidate into the correct type.
-            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-            // @ts-ignore
-            tokens={assets}
-          />
-          <CollectibleContracts
-            // TODO - Extend component to support injected tabLabel prop.
-            // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-            // @ts-ignore
-            tabLabel={strings('wallet.collectibles')}
-            key={'nfts-tab'}
-            navigation={navigation}
-          />
-        </ScrollableTabView>
+
+    refreshInProgressRef.current = true;
+    setRefreshing(true);
+
+    try {
+      await Promise.all([refreshBalance(), homepageRef.current?.refresh()]);
+    } catch (error) {
+      Logger.error(error as Error, 'Error refreshing wallet');
+    }
+
+    refreshInProgressRef.current = false;
+
+    // Only update state if component is still mounted
+    if (isMountedRef.current) {
+      setRefreshing(false);
+    }
+  }, [refreshBalance]);
+
+  const subscribeToScroll = useCallback((cb: () => void) => {
+    scrollSubscribersRef.current.add(cb);
+    return () => scrollSubscribersRef.current.delete(cb);
+  }, []);
+
+  // Reset viewed sections and visit depth synchronously on focus, before the
+  // new visitId propagates to child effects that re-add sections. A useEffect
+  // on [visitId] runs after children's effects (React runs children before
+  // parents), so sections would add themselves then the parent would clear
+  // them — causing total_sections_viewed to always be 0 on the second+ visit.
+  useFocusEffect(
+    useCallback(() => {
+      viewedSectionsRef.current.clear();
+      maxDepthThisVisitRef.current = -1;
+    }, []),
+  );
+
+  const notifySectionViewed = useCallback(
+    (
+      sectionName: HomeSectionName,
+      sectionIndex: number,
+      recordDepth: boolean,
+    ) => {
+      viewedSectionsRef.current.add(sectionName);
+      // Only update depth for sections that required the user to scroll to them.
+      // Non-rendered sections (sectionRef === null) pass recordDepth=false so they
+      // are counted in total_sections_viewed without inflating depth metrics.
+      if (recordDepth && sectionIndex > maxDepthThisVisitRef.current) {
+        maxDepthThisVisitRef.current = sectionIndex;
+      }
+    },
+    [],
+  );
+
+  const getViewedSectionCount = useCallback(
+    () => viewedSectionsRef.current.size,
+    [],
+  );
+
+  const getVisitMaxDepth = useCallback(() => maxDepthThisVisitRef.current, []);
+
+  const homepageScrollContextValue = useMemo(
+    () => ({
+      subscribeToScroll,
+      viewportHeight: Math.max(0, viewportHeight - viewportTopInset),
+      containerScreenY: containerScreenY + viewportTopInset,
+      entryPoint,
+      visitId,
+      notifySectionViewed,
+      getViewedSectionCount,
+      getVisitMaxDepth,
+      appSessionId: HOMEPAGE_APP_SESSION_ID,
+    }),
+    [
+      subscribeToScroll,
+      viewportHeight,
+      containerScreenY,
+      viewportTopInset,
+      entryPoint,
+      visitId,
+      notifySectionViewed,
+      getViewedSectionCount,
+      getVisitMaxDepth,
+    ],
+  );
+
+  const renderWalletHeader = () => (
+    <WalletHeader
+      displayName={displayName}
+      navigation={navigation}
+      isMoneyAccountVisible={isMoneyAccountVisible}
+      handleSearchPress={handleSearchPress}
+      useSearchHeaderLayout={isSearchHeaderEnabled}
+      isSearchReturnTransitionActive={Boolean(homepageSearchReturnTransition)}
+      showSearchPastePill={showPastePill}
+      handleSearchPastePress={handlePastePress}
+      handleActivityPress={handleActivityPress}
+      handleCardPress={handleCardPress}
+      handleHamburgerPress={handleHamburgerPress}
+      handleRewardsPress={handleRewardsPress}
+      touchAreaSlop={touchAreaSlop}
+      headerActionButtonsContainerStyle={styles.headerActionButtonsContainer}
+      headerAccountPickerStyle={styles.headerAccountPickerStyle}
+      isInterimLayout={isInterimHeader}
+      isSocialLayout={isSocialHeader}
+    />
+  );
+
+  // On iOS 26 UIKit draws the header, so `WalletHeader` never renders and the
+  // screen pins the named picker under the bar itself. Everywhere else the JS
+  // header owns the row, which keeps it out of the layout math below. Compact is
+  // a scrolling nav-bar title, so it is out of scope.
+  const showHeaderAccountPickerRow =
+    isSocialV1Enabled &&
+    isNativeHeader &&
+    !isCompactHeader &&
+    Boolean(selectedInternalAccount);
+
+  // The native bar is a transparent overlay, so the row clears it itself.
+  const renderHeaderAccountPickerRow = () =>
+    showHeaderAccountPickerRow ? (
+      <WalletHeaderAccountPickerRow
+        displayName={displayName}
+        onPress={handleHeaderAccountPickerPress}
+        hitSlop={touchAreaSlop}
+        style={{ paddingTop: nativeHeaderInset }}
+      />
+    ) : null;
+
+  const handleBannerError = useCallback(() => {
+    // Log the error but don't block the UI
+    Logger.error(new Error('Banner rendering error in wallet home'));
+  }, []);
+
+  const homeGrowthBannerContent =
+    homeGrowthBanner === 'braze' ? (
+      <ComponentErrorBoundary
+        componentLabel="BrazeBanner"
+        onError={handleBannerError}
+      >
+        <BrazeBanner
+          placementId={BRAZE_BANNER_WALLET_HOME_PLACEMENT_ID}
+          isGlass={isHomeGlass}
+        />
+      </ComponentErrorBoundary>
+    ) : homeGrowthBanner === 'carousel' ? (
+      <View accessible={false}>
+        <Carousel style={styles.carousel} />
       </View>
-    );
-  }, [
-    tokens,
-    accountBalanceByChainId,
-    selectedAddress,
-    styles.wrapper,
-    styles.banner,
-    styles.walletAccount,
-    basicFunctionalityEnabled,
-    turnOnBasicFunctionality,
-    renderTabBar,
-    onChangeTab,
-    navigation,
-    ticker,
-    conversionRate,
-    currentCurrency,
-  ]);
+    ) : null;
+
+  const networkConnectionBanner = useNetworkConnectionBanner();
+  const isNetworkConnectionBannerVisible =
+    (networkConnectionBanner.status === 'degraded' ||
+      networkConnectionBanner.status === 'unavailable') &&
+    Boolean(networkConnectionBanner.network);
+  const hasBannerContent =
+    !basicFunctionalityEnabled || isNetworkConnectionBannerVisible;
+  const bannerContent = hasBannerContent ? (
+    <View
+      style={styles.banner}
+      testID={WalletViewSelectorsIDs.HOMEPAGE_BANNER_CONTENT}
+    >
+      {!basicFunctionalityEnabled ? (
+        <BannerAlert
+          severity={BannerAlertSeverity.Danger}
+          title={strings('wallet.banner.title')}
+          description={
+            <CustomText
+              color={TextColor.InfoDefault}
+              onPress={turnOnBasicFunctionality}
+            >
+              {strings('wallet.banner.link')}
+            </CustomText>
+          }
+        />
+      ) : null}
+      <NetworkConnectionBannerContent {...networkConnectionBanner} />
+    </View>
+  ) : null;
+
+  /**
+   * Same wiring as legacy `content` cluster — homepage v1 header paths must hide main actions and pass checklist callbacks.
+   * Memoized so `AccountGroupBalance` (wrapped in React.memo) doesn't re-render on every
+   * `Wallet` render — a fresh object here would defeat that memoization on every unrelated
+   * state change (e.g. the balance/price update bursts that occur right after unlock).
+   */
+  const walletHomeAccountGroupBalanceProps = useMemo(
+    () => ({
+      onCoordinatedFlowExit: runWalletHomePostOnboardingComplete,
+      suspendRiveForCurtain: postOnboardingExitAnimating,
+      onTradePrimaryPress,
+      onNotificationsPrimaryPress:
+        handleWalletHomeOnboardingNotificationsPrimary,
+    }),
+    [
+      runWalletHomePostOnboardingComplete,
+      postOnboardingExitAnimating,
+      onTradePrimaryPress,
+      handleWalletHomeOnboardingNotificationsPrimary,
+    ],
+  );
+
+  const walletHomeMainAssetDetailsActions = showWalletHomeMainActions ? (
+    actionButtonsGridVariant.layout === 'eightCircular' ? (
+      <HomepageActionButtonsGrid
+        onSend={onSendWithoutTracking}
+        onReceive={onReceiveWithoutTracking}
+        rowOrder={actionButtonsGridVariant.rowOrder}
+      />
+    ) : (
+      <AssetDetailsActions
+        displayBuyButton={displayBuyButton}
+        displaySwapsButton={displaySwapsButton}
+        onReceive={onReceive}
+        onSend={onSend}
+        buyButtonActionID={WalletViewSelectorsIDs.WALLET_BUY_BUTTON}
+        swapButtonActionID={WalletViewSelectorsIDs.WALLET_SWAP_BUTTON}
+        sendButtonActionID={WalletViewSelectorsIDs.WALLET_SEND_BUTTON}
+        receiveButtonActionID={WalletViewSelectorsIDs.WALLET_RECEIVE_BUTTON}
+        containerTestID={WalletViewSelectorsIDs.ACTION_BUTTONS_CONTAINER}
+        isGlass={isHomeGlass}
+      />
+    )
+  ) : null;
+
+  const homepageDiscoveryPills = showDiscoveryPills ? (
+    <HomepageDiscoveryPills iconStyle={discoveryPillsIconStyle} />
+  ) : null;
+
+  // The fund step can outlast incoming funds, so check both (TMCU-1264).
+  const hideGrowthBannerForChecklist =
+    inWalletHomePostOnboardingFlow &&
+    (walletHomeOnboardingStepIndex === 0 || !isAccountGroupFunded);
+
+  // Hide growth banners when money account is enabled but user is geo-blocked.
+  const growthBanner =
+    !hideGrowthBannerForChecklist &&
+    (!isMoneyAccountEnabled || isMoneyAccountVisible)
+      ? homeGrowthBannerContent
+      : null;
+
+  const hasContentBeforeBalanceBreakdown = Boolean(
+    walletHomeMainAssetDetailsActions || growthBanner || homepageDiscoveryPills,
+  );
+  const contentBeforeBalanceBreakdown = hasContentBeforeBalanceBreakdown ? (
+    <>
+      {walletHomeMainAssetDetailsActions}
+      {growthBanner}
+      {homepageDiscoveryPills}
+    </>
+  ) : null;
+
+  const compactHeaderAccountName =
+    !isSocialHeader &&
+    (isCompactHeader || isSearchHeaderEnabled) &&
+    !inWalletHomePostOnboardingFlow ? (
+      <ButtonAnimated
+        onPress={
+          isSocialHeader ? handleAccountSelectorPress : handleAccountHubPress
+        }
+        style={styles.compactHeaderAccountName}
+        onLayout={handleAccountNameLayout}
+        testID={WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_BUTTON}
+        accessibilityRole="button"
+        accessibilityLabel={displayName}
+      >
+        <Box
+          flexDirection={BoxFlexDirection.Row}
+          alignItems={BoxAlignItems.Center}
+          twClassName="gap-1"
+        >
+          <CustomText
+            variant={TextVariant.HeadingSm}
+            fontWeight={FontWeight.Regular}
+            numberOfLines={1}
+            twClassName="shrink"
+            testID={WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_HEADING}
+          >
+            {displayName}
+          </CustomText>
+          <MMDSIcon
+            name={
+              isSocialHeader ? MMDSIconName.ArrowDown : MMDSIconName.ArrowRight
+            }
+            size={MMDSIconSize.Md}
+            color={MMDSIconColor.IconAlternative}
+          />
+        </Box>
+      </ButtonAnimated>
+    ) : null;
+
+  const portfolioHeader = isBalanceBreakdownEnabled ? (
+    <>
+      {hasBannerContent ? (
+        <View
+          style={styles.treatmentBannerContainer}
+          testID={WalletViewSelectorsIDs.HOMEPAGE_BANNER_CONTAINER}
+        >
+          {bannerContent}
+        </View>
+      ) : null}
+      {compactHeaderAccountName}
+      {isSearchHeaderEnabled && inWalletHomePostOnboardingFlow && (
+        <Box paddingTop={4} twClassName="flex-none" />
+      )}
+    </>
+  ) : (
+    <>
+      {hasBannerContent ? (
+        <View style={styles.treatmentBannerContainer}>{bannerContent}</View>
+      ) : null}
+      {compactHeaderAccountName}
+      <Box
+        style={styles.portfolioHeaderCluster}
+        paddingTop={
+          isSearchHeaderEnabled && inWalletHomePostOnboardingFlow ? 4 : 0
+        }
+        testID={WalletViewSelectorsIDs.WALLET_PORTFOLIO_HEADER_CLUSTER}
+      >
+        <AccountGroupBalance {...walletHomeAccountGroupBalanceProps} />
+        {walletHomeMainAssetDetailsActions}
+        {growthBanner}
+        {homepageDiscoveryPills}
+        {showMoneyBalanceCard && <MoneyBalanceCard isGlass={isHomeGlass} />}
+      </Box>
+    </>
+  );
+
+  const balanceBreakdownSectionProps = isBalanceBreakdownEnabled
+    ? {
+        accountGroupBalanceProps: walletHomeAccountGroupBalanceProps,
+        hideRows: inWalletHomePostOnboardingFlow,
+        transactionActiveAbTests: balanceBreakdownTransactionActiveAbTests,
+        children: contentBeforeBalanceBreakdown,
+      }
+    : undefined;
+
   const renderLoader = useCallback(
     () => (
       <View style={styles.loader}>
@@ -493,35 +1354,137 @@ const Wallet = ({
     [styles],
   );
 
-  /**
-   * Return current step of onboarding wizard if not step 5 nor 0
-   */
-  const renderOnboardingWizard = useCallback(
-    () =>
-      [1, 2, 3, 4, 5, 6, 7].includes(wizardStep) && (
-        <OnboardingWizard
-          navigation={navigation}
-          coachmarkRef={walletRef.current}
-        />
-      ),
-    [navigation, wizardStep],
-  );
-
   return (
     <ErrorBoundary navigation={navigation} view="Wallet">
-      <View style={baseStyles.flexGrow} {...generateTestId('wallet-screen')}>
-        {selectedAddress ? renderContent() : renderLoader()}
+      <PerpsAlwaysOnProvider>
+        <SafeAreaView
+          style={[
+            baseStyles.flexGrow,
+            { backgroundColor: colors.background.default },
+          ]}
+          // The native bar or the floating header owns the top inset; content scrolls under it.
+          edges={
+            isNativeHeader || isFloatingJsHeader ? [] : { top: 'additive' }
+          }
+          testID={WalletViewSelectorsIDs.WALLET_SAFE_AREA}
+        >
+          {selectedInternalAccount ? (
+            <>
+              {isMoneyAccountVisible && isMoneyDepositBrazeCampaignEnabled && (
+                <MoneyDepositBrazeCampaignObserver />
+              )}
+              {isNativeHeader ? null : isCompactHeader ? (
+                <WalletHeaderCompact
+                  accountAddress={selectedInternalAccount.address}
+                  avatarAccountType={avatarAccountType}
+                  displayName={displayName}
+                  handleRewardsPress={handleRewardsPress}
+                  handleAccountHubPress={handleAccountHubPress}
+                  handleSearchPress={
+                    isHeaderSearchEnabled || isSearchHeaderEnabled
+                      ? handleSearchPress
+                      : undefined
+                  }
+                  useSearchHeaderLayout={isSearchHeaderEnabled}
+                  isSearchReturnTransitionActive={Boolean(
+                    homepageSearchReturnTransition,
+                  )}
+                  showSearchPastePill={showPastePill}
+                  handleSearchPastePress={handlePastePress}
+                  touchAreaSlop={touchAreaSlop}
+                  scrollY={homepageScrollY}
+                  titleSectionHeight={accountNameSectionBottom}
+                />
+              ) : isFloatingJsHeader ? null : (
+                renderWalletHeader()
+              )}
 
-        {renderOnboardingWizard()}
-      </View>
+              <View
+                ref={containerViewRef}
+                style={styles.wrapper}
+                testID={WalletViewSelectorsIDs.WALLET_CONTAINER}
+                onLayout={(e) => {
+                  setViewportHeight(e.nativeEvent.layout.height);
+                  containerViewRef.current?.measureInWindow((_x, y) => {
+                    setContainerScreenY(y);
+                  });
+                }}
+              >
+                {isFloatingJsHeader && (
+                  // Mounted before the content so assistive tech reads the header first.
+                  <HeaderGlass
+                    onLayout={handleFloatingHeaderLayout}
+                    topInset={safeAreaInsets.top}
+                    scrollDistance={homepageScrollY}
+                    testID={WalletViewSelectorsIDs.WALLET_FLOATING_HEADER}
+                  >
+                    {renderWalletHeader()}
+                  </HeaderGlass>
+                )}
+                {isFocused && <AssetPollingProvider chainIds={evmChainIds} />}
+                {showHeaderAccountPickerRow
+                  ? renderHeaderAccountPickerRow()
+                  : null}
+                <HomepageScrollContext.Provider
+                  value={homepageScrollContextValue}
+                >
+                  <ConditionalScrollView
+                    ref={scrollViewRef}
+                    isScrollEnabled
+                    scrollViewProps={{
+                      testID: WalletViewSelectorsIDs.WALLET_SCROLL_VIEW,
+                      contentInsetAdjustmentBehavior: isNativeHeader
+                        ? 'automatic'
+                        : undefined,
+                      contentContainerStyle: scrollViewContentStyle,
+                      showsVerticalScrollIndicator: false,
+                      onScroll: handleHomepageScroll,
+                      scrollEventThrottle: 16,
+                      refreshControl: (
+                        <RefreshControl
+                          progressViewOffset={floatingHeaderInset}
+                          colors={[colors.primary.default]}
+                          tintColor={colors.icon.default}
+                          refreshing={refreshing}
+                          onRefresh={handleRefresh}
+                        />
+                      ),
+                    }}
+                  >
+                    {portfolioHeader}
+                    <Homepage
+                      ref={homepageRef}
+                      balanceBreakdownSectionProps={
+                        balanceBreakdownSectionProps
+                      }
+                    />
+                  </ConditionalScrollView>
+                </HomepageScrollContext.Provider>
+              </View>
+            </>
+          ) : (
+            renderLoader()
+          )}
+          {homepageSearchReturnTransition && isFocused ? (
+            <HomepageSearchReturnTransition
+              transition={homepageSearchReturnTransition}
+              onComplete={handleHomepageSearchReturnComplete}
+            />
+          ) : null}
+        </SafeAreaView>
+      </PerpsAlwaysOnProvider>
     </ErrorBoundary>
   );
 };
 
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mapStateToProps = (state: any) => ({
   shouldShowNewPrivacyToast: shouldShowNewPrivacyToastSelector(state),
 });
 
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mapDispatchToProps = (dispatch: any) => ({
   storePrivacyPolicyShownDate: () =>
     dispatch(storePrivacyPolicyShownDateAction(Date.now())),

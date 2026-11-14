@@ -1,0 +1,716 @@
+import React, {
+  forwardRef,
+  useCallback,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  TouchableWithoutFeedback,
+  View,
+  Text,
+  SectionList,
+  SectionListRenderItem,
+  KeyboardAvoidingView,
+  Platform,
+  ActivityIndicator,
+} from 'react-native';
+import { useSelector } from 'react-redux';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import Fuse from 'fuse.js';
+import styleSheet from './styles';
+import { useStyles } from '../../../component-library/hooks';
+import {
+  UrlAutocompleteComponentProps,
+  FuseSearchResult,
+  TokenSearchResult,
+  AutocompleteSearchResult,
+  UrlAutocompleteRef,
+  UrlAutocompleteCategory,
+  PerpsSearchResult,
+  PredictionsSearchResult,
+} from './types';
+import { strings } from '../../../../locales/i18n';
+import {
+  selectBrowserBookmarksWithType,
+  selectBrowserHistoryWithType,
+} from '../../../selectors/browser';
+import {
+  MAX_RECENTS,
+  EMPTY_STATE_CATEGORIES,
+  BROWSER_SEARCH_SECTIONS_ORDER,
+  HISTORY_FUSE_OPTIONS,
+} from './UrlAutocomplete.constants';
+import { Result } from './Result';
+import {
+  SwapBridgeNavigationLocation,
+  useSwapBridgeNavigation,
+} from '../Bridge/hooks/useSwapBridgeNavigation';
+import { BridgeToken } from '../Bridge/types';
+import {
+  useExploreSearch,
+  type SearchFeedId,
+} from '../../Views/TrendingView/search/useExploreSearch';
+import type { TrendingAsset } from '@metamask/assets-controllers';
+import { type PerpsMarketData } from '@metamask/perps-controller';
+import {
+  usePredictSearchResults,
+  type PredictSearchResult,
+} from '../PredictNext';
+import { selectBasicFunctionalityEnabled } from '../../../selectors/settings';
+import { PerpsConnectionProvider } from '../Perps/providers/PerpsConnectionProvider';
+import { PerpsStreamProvider } from '../Perps/providers/PerpsStreamManager';
+import { isCaipChainId, parseCaipChainId, type Hex } from '@metamask/utils';
+import { NATIVE_SWAPS_TOKEN_ADDRESS } from '../../../constants/bridge';
+import SitesSearchFooter from '../Sites/components/SitesSearchFooter/SitesSearchFooter';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  SECTION_LOADING_INDICATOR_TEST_ID,
+  sectionHeaderTestId,
+} from './UrlAutocomplete.testIds';
+
+export * from './types';
+
+/**
+ * Helper to convert CAIP chain ID to hex format
+ */
+const caipChainIdToHex = (caipChainId: string): Hex => {
+  if (!isCaipChainId(caipChainId)) {
+    return '0x1' as Hex;
+  }
+  const { reference } = parseCaipChainId(caipChainId);
+  return `0x${parseInt(reference, 10).toString(16)}` as Hex;
+};
+
+/**
+ * Helper to get token image URL from assetId
+ */
+const getTrendingTokenImageUrl = (assetId: string): string =>
+  `https://token.api.cx.metamask.io/assets/${assetId}/logo.png`;
+
+interface ResultsWithCategory {
+  category: UrlAutocompleteCategory | SearchFeedId;
+  data: AutocompleteSearchResult[];
+  isLoading?: boolean;
+}
+
+/**
+ * Helper to map search feed id to UrlAutocompleteCategory for display
+ */
+const sectionIdToCategory = (
+  sectionId: SearchFeedId,
+): UrlAutocompleteCategory => {
+  switch (sectionId) {
+    case 'sites':
+      return UrlAutocompleteCategory.Sites;
+    case 'tokens':
+    case 'stocks':
+      return UrlAutocompleteCategory.Tokens;
+    case 'perps':
+      return UrlAutocompleteCategory.Perps;
+    case 'predictions':
+      return UrlAutocompleteCategory.Predictions;
+    default:
+      return UrlAutocompleteCategory.Sites;
+  }
+};
+
+/**
+ * Transform TrendingAsset to TokenSearchResult
+ */
+const transformTokenResult = (asset: TrendingAsset): TokenSearchResult => {
+  const [caipChainId, assetIdentifier] = asset.assetId.split('/');
+  const isNativeToken = assetIdentifier?.startsWith('slip44:');
+  const address = isNativeToken
+    ? NATIVE_SWAPS_TOKEN_ADDRESS
+    : (assetIdentifier?.split(':')[1] ?? '');
+  const hexChainId = caipChainIdToHex(caipChainId);
+  const priceChange = asset.priceChangePct?.h24
+    ? parseFloat(asset.priceChangePct.h24)
+    : 0;
+
+  return {
+    category: UrlAutocompleteCategory.Tokens,
+    name: asset.name ?? '',
+    symbol: asset.symbol ?? '',
+    address,
+    decimals: asset.decimals ?? 18,
+    chainId: hexChainId,
+    logoUrl: getTrendingTokenImageUrl(asset.assetId),
+    price: parseFloat(asset.price) || 0,
+    percentChange: priceChange,
+    assetId: asset.assetId,
+    isFromSearch: true,
+  };
+};
+
+/**
+ * Transform PerpsMarketData to PerpsSearchResult
+ */
+const transformPerpsResult = (market: PerpsMarketData): PerpsSearchResult => ({
+  category: UrlAutocompleteCategory.Perps,
+  symbol: market.symbol,
+  name: market.name,
+  maxLeverage: market.maxLeverage,
+  price: market.price,
+  change24h: market.change24h,
+  change24hPercent: market.change24hPercent,
+  volume: market.volume,
+  openInterest: market.openInterest,
+  marketType: market.marketType,
+  marketSource: market.marketSource,
+});
+
+/**
+ * Tag a Predict search result with its autocomplete category
+ */
+const transformPredictionsResult = (
+  result: PredictSearchResult,
+): PredictionsSearchResult => ({
+  ...result,
+  category: UrlAutocompleteCategory.Predictions,
+});
+
+/**
+ * Props for the inner search content component
+ */
+interface SearchContentProps {
+  searchQuery: string;
+  browserHistory: FuseSearchResult[];
+  bookmarks: FuseSearchResult[];
+  onSelect: (item: AutocompleteSearchResult) => void;
+  onSelectPressIn?: () => void;
+  hide: () => void;
+  styles: ReturnType<typeof styleSheet>;
+}
+
+/**
+ * Inner component that uses omni-search hook
+ * Must be rendered inside PerpsConnectionProvider and PerpsStreamProvider
+ */
+const SearchContent: React.FC<SearchContentProps> = ({
+  searchQuery,
+  browserHistory,
+  bookmarks,
+  onSelect,
+  onSelectPressIn,
+  hide,
+  styles,
+}) => {
+  const tw = useTailwind();
+  const navigation = useNavigation<AppNavigationProp>();
+  const isBasicFunctionalityEnabled = useSelector(
+    selectBasicFunctionalityEnabled,
+  );
+
+  // Bridge Explore `useExploreSearch` ({ sections }) to the record shape this UI expects
+  const exploreResult = useExploreSearch(searchQuery);
+  // Predictions come from Predict's own search source, not Explore's section
+  const predictions = usePredictSearchResults(searchQuery);
+  const {
+    data: omniSearchData,
+    isLoading: omniSearchLoading,
+    sectionsOrder,
+  } = useMemo(() => {
+    const order = BROWSER_SEARCH_SECTIONS_ORDER;
+    const byFeedId = new Map(exploreResult.sections.map((s) => [s.feedId, s]));
+
+    const data: Partial<Record<SearchFeedId, unknown[]>> = {};
+    const isLoading: Partial<Record<SearchFeedId, boolean>> = {};
+
+    for (const sectionId of order) {
+      if (sectionId === 'tokens') {
+        const tokensSec = byFeedId.get('tokens');
+        const stocksSec = byFeedId.get('stocks');
+        data.tokens = [
+          ...((tokensSec?.items as TrendingAsset[]) ?? []),
+          ...((stocksSec?.items as TrendingAsset[]) ?? []),
+        ];
+        isLoading.tokens =
+          Boolean(tokensSec?.isLoading) || Boolean(stocksSec?.isLoading);
+        continue;
+      }
+      if (sectionId === 'predictions') {
+        data.predictions = predictions.results;
+        isLoading.predictions = predictions.isLoading;
+        continue;
+      }
+      const sec = byFeedId.get(sectionId);
+      data[sectionId] = sec?.items ?? [];
+      isLoading[sectionId] = sec?.isLoading ?? false;
+    }
+
+    return {
+      data: data as Record<SearchFeedId, unknown[]>,
+      isLoading: isLoading as Record<SearchFeedId, boolean>,
+      sectionsOrder: order,
+    };
+  }, [exploreResult, predictions]);
+
+  // Create Fuse instance for filtering Recents and Favorites
+  const fuseInstance = useMemo(() => {
+    const allLocalUrls: FuseSearchResult[] = [...browserHistory, ...bookmarks];
+    return new Fuse(allLocalUrls, HISTORY_FUSE_OPTIONS);
+  }, [browserHistory, bookmarks]);
+
+  // Filter Recents and Favorites using Fuse.js
+  const filteredLocalResults = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const fuseResults = fuseInstance.search(searchQuery) as FuseSearchResult[];
+    return fuseResults;
+  }, [fuseInstance, searchQuery]);
+
+  // Transform omni-search results to AutocompleteSearchResult format
+  const searchResults: ResultsWithCategory[] = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+
+    const results: ResultsWithCategory[] = [];
+
+    // Always add filtered Recents (local data, not API-dependent)
+    const filteredRecents = filteredLocalResults
+      .filter((r) => r?.category === UrlAutocompleteCategory.Recents)
+      .slice(0, MAX_RECENTS);
+    if (filteredRecents.length > 0) {
+      results.push({
+        category: UrlAutocompleteCategory.Recents,
+        data: filteredRecents,
+      });
+    }
+
+    // Always add filtered Favorites (local data, not API-dependent)
+    const filteredFavorites = filteredLocalResults.filter(
+      (r) => r?.category === UrlAutocompleteCategory.Favorites,
+    );
+    if (filteredFavorites.length > 0) {
+      results.push({
+        category: UrlAutocompleteCategory.Favorites,
+        data: filteredFavorites,
+      });
+    }
+
+    // Skip API-dependent sections if basic functionality is disabled
+    if (!isBasicFunctionalityEnabled) {
+      return results;
+    }
+
+    // Process API-dependent sections in order
+    sectionsOrder.forEach((sectionId) => {
+      const sectionData = omniSearchData[sectionId] ?? [];
+      const sectionIsLoading = omniSearchLoading[sectionId] ?? false;
+      const category = sectionIdToCategory(sectionId);
+
+      if (sectionId === 'sites') {
+        // Add Sites section (API-dependent)
+        if (sectionData.length > 0 || sectionIsLoading) {
+          const transformedSites = (
+            sectionData as { name: string; url: string }[]
+          )
+            .filter((site) => site?.name && site?.url)
+            .map(
+              (site): FuseSearchResult => ({
+                category: UrlAutocompleteCategory.Sites,
+                name: site.name,
+                url: site.url,
+              }),
+            );
+
+          results.push({
+            category,
+            data: transformedSites,
+            isLoading: sectionIsLoading,
+          });
+        }
+      } else {
+        // Skip if empty and not loading
+        if (sectionData.length === 0 && !sectionIsLoading) return;
+
+        // Transform data based on section type
+        let transformedData: AutocompleteSearchResult[] = [];
+
+        switch (sectionId) {
+          case 'tokens':
+            transformedData = (sectionData as TrendingAsset[])
+              .filter((asset) => asset?.assetId)
+              .map(transformTokenResult);
+            break;
+          case 'perps':
+            transformedData = (sectionData as PerpsMarketData[])
+              .filter((market) => market?.symbol)
+              .map(transformPerpsResult);
+            break;
+          case 'predictions':
+            transformedData = (sectionData as PredictSearchResult[]).map(
+              transformPredictionsResult,
+            );
+            break;
+        }
+
+        results.push({
+          category,
+          data: transformedData,
+          isLoading: sectionIsLoading,
+        });
+      }
+    });
+
+    return results;
+  }, [
+    searchQuery,
+    omniSearchData,
+    omniSearchLoading,
+    sectionsOrder,
+    isBasicFunctionalityEnabled,
+    filteredLocalResults,
+  ]);
+
+  const { goToSwaps: goToSwapsHook, networkModal } = useSwapBridgeNavigation({
+    location: SwapBridgeNavigationLocation.TokenView,
+    sourcePage: 'MainView',
+  });
+
+  const goToSwaps = useCallback(
+    async (tokenResult: TokenSearchResult) => {
+      try {
+        const bridgeToken = {
+          address: tokenResult.address,
+          name: tokenResult.name,
+          symbol: tokenResult.symbol,
+          image: tokenResult.logoUrl,
+          decimals: tokenResult.decimals,
+          chainId: tokenResult.chainId,
+        } satisfies BridgeToken;
+
+        goToSwapsHook(bridgeToken);
+      } catch {
+        // Silent catch - swap navigation failed
+        return;
+      }
+    },
+    [goToSwapsHook],
+  );
+
+  const renderSectionHeader = useCallback(
+    ({ section }: { section: ResultsWithCategory }) => (
+      <View
+        style={styles.categoryWrapper}
+        testID={sectionHeaderTestId(section.category)}
+      >
+        <Text style={styles.category}>
+          {strings(`autocomplete.${section.category}`)}
+        </Text>
+        {section.isLoading && (
+          <ActivityIndicator
+            testID={SECTION_LOADING_INDICATOR_TEST_ID}
+            size="small"
+          />
+        )}
+      </View>
+    ),
+    [styles],
+  );
+
+  const renderItem: SectionListRenderItem<AutocompleteSearchResult> =
+    useCallback(
+      ({ item }) => {
+        if (!item?.category) return null;
+        return (
+          <Result
+            result={item}
+            onPressIn={
+              item.category === UrlAutocompleteCategory.Sites ||
+              item.category === UrlAutocompleteCategory.Recents ||
+              item.category === UrlAutocompleteCategory.Favorites
+                ? onSelectPressIn
+                : undefined
+            }
+            onPress={() => {
+              // Select first so BrowserTab can start WebView navigation, then
+              // hide autocomplete for URL-based results.
+              // Keep autocomplete open for Tokens/Perps/Predictions.
+              onSelect(item);
+              const isUrlBasedResult =
+                item.category === UrlAutocompleteCategory.Sites ||
+                item.category === UrlAutocompleteCategory.Recents ||
+                item.category === UrlAutocompleteCategory.Favorites;
+              if (isUrlBasedResult) {
+                hide();
+              }
+            }}
+            onSwapPress={goToSwaps}
+            navigation={navigation}
+          />
+        );
+      },
+      [hide, onSelect, onSelectPressIn, goToSwaps, navigation],
+    );
+
+  const keyExtractor = useCallback(
+    (item: AutocompleteSearchResult, index: number) => {
+      if (!item?.category) return `unknown-${index}`;
+      switch (item.category) {
+        case UrlAutocompleteCategory.Tokens:
+          return `${item.category}-${item.chainId}-${item.address}`;
+        case UrlAutocompleteCategory.Perps:
+          return `${item.category}-${item.symbol}`;
+        case UrlAutocompleteCategory.Predictions:
+          return `${item.category}-${item.id}`;
+        default:
+          return `${item.category}-${'url' in item ? item.url : index}`;
+      }
+    },
+    [],
+  );
+
+  /**
+   * Handler for search footer URL selection
+   * Creates a FuseSearchResult and calls onSelect
+   */
+  const handleSearchFooterSelect = useCallback(
+    (url: string) => {
+      const searchResult: FuseSearchResult = {
+        category: UrlAutocompleteCategory.Sites,
+        url,
+        name: url,
+      };
+      hide();
+      onSelect(searchResult);
+    },
+    [hide, onSelect],
+  );
+
+  // Always show search footer when there's a search query
+  const showSearchFooter = searchQuery.trim().length > 0;
+
+  if (searchResults.length === 0 && !showSearchFooter) {
+    return null;
+  }
+
+  return (
+    <>
+      <SectionList<AutocompleteSearchResult, ResultsWithCategory>
+        contentContainerStyle={styles.contentContainer}
+        sections={searchResults}
+        keyExtractor={keyExtractor}
+        renderSectionHeader={renderSectionHeader}
+        renderItem={renderItem}
+        keyboardShouldPersistTaps="handled"
+        ListFooterComponent={
+          showSearchFooter ? (
+            <SitesSearchFooter
+              searchQuery={searchQuery}
+              onPress={handleSearchFooterSelect}
+              containerStyle={tw`px-4`}
+            />
+          ) : null
+        }
+      />
+      {networkModal}
+    </>
+  );
+};
+
+/**
+ * Autocomplete list that appears when the browser url bar is focused
+ * Integrates omni-search from Explore page with Sites shown first
+ */
+const UrlAutocomplete = forwardRef<
+  UrlAutocompleteRef,
+  UrlAutocompleteComponentProps
+>(({ onSelect, onSelectPressIn, onDismiss }, ref) => {
+  const browserHistory = useSelector(selectBrowserHistoryWithType);
+  const bookmarks = useSelector(selectBrowserBookmarksWithType);
+
+  // Track current search query
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const resultsRef = useRef<View | null>(null);
+  const { styles } = useStyles(styleSheet);
+
+  // Empty state: show Recents and Favorites from browser history/bookmarks
+  const emptyStateResults: ResultsWithCategory[] = useMemo(() => {
+    if (searchQuery.trim()) return [];
+
+    return EMPTY_STATE_CATEGORIES.flatMap((category) => {
+      const sourceData =
+        category === UrlAutocompleteCategory.Recents
+          ? browserHistory
+          : bookmarks;
+
+      let data = sourceData.filter(
+        (result, index, self) =>
+          result.category === category &&
+          index ===
+            self.findIndex(
+              (r) => r.url === result.url && r.category === result.category,
+            ),
+      );
+
+      if (data.length === 0) return [];
+
+      if (category === UrlAutocompleteCategory.Recents) {
+        data = data.slice(0, MAX_RECENTS);
+      }
+
+      return { category, data };
+    });
+  }, [searchQuery, browserHistory, bookmarks]);
+
+  const hasEmptyStateResults = emptyStateResults.some(
+    (section) => section.data.length > 0,
+  );
+  const isSearchMode = searchQuery.trim().length > 0;
+
+  const show = useCallback(() => {
+    resultsRef.current?.setNativeProps({ style: { display: 'flex' } });
+  }, []);
+
+  const reset = useCallback(() => {
+    setSearchQuery('');
+  }, []);
+
+  const search = useCallback((text: string) => {
+    setSearchQuery(text);
+  }, []);
+
+  const hide = useCallback(() => {
+    reset();
+    resultsRef.current?.setNativeProps({ style: { display: 'none' } });
+  }, [reset]);
+
+  const dismissAutocomplete = useCallback(() => {
+    hide();
+    onDismiss();
+  }, [hide, onDismiss]);
+
+  useImperativeHandle(ref, () => ({
+    search,
+    hide,
+    show,
+  }));
+
+  const { goToSwaps: goToSwapsHook, networkModal } = useSwapBridgeNavigation({
+    location: SwapBridgeNavigationLocation.TokenView,
+    sourcePage: 'MainView',
+  });
+
+  const goToSwaps = useCallback(
+    async (tokenResult: TokenSearchResult) => {
+      try {
+        const bridgeToken = {
+          address: tokenResult.address,
+          name: tokenResult.name,
+          symbol: tokenResult.symbol,
+          image: tokenResult.logoUrl,
+          decimals: tokenResult.decimals,
+          chainId: tokenResult.chainId,
+        } satisfies BridgeToken;
+
+        goToSwapsHook(bridgeToken);
+      } catch {
+        // Silent catch - swap navigation failed
+        return;
+      }
+    },
+    [goToSwapsHook],
+  );
+
+  // Render section header for empty state
+  const renderSectionHeader = useCallback(
+    ({ section }: { section: ResultsWithCategory }) => (
+      <View style={styles.categoryWrapper}>
+        <Text style={styles.category}>
+          {strings(`autocomplete.${section.category}`)}
+        </Text>
+      </View>
+    ),
+    [styles],
+  );
+
+  // Render item for empty state
+  const renderItem: SectionListRenderItem<AutocompleteSearchResult> =
+    useCallback(
+      ({ item }) => (
+        <Result
+          result={item}
+          onPressIn={onSelectPressIn}
+          onPress={() => {
+            onSelect(item);
+            hide();
+          }}
+          onSwapPress={goToSwaps}
+        />
+      ),
+      [hide, onSelect, onSelectPressIn, goToSwaps],
+    );
+
+  const keyExtractor = useCallback(
+    (item: AutocompleteSearchResult, index: number) => {
+      if ('url' in item) {
+        return `${item.category}-${item.url}`;
+      }
+      return `${item.category}-${index}`;
+    },
+    [],
+  );
+
+  // No results and not searching - show empty background
+  if (!hasEmptyStateResults && !isSearchMode) {
+    return (
+      <View ref={resultsRef} style={styles.wrapper}>
+        <TouchableWithoutFeedback
+          style={styles.bg}
+          onPress={dismissAutocomplete}
+        >
+          <View style={styles.bg} />
+        </TouchableWithoutFeedback>
+      </View>
+    );
+  }
+
+  return (
+    <View ref={resultsRef} style={styles.wrapper}>
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={100}
+      >
+        {isSearchMode ? (
+          // Search mode: wrap with PerpsConnectionProvider (context only) and PerpsStreamProvider for omni-search
+          <PerpsConnectionProvider suppressErrorView>
+            <PerpsStreamProvider>
+              <SearchContent
+                searchQuery={searchQuery}
+                browserHistory={browserHistory}
+                bookmarks={bookmarks}
+                onSelect={onSelect}
+                onSelectPressIn={onSelectPressIn}
+                hide={hide}
+                styles={styles}
+              />
+            </PerpsStreamProvider>
+          </PerpsConnectionProvider>
+        ) : (
+          // Empty state: show Recents and Favorites
+          <>
+            <SectionList<AutocompleteSearchResult, ResultsWithCategory>
+              contentContainerStyle={styles.contentContainer}
+              sections={emptyStateResults}
+              keyExtractor={keyExtractor}
+              renderSectionHeader={renderSectionHeader}
+              renderItem={renderItem}
+              keyboardShouldPersistTaps="handled"
+            />
+            {networkModal}
+          </>
+        )}
+      </KeyboardAvoidingView>
+    </View>
+  );
+});
+
+const UrlAutocompleteMemoized = React.memo(UrlAutocomplete);
+UrlAutocompleteMemoized.displayName = 'UrlAutocomplete';
+
+export default UrlAutocompleteMemoized;

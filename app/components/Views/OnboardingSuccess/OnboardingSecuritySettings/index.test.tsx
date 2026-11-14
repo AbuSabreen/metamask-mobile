@@ -1,0 +1,340 @@
+import React from 'react';
+import { fireEvent } from '@testing-library/react-native';
+import { useNavigation } from '@react-navigation/native';
+import { useSelector } from 'react-redux';
+import renderWithProvider from '../../../../util/test/renderWithProvider';
+import { selectUseSafeChainsListValidation } from '../../../../selectors/preferencesController';
+import { selectSeedlessOnboardingLoginFlow } from '../../../../selectors/seedlessOnboardingController';
+import { selectMobileUxBftcConsolidationFlagEnabled } from '../../../../selectors/featureFlagController/basicFunctionalityConsolidation';
+import OnboardingSecuritySettings from './';
+
+const mockUseAnalytics = jest.fn();
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: jest.fn(),
+}));
+
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: jest.fn(),
+}));
+
+jest.mock('../../../../util/networks', () => ({
+  toggleUseSafeChainsListValidation: jest.fn(),
+}));
+
+jest.mock('../../../../core/OAuthService/OAuthLoginHandlers/constants', () => ({
+  SEEDLESS_ONBOARDING_ENABLED: true,
+}));
+
+jest.mock(
+  '../../Settings/SecuritySettings/Sections/MetaMetricsAndDataCollectionSection/MetaMetricsAndDataCollectionSection',
+  () => ({
+    __esModule: true,
+    default: jest.fn(() => null),
+  }),
+);
+
+jest.mock(
+  '../../Settings/SecuritySettings/Sections/DeleteMetaMetricsData',
+  () => ({
+    __esModule: true,
+    default: jest.fn(() => null),
+  }),
+);
+
+jest.mock('../../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => mockUseAnalytics(),
+}));
+
+describe('OnboardingSecuritySettings', () => {
+  const mockNavigation = {
+    goBack: jest.fn(),
+    setOptions: jest.fn(),
+    navigate: jest.fn(),
+  };
+
+  const mockMetaMetricsAndDataCollectionSection = jest.requireMock(
+    '../../Settings/SecuritySettings/Sections/MetaMetricsAndDataCollectionSection/MetaMetricsAndDataCollectionSection',
+  ).default;
+  const mockDeleteMetaMetricsData = jest.requireMock(
+    '../../Settings/SecuritySettings/Sections/DeleteMetaMetricsData',
+  ).default;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (useNavigation as jest.Mock).mockReturnValue(mockNavigation);
+    mockMetaMetricsAndDataCollectionSection.mockReturnValue(null);
+    mockDeleteMetaMetricsData.mockReturnValue(null);
+    mockUseAnalytics.mockReturnValue({
+      isEnabled: jest.fn(() => false),
+    });
+  });
+
+  describe('Basic rendering', () => {
+    it('should render correctly with no auth connection', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return false;
+        return null;
+      });
+      const { getByTestId } = renderWithProvider(
+        <OnboardingSecuritySettings />,
+      );
+      expect(getByTestId('use-chains-list-validation')).toBeOnTheScreen();
+    });
+
+    it('should always render NetworkDetailsCheckSettings regardless of auth connection', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return false;
+        return null;
+      });
+      const { getByTestId } = renderWithProvider(
+        <OnboardingSecuritySettings />,
+      );
+      expect(getByTestId('use-chains-list-validation')).toBeOnTheScreen();
+    });
+
+    it('navigates back when the header back button is pressed', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return false;
+        return null;
+      });
+      const { getAllByTestId } = renderWithProvider(
+        <OnboardingSecuritySettings />,
+      );
+      fireEvent.press(getAllByTestId('button-icon')[0]);
+      expect(mockNavigation.goBack).toHaveBeenCalled();
+    });
+  });
+
+  describe('Social login detection and conditional rendering', () => {
+    it('hides consolidated child settings but keeps social-login settings', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return true;
+        if (selector === selectMobileUxBftcConsolidationFlagEnabled)
+          return true;
+        return null;
+      });
+
+      const { queryByTestId } = renderWithProvider(
+        <OnboardingSecuritySettings />,
+      );
+
+      expect(queryByTestId('use-chains-list-validation')).toBeNull();
+      expect(mockMetaMetricsAndDataCollectionSection).toHaveBeenCalled();
+      expect(mockDeleteMetaMetricsData).toHaveBeenCalled();
+    });
+
+    it('should render security sections when social login is enabled', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return true;
+        return null;
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockMetaMetricsAndDataCollectionSection).toHaveBeenCalledWith(
+        expect.objectContaining({ hideMarketingSection: true }),
+        undefined,
+      );
+      expect(mockDeleteMetaMetricsData).toHaveBeenCalledWith(
+        expect.objectContaining({ metricsOptin: false }),
+        undefined,
+      );
+    });
+
+    it('should render security sections when social login is active', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return true;
+        return null;
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockMetaMetricsAndDataCollectionSection).toHaveBeenCalledWith(
+        expect.objectContaining({ hideMarketingSection: true }),
+        undefined,
+      );
+      expect(mockDeleteMetaMetricsData).toHaveBeenCalledWith(
+        expect.objectContaining({ metricsOptin: false }),
+        undefined,
+      );
+    });
+
+    it('should NOT render security sections when auth connection is null', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return false;
+        return null;
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockMetaMetricsAndDataCollectionSection).not.toHaveBeenCalled();
+      expect(mockDeleteMetaMetricsData).not.toHaveBeenCalled();
+    });
+
+    it('should NOT render security sections when auth connection is undefined', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return undefined;
+        return null;
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockMetaMetricsAndDataCollectionSection).not.toHaveBeenCalled();
+      expect(mockDeleteMetaMetricsData).not.toHaveBeenCalled();
+    });
+
+    it('should NOT render security sections for non-social login auth connections', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return false;
+        return null;
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockMetaMetricsAndDataCollectionSection).not.toHaveBeenCalled();
+      expect(mockDeleteMetaMetricsData).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Component props validation', () => {
+    beforeEach(() => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return true;
+        return null;
+      });
+    });
+
+    it('should pass hideMarketingSection=true to MetaMetricsAndDataCollectionSection', () => {
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockMetaMetricsAndDataCollectionSection).toHaveBeenCalledWith(
+        expect.objectContaining({ hideMarketingSection: true }),
+        undefined,
+      );
+    });
+
+    it('should pass metricsOptin=false to DeleteMetaMetricsData by default', () => {
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockDeleteMetaMetricsData).toHaveBeenCalledWith(
+        expect.objectContaining({ metricsOptin: false }),
+        undefined,
+      );
+    });
+
+    it('should pass correct analyticsEnabled state to DeleteMetaMetricsData', () => {
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockDeleteMetaMetricsData).toHaveBeenCalledWith(
+        expect.objectContaining({ metricsOptin: expect.any(Boolean) }),
+        undefined,
+      );
+    });
+  });
+
+  describe('Selector usage', () => {
+    it('should call selectSeedlessOnboardingLoginFlow selector', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return true;
+        return null;
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(useSelector).toHaveBeenCalledWith(
+        selectSeedlessOnboardingLoginFlow,
+      );
+    });
+
+    it('should call selectUseSafeChainsListValidation selector', () => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return false;
+        return null;
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(useSelector).toHaveBeenCalledWith(
+        selectUseSafeChainsListValidation,
+      );
+    });
+  });
+
+  describe('Analytics state management', () => {
+    beforeEach(() => {
+      (useSelector as jest.Mock).mockImplementation((selector) => {
+        if (selector === selectUseSafeChainsListValidation) return false;
+        if (selector === selectSeedlessOnboardingLoginFlow) return true;
+        return null;
+      });
+    });
+
+    it('should pass metricsOptin=false when analytics is disabled', () => {
+      mockUseAnalytics.mockReturnValue({
+        isEnabled: jest.fn(() => false),
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockDeleteMetaMetricsData).toHaveBeenCalledWith(
+        expect.objectContaining({ metricsOptin: false }),
+        undefined,
+      );
+    });
+
+    it('should pass metricsOptin=true when analytics is enabled', () => {
+      mockUseAnalytics.mockReturnValue({
+        isEnabled: jest.fn(() => true),
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockDeleteMetaMetricsData).toHaveBeenCalledWith(
+        expect.objectContaining({ metricsOptin: true }),
+        undefined,
+      );
+    });
+
+    it('should call useAnalytics hook to get analytics state', () => {
+      const mockIsEnabled = jest.fn(() => false);
+      mockUseAnalytics.mockReturnValue({
+        isEnabled: mockIsEnabled,
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockUseAnalytics).toHaveBeenCalled();
+      expect(mockIsEnabled).toHaveBeenCalled();
+    });
+
+    it('should sync analytics state on component mount', () => {
+      const mockIsEnabled = jest.fn(() => true);
+      mockUseAnalytics.mockReturnValue({
+        isEnabled: mockIsEnabled,
+      });
+
+      renderWithProvider(<OnboardingSecuritySettings />);
+
+      expect(mockIsEnabled).toHaveBeenCalled();
+      expect(mockDeleteMetaMetricsData).toHaveBeenCalledWith(
+        expect.objectContaining({ metricsOptin: true }),
+        undefined,
+      );
+    });
+  });
+});

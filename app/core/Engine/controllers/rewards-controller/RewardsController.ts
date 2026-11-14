@@ -1,0 +1,6467 @@
+import { BaseController, StateMetadata } from '@metamask/base-controller';
+import { maxBy } from 'lodash';
+import {
+  type RewardsControllerState,
+  type RewardsAccountState,
+  type LoginResponseDto,
+  type EstimatePointsDto,
+  type EstimatedPointsDto,
+  type SeasonDtoState,
+  type SeasonStatusState,
+  type SeasonTierState,
+  type SeasonTierDto,
+  type SubscriptionReferralDetailState,
+  type GeoRewardsMetadata,
+  type SubscriptionDto,
+  type PaginatedPointsEventsDto,
+  type GetPointsEventsDto,
+  type OptInStatusInputDto,
+  type OptInStatusDto,
+  type PointsBoostDto,
+  type PointsEventDto,
+  type RewardDto,
+  type CampaignDto,
+  type CampaignParticipantStatusDto,
+  type CampaignLeaderboardDto,
+  type CampaignLeaderboardPositionDto,
+  type OndoGmPortfolioDto,
+  type OndoGmPortfolioState,
+  type OndoGmCampaignDepositsDto,
+  type OndoGmCampaignParticipantOutcomeDto,
+  type PerpsTradingCampaignLeaderboardDto,
+  type PerpsTradingCampaignLeaderboardPositionDto,
+  type PerpsTradingCampaignVolumeDto,
+  type PerpsTradingCampaignPrizePoolDto,
+  type PaginatedOndoGmActivityDto,
+  type PerpsTradingCampaignParticipantOutcomeDto,
+  type PredictThePitchLeaderboardDto,
+  type PredictThePitchLeaderboardPositionDto,
+  type PredictThePitchPositionsDto,
+  type PredictThePitchCampaignParticipantOutcomeDto,
+  type PredictThePitchPrizePoolDto,
+  type MoneyAccountSweepstakesStatsMeDto,
+  type MoneyAccountSweepstakesPrizePoolDto,
+  type MoneyAccountSweepstakesVolumeStatsDto,
+  type MoneyAccountSweepstakesDrawProofDto,
+  type MoneyAccountSweepstakesOutcomeDto,
+  type OndoGmActivityState,
+  type PointsEstimateHistoryEntry,
+  ClaimRewardDto,
+  PointsEventsDtoState,
+  GetPointsEventsLastUpdatedDto,
+  SeasonStatusDto,
+  type DiscoverSeasonsDto,
+  type SeasonMetadataDto,
+  type SeasonStateDto,
+  type LineaTokenRewardDto,
+  type OffDeviceSubscriptionAccountsState,
+  type ClientVersionRequirementDto,
+  type ClientVersionRequirementState,
+  type CampaignState,
+  type CampaignDtoState,
+  type SubscriptionBenefitsState,
+  type VipDashboardDto,
+  type VipDashboardState,
+  type VipEquityMultiplierDto,
+  type VipRefereeMeDto,
+  type VipRefereeMeState,
+  type VipFeesResponseDto,
+  type VipPerpsFeesState,
+  type GetVipTransactionsDto,
+  type PaginatedVipTransactionsDto,
+  type VipTransactionDto,
+  type VipTransactionsState,
+  type PerpsFeeResolverScope,
+  type PerpsTradingFeeGrant,
+  type TradingFeeGrantResponseDto,
+  CampaignType,
+} from './types';
+import {
+  defaultRewardsControllerState,
+  getRewardsControllerDefaultState,
+} from './defaultState';
+import { getHyperliquidMainnetBuilderAddress } from './utils/hyperliquid-builder-address';
+import type { RewardsControllerMessenger } from '../../messengers/rewards-controller-messenger';
+import {
+  storeSubscriptionToken,
+  removeSubscriptionToken,
+  resetAllSubscriptionTokens,
+  getSubscriptionToken,
+} from './utils/multi-subscription-token-vault';
+import Logger from '../../../../util/Logger';
+import { calculateExponentialRetryDelay } from '../../../../util/exponential-retry';
+import { captureException } from '@sentry/react-native';
+import type { InternalAccount } from '@metamask/keyring-internal-api';
+import { isAddress as isSolanaAddress } from '@solana/addresses';
+import { isHardwareAccount } from '../../../../util/address';
+import {
+  CaipAccountId,
+  parseCaipChainId,
+  toCaipAccountId,
+} from '@metamask/utils';
+import { base58 } from 'ethers/lib/utils';
+import {
+  isNonEvmAddress,
+  isBtcAccount,
+  isTronAccount,
+} from '../../../Multichain/utils';
+import { signSolanaRewardsMessage } from './utils/solana-snap';
+import { signBitcoinRewardsMessage } from './utils/bitcoin-snap';
+import { signTronRewardsMessage } from './utils/tron-snap';
+import {
+  AuthorizationFailedError,
+  InvalidTimestampError,
+  AccountAlreadyRegisteredError,
+  SeasonNotFoundError,
+  MAX_PERPS_TRADING_FEE_GRANT_BIPS,
+} from './services/rewards-data-service';
+import { sortAccounts } from './utils/sortAccounts';
+
+// Re-export the messenger type for convenience
+export type { RewardsControllerMessenger };
+
+export const DEFAULT_BLOCKED_REGIONS = ['UK', 'GB', 'GI'];
+
+const controllerName = 'RewardsController';
+
+// Season status cache threshold
+const SEASON_STATUS_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minute
+
+// Season metadata cache threshold
+const SEASON_METADATA_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minute
+
+// Referral details cache threshold
+const REFERRAL_DETAILS_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minutes
+
+// Benefits details cache threshold
+const BENEFITS_DETAILS_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minutes
+
+// VIP dashboard cache threshold — re-fetched on every dashboard screen focus,
+// so cache for 5 minutes to avoid redundant backend calls.
+const VIP_DASHBOARD_CACHE_THRESHOLD_MS = 1000 * 60 * 5;
+/** Holdings-keyed display cache for POST /vip/equity-multiplier (not program truth). */
+const VIP_EQUITY_MULTIPLIER_CACHE_THRESHOLD_MS = 1000 * 60 * 5;
+
+// VIP perps fees cache threshold — read on every perps trade UI render, so
+// cache for the same 5-minute window as the legacy public-discount path.
+const VIP_PERPS_FEES_CACHE_THRESHOLD_MS = 1000 * 60 * 5;
+
+const TRADING_FEE_GRANT_CACHE_TTL_MS = 30_000;
+const TRADING_FEE_GRANT_FAILURE_COOLDOWN_MS = 5_000;
+const TRADING_FEE_GRANT_CACHE_KEY = 'perps-trading-fee-grant';
+
+// VIP transactions cache threshold (first page only).
+// Disabled so each first-page read checks the backend last-updated timestamp.
+const VIP_TRANSACTIONS_CACHE_THRESHOLD_MS = 0;
+
+// Active boosts cache threshold
+const ACTIVE_BOOSTS_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minute
+
+// Unlocked rewards cache threshold
+const UNLOCKED_REWARDS_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minute
+
+// Off-device subscription accounts cache threshold
+const OFF_DEVICE_SUBSCRIPTION_ACCOUNTS_CACHE_THRESHOLD_MS = 1000 * 60 * 5; // 5 minutes
+
+// Campaigns cache threshold
+const CAMPAIGNS_CACHE_THRESHOLD_MS = 1000 * 60 * 5; // 5 minutes
+const CAMPAIGNS_CACHE_KEY = 'CAMPAIGNS_CACHE_KEY';
+
+// Campaign participant status cache threshold
+const CAMPAIGN_PARTICIPANT_STATUS_CACHE_THRESHOLD_MS = 1000 * 60 * 5; // 5 minutes
+
+// Campaign leaderboard cache threshold (hourly job updates, but we cache for 5 min)
+const ONDO_CAMPAIGN_LEADERBOARD_CACHE_THRESHOLD_MS = 1000 * 60 * 5; // 5 minutes
+
+// Campaign leaderboard position cache threshold
+// Disabled to keep the user's rank in sync with their latest trades.
+const ONDO_CAMPAIGN_LEADERBOARD_POSITION_CACHE_THRESHOLD_MS = 0;
+
+// Campaign portfolio position cache threshold
+// Disabled to keep positions in sync with the activity list after rebalances.
+const ONDO_CAMPAIGN_PORTFOLIO_POSITION_CACHE_THRESHOLD_MS = 0;
+
+// Campaign deposits cache threshold
+const ONDO_CAMPAIGN_DEPOSITS_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minute
+
+// Points events cache threshold (first page only)
+const POINTS_EVENTS_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minute cache
+
+// Campaign activity cache threshold (first page only)
+// Disabled to keep the activity feed in sync with the user's latest trades.
+const ONDO_CAMPAIGN_ACTIVITY_CACHE_THRESHOLD_MS = 0;
+
+// Campaign participant outcome cache threshold
+const ONDO_CAMPAIGN_PARTICIPANT_OUTCOME_CACHE_THRESHOLD_MS = 1000 * 60 * 10; // 10 minutes
+
+// Perps Trading Campaign leaderboard cache threshold (HyperTracker refreshes every ~15 min)
+const PERPS_TRADING_CAMPAIGN_LEADERBOARD_CACHE_THRESHOLD_MS = 1000 * 60 * 5; // 5 minutes
+
+// Perps Trading Campaign leaderboard position cache threshold
+// Disabled to keep the user's rank in sync with their latest trades.
+const PERPS_TRADING_CAMPAIGN_LEADERBOARD_POSITION_CACHE_THRESHOLD_MS = 0;
+
+// Perps Trading Campaign volume cache threshold
+const PERPS_TRADING_CAMPAIGN_VOLUME_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minute
+
+// Perps Trading Campaign prize pool cache threshold
+const PERPS_TRADING_CAMPAIGN_PRIZE_POOL_CACHE_THRESHOLD_MS = 1000 * 60 * 5; // 5 minutes
+
+// Perps Trading participant outcome cache threshold
+const PERPS_TRADING_PARTICIPANT_OUTCOME_CACHE_THRESHOLD_MS = 1000 * 60 * 10; // 10 minutes
+
+// Predict The Pitch cache thresholds
+const PREDICT_THE_PITCH_LEADERBOARD_CACHE_THRESHOLD_MS = 1000 * 60 * 5; // 5 minutes
+const PREDICT_THE_PITCH_LEADERBOARD_POSITION_CACHE_THRESHOLD_MS = 0;
+const PREDICT_THE_PITCH_POSITIONS_CACHE_THRESHOLD_MS = 0;
+const PREDICT_THE_PITCH_PARTICIPANT_OUTCOME_CACHE_THRESHOLD_MS = 1000 * 60 * 10; // 10 minutes
+const PREDICT_THE_PITCH_PRIZE_POOL_CACHE_THRESHOLD_MS = 1000 * 60 * 5; // 5 minutes
+
+// Money Account Sweepstakes cache thresholds
+const MONEY_ACCOUNT_SWEEPSTAKES_STATS_CACHE_THRESHOLD_MS = 1000 * 60 * 1; // 1 minute
+const MONEY_ACCOUNT_SWEEPSTAKES_PRIZE_POOL_CACHE_THRESHOLD_MS = 1000 * 60 * 5; // 5 minutes
+const MONEY_ACCOUNT_SWEEPSTAKES_DRAW_PROOF_CACHE_THRESHOLD_MS = 1000 * 60 * 60; // 1 hour
+const MONEY_ACCOUNT_SWEEPSTAKES_DRAW_PROOF_NULL_CACHE_THRESHOLD_MS =
+  1000 * 60 * 5; // 5 minutes (null/pending)
+const MONEY_ACCOUNT_SWEEPSTAKES_PARTICIPANT_OUTCOME_CACHE_THRESHOLD_MS =
+  1000 * 60 * 10; // 10 minutes
+
+// Client version requirements cache threshold
+const CLIENT_VERSION_REQUIREMENTS_CACHE_THRESHOLD_MS = 1000 * 60 * 30; // 30 minutes
+
+// First predict on us cache threshold — matches API Cache-Control max-age=60
+// Opt-in status stale threshold for not opted-in accounts to force a fresh check
+const NOT_OPTED_IN_OIS_STALE_CACHE_THRESHOLD_MS = 1000 * 60 * 60; // 1 hour
+
+// Maximum number of points estimate history entries to keep for Customer Support diagnostics
+const MAX_POINTS_ESTIMATE_HISTORY_ENTRIES = 50;
+
+/**
+ * State metadata for the RewardsController
+ */
+const metadata: StateMetadata<RewardsControllerState> = {
+  activeAccount: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  accounts: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  subscriptions: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  seasons: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  subscriptionReferralDetails: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  seasonStatuses: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  activeBoosts: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  unlockedRewards: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  pointsEvents: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  offDeviceSubscriptionAccounts: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  campaigns: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  campaignParticipantStatus: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  ondoCampaignLeaderboard: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  ondoCampaignLeaderboardPositions: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  ondoCampaignPortfolio: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  ondoCampaignActivity: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  ondoCampaignDeposits: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  perpsTradingCampaignLeaderboard: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  perpsTradingCampaignLeaderboardPositions: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  perpsTradingCampaignVolume: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  perpsTradingCampaignPrizePool: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  predictThePitchLeaderboard: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  predictThePitchLeaderboardPositions: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  predictThePitchPositions: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  predictThePitchPrizePool: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  moneyAccountSweepstakesStats: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  moneyAccountSweepstakesPrizePool: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  moneyAccountSweepstakesVolumeStats: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  moneyAccountSweepstakesDrawProof: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  clientVersionRequirements: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  pointsEstimateHistory: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: false,
+  },
+  rewardsEnvUrl: {
+    includeInStateLogs: false,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  subscriptionBenefits: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  vipDashboard: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  vipRefereeDashboard: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+  vipPerpsFees: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: false,
+  },
+  vipTransactions: {
+    includeInStateLogs: true,
+    persist: true,
+    includeInDebugSnapshot: false,
+    usedInUi: true,
+  },
+};
+
+export { defaultRewardsControllerState, getRewardsControllerDefaultState };
+
+type CacheReader<T> = (
+  key: string,
+) => { payload: T; lastFetched?: number } | undefined;
+
+type CacheWriter<T> = (key: string, payload: T) => void;
+
+interface CacheOptions<T> {
+  key: string;
+  ttl: number;
+  readCache: CacheReader<T>;
+  fetchFresh: () => Promise<T>;
+  writeCache: CacheWriter<T>;
+  swrCallback?: (old: T, fresh: T) => void; // Callback triggered after SWR refresh, to invalidate cache
+}
+
+interface InvalidateSubscriptionCacheOptions {
+  subscriptionId: string;
+  seasonId?: string;
+  campaignId?: string;
+}
+
+type MutableCacheRecord = Record<string, unknown>;
+
+function deleteMatchingCacheEntries(
+  cache: MutableCacheRecord | undefined,
+  matches: (key: string) => boolean,
+): void {
+  if (!cache) return;
+
+  Object.keys(cache).forEach((key) => {
+    if (matches(key)) {
+      delete cache[key];
+    }
+  });
+}
+
+function deleteMatchingMapEntries<T>(
+  cache: Map<string, T>,
+  matches: (key: string) => boolean,
+): void {
+  Array.from(cache.keys()).forEach((key) => {
+    if (matches(key)) {
+      cache.delete(key);
+    }
+  });
+}
+
+/**
+ * Get a value, from cache if exist
+ */
+export async function wrapWithCache<T>({
+  key,
+  ttl,
+  readCache,
+  fetchFresh,
+  writeCache,
+  swrCallback,
+}: CacheOptions<T>): Promise<T> {
+  // Try cache
+  try {
+    const cached = readCache(key);
+
+    if (cached) {
+      const isStale =
+        !cached.lastFetched || Date.now() - cached.lastFetched > ttl;
+
+      // If cache is fresh, return it immediately and do NOT trigger SWR
+      if (!isStale) return cached.payload;
+
+      // If stale and SWR enabled → return stale data + background refresh
+      if (swrCallback) {
+        (async () => {
+          try {
+            const fresh = await fetchFresh();
+            writeCache(key, fresh);
+            swrCallback(cached.payload, fresh);
+          } catch (err) {
+            Logger.log(
+              'SWR revalidation failed:',
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        })();
+        return cached.payload;
+      }
+    }
+  } catch (error) {
+    Logger.log(
+      'RewardsController: wrapWithCache cache read failed, fetching fresh',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  // Fetch fresh
+  const freshValue = await fetchFresh();
+
+  // Write cache
+  try {
+    writeCache(key, freshValue);
+  } catch (error) {
+    Logger.log(
+      'RewardsController: wrapWithCache writeCache failed',
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  return freshValue;
+}
+
+const MESSENGER_EXPOSED_METHODS = [
+  'addPointsEstimateToHistory',
+  'applyBonusCode',
+  'calculateTierStatus',
+  'canChangeRewardsEnvUrl',
+  'checkOptInStatusAgainstCache',
+  'claimReward',
+  'convertInternalAccountToCaipAccountId',
+  'convertToSeasonStatusDto',
+  'estimatePoints',
+  'getActivePointsBoosts',
+  'getActivityIfChanged',
+  'getActivityLastUpdated',
+  'getActualSubscriptionId',
+  'getBenefits',
+  'getCampaignParticipantStatus',
+  'getCampaigns',
+  'getCandidateSubscriptionId',
+  'getClientVersionRequirements',
+  'getDefaultRewardsEnvUrl',
+  'getFirstSubscriptionId',
+  'getGeoRewardsMetadata',
+  'getHasAccountOptedIn',
+  'getOffDeviceSubscriptionAccounts',
+  'getOndoCampaignDeposits',
+  'getOndoCampaignLeaderboard',
+  'getOndoCampaignLeaderboardPosition',
+  'getOndoCampaignActivity',
+  'getOndoCampaignPortfolioPosition',
+  'getOndoCampaignParticipantOutcome',
+  'getPerpsTradingCampaignLeaderboard',
+  'getPerpsTradingCampaignLeaderboardPosition',
+  'getPerpsTradingCampaignVolume',
+  'getPerpsTradingCampaignPrizePool',
+  'getOptInStatus',
+  'getPerpsTradingCampaignParticipantOutcome',
+  'getPredictThePitchLeaderboard',
+  'getPredictThePitchLeaderboardPosition',
+  'getPredictThePitchPositions',
+  'getPredictThePitchParticipantOutcome',
+  'getPredictThePitchPrizePool',
+  'getMoneyAccountSweepstakesStatsMe',
+  'getMoneyAccountSweepstakesPrizePool',
+  'getMoneyAccountSweepstakesVolumeStats',
+  'getMoneyAccountSweepstakesDrawProof',
+  'getMoneyAccountSweepstakesParticipantOutcome',
+  'getPerpsDiscountForAccount',
+  'getPerpsTradingFeeGrant',
+  'getVipTierForAccount',
+  'getVipTransactions',
+  'getVipTransactionsIfChanged',
+  'getVipTransactionsLastUpdated',
+  'getPointsEvents',
+  'getPointsEventsIfChanged',
+  'getPointsEventsLastUpdated',
+  'getReferralDetails',
+  'getRewardsEnvUrl',
+  'getSeasonMetadata',
+  'getSeasonOneLineaRewardTokens',
+  'getSeasonStatus',
+  'getUnlockedRewards',
+  'getVIPDashboard',
+  'getVipEquityMultiplier',
+  'getVipRefereeDashboard',
+  'handleAuthenticationTrigger',
+  'hasActiveSeason',
+  'hasActivityChanged',
+  'hasPointsEventsChanged',
+  'hasVipTransactionsChanged',
+  'invalidateSubscriptionAndAccounts',
+  'invalidateSubscriptionCache',
+  'isOptInSupported',
+  'isRewardsFeatureEnabled',
+  'isVipFeatureEnabled',
+  'linkAccountsToSubscriptionCandidate',
+  'linkAccountToSubscriptionCandidate',
+  'lookupVipTransaction',
+  'logout',
+  'optIn',
+  'optInToCampaign',
+  'optInToCampaigns',
+  'optOut',
+  'performSilentAuth',
+  'postBenefitImpression',
+  'registerMoneyAccountBinding',
+  'resetAll',
+  'resetState',
+  'setActiveAccountFromCandidate',
+  'setRewardsEnvUrl',
+  'shouldSkipSilentAuth',
+  'signRewardsMessage',
+  'validateBonusCode',
+] as const;
+
+/**
+ * Controller for managing user rewards and campaigns
+ * Handles reward claiming, campaign fetching, and reward history
+ */
+export class RewardsController extends BaseController<
+  typeof controllerName,
+  RewardsControllerState,
+  RewardsControllerMessenger
+> {
+  #geoLocation: GeoRewardsMetadata | null = null;
+  #participantOutcomeCache: Map<
+    string,
+    { payload: OndoGmCampaignParticipantOutcomeDto; lastFetched: number }
+  > = new Map();
+  #isDisabled: () => boolean;
+  #isVipDisabled: () => boolean;
+  #reauthPromises: Map<string, Promise<void>> = new Map();
+
+  // Deduplicates concurrent /vip/fees fetches for the same subscriptionId.
+  // Cleared when the promise settles (success or failure).
+  #vipFeesFetchInFlight: Map<string, Promise<VipFeesResponseDto | 0>> =
+    new Map();
+  #tradingFeeGrantCache: {
+    payload: TradingFeeGrantResponseDto;
+    lastFetched: number;
+  } | null = null;
+  #tradingFeeGrantRequest: Promise<TradingFeeGrantResponseDto> | null = null;
+  #tradingFeeGrantFailureCooldown: {
+    expiresAt: number;
+    errorMessage: string;
+  } | null = null;
+  #tradingFeeGrantCacheGeneration = 0;
+  /**
+   * In-memory display cache for equity multiplier. Keyed by
+   * `${subscriptionId}::${holdingsUsd}`. Not Redux / not program truth.
+   */
+  #vipEquityMultiplierCache: Map<
+    string,
+    { payload: VipEquityMultiplierDto; lastFetched: number }
+  > = new Map();
+  #vipEquityMultiplierInFlight: Map<
+    string,
+    Promise<VipEquityMultiplierDto | null>
+  > = new Map();
+  #perpsTradingParticipantOutcomeCache: Map<
+    string,
+    {
+      payload: PerpsTradingCampaignParticipantOutcomeDto | null;
+      lastFetched: number;
+    }
+  > = new Map();
+  #predictThePitchParticipantOutcomeCache: Map<
+    string,
+    {
+      payload: PredictThePitchCampaignParticipantOutcomeDto | null;
+      lastFetched: number;
+    }
+  > = new Map();
+  #moneyAccountSweepstakesParticipantOutcomeCache: Map<
+    string,
+    {
+      payload: MoneyAccountSweepstakesOutcomeDto;
+      lastFetched: number;
+    }
+  > = new Map();
+  #moneyAccountSweepstakesDrawProofNullCache: Map<
+    string,
+    { lastFetched: number }
+  > = new Map();
+  /**
+   * Session cache for Money Account binding results keyed by
+   * `${subscriptionId}:${address.toLowerCase()}`. Avoids re-POSTing within a
+   * session and remembers conflicts for late-discovered-conflict UX.
+   */
+  #moneyAccountBindingResults: Map<string, 'bound' | 'conflict'> = new Map();
+
+  /**
+   * Calculate tier status and next tier information
+   */
+  calculateTierStatus(
+    seasonTiers: SeasonTierDto[],
+    currentTierId: string,
+    currentPoints: number,
+  ): SeasonTierState {
+    // Sort tiers by points needed (ascending)
+    const sortedTiers = [...seasonTiers].sort(
+      (a, b) => a.pointsNeeded - b.pointsNeeded,
+    );
+
+    // Find current tier
+    const currentTier = sortedTiers.find((tier) => tier.id === currentTierId);
+    if (!currentTier) {
+      Logger.log(
+        `Current tier ${currentTierId} not found in season tiers, skip calculating tier status`,
+      );
+      return {
+        currentTier: null,
+        nextTier: null,
+        nextTierPointsNeeded: null,
+      };
+    }
+
+    // Find next tier (first tier with more points needed than current tier)
+    const currentTierIndex = sortedTiers.findIndex(
+      (tier) => tier.id === currentTierId,
+    );
+    const nextTier =
+      currentTierIndex < sortedTiers.length - 1
+        ? sortedTiers[currentTierIndex + 1]
+        : null;
+
+    // Calculate points needed for next tier
+    const nextTierPointsNeeded = nextTier
+      ? Math.max(0, nextTier.pointsNeeded - currentPoints)
+      : null;
+
+    return {
+      currentTier,
+      nextTier,
+      nextTierPointsNeeded,
+    };
+  }
+
+  /**
+   * Convert SeasonDto to SeasonDtoState for storage
+   */
+  #convertSeasonToState(season: SeasonStatusDto['season']): SeasonDtoState {
+    return {
+      id: season.id,
+      name: season.name,
+      startDate: season.startDate.getTime(),
+      endDate: season.endDate.getTime(),
+      tiers: season.tiers,
+      activityTypes: season.activityTypes,
+      waysToEarn: season.waysToEarn,
+    };
+  }
+
+  /**
+   * Combine season metadata and season state into a SeasonStatusDto
+   */
+  convertToSeasonStatusDto(
+    seasonMetadata: SeasonDtoState,
+    seasonState: SeasonStateDto,
+  ): SeasonStatusDto {
+    return {
+      season: {
+        id: seasonMetadata.id,
+        name: seasonMetadata.name,
+        startDate: new Date(seasonMetadata.startDate),
+        endDate: new Date(seasonMetadata.endDate),
+        tiers: seasonMetadata.tiers,
+        activityTypes: seasonMetadata.activityTypes,
+        waysToEarn: seasonMetadata.waysToEarn,
+      },
+      balance: {
+        total: seasonState.balance,
+        updatedAt: seasonState.updatedAt,
+      },
+      currentTierId: seasonState.currentTierId,
+    };
+  }
+
+  /**
+   * Convert SeasonStatusDto to SeasonStatusState and update seasons map
+   */
+  #convertSeasonStatusToSubscriptionState(
+    seasonStatus: SeasonStatusDto,
+  ): SeasonStatusState {
+    const tierState = this.calculateTierStatus(
+      seasonStatus.season.tiers,
+      seasonStatus.currentTierId,
+      seasonStatus.balance.total,
+    );
+
+    return {
+      season: this.#convertSeasonToState(seasonStatus.season),
+      balance: {
+        total: seasonStatus.balance.total,
+        updatedAt: seasonStatus.balance.updatedAt?.getTime(),
+      },
+      tier: tierState,
+      lastFetched: Date.now(),
+    };
+  }
+
+  #convertPointsEventsToState(
+    pointsEvents: PaginatedPointsEventsDto,
+  ): PointsEventsDtoState {
+    return {
+      results: pointsEvents.results.map((result) => ({
+        ...result,
+        timestamp: new Date(result.timestamp).getTime(),
+        updatedAt: new Date(result.updatedAt).getTime(),
+        type: result.type,
+        payload: result.payload,
+      })),
+      has_more: pointsEvents.has_more,
+      cursor: pointsEvents.cursor,
+      lastFetched: Date.now(),
+    };
+  }
+
+  #convertPointsEventsStateToDto(
+    state: PointsEventsDtoState,
+  ): PaginatedPointsEventsDto {
+    return {
+      results: state.results.map((r) => ({
+        ...r,
+        type: r.type as PointsEventDto['type'],
+        timestamp: new Date(r.timestamp),
+        updatedAt: new Date(r.updatedAt),
+      })),
+      cursor: state.cursor,
+      has_more: state.has_more,
+    };
+  }
+
+  #convertVipTransactionsToState(
+    transactions: PaginatedVipTransactionsDto,
+  ): VipTransactionsState {
+    return {
+      results: transactions.results.map((transaction) => ({
+        ...transaction,
+      })),
+      has_more: transactions.has_more,
+      cursor: transactions.cursor,
+      lastFetched: Date.now(),
+    };
+  }
+
+  #convertVipTransactionsStateToDto(
+    state: VipTransactionsState,
+  ): PaginatedVipTransactionsDto {
+    return {
+      results: state.results.map((transaction) => ({
+        ...transaction,
+      })),
+      has_more: state.has_more,
+      cursor: state.cursor,
+    };
+  }
+
+  constructor({
+    messenger,
+    state,
+    isDisabled,
+    isVipDisabled,
+  }: {
+    messenger: RewardsControllerMessenger;
+    state?: Partial<RewardsControllerState>;
+    isDisabled?: () => boolean;
+    isVipDisabled?: () => boolean;
+  }) {
+    super({
+      name: controllerName,
+      metadata,
+      messenger,
+      state: {
+        ...defaultRewardsControllerState,
+        ...state,
+      },
+    });
+
+    this.#isDisabled = isDisabled ?? (() => false);
+    this.#isVipDisabled = isVipDisabled ?? (() => false);
+
+    this.messenger.registerMethodActionHandlers(
+      this,
+      MESSENGER_EXPOSED_METHODS,
+    );
+    this.#initializeEventSubscriptions();
+  }
+
+  /**
+   * Initialize event subscriptions based on feature flag state
+   */
+  #initializeEventSubscriptions(): void {
+    // Subscribe to account changes for silent authentication
+    this.messenger.subscribe(
+      'AccountTreeController:selectedAccountGroupChange',
+      () => this.handleAuthenticationTrigger('Account Group changed'),
+    );
+
+    // Subscribe to KeyringController unlock events to retry silent auth
+    this.messenger.subscribe('KeyringController:unlock', () =>
+      this.handleAuthenticationTrigger('KeyringController unlocked'),
+    );
+
+    this.messenger.subscribe('AuthenticationController:stateChange', () => {
+      this.#resetTradingFeeGrantCache();
+    });
+  }
+
+  #resetTradingFeeGrantCache(): void {
+    this.#tradingFeeGrantCacheGeneration += 1;
+    this.#tradingFeeGrantCache = null;
+    this.#tradingFeeGrantRequest = null;
+    this.#tradingFeeGrantFailureCooldown = null;
+  }
+
+  /**
+   * Reset controller state to default
+   */
+  resetState(): void {
+    const { rewardsEnvUrl } = this.state;
+    this.#resetTradingFeeGrantCache();
+    this.#participantOutcomeCache.clear();
+    this.#perpsTradingParticipantOutcomeCache.clear();
+    this.#predictThePitchParticipantOutcomeCache.clear();
+    this.#vipEquityMultiplierCache.clear();
+    this.#vipEquityMultiplierInFlight.clear();
+    this.#moneyAccountSweepstakesParticipantOutcomeCache.clear();
+    this.#moneyAccountSweepstakesDrawProofNullCache.clear();
+    this.update(() => ({
+      ...getRewardsControllerDefaultState(),
+      rewardsEnvUrl,
+    }));
+  }
+
+  /**
+   * Returns the rewards API base URL the data service is currently targeting.
+   */
+  getRewardsEnvUrl(): string {
+    return this.messenger.call('RewardsDataService:getRewardsEnvUrl');
+  }
+
+  /**
+   * Returns whether the current MetaMask build allows manually overriding the
+   * rewards API environment (true for non-RC / non-production builds).
+   */
+  canChangeRewardsEnvUrl(): boolean {
+    return this.messenger.call('RewardsDataService:canChangeRewardsEnvUrl');
+  }
+
+  /**
+   * Returns the default rewards API base URL for the current MetaMask
+   * environment, ignoring any manual override.
+   */
+  getDefaultRewardsEnvUrl(): string {
+    return this.messenger.call('RewardsDataService:getDefaultRewardsEnvUrl');
+  }
+
+  /**
+   * Switches the active rewards API URL, persists the choice, and
+   * resets all cached state so the next fetches target the new environment.
+   *
+   * No-ops on production builds where the environment URL cannot be changed.
+   */
+  async setRewardsEnvUrl(url: string): Promise<void> {
+    if (!this.canChangeRewardsEnvUrl()) {
+      return;
+    }
+    this.#resetTradingFeeGrantCache();
+    this.update((state) => {
+      state.rewardsEnvUrl = url;
+    });
+    this.messenger.call('RewardsDataService:setRewardsEnvUrl', url);
+    await this.resetAll();
+  }
+
+  /**
+   * Get account state for a given CAIP-10 address
+   */
+  #getAccountState(account: CaipAccountId): RewardsAccountState | null {
+    let accState = null;
+    if (account?.startsWith('eip155')) {
+      accState =
+        this.state.accounts[
+          `eip155:0:${account.split(':')[2]?.toLowerCase()}`
+        ] || this.state.accounts[`eip155:0:${account.split(':')[2]}`];
+    }
+    if (!accState) {
+      accState = this.state.accounts[account];
+    }
+    return accState || null;
+  }
+
+  /**
+   * Get the actual subscription ID for a given CAIP account ID
+   * @param account - The CAIP account ID to check
+   * @returns The subscription ID or null if not found
+   */
+  getActualSubscriptionId(account: CaipAccountId): string | null {
+    const accountState = this.#getAccountState(account);
+    return accountState?.subscriptionId || null;
+  }
+
+  /**
+   * Get the first subscription ID from the subscriptions map
+   * @returns The first subscription ID or null if no subscriptions exist
+   */
+  getFirstSubscriptionId(): string | null {
+    if (!this.state.subscriptions) return null;
+    const subscriptionIds = Object.keys(this.state.subscriptions);
+    return subscriptionIds.length > 0 ? subscriptionIds[0] : null;
+  }
+
+  /**
+   * Create composite key for state storage
+   */
+  #createSeasonSubscriptionCompositeKey(
+    seasonId: string,
+    subscriptionId: string,
+  ): string {
+    return `${seasonId}:${subscriptionId}`;
+  }
+
+  /**
+   * Create campaign subscription composite key for state storage
+   */
+  #createSubscriptionCampaignCompositeKey(
+    subscriptionId: string,
+    campaignId: string,
+  ): string {
+    return `${subscriptionId}:${campaignId}`;
+  }
+
+  /**
+   * Create VIP transactions composite key for state storage
+   */
+  #createVIPCompositeKey(
+    subscriptionId: string,
+    type: GetVipTransactionsDto['type'],
+  ): string {
+    return `${subscriptionId}:${type}`;
+  }
+
+  #matchesSeasonSubscriptionCacheKey(
+    key: string,
+    subscriptionId: string,
+    seasonId?: string,
+  ): boolean {
+    if (seasonId !== undefined) {
+      const expectedKey = this.#createSeasonSubscriptionCompositeKey(
+        seasonId,
+        subscriptionId,
+      );
+      return key === expectedKey || key.startsWith(`${expectedKey}:`);
+    }
+
+    const [, keySubscriptionId] = key.split(':');
+    return keySubscriptionId === subscriptionId;
+  }
+
+  #matchesSubscriptionCampaignCacheKey(
+    key: string,
+    subscriptionId: string,
+    campaignId?: string,
+  ): boolean {
+    if (campaignId !== undefined) {
+      const expectedKey = this.#createSubscriptionCampaignCompositeKey(
+        subscriptionId,
+        campaignId,
+      );
+      return key === expectedKey || key.startsWith(`${expectedKey}:`);
+    }
+
+    const [keySubscriptionId] = key.split(':');
+    return keySubscriptionId === subscriptionId;
+  }
+
+  #invalidatePointsEventsCache(subscriptionId: string): void {
+    const pointsEventsCacheMatches = (key: string) =>
+      this.#matchesSeasonSubscriptionCacheKey(key, subscriptionId);
+
+    this.update((state) => {
+      deleteMatchingCacheEntries(state.pointsEvents, pointsEventsCacheMatches);
+    });
+
+    Logger.log(
+      'RewardsController: Invalidated points events cache for subscription',
+      { subscriptionId },
+    );
+  }
+
+  /**
+   * Get stored season status for a given composite key
+   */
+  #getSeasonStatus(
+    subscriptionId: string,
+    seasonId: string,
+  ): SeasonStatusState | null {
+    const compositeKey = this.#createSeasonSubscriptionCompositeKey(
+      seasonId,
+      subscriptionId,
+    );
+    return this.state.seasonStatuses[compositeKey] || null;
+  }
+
+  /**
+   * Sign a message for rewards authentication
+   */
+  async signRewardsMessage(
+    account: InternalAccount,
+    timestamp: number,
+  ): Promise<string> {
+    const message = `rewards,${account.address},${timestamp}`;
+
+    if (isSolanaAddress(account.address)) {
+      const result = await signSolanaRewardsMessage(
+        account.id,
+        Buffer.from(message, 'utf8').toString('base64'),
+      );
+      return `0x${Buffer.from(base58.decode(result.signature)).toString(
+        'hex',
+      )}`;
+    } else if (isBtcAccount(account)) {
+      const result = await signBitcoinRewardsMessage(
+        account.id,
+        Buffer.from(message, 'utf8').toString('base64'),
+      );
+      // Bitcoin signatures are already in hex format, just ensure 0x prefix
+      return result.signature.startsWith('0x')
+        ? result.signature
+        : `0x${result.signature}`;
+    } else if (isTronAccount(account)) {
+      const result = await signTronRewardsMessage(
+        account.id,
+        Buffer.from(message, 'utf8').toString('base64'),
+      );
+      // Tron signatures are already in hex format, just ensure 0x prefix
+      return result.signature.startsWith('0x')
+        ? result.signature
+        : `0x${result.signature}`;
+    } else if (!isNonEvmAddress(account.address)) {
+      const result = await this.#signEvmMessage(account, message);
+      return result;
+    }
+
+    throw new Error('Unsupported account type for signing rewards message');
+  }
+
+  async #signEvmMessage(
+    account: InternalAccount,
+    message: string,
+  ): Promise<string> {
+    // Convert message to hex format for signing
+    const hexMessage = '0x' + Buffer.from(message, 'utf8').toString('hex');
+
+    // Use KeyringController to sign the message
+    const signature = await this.messenger.call(
+      'KeyringController:signPersonalMessage',
+      {
+        data: hexMessage,
+        from: account.address,
+      },
+    );
+    Logger.log(
+      'RewardsController: EVM message signed for account',
+      account.address,
+    );
+    return signature;
+  }
+
+  /**
+   * Set the active account from a candidate account
+   */
+  setActiveAccountFromCandidate(candidate: InternalAccount | null): void {
+    if (!candidate) return;
+
+    const caipAccount = this.convertInternalAccountToCaipAccountId(candidate);
+    if (!caipAccount) return;
+
+    const accountState = this.#getAccountState(caipAccount);
+    if (!accountState) return;
+
+    this.update((state) => {
+      state.activeAccount = accountState;
+    });
+  }
+
+  /**
+   * Re-authenticate the account linked to a given subscription.
+   * Resolves the matching InternalAccount and calls performSilentAuth.
+   */
+  async #performReauthForSubscription(subscriptionId: string): Promise<void> {
+    await removeSubscriptionToken(subscriptionId);
+
+    if (this.state.activeAccount?.subscriptionId === subscriptionId) {
+      const account = await this.messenger.call(
+        'AccountsController:getSelectedMultichainAccount',
+      );
+      if (this.isOptInSupported(account as InternalAccount)) {
+        Logger.log(
+          'RewardsController: Attempting reauth with active account after 403',
+        );
+        const result = await this.performSilentAuth(account, false, false);
+        if (!result) {
+          throw new Error(`Reauth failed for subscription ${subscriptionId}`);
+        }
+        return;
+      }
+    }
+
+    // Active account can't sign (e.g. hardware wallet) or doesn't match —
+    // find any software account linked to this subscription.
+    if (this.state.accounts && Object.values(this.state.accounts).length > 0) {
+      const allLinkedAccounts = Object.values(this.state.accounts).filter(
+        (acc) => acc.subscriptionId === subscriptionId,
+      );
+      if (allLinkedAccounts.length > 0) {
+        const accounts = await this.messenger.call(
+          'AccountsController:listMultichainAccounts',
+        );
+        for (const linkedAccount of allLinkedAccounts) {
+          const intAccount = accounts.find((acc: InternalAccount) => {
+            const accCaipId = this.convertInternalAccountToCaipAccountId(acc);
+            return accCaipId === linkedAccount.account;
+          });
+          if (intAccount && this.isOptInSupported(intAccount)) {
+            Logger.log(
+              'RewardsController: Attempting reauth with linked account after 403',
+            );
+            const result = await this.performSilentAuth(
+              intAccount as InternalAccount,
+              false,
+              false,
+            );
+            if (!result) {
+              throw new Error(
+                `Reauth failed for subscription ${subscriptionId}`,
+              );
+            }
+            return;
+          }
+        }
+      }
+    }
+
+    throw new Error(
+      `No signable account found for subscription ${subscriptionId} to reauth`,
+    );
+  }
+
+  /**
+   * Wrap an authenticated async call with automatic 403 retry.
+   * On AuthorizationFailedError, coalesces concurrent reauths into a single
+   * performSilentAuth call, then retries the original function once.
+   */
+  async #withAuthRetry<T>(
+    fn: () => Promise<T>,
+    subscriptionId: string,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      if (!(error instanceof AuthorizationFailedError)) throw error;
+
+      if (!this.#reauthPromises.has(subscriptionId)) {
+        Logger.log(
+          'RewardsController: 403 detected, initiating reauth for subscription',
+          subscriptionId,
+        );
+        const promise = this.#performReauthForSubscription(
+          subscriptionId,
+        ).finally(() => {
+          this.#reauthPromises.delete(subscriptionId);
+        });
+        this.#reauthPromises.set(subscriptionId, promise);
+      } else {
+        Logger.log(
+          'RewardsController: 403 detected, reauth already in progress for subscription',
+          subscriptionId,
+        );
+      }
+
+      try {
+        await this.#reauthPromises.get(subscriptionId);
+      } catch (reauthError) {
+        captureException(reauthError as Error, {
+          tags: { feature: 'rewards', context: 'withAuthRetry.reauth_failed' },
+        });
+        this.invalidateSubscriptionCache({ subscriptionId });
+        await this.invalidateSubscriptionAndAccounts(subscriptionId);
+        throw reauthError;
+      }
+
+      return await fn();
+    }
+  }
+
+  /**
+   * Handle authentication triggers (account changes, keyring unlock)
+   */
+  async handleAuthenticationTrigger(reason?: string): Promise<void> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+
+    if (!rewardsEnabled) {
+      await this.performSilentAuth(null, true, true);
+      return;
+    }
+
+    Logger.log('RewardsController: handleAuthenticationTrigger', reason);
+
+    try {
+      const accounts = this.messenger.call(
+        'AccountTreeController:getAccountsFromSelectedAccountGroup',
+      );
+
+      if (!accounts || accounts.length === 0) {
+        await this.performSilentAuth(null, true, true);
+      } else {
+        const sortedAccounts = sortAccounts(accounts as InternalAccount[]);
+
+        let bulkOptInStatus: boolean[] | null = null;
+        try {
+          // Prefer to get opt in status in bulk for sorted accounts.
+          const bulkOptInStatusResult = await this.getOptInStatus({
+            addresses: sortedAccounts.map((account) => account.address),
+          });
+          bulkOptInStatus = bulkOptInStatusResult.ois ?? null;
+        } catch {
+          // Failed to get opt in status in bulk for sorted accounts, let silent auth do it individually
+        }
+
+        // Try silent auth on each account until one succeeds.
+        // When the bulk opt-in status is available, only attempt silent auth
+        // (which mints a session via mobile-login) for accounts that are
+        // opted in. This avoids spamming mobile-login with guaranteed-401
+        // requests for non-enrolled accounts on every account switch.
+        let successAccount: InternalAccount | null = null;
+        for (let i = 0; i < sortedAccounts.length; i++) {
+          const account = sortedAccounts[i];
+          if (bulkOptInStatus && bulkOptInStatus[i] === false) {
+            // Known not opted in — skip session mint for this account.
+            const skippedCaip = this.convertInternalAccountToCaipAccountId(
+              account as InternalAccount,
+            );
+            if (skippedCaip && !this.#getAccountState(skippedCaip)) {
+              // Seed missing state so setActiveAccountFromCandidate can run
+              // later. Do not set lastFreshOptInStatusCheck here — fresh OIS
+              // owns that timestamp.
+              this.update((state) => {
+                state.accounts[skippedCaip] = {
+                  account: skippedCaip,
+                  hasOptedIn: false,
+                  subscriptionId: null,
+                  perpsFeeDiscount: null,
+                  lastPerpsDiscountRateFetched: null,
+                };
+              });
+            }
+            continue;
+          }
+          try {
+            const subscriptionId = await this.performSilentAuth(
+              account as InternalAccount,
+              false,
+              true,
+            );
+            if (subscriptionId && !successAccount) {
+              successAccount = account as InternalAccount;
+              break;
+            }
+          } catch {
+            // Continue to next account
+          }
+        }
+
+        // Set the active account to the first successful account or the first account in the sorted accounts array
+        const activeAccountCandidate: InternalAccount =
+          successAccount || (sortedAccounts[0] as InternalAccount);
+        this.setActiveAccountFromCandidate(activeAccountCandidate);
+      }
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      if (errorMessage && !errorMessage?.includes('Engine does not exist')) {
+        Logger.log(
+          'RewardsController: Silent authentication failed:',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+  }
+
+  /**
+   * Check if silent authentication should be skipped
+   */
+  async shouldSkipSilentAuth(
+    account: CaipAccountId,
+    internalAccount: InternalAccount,
+  ): Promise<boolean> {
+    // Skip if opt-in is not supported (e.g., hardware wallets, unsupported account types)
+    if (!this.isOptInSupported(internalAccount)) return true;
+
+    const accountState = this.#getAccountState(account);
+    if (accountState) {
+      if (accountState.hasOptedIn === false) {
+        if (!accountState.lastFreshOptInStatusCheck) {
+          return false;
+        }
+
+        return (
+          Date.now() - accountState.lastFreshOptInStatusCheck <=
+          NOT_OPTED_IN_OIS_STALE_CACHE_THRESHOLD_MS
+        );
+      }
+      return (
+        Boolean(accountState.subscriptionId) &&
+        Boolean(
+          (await getSubscriptionToken(accountState.subscriptionId as string))
+            ?.token,
+        )
+      );
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if an internal account supports opt-in for rewards
+   * @param account - The internal account to check
+   * @returns boolean - True if the account supports opt-in, false otherwise
+   */
+  isOptInSupported(account: InternalAccount): boolean {
+    try {
+      // Try to check if it's a hardware wallet
+      const isHardware = isHardwareAccount(account.address);
+      // If it's a hardware wallet, opt-in is not supported
+      if (isHardware) {
+        return false;
+      }
+
+      // Check if it's an EVM address (not non-EVM)
+      if (!isNonEvmAddress(account.address)) {
+        return true;
+      }
+
+      // Check if it's a Solana address
+      if (isSolanaAddress(account.address)) {
+        return true;
+      }
+
+      if (isBtcAccount(account)) {
+        return true;
+      }
+
+      if (isTronAccount(account)) {
+        return true;
+      }
+
+      // If it's neither Solana, Bitcoin, Tron, nor EVM, opt-in is not supported
+      return false;
+    } catch (error) {
+      // If there's an exception (e.g., checking hardware wallet status fails),
+      // assume opt-in is not supported
+      Logger.log(
+        'RewardsController: Exception checking opt-in support, assuming not supported:',
+        error,
+      );
+      return false;
+    }
+  }
+
+  convertInternalAccountToCaipAccountId(
+    account: InternalAccount,
+  ): CaipAccountId | null {
+    try {
+      const [scope] = account.scopes;
+      const { namespace, reference } = parseCaipChainId(scope);
+      return toCaipAccountId(namespace, reference, account.address);
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to convert address to CAIP-10 format:',
+        error,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Perform silent authentication for the given address
+   */
+  async performSilentAuth(
+    internalAccount?: InternalAccount | null,
+    shouldBecomeActiveAccount = true,
+    respectSkipSilentAuth = true,
+  ): Promise<string | null> {
+    if (!internalAccount) {
+      if (shouldBecomeActiveAccount) {
+        this.update((state) => {
+          state.activeAccount = null;
+        });
+      }
+      return null;
+    }
+
+    const account: CaipAccountId | null =
+      this.convertInternalAccountToCaipAccountId(internalAccount);
+
+    const shouldSkip = account
+      ? await this.shouldSkipSilentAuth(account, internalAccount)
+      : false;
+
+    if (shouldSkip && respectSkipSilentAuth) {
+      // This means that we'll have a record for this account
+      let accountState = this.#getAccountState(account as CaipAccountId);
+      if (accountState) {
+        // Update last authenticated account
+        this.update((state) => {
+          if (shouldBecomeActiveAccount) {
+            state.activeAccount = accountState;
+          }
+        });
+      } else {
+        // Update accounts map && last authenticated account
+        accountState = {
+          account: account as CaipAccountId,
+          hasOptedIn: false,
+          subscriptionId: null,
+          perpsFeeDiscount: null, // Default value, will be updated when fetched
+          lastPerpsDiscountRateFetched: null,
+        };
+        this.update((state) => {
+          state.accounts[account as CaipAccountId] =
+            accountState as RewardsAccountState;
+          if (shouldBecomeActiveAccount) {
+            state.activeAccount = accountState;
+          }
+        });
+      }
+      return accountState?.subscriptionId || null;
+    }
+
+    let subscription: SubscriptionDto | null = null;
+    let authUnexpectedError = false;
+
+    if (respectSkipSilentAuth && !shouldSkip) {
+      // First, check opt-in status before attempting login
+      try {
+        const optInStatusResult = await this.getOptInStatus({
+          addresses: [internalAccount.address],
+        });
+
+        // Check if the account has not opted in (result is false)
+        if (optInStatusResult.ois?.[0] === false) {
+          Logger.log(
+            'RewardsController: Account has not opted in, skipping silent auth',
+            internalAccount.address,
+          );
+          // Account hasn't opted in, don't proceed with login
+          subscription = null;
+          // Update state to reflect not opted in
+          this.update((state) => {
+            if (!account) {
+              return;
+            }
+            const accountState: RewardsAccountState = {
+              account,
+              hasOptedIn: false,
+              subscriptionId: null,
+              perpsFeeDiscount: null,
+              lastPerpsDiscountRateFetched: null,
+              lastFreshOptInStatusCheck: Date.now(),
+            };
+            state.accounts[account] = accountState;
+            if (shouldBecomeActiveAccount) {
+              state.activeAccount = accountState;
+            }
+          });
+          return null;
+        }
+      } catch {
+        // Continue with silent login attempt when OIS is unavailable.
+      }
+    }
+
+    try {
+      // Generate timestamp and sign the message
+      let timestamp = Math.floor(Date.now() / 1000);
+      let signature;
+      let retryAttempt = 0;
+      const MAX_RETRY_ATTEMPTS = 1;
+
+      try {
+        signature = await this.signRewardsMessage(internalAccount, timestamp);
+      } catch (signError) {
+        Logger.log(
+          'RewardsController: Failed to generate signature:',
+          signError,
+        );
+
+        // Check if the error is due to locked keyring
+        if (
+          signError &&
+          typeof signError === 'object' &&
+          'message' in signError
+        ) {
+          const errorMessage = (signError as Error).message;
+          if (errorMessage.includes('controller is locked')) {
+            Logger.log(
+              'RewardsController: Keyring is locked, skipping silent auth',
+            );
+            return null; // Exit silently when keyring is locked
+          }
+        }
+
+        throw signError;
+      }
+
+      // Function to execute the login call with retry logic
+      const executeLogin = async (
+        ts: number,
+        sig: string,
+      ): Promise<LoginResponseDto> => {
+        try {
+          return await this.messenger.call('RewardsDataService:login', {
+            account: internalAccount.address,
+            timestamp: ts,
+            signature: sig,
+          });
+        } catch (error) {
+          // Check if it's an InvalidTimestampError and we haven't exceeded retry attempts
+          if (
+            error instanceof InvalidTimestampError &&
+            retryAttempt < MAX_RETRY_ATTEMPTS
+          ) {
+            retryAttempt++;
+            Logger.log(
+              'RewardsController: Retrying silent auth with server timestamp',
+              { originalTimestamp: ts, newTimestamp: error.timestamp },
+            );
+            // Use the timestamp from the error for retry
+            timestamp = error.timestamp;
+            signature = await this.signRewardsMessage(
+              internalAccount,
+              timestamp,
+            );
+            return await executeLogin(timestamp, signature);
+          }
+          throw error;
+        }
+      };
+
+      const loginResponse: LoginResponseDto = await executeLogin(
+        timestamp,
+        signature,
+      );
+
+      // Update state with successful authentication
+      subscription = loginResponse.subscription;
+
+      // Store the session token for this subscription
+      const { success: tokenStoreSuccess } = await storeSubscriptionToken(
+        subscription.id,
+        loginResponse.sessionId,
+      );
+      if (!tokenStoreSuccess) {
+        Logger.log('RewardsController: Failed to store session token', account);
+        throw new Error('Failed to store session token');
+      }
+
+      Logger.log('RewardsController: Silent auth successful', account);
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.includes('401')) {
+        // Not opted in
+        Logger.log('RewardsController: Account not opt-in', account);
+      } else {
+        // Unknown error
+        subscription = null;
+        authUnexpectedError = true;
+        captureException(error as Error, {
+          tags: {
+            feature: 'rewards',
+            context: 'performSilentAuth.unexpected_error',
+          },
+          extra: { accountType: internalAccount.type },
+        });
+      }
+    } finally {
+      // Update state
+      this.update((state) => {
+        if (!account) {
+          return;
+        }
+
+        // Update accounts map && last authenticated account
+        const accountState: RewardsAccountState = {
+          account,
+          hasOptedIn: authUnexpectedError ? undefined : !!subscription,
+          subscriptionId: subscription?.id || null,
+          perpsFeeDiscount: null, // Default value, will be updated when fetched
+          lastPerpsDiscountRateFetched: null,
+          lastFreshOptInStatusCheck: Date.now(),
+        };
+        state.accounts[account] = accountState;
+        if (shouldBecomeActiveAccount) {
+          state.activeAccount = accountState;
+        }
+
+        if (subscription) {
+          state.subscriptions[subscription.id] = subscription;
+        }
+      });
+    }
+
+    return subscription?.id || null;
+  }
+
+  /**
+   * Check if the given account (caip-10 format) has opted in to rewards
+   * @param account - The account address in CAIP-10 format
+   * @returns Promise<boolean> - True if the account has opted in, false otherwise
+   */
+  async getHasAccountOptedIn(account: CaipAccountId): Promise<boolean> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) return false;
+    const accountState = this.#getAccountState(account);
+    return !!accountState?.hasOptedIn;
+  }
+
+  checkOptInStatusAgainstCache(
+    addresses: string[],
+    addressToAccountMap: Map<string, InternalAccount>,
+  ): {
+    cachedOptInResults: (boolean | null)[];
+    cachedSubscriptionIds: (string | null)[];
+    addressesNeedingFresh: string[];
+  } {
+    // Arrays to track cached vs fresh data needed
+    const cachedOptInResults: (boolean | null)[] = new Array(
+      addresses.length,
+    ).fill(null);
+    const cachedSubscriptionIds: (string | null)[] = new Array(
+      addresses.length,
+    ).fill(null);
+    const addressesNeedingFresh: string[] = [];
+
+    // Check storage state for each address
+    for (let i = 0; i < addresses.length; i++) {
+      const address = addresses[i];
+      const internalAccount = addressToAccountMap.get(address.toLowerCase());
+
+      if (internalAccount) {
+        const caipAccount =
+          this.convertInternalAccountToCaipAccountId(internalAccount);
+        if (caipAccount) {
+          const accountState = this.#getAccountState(caipAccount);
+          if (accountState?.hasOptedIn !== undefined) {
+            // Check if account is not opted in and needs a recheck
+            const shouldRecheckFreshIfNotOptedIn =
+              !accountState.lastFreshOptInStatusCheck ||
+              Date.now() - accountState.lastFreshOptInStatusCheck >
+                NOT_OPTED_IN_OIS_STALE_CACHE_THRESHOLD_MS;
+
+            if (
+              accountState.hasOptedIn === false &&
+              shouldRecheckFreshIfNotOptedIn
+            ) {
+              // Force a fresh check for this not-opted-in account
+              addressesNeedingFresh.push(address);
+              continue;
+            }
+
+            // Use cached data
+            cachedOptInResults[i] = accountState.hasOptedIn;
+            cachedSubscriptionIds[i] = accountState.subscriptionId || null;
+            continue;
+          }
+        }
+      }
+
+      // No cached data found, need fresh API call
+      addressesNeedingFresh.push(address);
+    }
+
+    return {
+      cachedOptInResults,
+      cachedSubscriptionIds,
+      addressesNeedingFresh,
+    };
+  }
+
+  /**
+   * Get opt-in status for multiple addresses with feature flag check
+   * @param params - The request parameters containing addresses
+   * @returns Promise<OptInStatusDto> - The opt-in status response
+   */
+  async getOptInStatus(params: OptInStatusInputDto): Promise<OptInStatusDto> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      // Return empty arrays when feature flag is disabled
+      const result = {
+        ois: params.addresses.map(() => false),
+        sids: params.addresses.map(() => null),
+      };
+      return result;
+    }
+
+    try {
+      // Get all internal accounts to convert addresses to CAIP format
+      const allAccounts = this.messenger.call(
+        'AccountsController:listMultichainAccounts',
+      );
+
+      // Create a map of address to internal account for quick lookup
+      const addressToAccountMap = new Map<string, InternalAccount>();
+      for (const account of allAccounts) {
+        addressToAccountMap.set(account.address.toLowerCase(), account);
+      }
+
+      const {
+        cachedOptInResults,
+        cachedSubscriptionIds,
+        addressesNeedingFresh,
+      } = this.checkOptInStatusAgainstCache(
+        params.addresses,
+        addressToAccountMap,
+      );
+
+      // Make fresh API call only for addresses without cached data
+      let freshOptInResults: boolean[] = [];
+      let freshSubscriptionIds: (string | null)[] = [];
+      if (addressesNeedingFresh.length > 0) {
+        Logger.log(
+          'RewardsController: Making fresh opt-in status API call for addresses without cached data',
+          {
+            cachedCount: cachedOptInResults.filter((result) => result !== null)
+              .length,
+            needFreshCount: addressesNeedingFresh.length,
+          },
+        );
+
+        const freshResponse = await this.messenger.call(
+          'RewardsDataService:getOptInStatus',
+          { addresses: addressesNeedingFresh },
+        );
+        freshOptInResults = freshResponse.ois;
+        freshSubscriptionIds = freshResponse.sids;
+
+        // Update state with fresh results for future caching
+        for (let i = 0; i < addressesNeedingFresh.length; i++) {
+          const address = addressesNeedingFresh[i];
+          const hasOptedIn = freshOptInResults[i];
+          const subscriptionId =
+            Array.isArray(freshSubscriptionIds) &&
+            i < freshSubscriptionIds.length
+              ? freshSubscriptionIds[i]
+              : null;
+          const internalAccount = addressToAccountMap.get(
+            address.toLowerCase(),
+          );
+
+          if (internalAccount) {
+            const caipAccount =
+              this.convertInternalAccountToCaipAccountId(internalAccount);
+            if (caipAccount) {
+              const lastFreshOptInStatusCheck = Date.now();
+              this.update((state) => {
+                // Update or create account state with fresh opt-in status and subscription ID
+                if (!state.accounts[caipAccount]) {
+                  state.accounts[caipAccount] = {
+                    account: caipAccount,
+                    hasOptedIn,
+                    subscriptionId,
+                    perpsFeeDiscount: null,
+                    lastPerpsDiscountRateFetched: null,
+                    lastFreshOptInStatusCheck,
+                  };
+                } else {
+                  state.accounts[caipAccount].hasOptedIn = hasOptedIn;
+                  state.accounts[caipAccount].subscriptionId = subscriptionId;
+                  state.accounts[caipAccount].lastFreshOptInStatusCheck =
+                    lastFreshOptInStatusCheck;
+                }
+
+                if (state.activeAccount?.account === caipAccount) {
+                  state.activeAccount.hasOptedIn = hasOptedIn;
+                  state.activeAccount.subscriptionId = subscriptionId;
+                  state.activeAccount.lastFreshOptInStatusCheck =
+                    lastFreshOptInStatusCheck;
+                }
+              });
+            }
+          }
+        }
+      }
+
+      // Combine cached and fresh results in the correct order
+      const finalOptInResults: boolean[] = [];
+      const finalSubscriptionIds: (string | null)[] = [];
+      let freshIndex = 0;
+
+      for (let i = 0; i < params.addresses.length; i++) {
+        if (cachedOptInResults[i] !== null) {
+          // Use cached result
+          finalOptInResults[i] = cachedOptInResults[i] as boolean;
+          finalSubscriptionIds[i] = cachedSubscriptionIds[i];
+        } else {
+          // Use fresh result
+          finalOptInResults[i] = freshOptInResults[freshIndex];
+          finalSubscriptionIds[i] = freshSubscriptionIds[freshIndex];
+          freshIndex++;
+        }
+      }
+
+      return { ois: finalOptInResults, sids: finalSubscriptionIds };
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to get opt-in status:',
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  async #getVipFeesForSubscriptionId(
+    subscriptionId: string,
+  ): Promise<VipFeesResponseDto | 0 | null> {
+    // Deduplicate concurrent fetches: if there's already an in-flight
+    // request for this subscriptionId, await it instead of firing another.
+    let inFlight = this.#vipFeesFetchInFlight.get(subscriptionId);
+    if (!inFlight) {
+      inFlight = this.#withAuthRetry(
+        () =>
+          this.messenger.call('RewardsDataService:getVipFees', subscriptionId),
+        subscriptionId,
+      ).then((vipFeeResponse): VipFeesResponseDto | 0 => {
+        // Tier-0 response: backend says no VIP fees — return sentinel 0
+        // without caching so the next call re-checks.
+        if (!vipFeeResponse?.fees || vipFeeResponse.vipTier <= 0) {
+          return 0;
+        }
+        this.update((state) => {
+          // Promote the subscription's VIP flag so the rest of the app
+          // reflects the user's VIP status without waiting for a full refresh.
+          const subState = state.subscriptions[subscriptionId];
+          if (subState) {
+            subState.features = {
+              ...subState.features,
+              vip: { enabled: true },
+            };
+          }
+        });
+        return vipFeeResponse;
+      });
+      this.#vipFeesFetchInFlight.set(subscriptionId, inFlight);
+      const cleanup = () => this.#vipFeesFetchInFlight.delete(subscriptionId);
+      inFlight.then(cleanup, cleanup);
+    }
+
+    const result = await inFlight;
+    if (result === 0) return 0;
+    const feeResponse = result as VipFeesResponseDto;
+    if (!feeResponse.fees) return null;
+    return feeResponse;
+  }
+
+  async getVipTierForAccount(account: CaipAccountId): Promise<number | null> {
+    if (!this.isVipFeatureEnabled()) return null;
+
+    const subscriptionId = this.getActualSubscriptionId(account);
+    if (!subscriptionId) return null;
+
+    const subscription = this.state.subscriptions[subscriptionId];
+    if (!subscription) return null;
+
+    const vipFeesResponse =
+      await this.#getVipFeesForSubscriptionId(subscriptionId);
+
+    if (!vipFeesResponse) return null;
+    return vipFeesResponse.vipTier;
+  }
+
+  /**
+   * Get perps fee discount for an account.
+   *
+   * Calls the authenticated `/vip/fees` endpoint (bypassing the local
+   * `subscription.features.vip.enabled` flag — the backend is the source of
+   * truth) and converts the absolute VIP builder fee into a discount fraction
+   * relative to `baseFeeBips`. Responses are cached per-subscription for
+   * `VIP_PERPS_FEES_CACHE_THRESHOLD_MS`. When the backend returns a valid fee
+   * response the controller also flips the subscription's
+   * `features.vip.enabled` flag to `true` so the rest of the app reflects the
+   * user's VIP status.
+   *
+   * @param account - The account address in CAIP-10 format
+   * @param baseFeeBips - The perps MetaMask builder base fee in basis points
+   * that the caller would apply absent any discount. Used to convert the VIP
+   * absolute fee into a discount fraction (caller owns the source of truth
+   * for the base fee; the controller is a pure transformer).
+   * @returns Promise<number | null> — Discount in basis points (0-10000), or
+   * null when the discount is currently unknowable (rewards disabled, no
+   * subscription, unhydrated cache, fetch error). Callers should treat null
+   * as "no discount available yet" and retry next call. A literal 0 means
+   * "no discount applies" (tier-0 / non-VIP response, out-of-range bips).
+   */
+  async getPerpsDiscountForAccount(
+    account: CaipAccountId,
+    baseFeeBips: number,
+  ): Promise<number | null> {
+    if (!this.isVipFeatureEnabled()) return null;
+
+    const vipDiscountBips = await this.#getVipPerpsDiscountBips(
+      account,
+      baseFeeBips,
+    );
+    return vipDiscountBips;
+  }
+
+  async #requestTradingFeeGrant(
+    cacheGeneration: number,
+  ): Promise<TradingFeeGrantResponseDto> {
+    try {
+      const response = await this.messenger.call(
+        'RewardsDataService:getTradingFeeGrants',
+      );
+      if (cacheGeneration === this.#tradingFeeGrantCacheGeneration) {
+        this.#tradingFeeGrantFailureCooldown = null;
+      }
+      return response;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      if (cacheGeneration === this.#tradingFeeGrantCacheGeneration) {
+        this.#tradingFeeGrantFailureCooldown = {
+          expiresAt: Date.now() + TRADING_FEE_GRANT_FAILURE_COOLDOWN_MS,
+          errorMessage,
+        };
+      }
+      Logger.log(
+        'RewardsController: trading fee grant fetch failed; returning no grant:',
+        errorMessage,
+      );
+      throw error;
+    }
+  }
+
+  #fetchTradingFeeGrant(
+    cacheGeneration: number,
+  ): Promise<TradingFeeGrantResponseDto> {
+    const activeRequest = this.#tradingFeeGrantRequest;
+    if (activeRequest) {
+      return activeRequest;
+    }
+
+    const request = this.#requestTradingFeeGrant(cacheGeneration);
+    this.#tradingFeeGrantRequest = request;
+    request.then(
+      () => {
+        if (this.#tradingFeeGrantRequest === request) {
+          this.#tradingFeeGrantRequest = null;
+        }
+      },
+      () => {
+        if (this.#tradingFeeGrantRequest === request) {
+          this.#tradingFeeGrantRequest = null;
+        }
+      },
+    );
+    return request;
+  }
+
+  async #getTradingFeeGrantResponse(): Promise<TradingFeeGrantResponseDto | null> {
+    const failureCooldown = this.#tradingFeeGrantFailureCooldown;
+    if (failureCooldown) {
+      if (Date.now() < failureCooldown.expiresAt) {
+        Logger.log(
+          'RewardsController: trading fee grant request suppressed during failure cooldown:',
+          failureCooldown.errorMessage,
+        );
+        return null;
+      }
+      this.#tradingFeeGrantFailureCooldown = null;
+    }
+
+    const cacheGeneration = this.#tradingFeeGrantCacheGeneration;
+    try {
+      return await wrapWithCache({
+        key: TRADING_FEE_GRANT_CACHE_KEY,
+        ttl: TRADING_FEE_GRANT_CACHE_TTL_MS,
+        readCache: () => {
+          const cached = this.#tradingFeeGrantCache;
+          const grantExpiresAt = cached?.payload.grant
+            ? Date.parse(cached.payload.grant.expiresAt)
+            : null;
+          if (
+            grantExpiresAt !== null &&
+            (!Number.isFinite(grantExpiresAt) || grantExpiresAt <= Date.now())
+          ) {
+            this.#tradingFeeGrantCache = null;
+            return undefined;
+          }
+          return cached ?? undefined;
+        },
+        fetchFresh: () => this.#fetchTradingFeeGrant(cacheGeneration),
+        writeCache: (_key, response) => {
+          if (cacheGeneration !== this.#tradingFeeGrantCacheGeneration) {
+            return;
+          }
+          const grantExpiresAt = response.grant
+            ? Date.parse(response.grant.expiresAt)
+            : null;
+          if (
+            grantExpiresAt !== null &&
+            (!Number.isFinite(grantExpiresAt) || grantExpiresAt <= Date.now())
+          ) {
+            return;
+          }
+          this.#tradingFeeGrantCache = {
+            payload: response,
+            lastFetched: Date.now(),
+          };
+        },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fetch a trading-fee grant for the requested Perps route.
+   * Grant lookup respects Basic Functionality while remaining independent of
+   * Rewards opt-in, VIP feature state, and Rewards subscription state.
+   */
+  async getPerpsTradingFeeGrant(
+    scope: PerpsFeeResolverScope,
+  ): Promise<PerpsTradingFeeGrant | null> {
+    if (
+      this.#isDisabled() ||
+      scope.providerId !== 'hyperliquid' ||
+      scope.isTestnet
+    ) {
+      return null;
+    }
+
+    const response = await this.#getTradingFeeGrantResponse();
+    const grant = response?.grant;
+    if (!grant) {
+      return null;
+    }
+
+    const configuredBuilderAddress =
+      getHyperliquidMainnetBuilderAddress().toLowerCase();
+    if (
+      grant.hyperliquid.builderCode.toLowerCase() !== configuredBuilderAddress
+    ) {
+      return null;
+    }
+
+    const feeBips = Number(grant.hyperliquid.builderFeeBips);
+    const expiresAt = Date.parse(grant.expiresAt);
+    if (
+      !Number.isFinite(feeBips) ||
+      feeBips < 0 ||
+      feeBips > MAX_PERPS_TRADING_FEE_GRANT_BIPS ||
+      !Number.isFinite(expiresAt) ||
+      expiresAt <= Date.now()
+    ) {
+      return null;
+    }
+
+    return {
+      providerId: 'hyperliquid',
+      isTestnet: false,
+      feeBips,
+      expiresAt,
+    };
+  }
+
+  /**
+   * Resolve a VIP-driven perps discount for the given account. Always calls
+   * /vip/fees (cached) regardless of local VIP status — the backend is the
+   * source of truth. Returns null when the discount is currently unknowable
+   * (invalid input, no subscription, fetch error). Returns 0 when no discount
+   * applies (tier-0 response, out-of-range bips).
+   */
+  async #getVipPerpsDiscountBips(
+    account: CaipAccountId,
+    baseFeeBips: number,
+  ): Promise<number | null> {
+    if (!Number.isFinite(baseFeeBips) || baseFeeBips <= 0) return null;
+
+    const subscriptionId = this.getActualSubscriptionId(account);
+    if (!subscriptionId) return null;
+
+    const subscription = this.state.subscriptions[subscriptionId];
+    if (!subscription) return null;
+
+    let builderFeeBipsRaw: string;
+    const cached = this.state.vipPerpsFees[subscriptionId];
+    if (
+      cached &&
+      Date.now() - cached.lastFetched < VIP_PERPS_FEES_CACHE_THRESHOLD_MS
+    ) {
+      builderFeeBipsRaw = cached.hyperliquidBuilderFeeBips;
+    } else {
+      try {
+        const vipFeeResponse =
+          await this.#getVipFeesForSubscriptionId(subscriptionId);
+        if (vipFeeResponse === 0) {
+          return 0;
+        }
+        if (!vipFeeResponse?.fees) {
+          return null;
+        }
+        if (!vipFeeResponse.fees.hyperliquid?.builderFeeBips) {
+          return 0;
+        }
+        builderFeeBipsRaw = vipFeeResponse.fees.hyperliquid.builderFeeBips;
+        const next: VipPerpsFeesState = {
+          hyperliquidBuilderFeeBips: builderFeeBipsRaw,
+          lastFetched: Date.now(),
+        };
+        this.update((state) => {
+          state.vipPerpsFees[subscriptionId] = next;
+        });
+      } catch (error) {
+        Logger.log(
+          'RewardsController: VIP fees fetch failed; returning no discount:',
+          error instanceof Error ? error.message : String(error),
+        );
+        return null;
+      }
+    }
+
+    const builderFeeBips = parseFloat(builderFeeBipsRaw);
+    if (!Number.isFinite(builderFeeBips) || builderFeeBips < 0) {
+      Logger.log(
+        'RewardsController: VIP fees returned an invalid builderFeeBips:',
+        builderFeeBipsRaw,
+      );
+      return null;
+    }
+
+    // Valid range is [0, 10000]: 0 means free (100% discount), 10000 is
+    // unreachable (VIP fee would have to be negative). Anything outside
+    // [0, 10000] indicates backend misconfig — log and return 0.
+    const rawDiscountBips = Math.round(
+      10000 * (1 - builderFeeBips / baseFeeBips),
+    );
+    if (rawDiscountBips < 0 || rawDiscountBips > 10000) {
+      Logger.log(
+        'RewardsController: VIP builder fee out of valid range; returning no discount',
+        {
+          builderFeeBips,
+          baseFeeBips,
+          rawDiscountBips,
+        },
+      );
+      return 0;
+    }
+    return rawDiscountBips;
+  }
+
+  /**
+   * Triggers a balance update if newer points events are detected
+   * @param pointsEvents - The points events response from the API
+   * @param params - The original request parameters containing seasonId and subscriptionId
+   */
+  private triggerBalanceUpdateIfNeeded(
+    pointsEvents: PaginatedPointsEventsDto,
+    params: GetPointsEventsDto,
+  ): void {
+    // Only proceed if there are results to process
+    if (pointsEvents.results.length === 0) {
+      return;
+    }
+
+    // Find the latest updatedAt from the points events response
+    const latestEvent = maxBy(pointsEvents.results, (event) =>
+      (event.updatedAt instanceof Date
+        ? event.updatedAt
+        : new Date(event.updatedAt)
+      ).getTime(),
+    );
+
+    if (!latestEvent) {
+      return;
+    }
+
+    const latestUpdatedAt =
+      latestEvent.updatedAt instanceof Date
+        ? latestEvent.updatedAt.getTime()
+        : new Date(latestEvent.updatedAt).getTime();
+
+    // Check if we have an active season status cache for the requested seasonId and subscription id
+    const cachedSeasonStatus = this.#getSeasonStatus(
+      params.subscriptionId,
+      params.seasonId,
+    );
+
+    if (!cachedSeasonStatus) {
+      return;
+    }
+
+    // Compare cache timestamps with latest updatedAt
+    // Add 500ms delay to the balance updated timestamp as it's always going to be earlier than the event it was updated for.
+    const cacheBalanceUpdatedAt =
+      (cachedSeasonStatus.balance.updatedAt || 0) + 500;
+
+    // If cache timestamp is older than the latest event update, emit balance updated event
+    if (latestUpdatedAt > cacheBalanceUpdatedAt) {
+      Logger.log(
+        'RewardsController: Emitting balanceUpdated event due to newer points events',
+        {
+          seasonId: params.seasonId,
+          subscriptionId: params.subscriptionId,
+          latestUpdatedAt: new Date(latestUpdatedAt).toISOString(),
+          cacheBalanceUpdatedAt: new Date(cacheBalanceUpdatedAt).toISOString(),
+        },
+      );
+
+      this.invalidateSubscriptionCache({
+        subscriptionId: params.subscriptionId,
+        seasonId: params.seasonId,
+      });
+
+      this.messenger.publish('RewardsController:balanceUpdated', {
+        seasonId: params.seasonId,
+        subscriptionId: params.subscriptionId,
+      });
+    }
+  }
+
+  /**
+   * Get points events for a given season
+   * @param params - The request parameters
+   * @returns Promise<PaginatedPointsEventsDto> - The points events data
+   */
+  async getPointsEvents(
+    params: GetPointsEventsDto,
+  ): Promise<PaginatedPointsEventsDto> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) return { has_more: false, cursor: null, results: [] };
+
+    // If cursor is provided, always fetch fresh and do not touch cache
+    if (params.cursor) {
+      const dto = await this.#withAuthRetry(
+        () => this.messenger.call('RewardsDataService:getPointsEvents', params),
+        params.subscriptionId,
+      );
+      this.triggerBalanceUpdateIfNeeded(dto, params);
+      return dto;
+    }
+
+    if (params.forceFresh) {
+      const dto = await this.#withAuthRetry(
+        () => this.getPointsEventsIfChanged(params),
+        params.subscriptionId,
+      );
+      this.triggerBalanceUpdateIfNeeded(dto, params);
+      return dto;
+    }
+
+    // First page: use cached data with SWR background refresh
+    // Include type in cache key so different filters have separate cache entries
+    const baseCacheKey = this.#createSeasonSubscriptionCompositeKey(
+      params.seasonId,
+      params.subscriptionId,
+    );
+    const cacheKey = params.type
+      ? `${baseCacheKey}:${params.type}`
+      : baseCacheKey;
+
+    const result = await wrapWithCache<PaginatedPointsEventsDto>({
+      key: cacheKey,
+      ttl: POINTS_EVENTS_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cached = this.state.pointsEvents[key];
+        return cached
+          ? {
+              payload: this.#convertPointsEventsStateToDto(cached),
+              lastFetched: cached.lastFetched,
+            }
+          : undefined;
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh points events data via API call for seasonId & subscriptionId & type & page cursor',
+            {
+              seasonId: params.seasonId,
+              subscriptionId: params.subscriptionId,
+              type: params.type,
+              cursor: params.cursor,
+            },
+          );
+          const pointsEvents = await this.getPointsEventsIfChanged(params);
+          this.triggerBalanceUpdateIfNeeded(pointsEvents, params);
+          return pointsEvents;
+        }, params.subscriptionId),
+      writeCache: (key, pointsEventsDto) => {
+        this.update((state) => {
+          state.pointsEvents[key] =
+            this.#convertPointsEventsToState(pointsEventsDto);
+        });
+      },
+      swrCallback: (old, fresh) => {
+        const oldMostRecentId = old?.results?.[0]?.id || '';
+        const freshMostRecentId = fresh?.results?.[0]?.id || '';
+        if (oldMostRecentId !== freshMostRecentId) {
+          Logger.log(
+            'RewardsController: Emitting pointsEventsUpdated event due to new points events',
+            {
+              seasonId: params.seasonId,
+              subscriptionId: params.subscriptionId,
+            },
+          );
+          // Let UI know first page cache has been refreshed so it can re-query
+          this.messenger.publish('RewardsController:pointsEventsUpdated', {
+            seasonId: params.seasonId,
+            subscriptionId: params.subscriptionId,
+          });
+        }
+      },
+    });
+
+    return result;
+  }
+
+  async getPointsEventsIfChanged(
+    params: GetPointsEventsDto,
+  ): Promise<PaginatedPointsEventsDto> {
+    const baseCacheKey = this.#createSeasonSubscriptionCompositeKey(
+      params.seasonId,
+      params.subscriptionId,
+    );
+    const cacheKey = params.type
+      ? `${baseCacheKey}:${params.type}`
+      : baseCacheKey;
+
+    const hasPointsEventsChanged = await this.hasPointsEventsChanged(params);
+
+    // If no new points events have been added, return cached data
+    if (!hasPointsEventsChanged) {
+      return this.state.pointsEvents[cacheKey]
+        ? this.#convertPointsEventsStateToDto(this.state.pointsEvents[cacheKey])
+        : {
+            has_more: false,
+            cursor: null,
+            results: [],
+          };
+    }
+
+    return await this.messenger.call(
+      'RewardsDataService:getPointsEvents',
+      params,
+    );
+  }
+
+  /**
+   * Get points events last updated for a given season
+   * @param params - The request parameters
+   * @returns Promise<Date | null> - The points events last updated date
+   */
+  async getPointsEventsLastUpdated(
+    params: GetPointsEventsLastUpdatedDto,
+  ): Promise<Date | null> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) return null;
+    Logger.log(
+      'RewardsController: Getting fresh points events last updated for seasonId & subscriptionId',
+      params,
+    );
+    return this.#withAuthRetry(
+      () =>
+        this.messenger.call(
+          'RewardsDataService:getPointsEventsLastUpdated',
+          params,
+        ),
+      params.subscriptionId,
+    );
+  }
+
+  /**
+   * Check if a new points events have been added since the last fetch
+   * @param params - The request parameters
+   * @returns Promise<boolean> - True if a new points events have been added since the last fetch, false otherwise
+   */
+  async hasPointsEventsChanged(
+    params: GetPointsEventsLastUpdatedDto,
+  ): Promise<boolean> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) return false;
+
+    const baseCacheKey = this.#createSeasonSubscriptionCompositeKey(
+      params.seasonId,
+      params.subscriptionId,
+    );
+    const cacheKey = params.type
+      ? `${baseCacheKey}:${params.type}`
+      : baseCacheKey;
+
+    const cached = this.state.pointsEvents[cacheKey];
+
+    const cachedLatestUpdatedAt = cached?.results?.[0]?.updatedAt;
+    // If the cache is empty, we need to fetch fresh data
+    if (!cachedLatestUpdatedAt) return true;
+
+    const lastUpdated = await this.getPointsEventsLastUpdated(params);
+    return lastUpdated
+      ? lastUpdated.getTime() !== cachedLatestUpdatedAt
+      : // If the lastUpdated is null with non-empty cache, we need to fetch fresh data
+        true;
+  }
+
+  /**
+   * Estimate points for a given activity
+   * @param request - The estimate points request containing activity type and context
+   * @returns Promise<EstimatedPointsDto> - The estimated points and bonus information
+   * @note For PERPS activities, perpsContext can be a single position or an array for batch estimation.
+   * When an array is provided, returns aggregated points (sum) and average bonus.
+   */
+  async estimatePoints(
+    request: EstimatePointsDto,
+  ): Promise<EstimatedPointsDto> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) return { pointsEstimate: 0, bonusBips: 0 };
+
+    const activeSeason = await this.hasActiveSeason();
+    if (!activeSeason) return { pointsEstimate: 0, bonusBips: 0 };
+
+    try {
+      const estimatedPoints = await this.messenger.call(
+        'RewardsDataService:estimatePoints',
+        request,
+      );
+
+      // Track successful estimate in history for Customer Support diagnostics.
+      // History tracking is a diagnostic side effect and should not affect the main functionality.
+      try {
+        this.addPointsEstimateToHistory(request, estimatedPoints);
+      } catch (historyError) {
+        Logger.log(
+          'RewardsController: Failed to add points estimate to history:',
+          historyError instanceof Error
+            ? historyError.message
+            : String(historyError),
+        );
+      }
+
+      return estimatedPoints;
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to estimate points:',
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Add a successful points estimate to the history for Customer Support diagnostics.
+   * Maintains a bounded history of the last N estimates.
+   * @param request - The estimate request containing activity details
+   * @param response - The estimated points response
+   */
+  addPointsEstimateToHistory(
+    request: EstimatePointsDto,
+    response: EstimatedPointsDto,
+  ): void {
+    const { activityContext } = request;
+
+    const entry: PointsEstimateHistoryEntry = {
+      timestamp: Date.now(),
+      requestActivityType: request.activityType,
+      requestAccount: request.account,
+      // Swap context fields (if applicable) - flattened for easier diagnostics
+      ...(activityContext.swapContext && {
+        requestSwapSrcAssetId: activityContext.swapContext.srcAsset.id,
+        requestSwapSrcAssetAmount: activityContext.swapContext.srcAsset.amount,
+        requestSwapSrcAssetUsdPrice:
+          activityContext.swapContext.srcAsset.usdPrice,
+        requestSwapDestAssetId: activityContext.swapContext.destAsset.id,
+        requestSwapDestAssetAmount:
+          activityContext.swapContext.destAsset.amount,
+        requestSwapDestAssetUsdPrice:
+          activityContext.swapContext.destAsset.usdPrice,
+        requestSwapFeeAssetId: activityContext.swapContext.feeAsset.id,
+        requestSwapFeeAssetAmount: activityContext.swapContext.feeAsset.amount,
+        requestSwapFeeAssetUsdPrice:
+          activityContext.swapContext.feeAsset.usdPrice,
+      }),
+      // Perps context fields (if applicable)
+      ...(activityContext.perpsContext &&
+        !Array.isArray(activityContext.perpsContext) && {
+          requestPerpsType: activityContext.perpsContext.type,
+          requestPerpsUsdFeeValue: activityContext.perpsContext.usdFeeValue,
+          requestPerpsCoin: activityContext.perpsContext.coin,
+        }),
+      // Predict context fields (if applicable) - flattened for easier diagnostics
+      ...(activityContext.predictContext && {
+        requestPredictFeeAssetId: activityContext.predictContext.feeAsset.id,
+        requestPredictFeeAssetAmount:
+          activityContext.predictContext.feeAsset.amount,
+        requestPredictFeeAssetUsdPrice:
+          activityContext.predictContext.feeAsset.usdPrice,
+      }),
+      // Shield context fields (if applicable) - flattened for easier diagnostics
+      ...(activityContext.shieldContext && {
+        requestShieldFeeAssetId: activityContext.shieldContext.feeAsset.id,
+        requestShieldFeeAssetAmount:
+          activityContext.shieldContext.feeAsset.amount,
+        requestShieldFeeAssetUsdPrice:
+          activityContext.shieldContext.feeAsset.usdPrice,
+      }),
+      // Response fields
+      responsePointsEstimate: response.pointsEstimate,
+      responseBonusBips: response.bonusBips,
+    };
+
+    this.update((state) => {
+      // Add new entry at the beginning (most recent first)
+      state.pointsEstimateHistory.unshift(entry);
+
+      // Keep only the last N entries
+      if (
+        state.pointsEstimateHistory.length > MAX_POINTS_ESTIMATE_HISTORY_ENTRIES
+      ) {
+        state.pointsEstimateHistory = state.pointsEstimateHistory.slice(
+          0,
+          MAX_POINTS_ESTIMATE_HISTORY_ENTRIES,
+        );
+      }
+    });
+  }
+
+  /**
+   * Check if the rewards feature is enabled
+   * @returns boolean - True if rewards feature is enabled, false otherwise
+   */
+  isRewardsFeatureEnabled(): boolean {
+    const isDisabled = this.#isDisabled();
+    if (isDisabled) return false;
+    return true;
+  }
+
+  /**
+   * Check if the VIP feature is enabled.
+   * VIP is a sub-feature of rewards, so it requires both the rewards feature
+   * and the dedicated VIP feature flag to be enabled.
+   * @returns boolean - True if the VIP feature is enabled, false otherwise
+   */
+  isVipFeatureEnabled(): boolean {
+    if (!this.isRewardsFeatureEnabled()) return false;
+    if (this.#isVipDisabled()) return false;
+    return true;
+  }
+
+  /**
+   * Check if there is an active season.
+   * Temporarily hardcoded to false while no season is configured. Callers
+   * gate season-scoped flows (points estimates, rewards rows, dashboard
+   * fetches) off this; the perps VIP fee discount is independent and
+   * unaffected.
+   */
+  async hasActiveSeason(): Promise<boolean> {
+    return false;
+  }
+
+  /**
+   * Get season metadata with caching. This fetches and caches the season metadata
+   * including id, name, dates, tiers, and activity types.
+   * @param type - The type of season to get
+   * @returns Promise<SeasonDtoState> - The season metadata
+   */
+  async getSeasonMetadata(
+    type: 'current' | 'previous' = 'current',
+  ): Promise<SeasonDtoState | null> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return null;
+    }
+
+    const result = await wrapWithCache<SeasonDtoState>({
+      key: type,
+      ttl: SEASON_METADATA_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cached = this.state.seasons[key] || undefined;
+        if (!cached) return;
+        return { payload: cached, lastFetched: cached.lastFetched };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh season metadata via API call for type',
+          type,
+        );
+
+        // Get discover seasons to find if this season has a valid start date
+        const discoverSeasons = (await this.messenger.call(
+          'RewardsDataService:getDiscoverSeasons',
+        )) as DiscoverSeasonsDto;
+
+        let seasonInfo = null;
+
+        if (type === 'previous') {
+          seasonInfo = discoverSeasons.previous;
+        } else if (type === 'current') {
+          seasonInfo = discoverSeasons.current;
+        }
+
+        // If found with valid start date, fetch metadata and populate cache
+        if (seasonInfo?.startDate) {
+          Logger.log(
+            'RewardsController: Found season with valid start date, fetching metadata for',
+            type,
+          );
+
+          // Fetch season metadata
+          const seasonMetadata = (await this.messenger.call(
+            'RewardsDataService:getSeasonMetadata',
+            seasonInfo.id,
+          )) as SeasonMetadataDto;
+
+          // Convert to state format
+          const seasonStateFromMetadata = this.#convertSeasonToState({
+            id: seasonMetadata.id,
+            name: seasonMetadata.name,
+            startDate: seasonMetadata.startDate,
+            endDate: seasonMetadata.endDate,
+            tiers: seasonMetadata.tiers,
+            activityTypes: seasonMetadata.activityTypes,
+            waysToEarn: seasonMetadata.waysToEarn,
+          });
+
+          // Add lastFetched timestamp
+          const seasonStateWithTimestamp = {
+            ...seasonStateFromMetadata,
+            lastFetched: Date.now(),
+          };
+
+          return seasonStateWithTimestamp;
+        }
+
+        this.update((state) => {
+          delete state.seasons[type];
+        });
+
+        throw new Error(
+          `No valid season metadata could be found for type: ${type}`,
+        );
+      },
+      writeCache: (key, value) => {
+        this.update((state) => {
+          state.seasons[key] = value;
+          state.seasons[value.id] = value;
+        });
+      },
+    });
+
+    return result;
+  }
+
+  /**
+   * Get season status with caching
+   * @param seasonId - The ID of the season to get status for
+   * @param subscriptionId - The subscription ID for authentication
+   * @returns Promise<SeasonStatusState> - The season status data
+   */
+  async getSeasonStatus(
+    subscriptionId: string,
+    seasonId: string,
+  ): Promise<SeasonStatusState | null> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return null;
+    }
+
+    const season = this.state.seasons[seasonId];
+    if (!season) {
+      throw new Error(
+        `Failed to get season status: season not found for seasonId: ${seasonId}`,
+      );
+    }
+
+    const result = await wrapWithCache<SeasonStatusState>({
+      key: this.#createSeasonSubscriptionCompositeKey(seasonId, subscriptionId),
+      ttl: SEASON_STATUS_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cached = this.state.seasonStatuses[key] || undefined;
+        if (!cached) return;
+        return { payload: cached, lastFetched: cached.lastFetched };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          try {
+            Logger.log(
+              'RewardsController: Fetching fresh season status data via API call for subscriptionId & seasonId',
+              subscriptionId,
+              seasonId,
+            );
+
+            const seasonState = await this.messenger.call(
+              'RewardsDataService:getSeasonStatus',
+              seasonId,
+              subscriptionId,
+            );
+
+            const seasonStatus = this.convertToSeasonStatusDto(
+              season,
+              seasonState,
+            );
+            return this.#convertSeasonStatusToSubscriptionState(seasonStatus);
+          } catch (error) {
+            if (error instanceof SeasonNotFoundError) {
+              this.update((state) => {
+                state.seasons = {};
+              });
+              throw error;
+            }
+            Logger.log(
+              'RewardsController: Failed to get season status:',
+              error instanceof Error ? error.message : String(error),
+            );
+            throw error;
+          }
+        }, subscriptionId),
+      writeCache: (key, subscriptionSeasonStatus) => {
+        this.update((state) => {
+          // Update season status with composite key
+          state.seasonStatuses[key] = subscriptionSeasonStatus;
+        });
+      },
+    });
+
+    return result;
+  }
+
+  /**
+   * Invalidate local state for a subscription and its linked rewards accounts.
+   *
+   * Removes the subscription metadata entry, resets any linked rewards account
+   * state to opted-out, resets the active rewards account when it belongs to
+   * the subscription, and removes the stored session token. This intentionally
+   * does not clear rewards API caches such as vipDashboard; pair it with
+   * invalidateSubscriptionCache when cached data must be removed.
+   * @param subscriptionId - The subscription ID to invalidate
+   */
+  async invalidateSubscriptionAndAccounts(
+    subscriptionId: string,
+  ): Promise<void> {
+    this.update((state) => {
+      delete state.subscriptions[subscriptionId];
+
+      // Clear accounts linked to this subscription only
+      Object.entries(state.accounts).forEach(([caipAccount, accountState]) => {
+        if (accountState.subscriptionId === subscriptionId) {
+          state.accounts[caipAccount as CaipAccountId] = {
+            ...accountState,
+            hasOptedIn: false,
+            subscriptionId: null,
+            perpsFeeDiscount: null,
+            lastPerpsDiscountRateFetched: null,
+            lastFreshOptInStatusCheck: null,
+          };
+        }
+      });
+
+      // Reset activeAccount only if it's linked to this subscription
+      if (state.activeAccount?.subscriptionId === subscriptionId) {
+        state.activeAccount = {
+          ...state.activeAccount,
+          hasOptedIn: false,
+          subscriptionId: null,
+          perpsFeeDiscount: null,
+          lastPerpsDiscountRateFetched: null,
+          lastFreshOptInStatusCheck: null,
+        };
+      }
+    });
+
+    // Remove only this subscription's token
+    await removeSubscriptionToken(subscriptionId);
+    Logger.log(
+      'RewardsController: Invalidated subscription and accounts',
+      subscriptionId,
+    );
+  }
+
+  /**
+   * Get referral details with caching
+   * @param subscriptionId - The subscription ID for authentication
+   * @returns Promise<SubscriptionReferralDetailState | null> - The referral details data
+   */
+  async getReferralDetails(
+    subscriptionId: string,
+  ): Promise<SubscriptionReferralDetailState | null> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return null;
+    }
+    const result = await wrapWithCache<SubscriptionReferralDetailState>({
+      key: subscriptionId,
+      ttl: REFERRAL_DETAILS_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cached = this.state.subscriptionReferralDetails[key] || undefined;
+        if (!cached) return;
+        return { payload: cached, lastFetched: cached.lastFetched };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh referral details data via API call for',
+            { subscriptionId },
+          );
+          const referralDetails = await this.messenger.call(
+            'RewardsDataService:getReferralDetails',
+            subscriptionId,
+          );
+          // Gate the VIP-referee flag on the VIP feature flag: when the VIP
+          // program is disabled locally we never surface it (no gold-fox icon).
+          const vipEnabled = this.isVipFeatureEnabled();
+          return {
+            referralCode: referralDetails.referralCode,
+            totalReferees: referralDetails.totalReferees,
+            referredByCode: referralDetails.referredByCode,
+            isVipReferee: vipEnabled
+              ? Boolean(referralDetails.isVipReferee)
+              : false,
+            referredByVipCode: vipEnabled
+              ? (referralDetails.vipReferrer?.referralCode ?? null)
+              : null,
+            lastFetched: Date.now(),
+          };
+        }, subscriptionId),
+      writeCache: (key, payload) => {
+        this.update((state) => {
+          state.subscriptionReferralDetails[key] = payload;
+        });
+      },
+    });
+
+    // Gate the VIP-referee fields at the single return point so a fresh cache
+    // hit (which bypasses fetchFresh) can never surface stale VIP data after
+    // the VIP program is disabled locally. The fetchFresh path already clears
+    // these before they reach the cache; this guards the cache-read path too.
+    if (result && !this.isVipFeatureEnabled()) {
+      return {
+        ...result,
+        isVipReferee: false,
+        referredByVipCode: null,
+      };
+    }
+
+    return result;
+  }
+
+  /**
+   * Perform the complete opt-in process for rewards
+   * @param accounts - Array of internal accounts to opt in
+   */
+  async optIn(accounts: InternalAccount[]): Promise<string | null> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      Logger.log(
+        'RewardsController: Rewards feature is disabled, skipping optin',
+      );
+      return null;
+    }
+
+    if (!accounts || accounts.length === 0) {
+      Logger.log('RewardsController: No accounts provided, skipping optin');
+      return null;
+    }
+
+    Logger.log(
+      'RewardsController: Starting optin process based on account group with {{accountCount}} accounts',
+      {
+        accountCount: accounts.length,
+      },
+    );
+
+    // Sort accounts using utility function
+    const sortedAccounts = sortAccounts(accounts);
+
+    // Try to opt in iteratively
+    let successfulAccount: InternalAccount | null = null;
+    let optinResult: {
+      subscription: SubscriptionDto;
+      sessionId: string;
+    } | null = null;
+
+    for (const accountToTry of sortedAccounts) {
+      Logger.log(
+        'RewardsController: Trying opt-in for account',
+        accountToTry.address,
+      );
+
+      try {
+        optinResult = await this.#optIn(accountToTry);
+      } catch {
+        // Silent auth failed for this account
+      }
+
+      if (optinResult) {
+        successfulAccount = accountToTry;
+        Logger.log(
+          'RewardsController: Opt-in successful for account',
+          accountToTry.address,
+        );
+        break;
+      }
+    }
+
+    if (!successfulAccount || !optinResult) {
+      throw new Error('Failed to opt in any account from the account group');
+    }
+
+    // Link all other accounts to the successful subscription
+    const remainingAccounts = sortedAccounts.filter(
+      (accountToFilter) =>
+        accountToFilter.address !== successfulAccount?.address,
+    );
+
+    if (remainingAccounts.length > 0) {
+      Logger.log(
+        'RewardsController: Linking remaining {{count}} accounts to subscription',
+        {
+          count: remainingAccounts.length,
+          subscriptionId: optinResult.subscription.id,
+        },
+      );
+
+      await this.linkAccountsToSubscriptionCandidate(remainingAccounts);
+    }
+
+    return optinResult?.subscription.id || null;
+  }
+
+  /**
+   * Private method to perform opt-in for a single internal account (using mobile opt-in logic)
+   * @param account - The internal account to opt in
+   * @returns Promise with subscription data or null if failed
+   */
+  async #optIn(
+    account: InternalAccount,
+  ): Promise<{ subscription: SubscriptionDto; sessionId: string } | null> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      Logger.log(
+        'RewardsController: Rewards feature is disabled, skipping optin',
+        {
+          account: account.address,
+        },
+      );
+      return null;
+    }
+    Logger.log('RewardsController: Starting optin process', {
+      account: account.address,
+    });
+    // Generate timestamp and sign the message for mobile optin
+    let timestamp = Math.floor(Date.now() / 1000);
+    let signature = await this.signRewardsMessage(account, timestamp);
+    let retryAttempt = 0;
+    const MAX_RETRY_ATTEMPTS = 1;
+    const executeMobileOptin = async (
+      ts: number,
+      sig: string,
+    ): Promise<LoginResponseDto> => {
+      try {
+        return await this.messenger.call('RewardsDataService:mobileOptin', {
+          account: account.address,
+          timestamp: ts,
+          signature: sig as `0x${string}`,
+        });
+      } catch (error) {
+        // Check if it's an InvalidTimestampError and we haven't exceeded retry attempts
+        if (
+          error instanceof InvalidTimestampError &&
+          retryAttempt < MAX_RETRY_ATTEMPTS
+        ) {
+          retryAttempt++;
+          Logger.log('RewardsController: Retrying with server timestamp', {
+            originalTimestamp: ts,
+            newTimestamp: error.timestamp,
+          });
+          // Use the timestamp from the error for retry
+          timestamp = error.timestamp;
+          signature = await this.signRewardsMessage(account, timestamp);
+          return await executeMobileOptin(timestamp, signature);
+        }
+
+        // Check if it's an AccountAlreadyRegisteredError
+        if (error instanceof AccountAlreadyRegisteredError) {
+          // Try to perform silent auth for this account
+          const subscriptionId = await this.performSilentAuth(
+            account,
+            false,
+            false,
+          );
+
+          // If silent auth returned a subscription ID, recover with login response
+          if (subscriptionId && this.state.subscriptions[subscriptionId]) {
+            const subscription = this.state.subscriptions[subscriptionId];
+            const tokenResult = await getSubscriptionToken(subscriptionId);
+            if (tokenResult.success && tokenResult.token) {
+              return {
+                sessionId: tokenResult.token,
+                subscription,
+              };
+            }
+          }
+        }
+
+        throw error;
+      }
+    };
+    try {
+      const optinResponse = await executeMobileOptin(timestamp, signature);
+      Logger.log(
+        'RewardsController: Optin successful, updating controller state...',
+        account.address,
+      );
+      // Store the subscription token for authenticated requests
+      if (optinResponse.subscription?.id && optinResponse.sessionId) {
+        await storeSubscriptionToken(
+          optinResponse.subscription.id,
+          optinResponse.sessionId,
+        ).catch((error) => {
+          Logger.log(
+            'RewardsController: Failed to store subscription token:',
+            error,
+          );
+        });
+      }
+      // Update state with opt-in response data
+      this.update((state) => {
+        const caipAccount: CaipAccountId | null =
+          this.convertInternalAccountToCaipAccountId(account);
+        if (!caipAccount) {
+          return;
+        }
+        const accountState: RewardsAccountState = {
+          account: caipAccount,
+          hasOptedIn: true,
+          subscriptionId: optinResponse.subscription.id,
+          perpsFeeDiscount: null,
+          lastPerpsDiscountRateFetched: null,
+        };
+        if (
+          state.activeAccount &&
+          state.activeAccount.account === caipAccount
+        ) {
+          state.activeAccount = accountState;
+        }
+
+        state.accounts[caipAccount] = accountState;
+        state.subscriptions[optinResponse.subscription.id] =
+          optinResponse.subscription;
+      });
+      return {
+        subscription: optinResponse.subscription,
+        sessionId: optinResponse.sessionId,
+      };
+    } catch (error) {
+      captureException(error as Error, {
+        tags: { feature: 'rewards', context: 'optIn.unexpected_error' },
+        extra: { accountType: account.type },
+      });
+      Logger.log(
+        'RewardsController: Opt-in failed for account',
+        account.address,
+        error instanceof Error ? error.message : String(error),
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Reset rewards account state and clear all access tokens
+   */
+  async resetAll(): Promise<void> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      Logger.log(
+        'RewardsController: Rewards feature is disabled, skipping reset',
+      );
+      return;
+    }
+
+    try {
+      const currentActiveAccount = this.state.activeAccount?.account;
+      this.resetState();
+      this.update((state) => {
+        if (currentActiveAccount) {
+          state.activeAccount = {
+            account: currentActiveAccount,
+            hasOptedIn: false,
+            subscriptionId: null,
+            perpsFeeDiscount: null,
+            lastPerpsDiscountRateFetched: null,
+            lastFreshOptInStatusCheck: null,
+          };
+        }
+      });
+
+      // Remove all tokens from secure storage
+      await resetAllSubscriptionTokens();
+
+      Logger.log('RewardsController: Reset completed successfully');
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Reset failed to complete',
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Logout user from rewards and clear associated data
+   * @param subscriptionId - Optional subscription ID to logout from
+   */
+  async logout(): Promise<void> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      Logger.log(
+        'RewardsController: Rewards feature is disabled, skipping logout',
+      );
+      return;
+    }
+
+    if (!this.state.activeAccount?.subscriptionId) {
+      Logger.log('RewardsController: No authenticated account found');
+      return;
+    }
+
+    const subscriptionId = this.state.activeAccount.subscriptionId;
+
+    try {
+      // Call the data service logout if subscriptionId is provided
+      await this.messenger.call('RewardsDataService:logout', subscriptionId);
+
+      // Remove the session token from storage
+      await removeSubscriptionToken(subscriptionId);
+
+      // Update controller state to reflect logout
+      this.update((state) => {
+        // Clear last authenticated account if it matches this subscription
+        if (state.activeAccount?.subscriptionId === subscriptionId) {
+          delete state.accounts[state.activeAccount.account];
+          state.activeAccount = null;
+        }
+      });
+
+      this.invalidateSubscriptionCache({ subscriptionId });
+
+      Logger.log('RewardsController: Logout completed successfully');
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Logout failed to complete',
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get geo rewards metadata including location and support status
+   * @returns Promise<GeoRewardsMetadata> - The geo rewards metadata
+   */
+  async getGeoRewardsMetadata(): Promise<GeoRewardsMetadata> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return {
+        geoLocation: 'UNKNOWN',
+        optinAllowedForGeo: false,
+      };
+    }
+
+    if (this.#geoLocation) {
+      return this.#geoLocation;
+    }
+
+    try {
+      Logger.log(
+        'RewardsController: Fetching geo location for rewards metadata',
+      );
+
+      const geoLocation = await this.messenger.call(
+        'GeolocationController:getGeolocation',
+      );
+
+      // Check if the location is supported (not in blocked regions)
+      const optinAllowedForGeo = !DEFAULT_BLOCKED_REGIONS.some(
+        (blockedRegion) => geoLocation.startsWith(blockedRegion),
+      );
+
+      const result: GeoRewardsMetadata = {
+        geoLocation,
+        optinAllowedForGeo,
+      };
+
+      Logger.log('RewardsController: Geo rewards metadata retrieved', result);
+      this.#geoLocation = result;
+      return result;
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to get geo rewards metadata:',
+        error instanceof Error ? error.message : String(error),
+      );
+
+      // Return fallback metadata on error
+      return {
+        geoLocation: 'UNKNOWN',
+        optinAllowedForGeo: true,
+      };
+    }
+  }
+
+  /**
+   * Validate a bonus code
+   * @param code - The bonus code to validate
+   * @param subscriptionId - The subscription ID for authentication
+   * @returns Promise<boolean> - True if the code is valid, false otherwise
+   */
+  async validateBonusCode(
+    code: string,
+    subscriptionId: string,
+  ): Promise<boolean> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return false;
+    }
+
+    if (!code.trim()) {
+      return false;
+    }
+
+    if (code.length < 4 || code.length > 16) {
+      return false;
+    }
+
+    if (!/^[A-Za-z0-9]+$/.test(code)) {
+      return false;
+    }
+
+    try {
+      const response = await this.#withAuthRetry(
+        () =>
+          this.messenger.call(
+            'RewardsDataService:validateBonusCode',
+            code,
+            subscriptionId,
+          ),
+        subscriptionId,
+      );
+      return response.valid;
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to validate bonus code:',
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get candidate subscription ID with fallback logic
+   * @returns Promise<string | null> - The subscription ID or null if none found
+   */
+  async getCandidateSubscriptionId(): Promise<string | null> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return null;
+    }
+
+    // First, check if there's an active account with a subscription
+    if (this.state.activeAccount?.subscriptionId) {
+      return this.state.activeAccount.subscriptionId;
+    }
+
+    // Fallback to the first subscription ID from the subscriptions map
+    const subscriptionIds = Object.keys(this.state.subscriptions);
+    if (subscriptionIds.length > 0) {
+      return subscriptionIds[0];
+    }
+
+    // If no subscriptions found, call optinstatus for all internal accounts
+    try {
+      const allAccounts = this.messenger.call(
+        'AccountsController:listMultichainAccounts',
+      );
+
+      // Extract addresses from internal accounts using isOptInSupported
+      const supportedAccounts: InternalAccount[] =
+        allAccounts?.filter((account: InternalAccount) =>
+          this.isOptInSupported(account),
+        ) || [];
+      if (!supportedAccounts || supportedAccounts.length === 0) {
+        return null;
+      }
+
+      const addresses = supportedAccounts.map(
+        (account: InternalAccount) => account.address,
+      );
+
+      // Call opt-in status check
+      const optInStatusResponse = await this.getOptInStatus({ addresses });
+      if (!optInStatusResponse?.ois?.filter((ois: boolean) => ois).length) {
+        Logger.log(
+          'RewardsController: No candidate subscription ID found. No opted in accounts found via opt-in status response.',
+        );
+        return null;
+      }
+
+      Logger.log(
+        'RewardsController: Found opted in account via opt-in status response. Attempting silent auth to determine candidate subscription ID.',
+      );
+
+      // Loop through all accounts that have opted in (ois[i] === true)
+      // Only process the first 10 accounts with a 500ms delay between each
+      const maxSilentAuthAttempts = Math.min(
+        10,
+        optInStatusResponse.ois.length,
+      );
+      let silentAuthAttempts = 0;
+      for (let i = 0; i < supportedAccounts.length; i++) {
+        if (silentAuthAttempts > maxSilentAuthAttempts) break;
+        const account = supportedAccounts[i];
+        if (!account || optInStatusResponse.ois[i] === false) continue;
+        // Defensive: Ensure sids is an array and i is within bounds
+        let subscriptionId =
+          Array.isArray(optInStatusResponse?.sids) &&
+          i < optInStatusResponse.sids.length
+            ? optInStatusResponse.sids[i]
+            : null;
+        const sessionToken = subscriptionId
+          ? await getSubscriptionToken(subscriptionId)
+          : undefined;
+        if (
+          subscriptionId &&
+          Boolean(sessionToken?.token) &&
+          Boolean(sessionToken?.success) &&
+          Boolean(this.state.subscriptions[subscriptionId])
+        ) {
+          return subscriptionId;
+        }
+        try {
+          silentAuthAttempts++;
+          subscriptionId = await this.performSilentAuth(
+            account,
+            false, // shouldBecomeActiveAccount = false
+            false, // respectSkipSilentAuth = false
+          );
+          if (subscriptionId) {
+            Logger.log(
+              'RewardsController: Found candidate subscription ID via opt-in status response.',
+              {
+                subscriptionId,
+              },
+            );
+
+            return subscriptionId;
+          }
+        } catch (error) {
+          // Continue to next account if this one fails
+          Logger.log(
+            'RewardsController: Silent auth failed for account during candidate search:',
+            account.address,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to get candidate subscription ID:',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    throw new Error(
+      'No candidate subscription ID found after all silent auth attempts. There is an opted in account but we cannot use it to fetch the season status.',
+    );
+  }
+
+  /**
+   * Link an account to a subscription via mobile join
+   * @param account - The account to link to the subscription
+   * @returns Promise<boolean> - The updated subscription information
+   */
+  async linkAccountToSubscriptionCandidate(
+    account: InternalAccount,
+    invalidateRelatedData: boolean = true,
+  ): Promise<boolean> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      Logger.log('RewardsController: Rewards feature is disabled');
+      return false;
+    }
+
+    // Convert account to CAIP format
+    const caipAccount = this.convertInternalAccountToCaipAccountId(account);
+    if (!caipAccount) {
+      throw new Error('Failed to convert account to CAIP-10 format');
+    }
+
+    // Check if account already has a subscription (short-circuit)
+    const existingAccountState = this.#getAccountState(caipAccount);
+    if (existingAccountState?.subscriptionId) {
+      Logger.log(
+        'RewardsController: Account to link already has subscription',
+        {
+          account: caipAccount,
+          subscriptionId: existingAccountState.subscriptionId,
+        },
+      );
+      const existingSubscription =
+        this.state.subscriptions[existingAccountState.subscriptionId];
+      if (existingSubscription) {
+        return true;
+      }
+    }
+
+    // Get candidate subscription ID using the new method
+    const candidateSubscriptionId = await this.getCandidateSubscriptionId();
+    if (!candidateSubscriptionId) {
+      throw new Error('No valid subscription found to link account to');
+    }
+
+    if (!this.isOptInSupported(account)) {
+      Logger.log('RewardsController: Account is not supported for opt-in');
+      return false;
+    }
+
+    try {
+      // Generate timestamp and sign the message for mobile join
+      let timestamp = Math.floor(Date.now() / 1000);
+      let signature = await this.signRewardsMessage(account, timestamp);
+      let retryAttempt = 0;
+      const MAX_RETRY_ATTEMPTS = 1;
+
+      // Function to execute the mobile join call
+      const executeMobileJoin = async (
+        ts: number,
+        sig: string,
+      ): Promise<SubscriptionDto> => {
+        try {
+          return await this.messenger.call(
+            'RewardsDataService:mobileJoin',
+            {
+              account: account.address,
+              timestamp: ts,
+              signature: sig as `0x${string}`,
+            },
+            candidateSubscriptionId,
+          );
+        } catch (error) {
+          // Check if it's an InvalidTimestampError and we haven't exceeded retry attempts
+          if (
+            error instanceof InvalidTimestampError &&
+            retryAttempt < MAX_RETRY_ATTEMPTS
+          ) {
+            retryAttempt++;
+            Logger.log('RewardsController: Retrying with server timestamp', {
+              originalTimestamp: ts,
+              newTimestamp: error.timestamp,
+            });
+            // Use the timestamp from the error for retry
+            timestamp = error.timestamp;
+            signature = await this.signRewardsMessage(account, timestamp);
+            return await executeMobileJoin(timestamp, signature);
+          }
+
+          if (error instanceof AccountAlreadyRegisteredError) {
+            // Try to perform silent auth for this account
+            const subscriptionId = await this.performSilentAuth(
+              account,
+              false,
+              false,
+            );
+
+            // If silent auth returned a subscription ID, return the subscription from cache
+            if (subscriptionId && this.state.subscriptions[subscriptionId]) {
+              return this.state.subscriptions[subscriptionId];
+            }
+          }
+
+          throw error;
+        }
+      };
+
+      // Call mobile join via messenger with retry logic
+      const updatedSubscription: SubscriptionDto = await executeMobileJoin(
+        timestamp,
+        signature,
+      );
+
+      // Update store with accounts and subscriptions (but not activeAccount)
+      this.update((state) => {
+        // Update accounts state
+        state.accounts[caipAccount] = {
+          account: caipAccount,
+          hasOptedIn: true, // via linking this is now opted in.
+          subscriptionId: updatedSubscription.id,
+          perpsFeeDiscount: null,
+          lastPerpsDiscountRateFetched: null,
+        };
+        if (state.activeAccount?.account === caipAccount) {
+          state.activeAccount = state.accounts[caipAccount];
+        }
+      });
+
+      Logger.log(
+        'RewardsController: Successfully linked account to subscription',
+        {
+          account: caipAccount,
+          subscriptionId: updatedSubscription.id,
+        },
+      );
+
+      // Only invalidate related data if requested
+      if (invalidateRelatedData) {
+        // Invalidate cache for the linked account
+        this.invalidateSubscriptionCache({
+          subscriptionId: updatedSubscription.id,
+        });
+
+        // Emit event to trigger UI refresh
+        this.messenger.publish('RewardsController:accountLinked', {
+          subscriptionId: updatedSubscription.id,
+          account: caipAccount,
+        });
+      }
+
+      return true;
+    } catch (error) {
+      captureException(error as Error, {
+        tags: {
+          feature: 'rewards',
+          context: 'linkAccountToSubscriptionCandidate.failed',
+        },
+        extra: { accountType: account.type },
+      });
+      Logger.log(
+        'RewardsController: Failed to link account to subscription',
+        caipAccount,
+        candidateSubscriptionId,
+        error,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Link multiple accounts to a subscription candidate
+   * @param accounts - Array of accounts to link to the subscription
+   */
+  async linkAccountsToSubscriptionCandidate(
+    accounts: InternalAccount[],
+  ): Promise<{ account: InternalAccount; success: boolean }[]> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      Logger.log('RewardsController: Rewards feature is disabled');
+      return accounts.map((account) => ({ account, success: false }));
+    }
+
+    if (accounts.length === 0) {
+      return [];
+    }
+
+    let lastSuccessfullyLinked: RewardsAccountState | null = null;
+    const results: { account: InternalAccount; success: boolean }[] = [];
+
+    for (const accountToLink of accounts) {
+      try {
+        const caipAccountAccountToLink =
+          this.convertInternalAccountToCaipAccountId(accountToLink);
+        const existingAccountState = this.#getAccountState(
+          caipAccountAccountToLink as CaipAccountId,
+        );
+        if (existingAccountState?.subscriptionId) {
+          continue;
+        }
+
+        const success = await this.linkAccountToSubscriptionCandidate(
+          accountToLink,
+          false, // we will invalidate at the end of the loop
+        );
+
+        if (success) {
+          const accountStateForLinked = this.#getAccountState(
+            caipAccountAccountToLink as CaipAccountId,
+          );
+          if (accountStateForLinked) {
+            lastSuccessfullyLinked = accountStateForLinked;
+          }
+          results.push({ account: accountToLink, success });
+        } else {
+          results.push({ account: accountToLink, success: false });
+        }
+      } catch {
+        // Continue with other accounts even if one fails
+        results.push({ account: accountToLink, success: false });
+      }
+    }
+
+    // Invalidate cache and emit event if at least one account was successfully linked
+    if (lastSuccessfullyLinked?.subscriptionId) {
+      // Invalidate cache for the linked account
+      this.invalidateSubscriptionCache({
+        subscriptionId: lastSuccessfullyLinked.subscriptionId,
+      });
+
+      // Emit event to trigger UI refresh
+      this.messenger.publish('RewardsController:accountLinked', {
+        subscriptionId: lastSuccessfullyLinked.subscriptionId,
+        account: lastSuccessfullyLinked.account,
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Opt out of the rewards program, deleting the subscription and all associated data
+   * @returns Promise<boolean> - True if opt-out was successful, false otherwise
+   */
+  async optOut(subscriptionId: string): Promise<boolean> {
+    try {
+      // Check if subscription exists in our map or in any of the accounts
+      if (!this.state.subscriptions[subscriptionId]) {
+        const matchingAccount = this.state.accounts
+          ? Object.values(this.state.accounts).find(
+              (account) => account.subscriptionId === subscriptionId,
+            )
+          : null;
+        if (!matchingAccount) {
+          return false;
+        }
+      }
+
+      // Call the opt-out endpoint
+      const result = await this.#withAuthRetry(
+        () => this.messenger.call('RewardsDataService:optOut', subscriptionId),
+        subscriptionId,
+      );
+
+      if (result.success) {
+        // Opt-out removes the local subscription auth state and its API caches.
+        this.invalidateSubscriptionCache({ subscriptionId });
+        await this.invalidateSubscriptionAndAccounts(subscriptionId);
+
+        Logger.log(
+          'RewardsController: Successfully opted out of rewards program',
+          subscriptionId,
+        );
+        return true;
+      }
+      Logger.log(
+        'RewardsController: Opt-out request returned false',
+        subscriptionId,
+      );
+      return false;
+    } catch (error) {
+      captureException(error as Error, {
+        tags: { feature: 'rewards', context: 'optOut.failed' },
+      });
+      Logger.log('RewardsController: Failed to opt out', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get active points boosts for the current season
+   * Get active points boosts for the current season with caching
+   * @param seasonId - The season ID to get points boosts for
+   * @param subscriptionId - The subscription ID to get points boosts for
+   * @returns Promise<PointsBoostDto[]> - The active points boosts
+   */
+  async getActivePointsBoosts(
+    seasonId: string,
+    subscriptionId: string,
+  ): Promise<PointsBoostDto[]> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return [];
+    }
+
+    const result = await wrapWithCache<PointsBoostDto[]>({
+      key: this.#createSeasonSubscriptionCompositeKey(seasonId, subscriptionId),
+      ttl: ACTIVE_BOOSTS_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cachedActiveBoosts = this.state.activeBoosts[key] || undefined;
+        if (!cachedActiveBoosts) return;
+        return {
+          payload: cachedActiveBoosts.boosts,
+          lastFetched: cachedActiveBoosts.lastFetched,
+        };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh active boosts data via API call for subscriptionId & seasonId',
+            subscriptionId,
+            seasonId,
+          );
+          const response = await this.messenger.call(
+            'RewardsDataService:getActivePointsBoosts',
+            seasonId,
+            subscriptionId,
+          );
+          return response.boosts;
+        }, subscriptionId),
+      writeCache: (key, payload) => {
+        this.update((state) => {
+          state.activeBoosts[key] = {
+            boosts: payload,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+
+    return result;
+  }
+
+  /**
+   * Get unlocked rewards with caching
+   * @param seasonId - The season ID
+   * @param subscriptionId - The subscription ID for authentication
+   * @returns Promise<RewardDto[]> - The unlocked rewards data
+   */
+  async getUnlockedRewards(
+    seasonId: string,
+    subscriptionId: string,
+  ): Promise<RewardDto[]> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return [];
+    }
+    const result = await wrapWithCache<RewardDto[]>({
+      key: this.#createSeasonSubscriptionCompositeKey(seasonId, subscriptionId),
+      ttl: UNLOCKED_REWARDS_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cachedUnlockedRewards =
+          this.state.unlockedRewards[key] || undefined;
+        if (!cachedUnlockedRewards) return;
+        return {
+          payload: cachedUnlockedRewards.rewards,
+          lastFetched: cachedUnlockedRewards.lastFetched,
+        };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh unlocked rewards data via API call for subscriptionId & seasonId',
+            subscriptionId,
+            seasonId,
+          );
+          const response = (await this.messenger.call(
+            'RewardsDataService:getUnlockedRewards',
+            seasonId,
+            subscriptionId,
+          )) as RewardDto[];
+          return response || [];
+        }, subscriptionId),
+      writeCache: (key, payload) => {
+        this.update((state) => {
+          state.unlockedRewards[key] = {
+            rewards: payload,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+
+    return result;
+  }
+
+  /**
+   * Get CAIP-10 encoded accounts linked to a subscription with caching
+   * @param subscriptionId - The subscription ID for authentication
+   * @returns Promise<string[]> - Array of CAIP-10 account strings
+   */
+  async getOffDeviceSubscriptionAccounts(
+    subscriptionId: string,
+  ): Promise<string[]> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return [];
+    }
+    const result = await wrapWithCache<string[]>({
+      key: subscriptionId,
+      ttl: OFF_DEVICE_SUBSCRIPTION_ACCOUNTS_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cached =
+          this.state.offDeviceSubscriptionAccounts[key] || undefined;
+        if (!cached) return;
+        return {
+          payload: cached.accounts,
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        try {
+          Logger.log(
+            'RewardsController: Fetching fresh off-device subscription accounts for subscriptionId',
+            subscriptionId,
+          );
+          const backendAccounts = (await this.messenger.call(
+            'RewardsDataService:getSubscriptionAccounts',
+            subscriptionId,
+          )) as string[];
+
+          const deviceAccounts = await this.messenger.call(
+            'AccountsController:listMultichainAccounts',
+          );
+
+          // EVM (eip155) addresses are case-insensitive (EIP-55 checksum is
+          // cosmetic). All other namespaces (solana, bip122, etc.) are
+          // case-sensitive — lowercasing a Solana base58 address would
+          // produce an entirely different or invalid address.
+          const evmDeviceAddresses = new Set<string>();
+          const nonEvmDeviceAddresses = new Set<string>();
+          for (const account of deviceAccounts) {
+            const isEvm = account.scopes.some((s: string) =>
+              s.startsWith('eip155:'),
+            );
+            if (isEvm) {
+              evmDeviceAddresses.add(account.address.toLowerCase());
+            } else {
+              nonEvmDeviceAddresses.add(account.address);
+            }
+          }
+
+          return (backendAccounts || []).filter((caip10) => {
+            const lastColon = caip10.lastIndexOf(':');
+            if (lastColon === -1) return false;
+            const address = caip10.slice(lastColon + 1);
+            const namespace = caip10.slice(0, caip10.indexOf(':'));
+            if (namespace === 'eip155') {
+              return !evmDeviceAddresses.has(address.toLowerCase());
+            }
+            return !nonEvmDeviceAddresses.has(address);
+          });
+        } catch (error) {
+          Logger.log(
+            'RewardsController: Failed to get off-device subscription accounts:',
+            error instanceof Error ? error.message : String(error),
+          );
+          throw error;
+        }
+      },
+      writeCache: (key, payload) => {
+        this.update((state) => {
+          (
+            state.offDeviceSubscriptionAccounts as Record<
+              string,
+              OffDeviceSubscriptionAccountsState
+            >
+          )[key] = {
+            accounts: payload,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+
+    return result;
+  }
+
+  /**
+   * Get all available campaigns with caching
+   * @param subscriptionId - The subscription ID for authentication
+   * @returns Promise<CampaignDto[]> - The list of campaigns
+   */
+  async getCampaigns(subscriptionId: string): Promise<CampaignDto[]> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      return [];
+    }
+
+    return wrapWithCache<CampaignDto[]>({
+      key: CAMPAIGNS_CACHE_KEY,
+      ttl: CAMPAIGNS_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cached = this.state.campaigns[key];
+        return cached
+          ? {
+              payload: cached.campaigns as CampaignDto[],
+              lastFetched: cached.lastFetched,
+            }
+          : undefined;
+      },
+      fetchFresh: () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh campaigns data via API call',
+          );
+          const response = (await this.messenger.call(
+            'RewardsDataService:getCampaigns',
+            subscriptionId,
+          )) as CampaignDto[];
+          return response || [];
+        }, subscriptionId),
+      writeCache: (key, campaigns) => {
+        this.update((state) => {
+          (state.campaigns as Record<string, unknown>)[key] = {
+            campaigns: campaigns as CampaignDtoState[],
+            lastFetched: Date.now(),
+          } as CampaignState;
+        });
+      },
+    });
+  }
+
+  /**
+   * Opt a subscription into a campaign.
+   * @param campaignId - The campaign ID to opt into.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The participant status after opting in.
+   */
+  async optInToCampaign(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<CampaignParticipantStatusDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return { optedIn: false, participantCount: 0 };
+    }
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    const wasAlreadyOptedIn =
+      this.state.campaignParticipantStatus[key]?.optedIn === true;
+    const result = await this.#withAuthRetry(async () => {
+      Logger.log('RewardsController: Opting into campaign', campaignId);
+      return (await this.messenger.call(
+        'RewardsDataService:optInToCampaign',
+        subscriptionId,
+        campaignId,
+      )) as CampaignParticipantStatusDto;
+    }, subscriptionId);
+    this.invalidateSubscriptionCache({ subscriptionId, campaignId });
+    // Only emit if the user wasn't already opted in, to avoid redundant refetches
+    if (!wasAlreadyOptedIn) {
+      this.messenger.publish('RewardsController:campaignOptedIn', {
+        campaignId,
+        subscriptionId,
+      });
+      this.messenger.publish(
+        'RewardsController:leaderboardPositionInvalidated',
+        {
+          campaignId,
+          subscriptionId,
+        },
+      );
+      this.messenger.publish('RewardsController:portfolioPositionInvalidated', {
+        campaignId,
+        subscriptionId,
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Opt a subscription into multiple campaigns in one batch.
+   * POSTs each opt-in sequentially (up to 3 attempts per campaign on throw or
+   * non-opted-in response), continues after exhausted failures, then invalidates
+   * once per campaign and publishes a single `campaignOptedIn` so UI listeners
+   * do not refetch after every intermediate opt-in (important for series campaigns).
+   * Participant-status cache entries are re-seeded from the POST responses so
+   * post-event status fetches hit cache instead of the network.
+   * @param campaignIds - Campaign IDs to opt into, in call order.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns Per-campaign participant statuses after opting in.
+   */
+  async optInToCampaigns(
+    campaignIds: string[],
+    subscriptionId: string,
+  ): Promise<Record<string, CampaignParticipantStatusDto>> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return Object.fromEntries(
+        campaignIds.map((campaignId) => [
+          campaignId,
+          { optedIn: false, participantCount: 0 },
+        ]),
+      );
+    }
+
+    if (campaignIds.length === 0) {
+      return {};
+    }
+
+    const maxAttempts = 3;
+    const retryBaseDelayMs = 250;
+    const failedStatus: CampaignParticipantStatusDto = {
+      optedIn: false,
+      participantCount: 0,
+    };
+
+    const results: Record<string, CampaignParticipantStatusDto> = {};
+    const newlyOptedInIds: string[] = [];
+
+    for (const campaignId of campaignIds) {
+      const key = this.#createSubscriptionCampaignCompositeKey(
+        subscriptionId,
+        campaignId,
+      );
+      const wasAlreadyOptedIn =
+        this.state.campaignParticipantStatus[key]?.optedIn === true;
+
+      let result: CampaignParticipantStatusDto = failedStatus;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          const attemptResult = await this.#withAuthRetry(async () => {
+            Logger.log(
+              'RewardsController: Opting into campaign (batch)',
+              campaignId,
+              `attempt ${attempt + 1}/${maxAttempts}`,
+            );
+            return (await this.messenger.call(
+              'RewardsDataService:optInToCampaign',
+              subscriptionId,
+              campaignId,
+            )) as CampaignParticipantStatusDto;
+          }, subscriptionId);
+
+          if (attemptResult?.optedIn) {
+            result = attemptResult;
+            break;
+          }
+
+          result = attemptResult ?? failedStatus;
+        } catch (error) {
+          Logger.log(
+            'RewardsController: Opt-in to campaign failed (batch)',
+            campaignId,
+            error,
+          );
+          result = failedStatus;
+        }
+
+        if (attempt < maxAttempts - 1) {
+          const delay = calculateExponentialRetryDelay(
+            attempt,
+            retryBaseDelayMs,
+            2000,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+
+      results[campaignId] = result;
+      if (result.optedIn && !wasAlreadyOptedIn) {
+        newlyOptedInIds.push(campaignId);
+      }
+    }
+
+    // Invalidate once per campaign after the whole batch, then re-seed status
+    // so campaignOptedIn listeners that refetch get cache hits.
+    for (const campaignId of campaignIds) {
+      this.invalidateSubscriptionCache({ subscriptionId, campaignId });
+    }
+
+    const now = Date.now();
+    this.update((state) => {
+      for (const campaignId of campaignIds) {
+        const status = results[campaignId];
+        if (!status) {
+          continue;
+        }
+        const key = this.#createSubscriptionCampaignCompositeKey(
+          subscriptionId,
+          campaignId,
+        );
+        state.campaignParticipantStatus[key] = {
+          optedIn: status.optedIn,
+          participantCount: status.participantCount,
+          lastFetched: now,
+        };
+      }
+    });
+
+    if (newlyOptedInIds.length > 0) {
+      const primaryCampaignId = newlyOptedInIds[0];
+      this.messenger.publish('RewardsController:campaignOptedIn', {
+        campaignId: primaryCampaignId,
+        subscriptionId,
+      });
+      for (const campaignId of newlyOptedInIds) {
+        this.messenger.publish(
+          'RewardsController:leaderboardPositionInvalidated',
+          {
+            campaignId,
+            subscriptionId,
+          },
+        );
+        this.messenger.publish(
+          'RewardsController:portfolioPositionInvalidated',
+          {
+            campaignId,
+            subscriptionId,
+          },
+        );
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Register (or re-assert) the Money Account holder address for a subscription.
+   * The request carries a personal_sign signature from the Money Account.
+   * Results are memoized in-session so repeated re-asserts do not re-POST, and
+   * a discovered conflict is returned synchronously on subsequent calls.
+   * @param moneyAccountAddress - The Money Account holder address to bind.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns `'bound'` or `'conflict'`.
+   */
+  async registerMoneyAccountBinding(
+    moneyAccountAddress: string,
+    subscriptionId: string,
+  ): Promise<'bound' | 'conflict'> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return 'bound';
+    }
+
+    const cacheKey = `${subscriptionId}:${moneyAccountAddress.toLowerCase()}`;
+    const cached = this.#moneyAccountBindingResults.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const signBinding = async (ts: number): Promise<string> => {
+      const message = `metamask-rewards:money-account-binding:${subscriptionId}:${moneyAccountAddress.toLowerCase()}:${ts}`;
+      return this.messenger.call('KeyringController:signPersonalMessage', {
+        data: '0x' + Buffer.from(message, 'utf8').toString('hex'),
+        from: moneyAccountAddress,
+      });
+    };
+
+    let timestamp = Date.now();
+    let signature = await signBinding(timestamp);
+    let retryAttempt = 0;
+    const MAX_RETRY_ATTEMPTS = 1;
+
+    const executeBind = async (
+      ts: number,
+      sig: string,
+    ): Promise<'bound' | 'conflict'> => {
+      try {
+        return (await this.#withAuthRetry(async () => {
+          Logger.log('RewardsController: Registering Money Account binding');
+          return await this.messenger.call(
+            'RewardsDataService:registerMoneyAccountBinding',
+            subscriptionId,
+            moneyAccountAddress,
+            ts,
+            sig,
+          );
+        }, subscriptionId)) as 'bound' | 'conflict';
+      } catch (error) {
+        if (
+          error instanceof InvalidTimestampError &&
+          retryAttempt < MAX_RETRY_ATTEMPTS
+        ) {
+          retryAttempt++;
+          Logger.log(
+            'RewardsController: Retrying Money Account binding with server timestamp',
+            { originalTimestamp: ts, newTimestamp: error.timestamp },
+          );
+          timestamp = error.timestamp;
+          signature = await signBinding(timestamp);
+          return await executeBind(timestamp, signature);
+        }
+        throw error;
+      }
+    };
+
+    const result = await executeBind(timestamp, signature);
+
+    this.#moneyAccountBindingResults.set(cacheKey, result);
+    return result;
+  }
+
+  /**
+   * Get the campaign participant status, cached for 5 minutes.
+   * @param campaignId - The campaign ID to check status for.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The participant status.
+   */
+  async getCampaignParticipantStatus(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<CampaignParticipantStatusDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return { optedIn: false, participantCount: 0 };
+    }
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    const result = await wrapWithCache<CampaignParticipantStatusDto>({
+      key,
+      ttl: CAMPAIGN_PARTICIPANT_STATUS_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.campaignParticipantStatus[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            optedIn: cached.optedIn,
+            participantCount: cached.participantCount,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh campaign participant status via API call',
+          );
+          return (await this.messenger.call(
+            'RewardsDataService:getCampaignParticipantStatus',
+            subscriptionId,
+            campaignId,
+          )) as CampaignParticipantStatusDto;
+        }, subscriptionId),
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.campaignParticipantStatus[k] = {
+            optedIn: payload.optedIn,
+            participantCount: payload.participantCount,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Get the campaign leaderboard showing top 20 participants per tier.
+   * This is a public endpoint - no authentication required.
+   * Results are cached for 5 minutes.
+   * @param campaignId - The campaign ID to get leaderboard for.
+   * @returns The leaderboard data grouped by tier.
+   */
+  async getOndoCampaignLeaderboard(
+    campaignId: string,
+  ): Promise<CampaignLeaderboardDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return { campaignId, computedAt: '', tiers: {} };
+    }
+
+    const result = await wrapWithCache<CampaignLeaderboardDto>({
+      key: campaignId,
+      ttl: ONDO_CAMPAIGN_LEADERBOARD_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.ondoCampaignLeaderboard[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            campaignId: cached.campaignId,
+            computedAt: cached.computedAt,
+            tiers: cached.tiers,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh campaign leaderboard via API call',
+        );
+        return (await this.messenger.call(
+          'RewardsDataService:getOndoCampaignLeaderboard',
+          campaignId,
+        )) as CampaignLeaderboardDto;
+      },
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.ondoCampaignLeaderboard[k] = {
+            campaignId: payload.campaignId,
+            computedAt: payload.computedAt,
+            tiers: payload.tiers,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Get campaign-wide total deposits.
+   * This is a public endpoint - no authentication required.
+   * Results are cached for 5 minutes.
+   * @param campaignId - The campaign ID to get deposits for.
+   * @returns The total USD deposited across all participants.
+   */
+  async getOndoCampaignDeposits(
+    campaignId: string,
+  ): Promise<OndoGmCampaignDepositsDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return { totalUsdDeposited: '0' };
+    }
+
+    const result = await wrapWithCache<OndoGmCampaignDepositsDto>({
+      key: campaignId,
+      ttl: ONDO_CAMPAIGN_DEPOSITS_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.ondoCampaignDeposits[k];
+        if (!cached) return undefined;
+        return {
+          payload: { totalUsdDeposited: cached.totalUsdDeposited },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh campaign deposits via API call',
+        );
+        return (await this.messenger.call(
+          'RewardsDataService:getOndoCampaignDeposits',
+          campaignId,
+        )) as OndoGmCampaignDepositsDto;
+      },
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.ondoCampaignDeposits[k] = {
+            totalUsdDeposited: payload.totalUsdDeposited,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Fetch the participant outcome for the current user in a completed Perps Trading campaign.
+   * Results are cached for 10 minutes using a private in-memory Map.
+   * @param campaignId - The campaign ID.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The participant outcome DTO, or null if unavailable.
+   */
+  async getPerpsTradingCampaignParticipantOutcome(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PerpsTradingCampaignParticipantOutcomeDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    try {
+      return await wrapWithCache<PerpsTradingCampaignParticipantOutcomeDto | null>(
+        {
+          key,
+          ttl: PERPS_TRADING_PARTICIPANT_OUTCOME_CACHE_THRESHOLD_MS,
+          readCache: (k) =>
+            this.#perpsTradingParticipantOutcomeCache.get(k) ?? undefined,
+          fetchFresh: async () =>
+            this.#withAuthRetry(async () => {
+              Logger.log(
+                'RewardsController: Fetching Perps Trading campaign participant outcome',
+              );
+              return this.messenger.call(
+                'RewardsDataService:getPerpsTradingCampaignParticipantOutcome',
+                campaignId,
+                subscriptionId,
+              );
+            }, subscriptionId),
+          writeCache: (k, payload) => {
+            if (payload !== null) {
+              this.#perpsTradingParticipantOutcomeCache.set(k, {
+                payload,
+                lastFetched: Date.now(),
+              });
+            }
+          },
+        },
+      );
+    } catch (error) {
+      Logger.error(
+        error as Error,
+        'RewardsController: Failed to fetch Perps Trading participant outcome',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Get the current user's position on the campaign leaderboard.
+   * This is an authenticated endpoint.
+   * Always fetches fresh from the API so the user's rank stays in sync with
+   * their latest trades; the result is mirrored to
+   * `state.ondoCampaignLeaderboardPositions` so selectors can read the latest
+   * snapshot.
+   * @param campaignId - The campaign ID to get position for.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The user's leaderboard position, or null if not found.
+   */
+  async getOndoCampaignLeaderboardPosition(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<CampaignLeaderboardPositionDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    const result = await wrapWithCache<CampaignLeaderboardPositionDto | null>({
+      key,
+      ttl: ONDO_CAMPAIGN_LEADERBOARD_POSITION_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.ondoCampaignLeaderboardPositions[k];
+        if (!cached) return undefined;
+        if ('notFound' in cached) {
+          return { payload: null, lastFetched: cached.lastFetched };
+        }
+        return {
+          payload: {
+            projectedTier: cached.projectedTier,
+            rank: cached.rank,
+            totalInTier: cached.totalInTier,
+            rateOfReturn: cached.rateOfReturn,
+            currentUsdValue: cached.currentUsdValue,
+            totalUsdDeposited: cached.totalUsdDeposited,
+            netDeposit: cached.netDeposit,
+            qualifiedDays: cached.qualifiedDays,
+            qualified: cached.qualified,
+            neighbors: cached.neighbors,
+            computedAt: cached.computedAt,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh campaign leaderboard position via API call',
+          );
+          return (await this.messenger.call(
+            'RewardsDataService:getOndoCampaignLeaderboardPosition',
+            campaignId,
+            subscriptionId,
+          )) as CampaignLeaderboardPositionDto | null;
+        }, subscriptionId),
+      writeCache: (k, payload) => {
+        if (payload === null) {
+          this.update((state) => {
+            state.ondoCampaignLeaderboardPositions[k] = {
+              notFound: true,
+              lastFetched: Date.now(),
+            };
+          });
+        } else {
+          this.update((state) => {
+            state.ondoCampaignLeaderboardPositions[k] = {
+              projectedTier: payload.projectedTier,
+              rank: payload.rank,
+              totalInTier: payload.totalInTier,
+              rateOfReturn: payload.rateOfReturn,
+              currentUsdValue: payload.currentUsdValue,
+              totalUsdDeposited: payload.totalUsdDeposited,
+              netDeposit: payload.netDeposit,
+              qualifiedDays: payload.qualifiedDays,
+              qualified: payload.qualified,
+              neighbors: payload.neighbors,
+              computedAt: payload.computedAt,
+              lastFetched: Date.now(),
+            };
+          });
+        }
+      },
+    });
+    return result;
+  }
+
+  async getOndoCampaignParticipantOutcome(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<OndoGmCampaignParticipantOutcomeDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    try {
+      return await wrapWithCache<OndoGmCampaignParticipantOutcomeDto | null>({
+        key,
+        ttl: ONDO_CAMPAIGN_PARTICIPANT_OUTCOME_CACHE_THRESHOLD_MS,
+        readCache: (k) => this.#participantOutcomeCache.get(k) ?? undefined,
+        fetchFresh: async () =>
+          this.#withAuthRetry(async () => {
+            Logger.log(
+              'RewardsController: Fetching Ondo campaign participant outcome',
+            );
+            return this.messenger.call(
+              'RewardsDataService:getOndoCampaignParticipantOutcome',
+              campaignId,
+              subscriptionId,
+            );
+          }, subscriptionId),
+        writeCache: (k, payload) => {
+          if (payload !== null) {
+            this.#participantOutcomeCache.set(k, {
+              payload,
+              lastFetched: Date.now(),
+            });
+          }
+        },
+      });
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to get Ondo campaign participant outcome:',
+        error instanceof Error ? error.message : String(error),
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Get the current user's Ondo GM portfolio for a campaign.
+   * This is an authenticated endpoint.
+   * Always fetches fresh from the API; the result is mirrored to
+   * `state.ondoCampaignPortfolio[subscriptionId:campaignId]` as
+   * {@link OndoGmPortfolioState} so selectors can read the latest snapshot.
+   * Null API responses are not written to the cache.
+   * @param campaignId - The campaign ID to get portfolio for.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The portfolio, or null if not found.
+   */
+  async getOndoCampaignPortfolioPosition(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<OndoGmPortfolioDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    const result = await wrapWithCache<OndoGmPortfolioDto | null>({
+      key,
+      ttl: ONDO_CAMPAIGN_PORTFOLIO_POSITION_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.ondoCampaignPortfolio[k];
+        if (!cached) {
+          return undefined;
+        }
+        return {
+          payload: {
+            positions: cached.positions,
+            summary: cached.summary,
+            computedAt: cached.computedAt,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh campaign portfolio via API call',
+          );
+          return (await this.messenger.call(
+            'RewardsDataService:getOndoCampaignPortfolioPosition',
+            campaignId,
+            subscriptionId,
+          )) as OndoGmPortfolioDto | null;
+        }, subscriptionId),
+      writeCache: (k, payload) => {
+        if (payload === null) {
+          this.update((state) => {
+            delete (
+              state.ondoCampaignPortfolio as Record<
+                string,
+                OndoGmPortfolioState | undefined
+              >
+            )[k];
+          });
+          return;
+        }
+        this.update((state) => {
+          state.ondoCampaignPortfolio[k] = {
+            positions: payload.positions,
+            summary: payload.summary,
+            computedAt: payload.computedAt,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Get paginated activity for an Ondo GM campaign.
+   * Always fetches fresh from the API; the first-page result is mirrored to
+   * `state.ondoCampaignActivity` so selectors can read the latest snapshot.
+   * Subsequent pages (cursor provided) are fetched directly without going
+   * through the cache. When `forceFresh` is true a last-updated check avoids
+   * redundant fetches if the server data hasn't changed.
+   * @param params - Campaign ID, subscription ID, pagination cursor, and optional forceFresh flag.
+   * @returns Paginated activity entries.
+   */
+  async getOndoCampaignActivity(params: {
+    campaignId: string;
+    subscriptionId: string;
+    cursor: string | null;
+    forceFresh?: boolean;
+  }): Promise<PaginatedOndoGmActivityDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return { has_more: false, cursor: null, results: [] };
+    }
+
+    const { campaignId, subscriptionId, cursor, forceFresh } = params;
+
+    if (cursor) {
+      return this.#withAuthRetry(
+        () =>
+          this.messenger.call(
+            'RewardsDataService:getOndoCampaignActivity',
+            campaignId,
+            subscriptionId,
+            cursor,
+          ) as Promise<PaginatedOndoGmActivityDto>,
+        subscriptionId,
+      );
+    }
+
+    if (forceFresh) {
+      return this.#withAuthRetry(
+        () => this.getActivityIfChanged(campaignId, subscriptionId),
+        subscriptionId,
+      );
+    }
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    const result = await wrapWithCache<PaginatedOndoGmActivityDto>({
+      key,
+      ttl: ONDO_CAMPAIGN_ACTIVITY_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.ondoCampaignActivity[k];
+        if (!cached) {
+          return undefined;
+        }
+        return {
+          payload: {
+            results: cached.results as PaginatedOndoGmActivityDto['results'],
+            has_more: cached.has_more,
+            cursor: cached.cursor,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh campaign activity via API call',
+          );
+          const activity = await this.getActivityIfChanged(
+            campaignId,
+            subscriptionId,
+          );
+          return activity;
+        }, subscriptionId),
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.ondoCampaignActivity[k] = {
+            results: payload.results,
+            has_more: payload.has_more,
+            cursor: payload.cursor,
+            lastFetched: Date.now(),
+          } as OndoGmActivityState;
+        });
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Fetch the first page of activity only if the server data has changed
+   * since the last cached entry. Falls back to cached data when unchanged.
+   */
+  async getActivityIfChanged(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PaginatedOndoGmActivityDto> {
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+
+    const hasChanged = await this.hasActivityChanged(
+      campaignId,
+      subscriptionId,
+    );
+
+    if (!hasChanged) {
+      const cached = this.state.ondoCampaignActivity[key];
+      return cached
+        ? {
+            results: cached.results as PaginatedOndoGmActivityDto['results'],
+            has_more: cached.has_more,
+            cursor: cached.cursor,
+          }
+        : { has_more: false, cursor: null, results: [] };
+    }
+
+    return (await this.messenger.call(
+      'RewardsDataService:getOndoCampaignActivity',
+      campaignId,
+      subscriptionId,
+      null,
+    )) as PaginatedOndoGmActivityDto;
+  }
+
+  /**
+   * Get the last-updated timestamp for Ondo GM campaign activity.
+   * @param campaignId - The campaign ID.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The last-updated date, or null if no activity exists.
+   */
+  async getActivityLastUpdated(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<Date | null> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) return null;
+    Logger.log('RewardsController: Getting campaign activity last updated', {
+      campaignId,
+      subscriptionId,
+    });
+    return this.#withAuthRetry(
+      () =>
+        this.messenger.call(
+          'RewardsDataService:getOndoCampaignActivityLastUpdated',
+          campaignId,
+          subscriptionId,
+        ),
+      subscriptionId,
+    );
+  }
+
+  /**
+   * Check if campaign activity has changed since the last fetch.
+   * Compares the server's last-updated timestamp against the most recent
+   * cached entry's timestamp.
+   * @returns true if fresh data should be fetched.
+   */
+  async hasActivityChanged(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<boolean> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) return false;
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    const cached = this.state.ondoCampaignActivity[key];
+
+    const cachedLatestTimestamp = cached?.results?.[0]?.timestamp;
+    if (!cachedLatestTimestamp) return true;
+
+    const lastUpdated = await this.getActivityLastUpdated(
+      campaignId,
+      subscriptionId,
+    );
+    return lastUpdated
+      ? lastUpdated.toISOString() !== cachedLatestTimestamp
+      : true;
+  }
+
+  /**
+   * Claim a reward
+   * @param rewardId - The reward ID
+   * @param dto - The claim reward request body
+   * @param subscriptionId - The subscription ID for authentication
+   */
+  async claimReward(
+    rewardId: string,
+    subscriptionId: string,
+    dto?: ClaimRewardDto,
+  ): Promise<void> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      throw new Error('Rewards are not enabled');
+    }
+    try {
+      await this.#withAuthRetry(
+        () =>
+          this.messenger.call(
+            'RewardsDataService:claimReward',
+            rewardId,
+            subscriptionId,
+            dto,
+          ),
+        subscriptionId,
+      );
+
+      this.#invalidatePointsEventsCache(subscriptionId);
+
+      // Emit event to trigger UI refresh
+      this.messenger.publish('RewardsController:rewardClaimed', {
+        rewardId,
+        subscriptionId,
+      });
+
+      Logger.log('RewardsController: Successfully claimed reward', {
+        rewardId,
+        subscriptionId,
+      });
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to claim reward:',
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get Season 1 Linea token reward for the subscription.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The Linea token reward DTO or null if not found.
+   */
+  async getSeasonOneLineaRewardTokens(
+    subscriptionId: string,
+  ): Promise<LineaTokenRewardDto | null> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      throw new Error('Rewards are not enabled');
+    }
+
+    try {
+      const result = await this.#withAuthRetry(
+        () =>
+          this.messenger.call(
+            'RewardsDataService:getSeasonOneLineaRewardTokens',
+            subscriptionId,
+          ),
+        subscriptionId,
+      );
+      return result;
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to get Season 1 Linea reward tokens:',
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Get benefits details with caching
+   * @param subscriptionId - The subscription ID for authentication
+   * @param limit - The maximum number of items requested
+   * @returns Promise<SubscriptionBenefitsState> - The benefits data
+   */
+  async getBenefits(
+    subscriptionId: string,
+    limit: number,
+  ): Promise<SubscriptionBenefitsState> {
+    return await wrapWithCache<SubscriptionBenefitsState>({
+      key: `${subscriptionId}`,
+      ttl: BENEFITS_DETAILS_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cached = this.state.subscriptionBenefits[key] || undefined;
+        if (!cached) return;
+        return {
+          payload: cached,
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        try {
+          Logger.log(
+            'RewardsController: Fetching fresh benefits details data via API call for',
+            { subscriptionId, limit },
+          );
+          const benefits = await this.#withAuthRetry(
+            () =>
+              this.messenger.call(
+                'RewardsDataService:getBenefits',
+                subscriptionId,
+                limit,
+              ),
+            subscriptionId,
+          );
+          return {
+            benefits,
+            limit,
+            lastFetched: Date.now(),
+          };
+        } catch (error) {
+          Logger.log(
+            'RewardsController: Failed to get benefits details:',
+            error instanceof Error ? error.message : String(error),
+          );
+          throw error;
+        }
+      },
+      writeCache: (key, payload) => {
+        this.update((state) => {
+          state.subscriptionBenefits[key] = payload;
+        });
+      },
+    });
+  }
+
+  async getVipTransactions(
+    params: GetVipTransactionsDto,
+  ): Promise<PaginatedVipTransactionsDto> {
+    if (!this.isVipFeatureEnabled()) {
+      return { results: [], has_more: false, cursor: null };
+    }
+
+    const { subscriptionId, type, cursor, forceFresh } = params;
+    if (cursor) {
+      return this.#withAuthRetry(
+        () =>
+          this.messenger.call(
+            'RewardsDataService:getVipTransactions',
+            subscriptionId,
+            type,
+            cursor,
+          ),
+        subscriptionId,
+      );
+    }
+
+    if (forceFresh) {
+      return this.#withAuthRetry(
+        () => this.getVipTransactionsIfChanged(subscriptionId, type),
+        subscriptionId,
+      );
+    }
+
+    const key = this.#createVIPCompositeKey(subscriptionId, type);
+    return wrapWithCache<PaginatedVipTransactionsDto>({
+      key,
+      ttl: VIP_TRANSACTIONS_CACHE_THRESHOLD_MS,
+      readCache: (cacheKey) => {
+        const cached = this.state.vipTransactions[cacheKey];
+        return cached
+          ? {
+              payload: this.#convertVipTransactionsStateToDto(cached),
+              lastFetched: cached.lastFetched,
+            }
+          : undefined;
+      },
+      fetchFresh: () =>
+        this.#withAuthRetry(
+          () => this.getVipTransactionsIfChanged(subscriptionId, type),
+          subscriptionId,
+        ),
+      writeCache: (cacheKey, transactions) => {
+        this.update((state) => {
+          state.vipTransactions[cacheKey] =
+            this.#convertVipTransactionsToState(transactions);
+        });
+      },
+    });
+  }
+
+  async getVipTransactionsIfChanged(
+    subscriptionId: string,
+    type: GetVipTransactionsDto['type'],
+  ): Promise<PaginatedVipTransactionsDto> {
+    if (!this.isVipFeatureEnabled()) {
+      return { results: [], has_more: false, cursor: null };
+    }
+
+    const key = this.#createVIPCompositeKey(subscriptionId, type);
+    if (!(await this.hasVipTransactionsChanged(subscriptionId, type))) {
+      const cached = this.state.vipTransactions[key];
+      return cached
+        ? this.#convertVipTransactionsStateToDto(cached)
+        : { results: [], has_more: false, cursor: null };
+    }
+
+    return this.messenger.call(
+      'RewardsDataService:getVipTransactions',
+      subscriptionId,
+      type,
+      null,
+    );
+  }
+
+  async getVipTransactionsLastUpdated(
+    subscriptionId: string,
+    type: GetVipTransactionsDto['type'],
+  ): Promise<Date | null> {
+    if (!this.isVipFeatureEnabled()) return null;
+    return this.#withAuthRetry(
+      () =>
+        this.messenger.call(
+          'RewardsDataService:getVipTransactionsLastUpdated',
+          subscriptionId,
+          type,
+        ),
+      subscriptionId,
+    );
+  }
+
+  async hasVipTransactionsChanged(
+    subscriptionId: string,
+    type: GetVipTransactionsDto['type'],
+  ): Promise<boolean> {
+    if (!this.isVipFeatureEnabled()) return false;
+
+    const cached =
+      this.state.vipTransactions[
+        this.#createVIPCompositeKey(subscriptionId, type)
+      ];
+    const cachedLatestTimestamp = cached?.results[0]?.timestamp;
+    if (!cachedLatestTimestamp) return true;
+
+    const lastUpdated = await this.getVipTransactionsLastUpdated(
+      subscriptionId,
+      type,
+    );
+    return lastUpdated
+      ? lastUpdated.toISOString() !== cachedLatestTimestamp
+      : true;
+  }
+
+  async lookupVipTransaction(
+    subscriptionId: string,
+    key: string,
+  ): Promise<VipTransactionDto | null> {
+    if (!this.isVipFeatureEnabled()) return null;
+    return this.#withAuthRetry(
+      () =>
+        this.messenger.call(
+          'RewardsDataService:lookupVipTransaction',
+          subscriptionId,
+          key,
+        ),
+      subscriptionId,
+    );
+  }
+
+  /**
+   * Get the VIP dashboard with caching.
+   * @param subscriptionId - The subscription ID for authentication
+   * @returns Promise<VipDashboardState | null> - The dashboard data, or null when the user is not VIP
+   */
+  async getVIPDashboard(
+    subscriptionId: string,
+  ): Promise<VipDashboardState | null> {
+    if (!this.isVipFeatureEnabled()) return null;
+
+    return await wrapWithCache<VipDashboardState | null>({
+      key: subscriptionId,
+      ttl: VIP_DASHBOARD_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cached = this.state.vipDashboard[key] || undefined;
+        if (!cached) return;
+        return {
+          payload: cached,
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        try {
+          Logger.log(
+            'RewardsController: Fetching fresh VIP dashboard via API call for',
+            subscriptionId,
+          );
+          const dashboard: VipDashboardDto | null = await this.#withAuthRetry(
+            () =>
+              this.messenger.call(
+                'RewardsDataService:getVIPDashboard',
+                subscriptionId,
+              ),
+            subscriptionId,
+          );
+
+          if (!dashboard) {
+            return null;
+          }
+
+          return {
+            ...dashboard,
+            lastFetched: Date.now(),
+          };
+        } catch (error) {
+          Logger.log(
+            'RewardsController: Failed to get VIP dashboard:',
+            error instanceof Error ? error.message : String(error),
+          );
+          throw error;
+        }
+      },
+      writeCache: (key, payload) => {
+        this.update((state) => {
+          if (payload) {
+            state.vipDashboard[key] = payload;
+            // A non-null dashboard means the backend considers this
+            // subscription VIP-eligible. Keep the cached subscription's
+            // feature flag in sync so consumers reading `features.vip.enabled`
+            // (e.g. the dashboard crown icon) reflect reality without needing
+            // a full subscription refetch.
+            const subscription = state.subscriptions[key];
+            if (subscription && !subscription.features?.vip?.enabled) {
+              subscription.features = {
+                ...subscription.features,
+                vip: { enabled: true },
+              };
+            }
+          } else {
+            delete state.vipDashboard[key];
+          }
+        });
+      },
+    });
+  }
+
+  /**
+   * Display-only equity multiplier estimate from client-supplied holdings.
+   * Must never be persisted as program truth or feed warrant settlement
+   * (RWDS-1485). Client balance is untrusted; cache is holdings-keyed TTL only.
+   */
+  async getVipEquityMultiplier(
+    subscriptionId: string,
+    holdingsUsd: string,
+  ): Promise<VipEquityMultiplierDto | null> {
+    if (!this.isVipFeatureEnabled()) return null;
+
+    const cacheKey = `${subscriptionId}::${holdingsUsd}`;
+    const cached = this.#vipEquityMultiplierCache.get(cacheKey);
+    if (
+      cached &&
+      Date.now() - cached.lastFetched < VIP_EQUITY_MULTIPLIER_CACHE_THRESHOLD_MS
+    ) {
+      return cached.payload;
+    }
+
+    const inFlight = this.#vipEquityMultiplierInFlight.get(cacheKey);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const fetchPromise = (async (): Promise<VipEquityMultiplierDto | null> => {
+      try {
+        const result = await this.#withAuthRetry(
+          () =>
+            this.messenger.call(
+              'RewardsDataService:getVipEquityMultiplier',
+              subscriptionId,
+              holdingsUsd,
+            ),
+          subscriptionId,
+        );
+        if (result) {
+          this.#vipEquityMultiplierCache.set(cacheKey, {
+            payload: result,
+            lastFetched: Date.now(),
+          });
+        }
+        return result;
+      } catch (error) {
+        Logger.log(
+          'RewardsController: Failed to get VIP equity multiplier:',
+          error instanceof Error ? error.message : String(error),
+        );
+        throw error;
+      } finally {
+        this.#vipEquityMultiplierInFlight.delete(cacheKey);
+      }
+    })();
+
+    this.#vipEquityMultiplierInFlight.set(cacheKey, fetchPromise);
+    return fetchPromise;
+  }
+
+  /**
+   * Get the VIP referee stats with caching.
+   * @param subscriptionId - The subscription ID for authentication
+   * @returns Promise<VipRefereeMeState | null> - The referee stats, or null when the user is not a VIP referee
+   */
+  async getVipRefereeDashboard(
+    subscriptionId: string,
+  ): Promise<VipRefereeMeState | null> {
+    if (!this.isVipFeatureEnabled()) return null;
+
+    return await wrapWithCache<VipRefereeMeState | null>({
+      key: subscriptionId,
+      ttl: VIP_DASHBOARD_CACHE_THRESHOLD_MS,
+      readCache: (key) => {
+        const cached = this.state.vipRefereeDashboard[key] || undefined;
+        if (!cached) return;
+        return {
+          payload: cached,
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        try {
+          Logger.log(
+            'RewardsController: Fetching fresh VIP referee dashboard via API call for',
+            subscriptionId,
+          );
+          const referee: VipRefereeMeDto | null = await this.#withAuthRetry(
+            () =>
+              this.messenger.call(
+                'RewardsDataService:getVipRefereeDashboard',
+                subscriptionId,
+              ),
+            subscriptionId,
+          );
+
+          if (!referee) {
+            return null;
+          }
+
+          return {
+            ...referee,
+            lastFetched: Date.now(),
+          };
+        } catch (error) {
+          Logger.log(
+            'RewardsController: Failed to get VIP referee dashboard:',
+            error instanceof Error ? error.message : String(error),
+          );
+          throw error;
+        }
+      },
+      writeCache: (key, payload) => {
+        this.update((state) => {
+          if (payload) {
+            state.vipRefereeDashboard[key] = payload;
+          } else {
+            delete state.vipRefereeDashboard[key];
+          }
+        });
+      },
+    });
+  }
+
+  /**
+   * Post a benefit impression with caching to prevent duplicate impressions within a short time frame
+   * @param subscriptionId - The subscription ID for authentication
+   * @param benefitId - The specific benefit ID that was impressed
+   * @param benefitType - The type of the benefit that was impressed
+   * @param walletAddress - The wallet address that viewed the benefit (optional)
+   * @returns Promise<SubscriptionBenefitsState> - The benefits data
+   */
+  async postBenefitImpression(
+    subscriptionId: string,
+    benefitId: number,
+    benefitType: number,
+    walletAddress?: string,
+  ): Promise<void> {
+    try {
+      Logger.log(
+        'RewardsController: Posting benefit impression via API call for',
+        { subscriptionId, benefitId },
+      );
+      await this.#withAuthRetry(
+        () =>
+          this.messenger.call(
+            'RewardsDataService:postBenefitImpression',
+            subscriptionId,
+            benefitId,
+            benefitType,
+            walletAddress,
+          ),
+        subscriptionId,
+      );
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to post benefit impression:',
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Apply a bonus code to a subscription.
+   * @param bonusCode - The bonus code to apply.
+   * @param subscriptionId - The subscription ID to apply the bonus code to.
+   * @returns Promise that resolves when the bonus code is applied successfully.
+   * @throws Error with the error message from the API response.
+   */
+  async applyBonusCode(
+    bonusCode: string,
+    subscriptionId: string,
+  ): Promise<void> {
+    const rewardsEnabled = this.isRewardsFeatureEnabled();
+    if (!rewardsEnabled) {
+      throw new Error('Rewards are not enabled');
+    }
+
+    try {
+      await this.#withAuthRetry(
+        () =>
+          this.messenger.call(
+            'RewardsDataService:applyBonusCode',
+            { bonusCode },
+            subscriptionId,
+          ),
+        subscriptionId,
+      );
+
+      this.#invalidatePointsEventsCache(subscriptionId);
+
+      Logger.log(
+        'RewardsController: Successfully applied bonus code',
+        subscriptionId,
+      );
+    } catch (error) {
+      Logger.log(
+        'RewardsController: Failed to apply bonus code:',
+        error instanceof Error ? error.message : String(error),
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch the minimum client version requirements from the public API.
+   * Cached for 30 minutes using controller state, matching other endpoint caches.
+   * This is a public (unauthenticated) endpoint that does not require
+   * the rewards feature to be enabled.
+   */
+  async getClientVersionRequirements(): Promise<ClientVersionRequirementDto> {
+    const cached = this.state.clientVersionRequirements;
+    if (
+      cached &&
+      Date.now() - cached.lastFetched <
+        CLIENT_VERSION_REQUIREMENTS_CACHE_THRESHOLD_MS
+    ) {
+      const { lastFetched, ...payload } = cached;
+      return payload;
+    }
+
+    Logger.log(
+      'RewardsController: Fetching fresh client version requirements via API call',
+    );
+    const result = (await this.messenger.call(
+      'RewardsDataService:getClientVersionRequirements',
+    )) as ClientVersionRequirementDto;
+
+    this.update((state) => {
+      state.clientVersionRequirements = {
+        ...result,
+        lastFetched: Date.now(),
+      } as ClientVersionRequirementState;
+    });
+
+    return result;
+  }
+
+  /**
+   * Invalidate cached data for a subscription
+   *
+   * Clears cached rewards API data only. This does not alter linked account
+   * auth state, subscription metadata, or stored session tokens; pair it with
+   * invalidateSubscriptionAndAccounts when auth/account state must be reset.
+   *
+   * @param options - Cache invalidation scope
+   * @param options.subscriptionId - The subscription ID to invalidate cache for
+   * @param options.seasonId - Optional season ID to limit invalidation to season-scoped cache entries
+   * @param options.campaignId - Optional campaign ID to limit invalidation to campaign-scoped cache entries
+   */
+  invalidateSubscriptionCache({
+    subscriptionId,
+    seasonId,
+    campaignId,
+  }: InvalidateSubscriptionCacheOptions): void {
+    const shouldInvalidateAllCompositeCaches =
+      seasonId === undefined && campaignId === undefined;
+    const shouldInvalidateSeasonCaches =
+      shouldInvalidateAllCompositeCaches || seasonId !== undefined;
+    const shouldInvalidateCampaignCaches =
+      shouldInvalidateAllCompositeCaches || campaignId !== undefined;
+
+    const seasonCacheMatches = (key: string) =>
+      this.#matchesSeasonSubscriptionCacheKey(key, subscriptionId, seasonId);
+    const campaignCacheMatches = (key: string) =>
+      this.#matchesSubscriptionCampaignCacheKey(
+        key,
+        subscriptionId,
+        campaignId,
+      );
+
+    this.update((state) => {
+      if (shouldInvalidateAllCompositeCaches) {
+        delete state.subscriptionBenefits?.[subscriptionId];
+        delete state.vipDashboard?.[subscriptionId];
+        delete state.vipRefereeDashboard?.[subscriptionId];
+        delete state.vipPerpsFees?.[subscriptionId];
+        deleteMatchingCacheEntries(
+          state.vipTransactions,
+          (key) =>
+            key === subscriptionId || key.startsWith(`${subscriptionId}:`),
+        );
+        delete state.offDeviceSubscriptionAccounts?.[subscriptionId];
+        delete state.subscriptionReferralDetails?.[subscriptionId];
+      }
+
+      if (shouldInvalidateSeasonCaches) {
+        [
+          state.seasonStatuses,
+          state.unlockedRewards,
+          state.activeBoosts,
+          state.pointsEvents,
+        ].forEach((cache) =>
+          deleteMatchingCacheEntries(cache, seasonCacheMatches),
+        );
+      }
+
+      if (shouldInvalidateCampaignCaches) {
+        [
+          state.campaignParticipantStatus,
+          state.ondoCampaignLeaderboardPositions,
+          state.ondoCampaignPortfolio,
+          state.ondoCampaignActivity,
+          state.perpsTradingCampaignLeaderboardPositions,
+          state.predictThePitchLeaderboardPositions,
+          state.predictThePitchPositions,
+          state.moneyAccountSweepstakesStats,
+        ].forEach((cache) =>
+          deleteMatchingCacheEntries(cache, campaignCacheMatches),
+        );
+      }
+    });
+
+    if (shouldInvalidateCampaignCaches) {
+      deleteMatchingMapEntries(
+        this.#participantOutcomeCache,
+        campaignCacheMatches,
+      );
+      deleteMatchingMapEntries(
+        this.#perpsTradingParticipantOutcomeCache,
+        campaignCacheMatches,
+      );
+      deleteMatchingMapEntries(
+        this.#predictThePitchParticipantOutcomeCache,
+        campaignCacheMatches,
+      );
+      deleteMatchingMapEntries(
+        this.#moneyAccountSweepstakesParticipantOutcomeCache,
+        campaignCacheMatches,
+      );
+    }
+
+    Logger.log('RewardsController: Invalidated cache for subscription', {
+      subscriptionId,
+      seasonId: seasonId ?? 'all seasons',
+      campaignId: campaignId ?? 'all campaigns',
+    });
+  }
+
+  async getPredictThePitchLeaderboard(
+    campaignId: string,
+  ): Promise<PredictThePitchLeaderboardDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return {
+        campaignId,
+        computedAt: '',
+        entries: [],
+        totalParticipants: 0,
+      };
+    }
+
+    return await wrapWithCache<PredictThePitchLeaderboardDto>({
+      key: campaignId,
+      ttl: PREDICT_THE_PITCH_LEADERBOARD_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.predictThePitchLeaderboard[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            campaignId: cached.campaignId,
+            computedAt: cached.computedAt,
+            entries: cached.entries,
+            totalParticipants: cached.totalParticipants,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh Predict The Pitch leaderboard via API call',
+        );
+        return (await this.messenger.call(
+          'RewardsDataService:getPredictThePitchLeaderboard',
+          campaignId,
+        )) as PredictThePitchLeaderboardDto;
+      },
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.predictThePitchLeaderboard[k] = {
+            ...payload,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+  }
+
+  async getPredictThePitchLeaderboardPosition(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PredictThePitchLeaderboardPositionDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    return await wrapWithCache<PredictThePitchLeaderboardPositionDto | null>({
+      key,
+      ttl: PREDICT_THE_PITCH_LEADERBOARD_POSITION_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.predictThePitchLeaderboardPositions[k];
+        if (!cached) return undefined;
+        if ('notFound' in cached) {
+          return { payload: null, lastFetched: cached.lastFetched };
+        }
+        return {
+          payload: {
+            rank: cached.rank,
+            totalParticipants: cached.totalParticipants,
+            roi: cached.roi,
+            pnl: cached.pnl,
+            volume: cached.volume,
+            eligible: cached.eligible,
+            neighbors: cached.neighbors,
+            computedAt: cached.computedAt,
+            marketsTraded: cached.marketsTraded,
+            minimumMarketsTraded: cached.minimumMarketsTraded,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh Predict The Pitch leaderboard position via API call',
+          );
+          return (await this.messenger.call(
+            'RewardsDataService:getPredictThePitchLeaderboardPosition',
+            campaignId,
+            subscriptionId,
+          )) as PredictThePitchLeaderboardPositionDto | null;
+        }, subscriptionId),
+      writeCache: (k, payload) => {
+        if (payload === null) {
+          this.update((state) => {
+            state.predictThePitchLeaderboardPositions[k] = {
+              notFound: true,
+              lastFetched: Date.now(),
+            };
+          });
+          return;
+        }
+        this.update((state) => {
+          state.predictThePitchLeaderboardPositions[k] = {
+            ...payload,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+  }
+
+  async getPredictThePitchPositions(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PredictThePitchPositionsDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    return await wrapWithCache<PredictThePitchPositionsDto>({
+      key,
+      ttl: PREDICT_THE_PITCH_POSITIONS_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.predictThePitchPositions[k];
+        if (!cached) return undefined;
+
+        return {
+          payload: {
+            openPositions: cached.openPositions,
+            resolvedPositions: cached.resolvedPositions,
+            computedAt: cached.computedAt,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh Predict The Pitch positions via API call',
+          );
+          return (await this.messenger.call(
+            'RewardsDataService:getPredictThePitchPositions',
+            campaignId,
+            subscriptionId,
+          )) as PredictThePitchPositionsDto;
+        }, subscriptionId),
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.predictThePitchPositions[k] = {
+            openPositions: payload.openPositions,
+            resolvedPositions: payload.resolvedPositions,
+            computedAt: payload.computedAt,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+  }
+
+  async getPredictThePitchParticipantOutcome(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PredictThePitchCampaignParticipantOutcomeDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    try {
+      return await wrapWithCache<PredictThePitchCampaignParticipantOutcomeDto | null>(
+        {
+          key,
+          ttl: PREDICT_THE_PITCH_PARTICIPANT_OUTCOME_CACHE_THRESHOLD_MS,
+          readCache: (k) =>
+            this.#predictThePitchParticipantOutcomeCache.get(k) ?? undefined,
+          fetchFresh: async () =>
+            this.#withAuthRetry(async () => {
+              Logger.log(
+                'RewardsController: Fetching Predict The Pitch participant outcome',
+              );
+              return this.messenger.call(
+                'RewardsDataService:getPredictThePitchParticipantOutcome',
+                campaignId,
+                subscriptionId,
+              );
+            }, subscriptionId),
+          writeCache: (k, payload) => {
+            if (payload !== null) {
+              this.#predictThePitchParticipantOutcomeCache.set(k, {
+                payload,
+                lastFetched: Date.now(),
+              });
+            }
+          },
+        },
+      );
+    } catch (error) {
+      Logger.error(
+        error as Error,
+        'RewardsController: Failed to fetch Predict The Pitch participant outcome',
+      );
+      return null;
+    }
+  }
+
+  async getPredictThePitchPrizePool(
+    campaignId: string,
+  ): Promise<PredictThePitchPrizePoolDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return {
+        totalVolumeUsd: 0,
+        unlockedPoolUsd: 0,
+        thresholdsUsd: [],
+        poolScheduleUsd: [],
+        breakdown: [],
+        computedAt: null,
+      };
+    }
+
+    return await wrapWithCache<PredictThePitchPrizePoolDto>({
+      key: campaignId,
+      ttl: PREDICT_THE_PITCH_PRIZE_POOL_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.predictThePitchPrizePool[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            totalVolumeUsd: cached.totalVolumeUsd,
+            unlockedPoolUsd: cached.unlockedPoolUsd,
+            thresholdsUsd: cached.thresholdsUsd,
+            poolScheduleUsd: cached.poolScheduleUsd,
+            breakdown: cached.breakdown,
+            computedAt: cached.computedAt,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh Predict The Pitch prize pool via API call',
+        );
+        return (await this.messenger.call(
+          'RewardsDataService:getPredictThePitchPrizePool',
+          campaignId,
+        )) as PredictThePitchPrizePoolDto;
+      },
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.predictThePitchPrizePool[k] = {
+            ...payload,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+  }
+
+  /**
+   * Fetch the current user's Money Account Sweepstakes stats.
+   * Results are cached for 1 minute using controller state.
+   * @param campaignId - The campaign ID.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The user's sweepstakes stats.
+   */
+  async getMoneyAccountSweepstakesStatsMe(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<MoneyAccountSweepstakesStatsMeDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return {
+        entryCount: 0,
+        currentBalanceUsd: 0,
+        yieldEarnedUsd: 0,
+        qualifyingDepositsUsd: 0,
+        qualifyingThresholdUsd: 0,
+        // No campaign is being scored when rewards is off. `not_yet_qualified`
+        // here paired with a zero threshold, which a shortfall-deriving caller
+        // renders as "add $0".
+        todayStatus: 'not_scored',
+        daysRemaining: 0,
+        dataAsOf: null,
+      };
+    }
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+
+    return await wrapWithCache<MoneyAccountSweepstakesStatsMeDto>({
+      key,
+      ttl: MONEY_ACCOUNT_SWEEPSTAKES_STATS_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.moneyAccountSweepstakesStats[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            entryCount: cached.entryCount,
+            currentBalanceUsd: cached.currentBalanceUsd,
+            yieldEarnedUsd: cached.yieldEarnedUsd,
+            qualifyingDepositsUsd: cached.qualifyingDepositsUsd,
+            qualifyingThresholdUsd: cached.qualifyingThresholdUsd,
+            todayStatus: cached.todayStatus,
+            daysRemaining: cached.daysRemaining,
+            dataAsOf: cached.dataAsOf,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () =>
+        this.#withAuthRetry(async () => {
+          Logger.log(
+            'RewardsController: Fetching fresh Money Account Sweepstakes stats via API call',
+          );
+          return (await this.messenger.call(
+            'RewardsDataService:getMoneyAccountSweepstakesStatsMe',
+            campaignId,
+            subscriptionId,
+          )) as MoneyAccountSweepstakesStatsMeDto;
+        }, subscriptionId),
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.moneyAccountSweepstakesStats[k] = {
+            ...payload,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+  }
+
+  /**
+   * Fetch the Money Account Sweepstakes prize pool.
+   * Public endpoint — results are cached for 5 minutes.
+   * @param campaignId - The campaign ID.
+   * @returns The prize pool DTO.
+   */
+  async getMoneyAccountSweepstakesPrizePool(
+    campaignId: string,
+  ): Promise<MoneyAccountSweepstakesPrizePoolDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return {
+        totalVolumeUsd: 0,
+        unlockedPoolUsd: 0,
+        thresholdsUsd: [],
+        poolScheduleUsd: [],
+        numberOfWinners: 0,
+        minPrizeUsd: 0,
+        maxPrizeUsd: 0,
+      };
+    }
+
+    return await wrapWithCache<MoneyAccountSweepstakesPrizePoolDto>({
+      key: campaignId,
+      ttl: MONEY_ACCOUNT_SWEEPSTAKES_PRIZE_POOL_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.moneyAccountSweepstakesPrizePool[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            totalVolumeUsd: cached.totalVolumeUsd,
+            unlockedPoolUsd: cached.unlockedPoolUsd,
+            thresholdsUsd: cached.thresholdsUsd,
+            poolScheduleUsd: cached.poolScheduleUsd,
+            numberOfWinners: cached.numberOfWinners,
+            minPrizeUsd: cached.minPrizeUsd,
+            maxPrizeUsd: cached.maxPrizeUsd,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh Money Account Sweepstakes prize pool via API call',
+        );
+        return (await this.messenger.call(
+          'RewardsDataService:getMoneyAccountSweepstakesPrizePool',
+          campaignId,
+        )) as MoneyAccountSweepstakesPrizePoolDto;
+      },
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.moneyAccountSweepstakesPrizePool[k] = {
+            ...payload,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+  }
+
+  /**
+   * Fetch the Money Account Sweepstakes aggregate volume stats.
+   * Public endpoint — results are cached for 5 minutes.
+   * @param campaignId - The campaign ID.
+   * @returns The volume stats DTO.
+   */
+  async getMoneyAccountSweepstakesVolumeStats(
+    campaignId: string,
+  ): Promise<MoneyAccountSweepstakesVolumeStatsDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return {
+        totalVolumeUsd: 0,
+        eligibleParticipantCount: 0,
+        yieldEarnedUsd: 0,
+      };
+    }
+
+    return await wrapWithCache<MoneyAccountSweepstakesVolumeStatsDto>({
+      key: campaignId,
+      ttl: MONEY_ACCOUNT_SWEEPSTAKES_PRIZE_POOL_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.moneyAccountSweepstakesVolumeStats[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            totalVolumeUsd: cached.totalVolumeUsd,
+            eligibleParticipantCount: cached.eligibleParticipantCount,
+            yieldEarnedUsd: cached.yieldEarnedUsd,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh Money Account Sweepstakes volume stats via API call',
+        );
+        return (await this.messenger.call(
+          'RewardsDataService:getMoneyAccountSweepstakesVolumeStats',
+          campaignId,
+        )) as MoneyAccountSweepstakesVolumeStatsDto;
+      },
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.moneyAccountSweepstakesVolumeStats[k] = {
+            ...payload,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+  }
+
+  /**
+   * Fetch the Money Account Sweepstakes draw proof.
+   * Public endpoint. Non-null proofs are cached in controller state for 1 hour;
+   * null (pending) responses are cached in-memory for 5 minutes.
+   * @param campaignId - The campaign ID.
+   * @returns The draw proof DTO, or null if the draw has not been published yet.
+   */
+  async getMoneyAccountSweepstakesDrawProof(
+    campaignId: string,
+  ): Promise<MoneyAccountSweepstakesDrawProofDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+
+    const cached = this.state.moneyAccountSweepstakesDrawProof?.[campaignId];
+    if (
+      cached &&
+      Date.now() - cached.lastFetched <
+        MONEY_ACCOUNT_SWEEPSTAKES_DRAW_PROOF_CACHE_THRESHOLD_MS
+    ) {
+      return {
+        explanation: cached.explanation,
+        originalDraw: cached.originalDraw,
+        finalWinners: cached.finalWinners,
+        adjustmentTrail: cached.adjustmentTrail,
+        addressProof: cached.addressProof,
+      };
+    }
+
+    const nullCached =
+      this.#moneyAccountSweepstakesDrawProofNullCache.get(campaignId);
+    if (
+      nullCached &&
+      Date.now() - nullCached.lastFetched <
+        MONEY_ACCOUNT_SWEEPSTAKES_DRAW_PROOF_NULL_CACHE_THRESHOLD_MS
+    ) {
+      return null;
+    }
+
+    Logger.log(
+      'RewardsController: Fetching fresh Money Account Sweepstakes draw proof via API call',
+    );
+    const result = (await this.messenger.call(
+      'RewardsDataService:getMoneyAccountSweepstakesDrawProof',
+      campaignId,
+    )) as MoneyAccountSweepstakesDrawProofDto | null;
+
+    if (result) {
+      this.#moneyAccountSweepstakesDrawProofNullCache.delete(campaignId);
+      this.update((state) => {
+        state.moneyAccountSweepstakesDrawProof = {
+          ...state.moneyAccountSweepstakesDrawProof,
+          [campaignId]: {
+            ...result,
+            lastFetched: Date.now(),
+          },
+        };
+      });
+    } else {
+      this.#moneyAccountSweepstakesDrawProofNullCache.set(campaignId, {
+        lastFetched: Date.now(),
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Fetch the participant outcome for the current user in a completed Money
+   * Account Sweepstakes campaign. Results are cached for 10 minutes using a
+   * private in-memory Map.
+   * @param campaignId - The campaign ID.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The participant outcome DTO, or null if unavailable.
+   */
+  async getMoneyAccountSweepstakesParticipantOutcome(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<MoneyAccountSweepstakesOutcomeDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    try {
+      return await wrapWithCache<MoneyAccountSweepstakesOutcomeDto>({
+        key,
+        ttl: MONEY_ACCOUNT_SWEEPSTAKES_PARTICIPANT_OUTCOME_CACHE_THRESHOLD_MS,
+        readCache: (k) =>
+          this.#moneyAccountSweepstakesParticipantOutcomeCache.get(k) ??
+          undefined,
+        fetchFresh: async () =>
+          this.#withAuthRetry(async () => {
+            Logger.log(
+              'RewardsController: Fetching Money Account Sweepstakes participant outcome',
+            );
+            return (await this.messenger.call(
+              'RewardsDataService:getMoneyAccountSweepstakesParticipantOutcome',
+              campaignId,
+              subscriptionId,
+            )) as MoneyAccountSweepstakesOutcomeDto;
+          }, subscriptionId),
+        writeCache: (k, payload) => {
+          this.#moneyAccountSweepstakesParticipantOutcomeCache.set(k, {
+            payload,
+            lastFetched: Date.now(),
+          });
+        },
+      });
+    } catch (error) {
+      Logger.error(
+        error as Error,
+        'RewardsController: Failed to fetch Money Account Sweepstakes participant outcome',
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Get the perps trading campaign leaderboard.
+   * This is a public endpoint - no authentication required.
+   * Results are cached for 5 minutes.
+   * @param campaignId - The campaign ID to get leaderboard for.
+   * @returns The leaderboard entries and metadata.
+   */
+  async getPerpsTradingCampaignLeaderboard(
+    campaignId: string,
+  ): Promise<PerpsTradingCampaignLeaderboardDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return {
+        campaignId,
+        computedAt: '',
+        entries: [],
+        totalParticipants: 0,
+        minVolumeForEligibility: 0,
+      };
+    }
+
+    const result = await wrapWithCache<PerpsTradingCampaignLeaderboardDto>({
+      key: campaignId,
+      ttl: PERPS_TRADING_CAMPAIGN_LEADERBOARD_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.perpsTradingCampaignLeaderboard[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            campaignId: cached.campaignId,
+            computedAt: cached.computedAt,
+            entries: cached.entries,
+            totalParticipants: cached.totalParticipants,
+            minVolumeForEligibility: cached.minVolumeForEligibility,
+            numberOfWinners: cached.numberOfWinners,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh perps trading campaign leaderboard via API call',
+        );
+        return (await this.messenger.call(
+          'RewardsDataService:getPerpsTradingCampaignLeaderboard',
+          campaignId,
+        )) as PerpsTradingCampaignLeaderboardDto;
+      },
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.perpsTradingCampaignLeaderboard[k] = {
+            campaignId: payload.campaignId,
+            computedAt: payload.computedAt,
+            entries: payload.entries,
+            totalParticipants: payload.totalParticipants,
+            minVolumeForEligibility: payload.minVolumeForEligibility,
+            numberOfWinners: payload.numberOfWinners,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Get the current user's position on the perps trading campaign leaderboard.
+   * This is an authenticated endpoint.
+   * Always fetches fresh from the API so the user's rank stays in sync with
+   * their latest trades; the result is mirrored to
+   * `state.perpsTradingCampaignLeaderboardPositions` so selectors can read the
+   * latest snapshot.
+   * @param campaignId - The campaign ID to get position for.
+   * @param subscriptionId - The subscription ID for authentication.
+   * @returns The user's leaderboard position, or null if not found.
+   */
+  async getPerpsTradingCampaignLeaderboardPosition(
+    campaignId: string,
+    subscriptionId: string,
+  ): Promise<PerpsTradingCampaignLeaderboardPositionDto | null> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return null;
+    }
+
+    const key = this.#createSubscriptionCampaignCompositeKey(
+      subscriptionId,
+      campaignId,
+    );
+    const result =
+      await wrapWithCache<PerpsTradingCampaignLeaderboardPositionDto | null>({
+        key,
+        ttl: PERPS_TRADING_CAMPAIGN_LEADERBOARD_POSITION_CACHE_THRESHOLD_MS,
+        readCache: (k) => {
+          const cached = this.state.perpsTradingCampaignLeaderboardPositions[k];
+          if (!cached) return undefined;
+          if ('notFound' in cached) {
+            return { payload: null, lastFetched: cached.lastFetched };
+          }
+          return {
+            payload: {
+              rank: cached.rank,
+              totalParticipants: cached.totalParticipants,
+              pnl: cached.pnl,
+              volume: cached.volume,
+              eligible: cached.eligible,
+              minVolumeForEligibility: cached.minVolumeForEligibility,
+              neighbors: cached.neighbors,
+              computedAt: cached.computedAt,
+            },
+            lastFetched: cached.lastFetched,
+          };
+        },
+        fetchFresh: async () =>
+          this.#withAuthRetry(async () => {
+            Logger.log(
+              'RewardsController: Fetching fresh perps trading campaign leaderboard position via API call',
+            );
+            return (await this.messenger.call(
+              'RewardsDataService:getPerpsTradingCampaignLeaderboardPosition',
+              campaignId,
+              subscriptionId,
+            )) as PerpsTradingCampaignLeaderboardPositionDto | null;
+          }, subscriptionId),
+        writeCache: (k, payload) => {
+          if (payload === null) {
+            this.update((state) => {
+              state.perpsTradingCampaignLeaderboardPositions[k] = {
+                notFound: true,
+                lastFetched: Date.now(),
+              };
+            });
+          } else {
+            this.update((state) => {
+              state.perpsTradingCampaignLeaderboardPositions[k] = {
+                rank: payload.rank,
+                totalParticipants: payload.totalParticipants,
+                pnl: payload.pnl,
+                volume: payload.volume,
+                eligible: payload.eligible,
+                minVolumeForEligibility: payload.minVolumeForEligibility,
+                neighbors: payload.neighbors,
+                computedAt: payload.computedAt,
+                lastFetched: Date.now(),
+              };
+            });
+          }
+        },
+      });
+    return result;
+  }
+
+  /**
+   * Get the perps trading campaign aggregate volume (public stats).
+   * This is a public endpoint - no authentication required.
+   * Results are cached for 1 minute.
+   * @param campaignId - The campaign ID to get volume for.
+   * @returns Current aggregate notional volume for the campaign.
+   */
+  async getPerpsTradingCampaignVolume(
+    campaignId: string,
+  ): Promise<PerpsTradingCampaignVolumeDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return {
+        totalUsdVolume: '0',
+      };
+    }
+
+    const result = await wrapWithCache<PerpsTradingCampaignVolumeDto>({
+      key: campaignId,
+      ttl: PERPS_TRADING_CAMPAIGN_VOLUME_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.perpsTradingCampaignVolume[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            totalUsdVolume: cached.totalUsdVolume,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh perps trading campaign volume via API call',
+        );
+        return (await this.messenger.call(
+          'RewardsDataService:getPerpsTradingCampaignVolume',
+          campaignId,
+        )) as PerpsTradingCampaignVolumeDto;
+      },
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.perpsTradingCampaignVolume[k] = {
+            totalUsdVolume: payload.totalUsdVolume,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+    return result;
+  }
+
+  /**
+   * Get the perps trading campaign prize ladder and currently unlocked pool.
+   * This is a public endpoint - no authentication required.
+   * Results are cached for 5 minutes.
+   * @param campaignId - The campaign ID to get the prize pool for.
+   * @returns The prize pool schedule and unlocked amount for the campaign.
+   */
+  async getPerpsTradingCampaignPrizePool(
+    campaignId: string,
+  ): Promise<PerpsTradingCampaignPrizePoolDto> {
+    if (!this.isRewardsFeatureEnabled()) {
+      return {
+        totalVolumeUsd: 0,
+        unlockedPoolUsd: 0,
+        thresholdsUsd: [],
+        poolScheduleUsd: [],
+        computedAt: null,
+      };
+    }
+
+    const result = await wrapWithCache<PerpsTradingCampaignPrizePoolDto>({
+      key: campaignId,
+      ttl: PERPS_TRADING_CAMPAIGN_PRIZE_POOL_CACHE_THRESHOLD_MS,
+      readCache: (k) => {
+        const cached = this.state.perpsTradingCampaignPrizePool[k];
+        if (!cached) return undefined;
+        return {
+          payload: {
+            totalVolumeUsd: cached.totalVolumeUsd,
+            unlockedPoolUsd: cached.unlockedPoolUsd,
+            thresholdsUsd: cached.thresholdsUsd,
+            poolScheduleUsd: cached.poolScheduleUsd,
+            computedAt: cached.computedAt,
+          },
+          lastFetched: cached.lastFetched,
+        };
+      },
+      fetchFresh: async () => {
+        Logger.log(
+          'RewardsController: Fetching fresh perps trading campaign prize pool via API call',
+        );
+        return (await this.messenger.call(
+          'RewardsDataService:getPerpsTradingCampaignPrizePool',
+          campaignId,
+        )) as PerpsTradingCampaignPrizePoolDto;
+      },
+      writeCache: (k, payload) => {
+        this.update((state) => {
+          state.perpsTradingCampaignPrizePool[k] = {
+            totalVolumeUsd: payload.totalVolumeUsd,
+            unlockedPoolUsd: payload.unlockedPoolUsd,
+            thresholdsUsd: payload.thresholdsUsd,
+            poolScheduleUsd: payload.poolScheduleUsd,
+            computedAt: payload.computedAt,
+            lastFetched: Date.now(),
+          };
+        });
+      },
+    });
+    return result;
+  }
+}

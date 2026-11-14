@@ -5,44 +5,48 @@ import {
   InteractionManager,
   ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
+import Text, {
+  TextVariant,
+} from '../../../component-library/components/Texts/Text';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
-import MaterialCommunityIcon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { strings } from '../../../../locales/i18n';
-import {
-  MULTI_TAB_ADD_BUTTON,
-  MULTI_TAB_CLOSE_ALL_BUTTON,
-  MULTI_TAB_DONE_BUTTON,
-  MULTI_TAB_NO_TABS_MESSAGE,
-} from '../../../../wdio/screen-objects/testIDs/BrowserScreen/MultiTab.testIds';
+import { BrowserViewSelectorsIDs } from '../../Views/BrowserTab/BrowserView.testIds';
 import { MetaMetricsEvents } from '../../../core/Analytics';
 import { fontStyles, colors as importedColors } from '../../../styles/common';
 import Device from '../../../util/device';
 import { ThemeContext, mockTheme } from '../../../util/theme';
-import withMetricsAwareness from '../../hooks/useMetrics/withMetricsAwareness';
+import { analytics } from '../../../util/analytics/analytics';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
 import TabThumbnail from './TabThumbnail';
+import ButtonIcon, {
+  ButtonIconSizes,
+} from '../../../component-library/components/Buttons/ButtonIcon';
+import { IconName } from '../../../component-library/components/Icons/Icon';
+import {
+  GRID_GAP,
+  GRID_COLUMNS,
+  GRID_PADDING,
+  THUMB_HEIGHT,
+} from './Tabs.constants';
 
-const THUMB_VERTICAL_MARGIN = 15;
+// Calculate visible rows for scroll positioning
 const NAVBAR_SIZE = Device.isIphoneX() ? 88 : 64;
-const THUMB_HEIGHT =
-  Dimensions.get('window').height / (Device.isIphone5S() ? 4 : 5) +
-  THUMB_VERTICAL_MARGIN;
 const ROWS_VISIBLE = Math.floor(
-  (Dimensions.get('window').height - NAVBAR_SIZE - THUMB_VERTICAL_MARGIN) /
-    THUMB_HEIGHT,
+  (Dimensions.get('window').height - NAVBAR_SIZE - GRID_PADDING) /
+    (THUMB_HEIGHT + GRID_GAP),
 );
-const TABS_VISIBLE = ROWS_VISIBLE;
+const TABS_VISIBLE = ROWS_VISIBLE * GRID_COLUMNS;
 
-const createStyles = (colors, shadows) =>
+const createStyles = (colors) =>
   StyleSheet.create({
     noTabs: {
       flex: 1,
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: colors.background.alternative,
+      paddingHorizontal: 16,
     },
     noTabsTitle: {
       ...fontStyles.normal,
@@ -55,31 +59,6 @@ const createStyles = (colors, shadows) =>
       color: colors.text.alternative,
       fontSize: 14,
     },
-    tabAction: {
-      flex: 1,
-      alignContent: 'center',
-      alignSelf: 'flex-start',
-      justifyContent: 'center',
-    },
-
-    tabActionleft: {
-      justifyContent: 'center',
-    },
-    tabActionRight: {
-      justifyContent: 'center',
-      alignItems: 'flex-end',
-    },
-    tabActionDone: {
-      ...fontStyles.bold,
-    },
-    tabActionText: {
-      color: colors.primary.default,
-      ...fontStyles.normal,
-      fontSize: 16,
-    },
-    actionDisabled: {
-      color: colors.text.alternative,
-    },
     tabsView: {
       flex: 1,
       backgroundColor: colors.background.default,
@@ -89,39 +68,28 @@ const createStyles = (colors, shadows) =>
       right: 0,
       bottom: 0,
     },
-    tabActions: {
-      paddingHorizontal: 20,
+    topBar: {
       flexDirection: 'row',
-      paddingTop: 17,
-      ...shadows.size.md,
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: 16,
+      paddingVertical: 12,
       backgroundColor: colors.background.default,
-      height: 50,
+    },
+    topBarTitle: {
+      flex: 1,
+      textAlign: 'center',
     },
     tabs: {
       flex: 1,
-      backgroundColor: colors.background.alternative,
+      backgroundColor: colors.background.default,
     },
     tabsContent: {
-      padding: 15,
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      padding: GRID_PADDING,
+      gap: GRID_GAP,
       backgroundColor: importedColors.transparent,
-    },
-    newTabIcon: {
-      marginTop: Device.isIos() ? 3 : 2.5,
-      color: colors.primary.inverse,
-      fontSize: 24,
-      textAlign: 'center',
-      justifyContent: 'center',
-      alignContent: 'center',
-    },
-    newTabIconButton: {
-      alignSelf: 'center',
-      justifyContent: 'flex-start',
-      alignContent: 'flex-start',
-      backgroundColor: colors.primary.default,
-      borderRadius: 100,
-      width: 30,
-      height: 30,
-      marginTop: -7,
     },
   });
 
@@ -148,10 +116,6 @@ class Tabs extends PureComponent {
      */
     closeTab: PropTypes.func,
     /**
-     * Closes all tabs
-     */
-    closeAllTabs: PropTypes.func,
-    /**
      * Dismiss the entire view
      */
     closeTabsView: PropTypes.func,
@@ -163,10 +127,6 @@ class Tabs extends PureComponent {
      * Sets the current tab used for the animation
      */
     animateCurrentTab: PropTypes.func, // eslint-disable-line react/no-unused-prop-types
-    /**
-     * Metrics injected by withMetricsAwareness HOC
-     */
-    metrics: PropTypes.object,
   };
 
   thumbnails = {};
@@ -192,12 +152,11 @@ class Tabs extends PureComponent {
         }
       });
 
-      // Calculate the row
+      // Calculate the row (2 columns per row in grid layout)
+      const row = Math.floor(index / GRID_COLUMNS);
 
-      const row = index + 1;
-
-      // Scroll if needed
-      const pos = (row - 1) * THUMB_HEIGHT;
+      // Scroll if needed (account for grid gap between rows)
+      const pos = row * (THUMB_HEIGHT + GRID_GAP);
 
       InteractionManager.runAfterInteractions(() => {
         this.scrollview.current &&
@@ -224,8 +183,7 @@ class Tabs extends PureComponent {
 
   getStyles = () => {
     const colors = this.context.colors || mockTheme.colors;
-    const shadows = this.context.shadows || mockTheme.shadows;
-    return createStyles(colors, shadows);
+    return createStyles(colors);
   };
 
   renderNoTabs() {
@@ -233,7 +191,10 @@ class Tabs extends PureComponent {
 
     return (
       <View style={styles.noTabs}>
-        <Text style={styles.noTabsTitle} testID={MULTI_TAB_NO_TABS_MESSAGE}>
+        <Text
+          style={styles.noTabsTitle}
+          testID={BrowserViewSelectorsIDs.NO_TABS_MESSAGE}
+        >
           {strings('browser.no_tabs_title')}
         </Text>
         <Text style={styles.noTabsDesc}>{strings('browser.no_tabs_desc')}</Text>
@@ -248,6 +209,7 @@ class Tabs extends PureComponent {
         style={styles.tabs}
         contentContainerStyle={styles.tabsContent}
         ref={this.scrollview}
+        testID={BrowserViewSelectorsIDs.TABS_COMPONENT}
       >
         {tabs.map((tab) => (
           // eslint-disable-next-line react/jsx-key
@@ -266,66 +228,55 @@ class Tabs extends PureComponent {
 
   onNewTabPress = () => {
     const { tabs, newTab } = this.props;
-    newTab();
+    newTab(); // No URL = opens empty DiscoveryTab, returns false if max tabs modal shown
     this.trackNewTabEvent(tabs.length);
+    // Don't call closeTabsView() here. When a tab is created, the "new tab
+    // added" useEffect in Browser calls switchToTab which closes the tabs view
+    // via hideTabsAndUpdateUrl. Calling closeTabsView eagerly would set
+    // shouldShowTabs=false before switchToTab runs, causing it to capture a
+    // screenshot of the still-visible Tabs grid instead of the tab content.
   };
 
   trackNewTabEvent = (tabsNumber) => {
-    this.props.metrics.trackEvent(MetaMetricsEvents.BROWSER_NEW_TAB, {
-      option_chosen: 'Browser Bottom Bar Menu',
-      number_of_tabs: tabsNumber,
-    });
+    analytics.trackEvent(
+      AnalyticsEventBuilder.createEventBuilder(
+        MetaMetricsEvents.BROWSER_NEW_TAB,
+      )
+        .addProperties({
+          option_chosen: 'Tabs View Top Bar',
+          number_of_tabs: tabsNumber,
+        })
+        .build(),
+    );
   };
 
-  renderTabActions() {
-    const { tabs, closeAllTabs, closeTabsView } = this.props;
+  renderTopBar() {
+    const { closeTabsView } = this.props;
     const styles = this.getStyles();
 
     return (
-      <View style={styles.tabActions}>
-        <TouchableOpacity
-          style={[styles.tabAction, styles.tabActionleft]}
-          onPress={closeAllTabs}
-          testID={MULTI_TAB_CLOSE_ALL_BUTTON}
-        >
-          <Text
-            style={[
-              styles.tabActionText,
-              tabs.length === 0 ? styles.actionDisabled : null,
-            ]}
-          >
-            {strings('browser.tabs_close_all')}
-          </Text>
-        </TouchableOpacity>
-        <View style={styles.tabAction}>
-          <TouchableOpacity
-            style={styles.newTabIconButton}
-            onPress={this.onNewTabPress}
-            testID={MULTI_TAB_ADD_BUTTON}
-          >
-            <MaterialCommunityIcon
-              name="plus"
-              size={15}
-              style={styles.newTabIcon}
-            />
-          </TouchableOpacity>
-        </View>
-
-        <TouchableOpacity
-          style={[styles.tabAction, styles.tabActionRight]}
+      <View style={styles.topBar}>
+        <ButtonIcon
+          iconName={IconName.ArrowLeft}
+          size={ButtonIconSizes.Md}
           onPress={closeTabsView}
-          testID={MULTI_TAB_DONE_BUTTON}
+          testID={BrowserViewSelectorsIDs.TABS_BACK_BUTTON}
+          accessibilityLabel={strings('browser.go_back')}
+        />
+        <Text
+          variant={TextVariant.HeadingMD}
+          style={styles.topBarTitle}
+          testID={BrowserViewSelectorsIDs.TABS_OPENED_TITLE}
         >
-          <Text
-            style={[
-              styles.tabActionText,
-              styles.tabActionDone,
-              tabs.length === 0 ? styles.actionDisabled : null,
-            ]}
-          >
-            {strings('browser.tabs_done')}
-          </Text>
-        </TouchableOpacity>
+          {strings('browser.opened_tabs')}
+        </Text>
+        <ButtonIcon
+          iconName={IconName.Add}
+          size={ButtonIconSizes.Lg}
+          onPress={this.onNewTabPress}
+          testID={BrowserViewSelectorsIDs.ADD_NEW_TAB}
+          accessibilityLabel={strings('browser.add_new_tab')}
+        />
       </View>
     );
   }
@@ -338,10 +289,10 @@ class Tabs extends PureComponent {
       <SafeAreaInsetsContext.Consumer>
         {(insets) => (
           <View style={{ ...styles.tabsView, paddingTop: insets.top }}>
+            {this.renderTopBar()}
             {tabs.length === 0
               ? this.renderNoTabs()
               : this.renderTabs(tabs, activeTab)}
-            {this.renderTabActions()}
           </View>
         )}
       </SafeAreaInsetsContext.Consumer>
@@ -351,4 +302,4 @@ class Tabs extends PureComponent {
 
 Tabs.contextType = ThemeContext;
 
-export default withMetricsAwareness(Tabs);
+export default Tabs;

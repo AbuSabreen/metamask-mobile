@@ -1,0 +1,394 @@
+import { fireEvent, screen } from '@testing-library/react-native';
+import React from 'react';
+import Routes from '../../../../../constants/navigation/Routes';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import { useUnrealizedPnL } from '../../hooks/useUnrealizedPnL';
+import { usePredictPositions } from '../../hooks/usePredictPositions';
+import { PredictPosition, PredictPositionStatus } from '../../types';
+import MarketsWonCard from './PredictPositionsHeader';
+
+// Mock account utilities
+jest.mock('../../utils/accounts', () => ({
+  getEvmAccountFromSelectedAccountGroup: jest.fn(() => ({
+    id: 'test-account-id',
+    address: '0x1234567890123456789012345678901234567890',
+    type: 'eip155:eoa',
+    name: 'Test Account',
+    metadata: {
+      lastSelected: 0,
+    },
+  })),
+}));
+
+// Mock Engine with AccountTreeController
+jest.mock('../../../../../core/Engine', () => ({
+  context: {
+    AccountTreeController: {
+      getAccountsFromSelectedAccountGroup: jest.fn(() => [
+        {
+          id: 'test-account-id',
+          address: '0x1234567890123456789012345678901234567890',
+          type: 'eip155:eoa',
+          name: 'Test Account',
+          metadata: {
+            lastSelected: 0,
+          },
+        },
+      ]),
+    },
+  },
+}));
+
+jest.mock('../../hooks/useUnrealizedPnL', () => ({
+  useUnrealizedPnL: jest.fn(),
+}));
+
+const mockDeposit = jest.fn();
+jest.mock('../../hooks/usePredictDeposit', () => ({
+  usePredictDeposit: () => ({
+    deposit: mockDeposit,
+    status: 'IDLE',
+  }),
+  PredictDepositStatus: {
+    IDLE: 'IDLE',
+    PENDING: 'PENDING',
+    CONFIRMED: 'CONFIRMED',
+    FAILED: 'FAILED',
+  },
+}));
+
+const mockBalanceResult: {
+  data: number | undefined;
+  isLoading: boolean;
+  error: { message: string } | null;
+} = {
+  data: 100.5,
+  isLoading: false,
+  error: null,
+};
+jest.mock('../../hooks/usePredictBalance', () => ({
+  usePredictBalance: () => mockBalanceResult,
+}));
+
+const mockInvalidateQueries = jest.fn();
+jest.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({
+    invalidateQueries: mockInvalidateQueries,
+  }),
+}));
+
+const mockNavigate = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    navigate: mockNavigate,
+  }),
+  useFocusEffect: jest.fn(),
+}));
+
+const mockExecuteGuardedAction = jest.fn(async (action) => await action());
+jest.mock('../../hooks/usePredictActionGuard', () => ({
+  usePredictActionGuard: () => ({
+    executeGuardedAction: mockExecuteGuardedAction,
+    isEligible: true,
+  }),
+}));
+
+const mockRefetchClaimablePositions = jest.fn();
+let mockActivePositions: PredictPosition[] = [];
+let mockClaimablePositions: PredictPosition[] = [];
+jest.mock('../../hooks/usePredictPositions');
+
+const mockClaim = jest.fn();
+jest.mock('../../hooks/usePredictClaim', () => ({
+  usePredictClaim: () => ({
+    claim: mockClaim,
+    loading: false,
+    completed: false,
+    error: false,
+  }),
+}));
+
+jest.mock('../../../../../../locales/i18n', () => ({
+  strings: jest.fn((key: string, params?: Record<string, unknown>) => {
+    const mockStrings: Record<string, string> = {
+      'predict.claim_amount_text': `Claim $${params?.amount || '0.00'}`,
+      'predict.available_balance': 'Available Balance',
+      'predict.unrealized_pnl_label': 'Unrealized P&L',
+      'predict.unrealized_pnl_value': `${params?.amount || '+$0.00'} (${
+        params?.percent || '+0.0%'
+      })`,
+    };
+    return mockStrings[key] || key;
+  }),
+}));
+
+function createTestState(_availableBalance?: number, privacyMode = false) {
+  const testAddress = '0x1234567890123456789012345678901234567890';
+  const testAccountId = 'test-account-id';
+
+  return {
+    engine: {
+      backgroundState: {
+        AccountsController: {
+          internalAccounts: {
+            selectedAccount: testAccountId,
+            accounts: {
+              [testAccountId]: {
+                id: testAccountId,
+                address: testAddress,
+                name: 'Test Account',
+                type: 'eip155:eoa' as const,
+                metadata: {
+                  lastSelected: 0,
+                },
+              },
+            },
+          },
+        },
+        PreferencesController: {
+          privacyMode,
+        },
+      },
+    },
+  };
+}
+
+describe('MarketsWonCard', () => {
+  const mockUseUnrealizedPnL = useUnrealizedPnL as jest.MockedFunction<
+    typeof useUnrealizedPnL
+  >;
+  const mockUsePredictPositions = usePredictPositions as jest.MockedFunction<
+    typeof usePredictPositions
+  >;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockBalanceResult.data = 100.5;
+    mockBalanceResult.isLoading = false;
+    mockActivePositions = [{ id: 'position-1' } as PredictPosition];
+    mockClaimablePositions = [];
+
+    mockUseUnrealizedPnL.mockReturnValue({
+      data: {
+        user: '0x1234567890123456789012345678901234567890',
+        cashUpnl: 8.63,
+        percentUpnl: 3.9,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as unknown as ReturnType<typeof useUnrealizedPnL>);
+    mockUsePredictPositions.mockImplementation(
+      ({ claimable }: { claimable?: boolean } = {}) =>
+        ({
+          data: claimable ? mockClaimablePositions : mockActivePositions,
+          isLoading: false,
+          error: null,
+          refetch: mockRefetchClaimablePositions,
+        }) as unknown as ReturnType<typeof usePredictPositions>,
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('rendering', () => {
+    it('does not enable live updates for active position count query', () => {
+      const state = createTestState(100.5);
+
+      renderWithProvider(<MarketsWonCard />, { state });
+
+      const activePositionsCall = mockUsePredictPositions.mock.calls.find(
+        ([options]) => options?.claimable === false,
+      );
+
+      expect(activePositionsCall?.[0]).toMatchObject({ claimable: false });
+      expect(activePositionsCall?.[0]?.livePriceUpdates).toBeUndefined();
+    });
+
+    it('displays available balance and unrealized P&L', () => {
+      const state = createTestState(100.5);
+
+      renderWithProvider(<MarketsWonCard />, { state });
+
+      expect(screen.getByTestId('markets-won-card')).toBeOnTheScreen();
+      expect(screen.getByText('Available Balance')).toBeOnTheScreen();
+      expect(screen.getByText('$100.50')).toBeOnTheScreen();
+      expect(screen.getByText('Unrealized P&L')).toBeOnTheScreen();
+      expect(screen.getByText('+$8.63 (+3.9%)')).toBeOnTheScreen();
+    });
+
+    it('displays formatted balance value', () => {
+      mockBalanceResult.data = 1234.56;
+      const state = createTestState(1234.56);
+
+      renderWithProvider(<MarketsWonCard />, { state });
+
+      expect(screen.getByText('$1,234.56')).toBeOnTheScreen();
+    });
+
+    it('hides monetary values when privacy mode is enabled', () => {
+      mockClaimablePositions = [
+        {
+          id: 'position-1',
+          status: PredictPositionStatus.WON,
+          cashPnl: 24.66,
+          currentValue: 24.66,
+          marketId: 'market-1',
+          title: 'Test Market',
+          outcome: 'Yes',
+        } as PredictPosition,
+      ];
+      const state = createTestState(100.5, true);
+
+      renderWithProvider(<MarketsWonCard />, { state });
+
+      expect(screen.queryByText('$100.50')).toBeNull();
+      expect(screen.queryByText('+$8.63 (+3.9%)')).toBeNull();
+      expect(screen.queryByText('Claim $24.66')).toBeNull();
+      expect(screen.getByText('••••••••••••')).toBeOnTheScreen();
+      expect(screen.getAllByText('•••••••••').length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('navigation', () => {
+    it('navigates to market list when balance area is pressed', () => {
+      const state = createTestState(50.25);
+
+      renderWithProvider(<MarketsWonCard />, { state });
+
+      const balanceTouchable =
+        screen.getByTestId('markets-won-count').parent?.parent;
+      if (balanceTouchable) {
+        fireEvent.press(balanceTouchable);
+      }
+
+      expect(mockNavigate).toHaveBeenCalledTimes(1);
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.PREDICT.ROOT, {
+        screen: Routes.PREDICT.MARKET_LIST,
+        params: {
+          entryPoint: expect.any(String),
+        },
+      });
+    });
+  });
+
+  describe('refresh', () => {
+    it('invalidates balance and unrealized P&L queries when refresh is called', async () => {
+      const ref = React.createRef<{ refresh: () => Promise<void> }>();
+      const state = createTestState(100.5);
+
+      renderWithProvider(<MarketsWonCard ref={ref} />, { state });
+
+      await ref.current?.refresh();
+
+      expect(mockInvalidateQueries).toHaveBeenCalled();
+    });
+  });
+
+  describe('loading states', () => {
+    it('displays skeleton loader when balance is loading', () => {
+      mockBalanceResult.isLoading = true;
+      mockBalanceResult.data = 100.5;
+      const state = createTestState(100.5);
+
+      renderWithProvider(<MarketsWonCard />, { state });
+
+      expect(screen.getByTestId('markets-won-card')).toBeOnTheScreen();
+      expect(screen.getByTestId('markets-won-count')).toBeOnTheScreen();
+    });
+
+    it('displays skeleton loader when unrealized P&L is loading', () => {
+      mockUseUnrealizedPnL.mockReturnValue({
+        data: {
+          user: '0x1234567890123456789012345678901234567890',
+          cashUpnl: 0,
+          percentUpnl: 0,
+        },
+        isLoading: true,
+        isFetching: true,
+        error: null,
+      } as unknown as ReturnType<typeof useUnrealizedPnL>);
+      const state = createTestState(100.5);
+
+      renderWithProvider(<MarketsWonCard />, { state });
+
+      expect(screen.getByTestId('markets-won-card')).toBeOnTheScreen();
+    });
+  });
+
+  describe('empty state', () => {
+    it('returns null when no data is available', () => {
+      mockBalanceResult.data = undefined;
+      mockBalanceResult.isLoading = false;
+      mockUseUnrealizedPnL.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isFetching: false,
+        error: null,
+      } as unknown as ReturnType<typeof useUnrealizedPnL>);
+      const state = createTestState();
+
+      const { toJSON } = renderWithProvider(<MarketsWonCard />, { state });
+
+      expect(toJSON()).toBeNull();
+    });
+  });
+
+  describe('error handling', () => {
+    it('calls onError callback when balance error occurs', () => {
+      const mockOnError = jest.fn();
+      mockBalanceResult.error = { message: 'Balance fetch failed' };
+      mockBalanceResult.data = 100.5;
+      const state = createTestState(100.5);
+
+      renderWithProvider(<MarketsWonCard onError={mockOnError} />, { state });
+
+      expect(mockOnError).toHaveBeenCalledWith('Balance fetch failed');
+    });
+
+    it('calls onError callback when P&L error occurs', () => {
+      const mockOnError = jest.fn();
+      mockBalanceResult.error = null;
+      mockBalanceResult.data = 100.5;
+      mockUseUnrealizedPnL.mockReturnValue({
+        data: {
+          user: '0x1234567890123456789012345678901234567890',
+          cashUpnl: 8.63,
+          percentUpnl: 3.9,
+        },
+        isLoading: false,
+        isFetching: false,
+        error: new Error('P&L fetch failed'),
+      } as unknown as ReturnType<typeof useUnrealizedPnL>);
+      const state = createTestState(100.5);
+
+      renderWithProvider(<MarketsWonCard onError={mockOnError} />, { state });
+
+      expect(mockOnError).toHaveBeenCalledWith('P&L fetch failed');
+    });
+
+    it('prioritizes balance error over P&L error', () => {
+      const mockOnError = jest.fn();
+      mockBalanceResult.error = { message: 'Balance error' };
+      mockBalanceResult.data = 100.5;
+      mockUseUnrealizedPnL.mockReturnValue({
+        data: {
+          user: '0x1234567890123456789012345678901234567890',
+          cashUpnl: 8.63,
+          percentUpnl: 3.9,
+        },
+        isLoading: false,
+        isFetching: false,
+        error: new Error('P&L error'),
+      } as unknown as ReturnType<typeof useUnrealizedPnL>);
+      const state = createTestState(100.5);
+
+      renderWithProvider(<MarketsWonCard onError={mockOnError} />, { state });
+
+      expect(mockOnError).toHaveBeenCalledWith('Balance error');
+    });
+  });
+});

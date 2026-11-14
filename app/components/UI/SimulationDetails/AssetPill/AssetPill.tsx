@@ -4,48 +4,52 @@ import { View, ViewProps } from 'react-native';
 import { useSelector } from 'react-redux';
 import { Hex } from '@metamask/utils';
 
-import Text, {
-  TextVariant,
-} from '../../../../component-library/components/Texts/Text';
 import AvatarNetwork from '../../../../component-library/components/Avatars/Avatar/variants/AvatarNetwork';
 import { AvatarSize } from '../../../../component-library/components/Avatars/Avatar/Avatar.types';
-import {
-  selectChainId,
-  selectTicker,
-} from '../../../../selectors/networkController';
 import { NetworkList } from '../../../../util/networks';
 import { useStyles } from '../../../hooks/useStyles';
 import Name from '../../Name/Name';
 import { NameType } from '../../Name/Name.types';
 import { AssetIdentifier, AssetType } from '../types';
 import styleSheet from './AssetPill.styles';
+import { selectEvmNetworkConfigurationsByChainId } from '../../../../selectors/networkController';
+import { Text, TextVariant } from '@metamask/design-system-react-native';
 
 interface AssetPillProperties extends ViewProps {
   asset: AssetIdentifier;
 }
 
 const getNetworkImage = (chainId: Hex) => {
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const network: any = Object.values(NetworkList).find(
+    // TODO: Replace "any" with type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (nw: any) => nw.chainId === chainId,
   );
   return network?.imageSource || null;
 };
 
-const NativeAssetPill: React.FC = () => {
+const NativeAssetPill: React.FC<AssetPillProperties> = ({ asset }) => {
   const { styles } = useStyles(styleSheet, {});
-  const ticker = useSelector(selectTicker);
-  const chainId = useSelector(selectChainId);
-  const imageSource = getNetworkImage(chainId);
+  const imageSource = getNetworkImage(asset.chainId);
+
+  const networkConfigurationsByChainId = useSelector(
+    selectEvmNetworkConfigurationsByChainId,
+  );
+
+  const { nativeCurrency } =
+    networkConfigurationsByChainId[asset.chainId] || {};
 
   return (
     <View style={styles.nativeAssetPill}>
       <AvatarNetwork
         testID="simulation-details-asset-pill-avatar-network"
         size={AvatarSize.Xs}
-        name={ticker}
+        name={nativeCurrency}
         imageSource={imageSource}
       />
-      <Text variant={TextVariant.BodyMD}>{ticker}</Text>
+      <Text variant={TextVariant.BodyMd}>{nativeCurrency}</Text>
     </View>
   );
 };
@@ -56,12 +60,14 @@ const AssetPill: React.FC<AssetPillProperties> = ({ asset }) => {
   return (
     <View style={styles.assetPill}>
       {asset.type === AssetType.Native ? (
-        <NativeAssetPill />
+        <NativeAssetPill asset={asset} />
       ) : (
         <Name
+          preferContractSymbol
           testID="simulation-details-asset-pill-name"
           type={NameType.EthereumAddress}
-          value={asset.address as Hex}
+          value={asset.address}
+          variation={asset.chainId}
         />
       )}
     </View>

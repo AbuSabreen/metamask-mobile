@@ -1,430 +1,265 @@
 import React from 'react';
-import renderWithProvider from '../../../util/test/renderWithProvider';
-import LedgerConfirmationModal from './LedgerConfirmationModal';
-import useLedgerBluetooth from '../../hooks/Ledger/useLedgerBluetooth';
-import {
-  ERROR_STEP,
-  OPEN_ETH_APP_STEP,
-  RETRY_BUTTON,
-  SEARCHING_FOR_DEVICE_STEP,
-} from './Steps/Steps.constants';
-import useBluetoothPermissions from '../../hooks/useBluetoothPermissions';
-import useBluetooth from '../../hooks/Ledger/useBluetooth';
+import { render, waitFor } from '@testing-library/react-native';
 import { act } from '@testing-library/react-hooks';
-import {
-  BluetoothPermissionErrors,
-  LedgerCommunicationErrors,
-} from '../../../core/Ledger/ledgerErrors';
-import { unlockLedgerDefaultAccount } from '../../../core/Ledger/Ledger';
-import { strings } from '../../../../locales/i18n';
-import { useMetrics } from '../../hooks/useMetrics';
+import LedgerConfirmationModal from './LedgerConfirmationModal';
 import { MetaMetricsEvents } from '../../../core/Analytics';
-import { fireEvent } from '@testing-library/react-native';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { createMockUseAnalyticsHook } from '../../../util/test/analyticsMock';
 
-jest.mock('../../../core/Ledger/Ledger', () => ({
-  unlockLedgerDefaultAccount: jest.fn(),
-}));
+const mockTrackEvent = jest.fn();
+const mockCreateEventBuilder = jest.fn().mockReturnValue({
+  addProperties: jest.fn().mockReturnThis(),
+  build: jest.fn().mockReturnValue({}),
+});
 
-jest.mock('../../hooks/Ledger/useBluetooth', () => ({
-  __esModule: true,
-  default: jest.fn(),
-}));
+jest.mock('../../hooks/useAnalytics/useAnalytics');
 
-jest.mock('../../hooks/Ledger/useLedgerBluetooth', () => ({
-  __esModule: true,
-  default: jest.fn(),
-}));
+// Mock HardwareWallet hooks
+const mockEnsureDeviceReady = jest.fn();
+const mockShowAwaitingConfirmation = jest.fn();
+const mockHideAwaitingConfirmation = jest.fn();
+const mockShowHardwareWalletError = jest.fn();
+const mockIsUserCancellation = jest.fn();
 
-jest.mock('../../../components/hooks/useBluetoothPermissions', () => ({
-  __esModule: true,
-  default: jest.fn(),
-}));
-
-jest.mock('@react-navigation/native', () => ({
-  ...jest.requireActual('@react-navigation/native'),
-  useNavigation: () => ({
-    navigate: jest.fn(),
+jest.mock('../../../core/HardwareWallet', () => ({
+  useHardwareWallet: () => ({
+    ensureDeviceReady: mockEnsureDeviceReady,
+    showAwaitingConfirmation: mockShowAwaitingConfirmation,
+    hideAwaitingConfirmation: mockHideAwaitingConfirmation,
+    showHardwareWalletError: mockShowHardwareWalletError,
   }),
-}));
-
-jest.mock('../../../components/hooks/useMetrics', () => ({
-  useMetrics: jest.fn(),
+  isUserCancellation: (error: unknown) => mockIsUserCancellation(error),
 }));
 
 describe('LedgerConfirmationModal', () => {
+  const defaultProps = {
+    onConfirmation: jest.fn().mockResolvedValue(undefined),
+    onRejection: jest.fn(),
+    deviceId: 'test-device-id',
+  };
+
   beforeEach(() => {
-    jest.resetAllMocks();
+    jest.clearAllMocks();
+    jest.mocked(useAnalytics).mockReturnValue(
+      createMockUseAnalyticsHook({
+        trackEvent: mockTrackEvent,
+        createEventBuilder: mockCreateEventBuilder,
+      }),
+    );
+    mockEnsureDeviceReady.mockResolvedValue(true);
+    mockIsUserCancellation.mockReturnValue(false);
+  });
 
-    //mock hook return value
-    useBluetoothPermissions.mockReturnValue({
-      hasBluetoothPermissions: true,
-      bluetoothPermissionError: null,
-      checkPermissions: jest.fn(),
+  it('renders nothing (null)', () => {
+    const { toJSON } = render(<LedgerConfirmationModal {...defaultProps} />);
+    expect(toJSON()).toBeNull();
+  });
+
+  describe('successful signing flow', () => {
+    it('executes the full signing flow when device is ready', async () => {
+      mockEnsureDeviceReady.mockResolvedValue(true);
+
+      render(<LedgerConfirmationModal {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(mockEnsureDeviceReady).toHaveBeenCalledWith('test-device-id');
+      });
+
+      await waitFor(() => {
+        expect(mockShowAwaitingConfirmation).toHaveBeenCalledWith(
+          'transaction',
+          expect.any(Function),
+        );
+      });
+
+      await waitFor(() => {
+        expect(defaultProps.onConfirmation).toHaveBeenCalled();
+      });
+
+      await waitFor(() => {
+        expect(mockHideAwaitingConfirmation).toHaveBeenCalled();
+      });
     });
 
-    useBluetooth.mockReturnValue({
-      bluetoothOn: true,
-      bluetoothConnectionError: false,
+    it('uses message operationType when provided', async () => {
+      mockEnsureDeviceReady.mockResolvedValue(true);
+
+      render(
+        <LedgerConfirmationModal {...defaultProps} operationType="message" />,
+      );
+
+      await waitFor(() => {
+        expect(mockShowAwaitingConfirmation).toHaveBeenCalledWith(
+          'message',
+          expect.any(Function),
+        );
+      });
+    });
+  });
+
+  describe('device not ready', () => {
+    it('calls onRejection when device is not ready', async () => {
+      mockEnsureDeviceReady.mockResolvedValue(false);
+
+      render(<LedgerConfirmationModal {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(defaultProps.onRejection).toHaveBeenCalled();
+      });
+
+      // Should not proceed with signing
+      expect(mockShowAwaitingConfirmation).not.toHaveBeenCalled();
+      expect(defaultProps.onConfirmation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('signing errors', () => {
+    it('shows error UI and calls onRejection when signing fails', async () => {
+      mockEnsureDeviceReady.mockResolvedValue(true);
+      const signingError = new Error('Signing failed');
+      defaultProps.onConfirmation.mockRejectedValueOnce(signingError);
+      mockIsUserCancellation.mockReturnValue(false);
+
+      render(<LedgerConfirmationModal {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(mockHideAwaitingConfirmation).toHaveBeenCalled();
+      });
+
+      await waitFor(() => {
+        expect(mockShowHardwareWalletError).toHaveBeenCalledWith(signingError);
+      });
+
+      await waitFor(() => {
+        expect(defaultProps.onRejection).toHaveBeenCalled();
+      });
     });
 
-    useLedgerBluetooth.mockReturnValue({
-      isSendingLedgerCommands: false,
-      isAppLaunchConfirmationNeeded: false,
-      ledgerLogicToRun: jest.fn(),
-      error: null,
+    it('does not show error UI for user cancellation during signing', async () => {
+      mockEnsureDeviceReady.mockResolvedValue(true);
+      const userCancelError = new Error('User cancelled');
+      defaultProps.onConfirmation.mockRejectedValueOnce(userCancelError);
+      mockIsUserCancellation.mockReturnValue(true);
+
+      render(<LedgerConfirmationModal {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(mockHideAwaitingConfirmation).toHaveBeenCalled();
+      });
+
+      await waitFor(() => {
+        expect(defaultProps.onRejection).toHaveBeenCalled();
+      });
+
+      // Should NOT show error UI for user cancellation
+      expect(mockShowHardwareWalletError).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('connection errors', () => {
+    it('calls onRejection without showing error UI when connection fails', async () => {
+      mockEnsureDeviceReady.mockRejectedValue(new Error('Connection failed'));
+
+      render(<LedgerConfirmationModal {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(defaultProps.onRejection).toHaveBeenCalled();
+      });
+
+      // ensureDeviceReady handles its own error UX internally
+      expect(mockShowHardwareWalletError).not.toHaveBeenCalled();
     });
 
-    useMetrics.mockReturnValue({
-      trackEvent: jest.fn(),
+    it('calls onRejection for user cancellation during connection', async () => {
+      mockEnsureDeviceReady.mockRejectedValue(new Error('User cancelled'));
+      mockIsUserCancellation.mockReturnValue(true);
+
+      render(<LedgerConfirmationModal {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(defaultProps.onRejection).toHaveBeenCalled();
+      });
+
+      expect(mockShowHardwareWalletError).not.toHaveBeenCalled();
     });
   });
 
-  const checkLedgerCommunicationErrorFlow = function (
-    ledgerCommunicationError: LedgerCommunicationErrors,
-    expectedTitle: string,
-    expectedErrorBody: string,
-  ) {
-    useLedgerBluetooth.mockReturnValue({
-      isSendingLedgerCommands: true,
-      isAppLaunchConfirmationNeeded: false,
-      ledgerLogicToRun: jest.fn(),
-      error: ledgerCommunicationError,
+  describe('analytics', () => {
+    it('tracks HARDWARE_WALLET_ERROR when signing fails with non-user error', async () => {
+      mockEnsureDeviceReady.mockResolvedValue(true);
+      const error = new Error('Hardware error');
+      defaultProps.onConfirmation.mockRejectedValueOnce(error);
+      mockIsUserCancellation.mockReturnValue(false);
+
+      render(<LedgerConfirmationModal {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(mockTrackEvent).toHaveBeenCalled();
+      });
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.HARDWARE_WALLET_ERROR,
+      );
     });
 
-    const { getByTestId, getByText } = renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={jest.fn()}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
+    it('tracks DAPP_TRANSACTION_CANCELLED when handleRejection is called without error', async () => {
+      mockEnsureDeviceReady.mockResolvedValue(true);
 
-    expect(getByTestId(ERROR_STEP)).toBeTruthy();
-    expect(getByText(expectedTitle)).toBeTruthy();
-    expect(getByText(expectedErrorBody)).toBeTruthy();
-  };
+      render(<LedgerConfirmationModal {...defaultProps} />);
 
-  const checkBluetoothPermissionErrorFlow = function (
-    bluetoothPermissionError: BluetoothPermissionErrors,
-    expectedTitle: string,
-    expectedErrorBody: string,
-  ) {
-    useBluetoothPermissions.mockReturnValue({
-      hasBluetoothPermissions: false,
-      bluetoothPermissionError,
-      checkPermissions: jest.fn(),
+      await waitFor(() => {
+        expect(mockShowAwaitingConfirmation).toHaveBeenCalled();
+      });
+
+      // Get the cancel callback and invoke it
+      const cancelCallback = mockShowAwaitingConfirmation.mock.calls[0][1];
+      await act(async () => {
+        cancelCallback();
+      });
+
+      await waitFor(() => {
+        expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+          MetaMetricsEvents.DAPP_TRANSACTION_CANCELLED,
+        );
+      });
     });
 
-    const { getByTestId, getByText } = renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={jest.fn()}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
-    expect(getByTestId(ERROR_STEP)).toBeTruthy();
-    expect(getByText(expectedTitle)).toBeTruthy();
-    expect(getByText(expectedErrorBody)).toBeTruthy();
-  };
+    it('does not track error analytics for user cancellation', async () => {
+      mockEnsureDeviceReady.mockResolvedValue(true);
+      const userCancelError = new Error('User cancelled');
+      defaultProps.onConfirmation.mockRejectedValueOnce(userCancelError);
+      mockIsUserCancellation.mockReturnValue(true);
 
-  it('render matches latest snapshot', () => {
-    const { toJSON } = renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={jest.fn()}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
-    expect(toJSON()).toMatchSnapshot();
-  });
+      render(<LedgerConfirmationModal {...defaultProps} />);
 
-  it('renders SearchingForDeviceStep when not sending ledger commands', () => {
-    const { getByTestId } = renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={jest.fn()}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
-    expect(getByTestId(SEARCHING_FOR_DEVICE_STEP)).toBeTruthy();
-  });
+      await waitFor(() => {
+        expect(defaultProps.onRejection).toHaveBeenCalled();
+      });
 
-  it('renders OpenETHAppStep when app launch confirmation is needed', () => {
-    useLedgerBluetooth.mockReturnValue({
-      isSendingLedgerCommands: true,
-      isAppLaunchConfirmationNeeded: true,
-      ledgerLogicToRun: jest.fn(),
-      error: null,
+      // Should not track HARDWARE_WALLET_ERROR for user cancellation
+      expect(mockCreateEventBuilder).not.toHaveBeenCalledWith(
+        MetaMetricsEvents.HARDWARE_WALLET_ERROR,
+      );
     });
-
-    const { getByTestId } = renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={jest.fn()}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
-    expect(getByTestId(OPEN_ETH_APP_STEP)).toBeTruthy();
   });
 
-  it('renders ErrorStep when there is a ledger FailedToOpenApp  error', async () => {
-    checkLedgerCommunicationErrorFlow(
-      LedgerCommunicationErrors.FailedToOpenApp,
-      strings('ledger.failed_to_open_eth_app'),
-      strings('ledger.ethereum_app_open_error'),
-    );
-  });
+  describe('double execution prevention', () => {
+    it('only runs the signing flow once', async () => {
+      mockEnsureDeviceReady.mockResolvedValue(true);
 
-  it('renders ErrorStep when there is a ledger FailedToCloseApp error', async () => {
-    checkLedgerCommunicationErrorFlow(
-      LedgerCommunicationErrors.FailedToCloseApp,
-      strings('ledger.running_app_close'),
-      strings('ledger.running_app_close_error'),
-    );
-  });
+      const { rerender } = render(
+        <LedgerConfirmationModal {...defaultProps} />,
+      );
 
-  it('renders ErrorStep when there is a ledger AppIsNotInstalled error', async () => {
-    checkLedgerCommunicationErrorFlow(
-      LedgerCommunicationErrors.AppIsNotInstalled,
-      strings('ledger.ethereum_app_not_installed'),
-      strings('ledger.ethereum_app_not_installed_error'),
-    );
-  });
+      await waitFor(() => {
+        expect(mockEnsureDeviceReady).toHaveBeenCalledTimes(1);
+      });
 
-  it('renders ErrorStep when there is a ledger LedgerIsLocked error', async () => {
-    checkLedgerCommunicationErrorFlow(
-      LedgerCommunicationErrors.LedgerIsLocked,
-      strings('ledger.ledger_is_locked'),
-      strings('ledger.unlock_ledger_message'),
-    );
-  });
+      // Trigger a rerender
+      rerender(<LedgerConfirmationModal {...defaultProps} />);
 
-  it('renders ErrorStep when there is a ledger LedgerHasPendingConfirmation error', async () => {
-    checkLedgerCommunicationErrorFlow(
-      LedgerCommunicationErrors.LedgerHasPendingConfirmation,
-      strings('ledger.ledger_pending_confirmation'),
-      strings('ledger.ledger_pending_confirmation_error'),
-    );
-  });
-
-  it('renders ErrorStep when there is a ledger NotSupported error', async () => {
-    checkLedgerCommunicationErrorFlow(
-      LedgerCommunicationErrors.NotSupported,
-      strings('ledger.not_supported'),
-      strings('ledger.not_supported_error'),
-    );
-  });
-
-  it('renders ErrorStep when there is a ledger UnknownError error', async () => {
-    checkLedgerCommunicationErrorFlow(
-      LedgerCommunicationErrors.UnknownError,
-      strings('ledger.unknown_error'),
-      strings('ledger.unknown_error_message'),
-    );
-  });
-
-  it('renders ErrorStep when there is a ledger NonceTooLow error', async () => {
-    checkLedgerCommunicationErrorFlow(
-      LedgerCommunicationErrors.NonceTooLow,
-      strings('ledger.nonce_too_low'),
-      strings('ledger.nonce_too_low_error'),
-    );
-  });
-
-  it('renders ErrorStep when there is a ledger LedgerDisconnected error', async () => {
-    checkLedgerCommunicationErrorFlow(
-      LedgerCommunicationErrors.LedgerDisconnected,
-      strings('ledger.ledger_disconnected'),
-      strings('ledger.ledger_disconnected_error'),
-    );
-  });
-
-  it('renders ErrorStep when there is a bluetooth LocationAccessBlocked error', () => {
-    checkBluetoothPermissionErrorFlow(
-      BluetoothPermissionErrors.LocationAccessBlocked,
-      strings('ledger.location_access_blocked'),
-      strings('ledger.location_access_blocked_error'),
-    );
-  });
-
-  it('renders ErrorStep when there is a bluetooth NearbyDevicesAccessBlocked error', () => {
-    checkBluetoothPermissionErrorFlow(
-      BluetoothPermissionErrors.NearbyDevicesAccessBlocked,
-      strings('ledger.nearbyDevices_access_blocked'),
-      strings('ledger.nearbyDevices_access_blocked_message'),
-    );
-  });
-
-  it('renders ErrorStep when there is a bluetooth BluetoothAccessBlocked error', () => {
-    checkBluetoothPermissionErrorFlow(
-      BluetoothPermissionErrors.BluetoothAccessBlocked,
-      strings('ledger.bluetooth_access_blocked'),
-      strings('ledger.bluetooth_access_blocked_message'),
-    );
-  });
-
-  it('renders ErrorStep when there is a bluetooth connection error', () => {
-    useBluetooth.mockReturnValue({
-      bluetoothOn: false,
-      bluetoothConnectionError: true,
+      // Should still only have been called once
+      expect(mockEnsureDeviceReady).toHaveBeenCalledTimes(1);
     });
-
-    const { getByTestId, getByText } = renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={jest.fn()}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
-    expect(getByTestId(ERROR_STEP)).toBeTruthy();
-    expect(getByText(strings('ledger.bluetooth_off'))).toBeTruthy();
-    expect(getByText(strings('ledger.bluetooth_off_message'))).toBeTruthy();
-  });
-
-  it('retries connectLedger when retry button is used', async () => {
-    const ledgerLogicToRun = jest.fn();
-
-    useLedgerBluetooth.mockReturnValue({
-      isSendingLedgerCommands: true,
-      isAppLaunchConfirmationNeeded: false,
-      ledgerLogicToRun,
-      error: LedgerCommunicationErrors.FailedToOpenApp,
-    });
-
-    const { getByTestId } = renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={jest.fn()}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
-
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    await act(async () => {});
-
-    expect(ledgerLogicToRun).toHaveBeenCalledTimes(1);
-
-    const retryButton = getByTestId(RETRY_BUTTON);
-    fireEvent.press(retryButton);
-
-    //Retry will run connectLedger again
-    expect(ledgerLogicToRun).toHaveBeenCalledTimes(2);
-  });
-
-  it('retries checkPermissions when retry button is used', async () => {
-    const checkPermissions = jest.fn();
-    useBluetoothPermissions.mockReturnValue({
-      hasBluetoothPermissions: false,
-      bluetoothPermissionError:
-        BluetoothPermissionErrors.NearbyDevicesAccessBlocked,
-      checkPermissions,
-    });
-
-    const { getByTestId } = renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={jest.fn()}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
-
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    await act(async () => {});
-
-    const retryButton = getByTestId(RETRY_BUTTON);
-    fireEvent.press(retryButton);
-
-    //Retry will run connectLedger again
-    expect(checkPermissions).toHaveBeenCalledTimes(1);
-  });
-
-  it('calls onConfirmation when ledger commands are being sent and confirmed have been received.', async () => {
-    const onConfirmation = jest.fn();
-    unlockLedgerDefaultAccount.mockReturnValue(Promise.resolve(true));
-    useLedgerBluetooth.mockReturnValue({
-      isSendingLedgerCommands: true,
-      isAppLaunchConfirmationNeeded: false,
-      ledgerLogicToRun: jest.fn().mockImplementation((callback) => callback()),
-      error: null,
-    });
-
-    renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={onConfirmation}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
-
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    await act(async () => {});
-
-    expect(unlockLedgerDefaultAccount).toHaveBeenCalled();
-    expect(onConfirmation).toHaveBeenCalled();
-  });
-
-  it('logs LEDGER_HARDWARE_WALLET_ERROR thrown by unlockLedgerDefaultAccount', async () => {
-    const onConfirmation = jest.fn();
-
-    const ledgerLogicToRun = jest.fn();
-    useLedgerBluetooth.mockReturnValue({
-      isSendingLedgerCommands: true,
-      isAppLaunchConfirmationNeeded: false,
-      ledgerLogicToRun,
-      error: null,
-    });
-
-    ledgerLogicToRun.mockImplementation(() => {
-      throw new Error('error');
-    });
-
-    const trackEvent = jest.fn();
-    useMetrics.mockReturnValue({
-      trackEvent,
-    });
-
-    renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={onConfirmation}
-        onRejection={jest.fn()}
-        deviceId={'test'}
-      />,
-    );
-
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    await act(async () => {});
-
-    expect(onConfirmation).not.toHaveBeenCalled();
-
-    expect(trackEvent).toHaveBeenNthCalledWith(
-      1,
-      MetaMetricsEvents.LEDGER_HARDWARE_WALLET_ERROR,
-      {
-        device_type: 'Ledger',
-        error: 'LEDGER_ETH_APP_NOT_INSTALLED',
-      },
-    );
-  });
-
-  it('calls onRejection when user refuses confirmation', async () => {
-    const onRejection = jest.fn();
-    useLedgerBluetooth.mockReturnValue({
-      isSendingLedgerCommands: true,
-      isAppLaunchConfirmationNeeded: false,
-      ledgerLogicToRun: jest.fn(),
-      error: LedgerCommunicationErrors.UserRefusedConfirmation,
-    });
-
-    renderWithProvider(
-      <LedgerConfirmationModal
-        onConfirmation={jest.fn()}
-        onRejection={onRejection}
-        deviceId={'test'}
-      />,
-    );
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    await act(async () => {});
-
-    expect(onRejection).toHaveBeenCalled();
   });
 });

@@ -1,0 +1,306 @@
+import {
+  ContractConfig,
+  PositionsProtocolContractConfig,
+  RoundConfig,
+} from './types';
+import {
+  isEsportsRoundHandicapMarketType,
+  isEsportsRoundOverUnderMarketType,
+} from '../../constants/sports';
+
+export const POLYMARKET_PROVIDER_ID = 'polymarket';
+
+/**
+ * Gamma market version for Protocol V2 (PositionManager) markets. Every
+ * other value — "v1", missing, or unknown — stays on the CTF path. This is
+ * the Gamma version axis, not the EIP-712 domain version and not the CLOB
+ * deployment version.
+ */
+export const V2_MARKET_VERSION = 'v2';
+
+/**
+ * Gamma market version for Protocol V1 (CTF) markets, threaded explicitly
+ * from a loaded market that carries no Gamma version field so the order
+ * path never re-resolves it. Every non-"v2" value stays on the CTF path.
+ */
+export const V1_MARKET_VERSION = 'v1';
+
+export const POLYMARKET_TERMS_URL = 'https://polymarket.com/tos';
+
+export const DEFAULT_CLOB_BASE_URL = 'https://clob.polymarket.com';
+
+/**
+ * Default slippage for market orders.
+ */
+export const SLIPPAGE_BUY = 0.03; // 3%
+export const SLIPPAGE_SELL = 0.05; // 5%
+
+export const ORDER_RATE_LIMIT_MS = 5000;
+
+export const MIN_PUSD_BALANCE_FOR_CLAIM_GAS = 0.5;
+
+export const POLYGON_MAINNET_CHAIN_ID = 137;
+export const POLYGON_MAINNET_CAIP_CHAIN_ID =
+  `eip155:${POLYGON_MAINNET_CHAIN_ID}` as const;
+
+export const COLLATERAL_TOKEN_DECIMALS = 6;
+export const CONDITIONAL_TOKEN_DECIMALS = 6;
+
+export const HASH_ZERO_BYTES32 =
+  '0x0000000000000000000000000000000000000000000000000000000000000000';
+
+export const EIP712Domain = [
+  { name: 'name', type: 'string' },
+  { name: 'version', type: 'string' },
+  { name: 'chainId', type: 'uint256' },
+];
+
+export const ClobAuthDomain = {
+  ClobAuth: [
+    { name: 'address', type: 'address' },
+    { name: 'timestamp', type: 'string' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'message', type: 'string' },
+  ],
+};
+
+export const MSG_TO_SIGN =
+  'This message attests that I control the given wallet';
+
+export const ROUNDING_CONFIG: Record<string, RoundConfig> = {
+  '0.1': {
+    price: 1,
+    size: 2,
+    amount: 3,
+  },
+  '0.01': {
+    price: 2,
+    size: 2,
+    amount: 4,
+  },
+  '0.001': {
+    price: 3,
+    size: 2,
+    amount: 5,
+  },
+  '0.0001': {
+    price: 4,
+    size: 2,
+    amount: 6,
+  },
+  '0.0025': {
+    price: 4,
+    size: 2,
+    amount: 6,
+  },
+};
+
+/**
+ * Gas limit for the Safe execTransaction call used during withdrawals.
+ * The actual execution uses ~93k gas; includes a 30% buffer.
+ */
+export const SAFE_EXEC_GAS_LIMIT = 121000;
+
+export const MATIC_CONTRACTS_V2: ContractConfig = {
+  exchange: '0xE111180000d2663C0091e4f400237545B87B996B',
+  negRiskAdapter: '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296',
+  negRiskExchange: '0xe2222d279d744050d28e00520010520000310F59',
+  collateral: '0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB',
+  conditionalTokens: '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045',
+};
+
+/**
+ * Protocol V2 settles on a single ExchangeV3 — there is no separate neg-risk
+ * exchange. Both slots carry ExchangeV3 so the order verifying contract is
+ * ExchangeV3 regardless of negRisk. The PositionManager owns the
+ * positions-protocol outcome balances.
+ */
+export const MATIC_POSITIONS_PROTOCOL_CONTRACTS: PositionsProtocolContractConfig =
+  {
+    exchange: '0xe3333700cA9d93003F00f0F71f8515005F6c00Aa',
+    negRiskExchange: '0xe3333700cA9d93003F00f0F71f8515005F6c00Aa',
+    positionManager: '0x006F54F7f9A22e0000CC2AB60031000000ae9fEF',
+    router: '0x12121212006e4CD160D18e3f00711DA5c3372600',
+  };
+
+export const USDC_E_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+
+export const COLLATERAL_ONRAMP_ADDRESS =
+  '0x93070a847efEf7F70739046A929D47a521F5B8ee';
+
+export const CTF_COLLATERAL_ADAPTER_ADDRESS =
+  '0xAdA100Db00Ca00073811820692005400218FcE1f';
+
+export const NEG_RISK_CTF_COLLATERAL_ADAPTER_ADDRESS =
+  '0xadA2005600Dec949baf300f4C6120000bDB6eAab';
+
+export const POLYGON_PUSD_CAIP_ASSET_ID =
+  `${POLYGON_MAINNET_CAIP_CHAIN_ID}/erc20:${MATIC_CONTRACTS_V2.collateral}` as const;
+
+// Seeds the default enabled-market list; runtime matching is unbounded via
+// isEsportsRoundHandicapMarketType / isEsportsRoundOverUnderMarketType.
+const SEEDED_ESPORTS_ROUND_GAMES = 5;
+
+const ESPORTS_ROUND_HANDICAP_MARKET_TYPES = Array.from(
+  { length: SEEDED_ESPORTS_ROUND_GAMES },
+  (_, index) => `round_handicap_game_${index + 1}`,
+);
+
+const ESPORTS_ROUND_OVER_UNDER_MARKET_TYPES = Array.from(
+  { length: SEEDED_ESPORTS_ROUND_GAMES },
+  (_, index) => `round_over_under_game_${index + 1}`,
+);
+
+export const ESPORTS_MARKET_TYPES: readonly string[] = [
+  'child_moneyline',
+  'map_handicap',
+  ...ESPORTS_ROUND_HANDICAP_MARKET_TYPES,
+  ...ESPORTS_ROUND_OVER_UNDER_MARKET_TYPES,
+  'first_blood_game',
+  'kill_over_under_game',
+  'map_participant_win_total',
+  'cs2_odd_even_total_kills',
+  'cs2_odd_even_total_rounds',
+  'lol_both_teams_baron',
+  'lol_both_teams_dragon',
+  'lol_both_teams_inhibitors',
+  'lol_odd_even_total_kills',
+  'lol_penta_kill',
+  'lol_quadra_kill',
+  'dota2_both_teams_barracks',
+  'dota2_both_teams_roshan',
+  'dota2_game_ends_daytime',
+  'dota2_rampage',
+  'dota2_ultra_kill',
+];
+
+export const SPORTS_MARKET_TYPE_TO_GROUP: Record<string, string> = {
+  first_half_moneyline: 'first_half',
+  first_half_spreads: 'first_half',
+  first_half_totals: 'halves',
+  second_half_totals: 'halves',
+  team_totals: 'team_totals',
+  team_totals_home: 'team_totals',
+  team_totals_away: 'team_totals',
+  soccer_team_totals: 'team_totals',
+  anytime_touchdowns: 'touchdowns',
+  first_touchdowns: 'touchdowns',
+  rushing_yards: 'rushing',
+  receiving_yards: 'receiving',
+  points: 'points',
+  assists: 'assists',
+  rebounds: 'rebounds',
+  soccer_player_goals: 'goals',
+  soccer_anytime_goalscorer: 'goalscorers',
+  soccer_exact_score: 'exact_score',
+  both_teams_to_score_first_half: 'halves',
+  both_teams_to_score_second_half: 'halves',
+  soccer_halftime_result: 'halves',
+  soccer_second_half_result: 'halves',
+  total_corners: 'corners',
+  tennis_first_set_winner: 'first_set',
+  tennis_first_set_totals: 'first_set',
+  child_moneyline: 'game_lines',
+  map_handicap: 'game_lines',
+  map_participant_win_total: 'game_lines',
+};
+
+export const SUPPORTED_SPORTS_MARKET_TYPES: ReadonlySet<string> = new Set([
+  'moneyline',
+  'spreads',
+  'totals',
+  'first_half_moneyline',
+  'first_half_spreads',
+  'both_teams_to_score',
+  'both_teams_to_score_first_half',
+  'both_teams_to_score_second_half',
+  'first_half_totals',
+  'second_half_totals',
+  'soccer_first_to_score',
+  'soccer_halftime_result',
+  'soccer_second_half_result',
+  'soccer_player_goals',
+  'soccer_team_to_advance',
+  'soccer_extra_time',
+  'soccer_penalty_shootout',
+  'team_totals',
+  'team_totals_home',
+  'team_totals_away',
+  'anytime_touchdowns',
+  'first_touchdowns',
+  'rushing_yards',
+  'receiving_yards',
+  'soccer_team_totals',
+  'basketball_team_to_score_first',
+  'soccer_exact_score',
+  ...ESPORTS_MARKET_TYPES,
+]);
+
+export const isSupportedSportsMarketType = (type?: string): boolean => {
+  const normalizedType = type?.toLowerCase();
+  if (!normalizedType) {
+    return false;
+  }
+
+  return (
+    SUPPORTED_SPORTS_MARKET_TYPES.has(normalizedType) ||
+    isEsportsRoundHandicapMarketType(normalizedType) ||
+    isEsportsRoundOverUnderMarketType(normalizedType)
+  );
+};
+
+export const GROUP_ORDER: string[] = [
+  'game_lines',
+  'team_totals',
+  'exact_score',
+  'halves',
+  'corners',
+  'goals',
+  'goalscorers',
+  'first_half',
+  'first_set',
+  'touchdowns',
+  'rushing',
+  'receiving',
+  'points',
+  'assists',
+  'shots',
+  'rebounds',
+  'halftime',
+];
+
+export const DEFAULT_GROUP_KEY = 'game_lines';
+
+export const SPORTS_MARKET_TYPE_PRIORITIES: Record<string, number> = {
+  soccer_team_to_advance: -1,
+  moneyline: 0,
+  // Sits between moneyline (0) and spreads (1) so map/game winners sort after
+  // the match winner but before handicap lines. Round handicap / over-under
+  // priorities are resolved dynamically in getSportsMarketTypePriority.
+  child_moneyline: 0.5,
+  soccer_halftime_result: 0,
+  soccer_second_half_result: 0,
+  tennis_first_set_winner: 0,
+  spreads: 1,
+  map_handicap: 1,
+  totals: 2,
+  team_totals: 2,
+  team_totals_home: 2,
+  team_totals_away: 2,
+  kill_over_under_game: 2,
+  map_participant_win_total: 2,
+  first_half_totals: 2,
+  second_half_totals: 2,
+  both_teams_to_score: 3,
+  both_teams_to_score_first_half: 3,
+  both_teams_to_score_second_half: 3,
+  soccer_first_to_score: 4,
+  tennis_set_totals: 2,
+  tennis_first_set_totals: 2,
+  tennis_match_totals: 3,
+  tennis_completed_match: 4,
+  // These soccer progression markets render at the bottom of Game Lines, after
+  // the regulation-time markets above.
+  soccer_extra_time: 6,
+  soccer_penalty_shootout: 7,
+};

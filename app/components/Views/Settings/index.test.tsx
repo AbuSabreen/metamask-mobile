@@ -1,29 +1,45 @@
 import React from 'react';
-import { shallow } from 'enzyme';
 import Settings from './';
-import configureMockStore from 'redux-mock-store';
-import { Provider } from 'react-redux';
-import renderWithProvider from '../../../util/test/renderWithProvider';
-import { SettingsViewSelectorsIDs } from '../../../../e2e/selectors/Settings/SettingsView.selectors';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
 
-const mockStore = configureMockStore();
+import renderWithProvider from '../../../util/test/renderWithProvider';
+import { SettingsViewSelectorsIDs } from './SettingsView.testIds';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { fireEvent } from '@testing-library/react-native';
+import Routes from '../../../constants/navigation/Routes';
+import { strings } from '../../../../locales/i18n';
+
+// Mock Authentication module
+jest.mock('../../../core', () => ({
+  Authentication: {
+    lockApp: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+// Mock whenEngineReady to prevent Jest environment teardown errors
+jest.mock('../../../util/analytics/whenEngineReady', () => ({
+  whenEngineReady: jest.fn(() => Promise.resolve()),
+  isEngineReady: jest.fn(() => false),
+  getEngine: jest.fn(() => ({})),
+}));
+
+import { AvatarAccountType } from '../../../component-library/components/Avatars/Avatar';
+
 const initialState = {
   user: { seedphraseBackedUp: true, passwordSet: true },
   privacy: { approvedHosts: [] },
   browser: { history: [] },
   settings: {
     lockTime: 1000,
-    searchEngine: 'DuckDuckGo',
-    useBlockieIcon: true,
+    searchEngine: 'Google',
+    avatarAccountType: AvatarAccountType.Maskicon,
   },
   engine: {
-    backgroundState: initialBackgroundState,
+    backgroundState,
   },
 };
 
-const mockSetOptions = jest.fn();
 const mockNavigate = jest.fn();
+const mockGoBack = jest.fn();
 
 jest.mock('@react-navigation/native', () => {
   const actualReactNavigation = jest.requireActual('@react-navigation/native');
@@ -31,76 +47,213 @@ jest.mock('@react-navigation/native', () => {
     ...actualReactNavigation,
     useNavigation: () => ({
       navigate: mockNavigate,
-      setOptions: mockSetOptions,
+      goBack: mockGoBack,
     }),
   };
 });
-const store = mockStore(initialState);
+
+jest.mock('../../../util/notifications/constants/config', () => ({
+  isNotificationsFeatureEnabled: jest.fn(() => true),
+}));
 
 describe('Settings', () => {
-  it('should render correctly', () => {
-    const wrapper = shallow(
-      <Provider store={store}>
-        <Settings />
-      </Provider>,
-    );
-    expect(wrapper).toMatchSnapshot();
+  beforeEach(() => {
+    jest.clearAllMocks();
   });
-  it('should render general settings button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
+
+  afterAll(() => {
+    jest.clearAllTimers();
+    jest.clearAllMocks();
+    jest.restoreAllMocks();
+  });
+
+  it('renders settings component with all sections', () => {
+    const { getByText } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    expect(getByText(strings('app_settings.title'))).toBeOnTheScreen();
+  });
+
+  it('renders header with correct title', () => {
+    const { getByTestId, getByText } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    const header = getByTestId(SettingsViewSelectorsIDs.SETTINGS_HEADER);
+    expect(header).toBeDefined();
+    expect(getByText(strings('app_settings.title'))).toBeDefined();
+  });
+
+  it('navigates back when back button is pressed', () => {
+    const { getByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    const header = getByTestId(SettingsViewSelectorsIDs.SETTINGS_HEADER);
+    const backButton = header.findByProps({ iconName: 'ArrowLeft' });
+    fireEvent.press(backButton);
+    expect(mockGoBack).toHaveBeenCalled();
+  });
+
+  it('renders general settings button', () => {
+    const { getByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
     const generalSettings = getByTestId(SettingsViewSelectorsIDs.GENERAL);
     expect(generalSettings).toBeDefined();
   });
-  it('should render security settings button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
+  it('renders security settings button', () => {
+    const { getByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
     const securitySettings = getByTestId(SettingsViewSelectorsIDs.SECURITY);
     expect(securitySettings).toBeDefined();
   });
-  it('should render advanced settings button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
+  it('renders advanced settings button', () => {
+    const { getByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
     const advancedSettings = getByTestId(SettingsViewSelectorsIDs.ADVANCED);
     expect(advancedSettings).toBeDefined();
   });
-  it('should render contacts settings button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
-    const contactsSettings = getByTestId(SettingsViewSelectorsIDs.CONTACTS);
-    expect(contactsSettings).toBeDefined();
+
+  it('does not render root list row subtitles', () => {
+    const { getByText, queryByText } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+
+    expect(
+      getByText(strings('app_settings.notifications_title')),
+    ).toBeOnTheScreen();
+    expect(getByText(strings('backupAndSync.title'))).toBeOnTheScreen();
+    expect(queryByText('Manage your notifications')).not.toBeOnTheScreen();
+    expect(
+      queryByText('Back up your accounts and sync settings.'),
+    ).not.toBeOnTheScreen();
   });
-  it('should render network settings button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
-    const networksSettings = getByTestId(SettingsViewSelectorsIDs.NETWORKS);
-    expect(networksSettings).toBeDefined();
+
+  it('renders settings group headings', () => {
+    const { getByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+
+    expect(
+      getByTestId(SettingsViewSelectorsIDs.GROUP_GENERAL),
+    ).toBeOnTheScreen();
+    expect(
+      getByTestId(SettingsViewSelectorsIDs.GROUP_SECURITY_AND_PRIVACY),
+    ).toBeOnTheScreen();
+    expect(
+      getByTestId(SettingsViewSelectorsIDs.GROUP_TRANSACTIONS_AND_ASSETS),
+    ).toBeOnTheScreen();
+    expect(getByTestId(SettingsViewSelectorsIDs.GROUP_MORE)).toBeOnTheScreen();
   });
-  it('should render feature request button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
+  it('does not render contacts (account menu entry)', () => {
+    const { queryByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    expect(
+      queryByTestId(SettingsViewSelectorsIDs.CONTACTS),
+    ).not.toBeOnTheScreen();
+  });
+  it('render feature request button', () => {
+    const { getByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
     const onRampSettings = getByTestId(SettingsViewSelectorsIDs.ON_RAMP);
     expect(onRampSettings).toBeDefined();
   });
-  it('should render experimental settings button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
+  it('renders experimental settings button', () => {
+    const { getByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
     const experimentalSettings = getByTestId(
       SettingsViewSelectorsIDs.EXPERIMENTAL,
     );
     expect(experimentalSettings).toBeDefined();
   });
-  it('should render about metamask button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
-    const aboutMetamask = getByTestId(SettingsViewSelectorsIDs.ABOUT_METAMASK);
-    expect(aboutMetamask).toBeDefined();
+  it('does not render about metamask (account menu entry)', () => {
+    const { queryByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    expect(
+      queryByTestId(SettingsViewSelectorsIDs.ABOUT_METAMASK),
+    ).not.toBeOnTheScreen();
   });
-  it('should render request feature button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
-    const requestFeature = getByTestId(SettingsViewSelectorsIDs.REQUEST);
-    expect(requestFeature).toBeDefined();
+  it('does not render request feature (account menu entry)', () => {
+    const { queryByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    expect(
+      queryByTestId(SettingsViewSelectorsIDs.REQUEST),
+    ).not.toBeOnTheScreen();
   });
-  it('should render contact support button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
-    const contactSupport = getByTestId(SettingsViewSelectorsIDs.CONTACT);
-    expect(contactSupport).toBeDefined();
+  it('does not render contact support (account menu entry)', () => {
+    const { queryByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    expect(
+      queryByTestId(SettingsViewSelectorsIDs.CONTACT),
+    ).not.toBeOnTheScreen();
   });
-  it('should render lock button', () => {
-    const { getByTestId } = renderWithProvider(<Settings />);
-    const lock = getByTestId(SettingsViewSelectorsIDs.LOCK);
-    expect(lock).toBeDefined();
+  it('does not render lock button (account menu entry)', () => {
+    const { queryByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    expect(queryByTestId(SettingsViewSelectorsIDs.LOCK)).not.toBeOnTheScreen();
+  });
+  it('does not render permissions (account menu entry)', () => {
+    const { queryByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    expect(
+      queryByTestId(SettingsViewSelectorsIDs.PERMISSIONS),
+    ).not.toBeOnTheScreen();
+  });
+  it('renders backup and sync settings button and navigates to correct page on press', () => {
+    const { getByTestId } = renderWithProvider(<Settings />, {
+      state: initialState,
+    });
+    const backupAndSyncSettings = getByTestId(
+      SettingsViewSelectorsIDs.BACKUP_AND_SYNC,
+    );
+    expect(backupAndSyncSettings).toBeDefined();
+
+    fireEvent.press(backupAndSyncSettings);
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.SETTINGS.BACKUP_AND_SYNC);
+  });
+
+  describe('Feature Flag Override', () => {
+    const originalEnv = process.env.METAMASK_ENVIRONMENT;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      // Reset to original value before each test
+      if (originalEnv !== undefined) {
+        process.env.METAMASK_ENVIRONMENT = originalEnv;
+      } else {
+        delete process.env.METAMASK_ENVIRONMENT;
+      }
+    });
+
+    afterEach(() => {
+      if (originalEnv !== undefined) {
+        process.env.METAMASK_ENVIRONMENT = originalEnv;
+      } else {
+        delete process.env.METAMASK_ENVIRONMENT;
+      }
+    });
+
+    it('renders feature flag override drawer when METAMASK_ENVIRONMENT is not production', () => {
+      process.env.METAMASK_ENVIRONMENT = 'development';
+
+      const { getByText } = renderWithProvider(<Settings />, {
+        state: initialState,
+      });
+
+      const featureFlagOverrideTitle = getByText(
+        strings('app_settings.feature_flag_override.title'),
+      );
+
+      expect(featureFlagOverrideTitle).toBeDefined();
+    });
   });
 });

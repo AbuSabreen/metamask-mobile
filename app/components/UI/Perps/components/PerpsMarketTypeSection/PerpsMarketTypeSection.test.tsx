@@ -1,0 +1,301 @@
+import React, { ComponentType } from 'react';
+import { fireEvent } from '@testing-library/react-native';
+import PerpsMarketTypeSection from './PerpsMarketTypeSection';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import Routes from '../../../../../constants/navigation/Routes';
+import { createActiveABTestAssignment } from '../../../../../util/analytics/activeABTestAssignments';
+
+// Type helper for UNSAFE_getByType with mocked string components
+const asComponentType = (name: string) => name as unknown as ComponentType;
+
+const mockNavigate = jest.fn();
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    navigate: mockNavigate,
+  }),
+}));
+
+jest.mock('../PerpsMarketList', () => 'PerpsMarketList');
+jest.mock('../PerpsRowSkeleton', () => 'PerpsRowSkeleton');
+
+const mockMarkets = [
+  {
+    symbol: 'BTC-USD',
+    name: 'Bitcoin',
+    maxLeverage: '40x',
+    price: '$50,000.00',
+    change24h: '+$1,250.00',
+    change24hPercent: '+2.5%',
+    volume: '$1.2B',
+  },
+  {
+    symbol: 'ETH-USD',
+    name: 'Ethereum',
+    maxLeverage: '25x',
+    price: '$3,000.00',
+    change24h: '+$75.00',
+    change24hPercent: '+2.5%',
+    volume: '$500M',
+  },
+];
+
+describe('PerpsMarketTypeSection', () => {
+  const initialState = {
+    engine: {
+      backgroundState: {
+        ...backgroundState,
+      },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it('renders section title', () => {
+    // Arrange & Act
+    const { getByText } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+      />,
+      { state: initialState },
+    );
+
+    // Assert
+    expect(getByText('Crypto')).toBeOnTheScreen();
+  });
+
+  it('renders PerpsMarketList with markets', () => {
+    // Arrange & Act
+    const { UNSAFE_getByType } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+      />,
+      { state: initialState },
+    );
+
+    // Assert
+    const marketList = UNSAFE_getByType(asComponentType('PerpsMarketList'));
+    expect(marketList.props.markets).toEqual(mockMarkets);
+  });
+
+  it('renders skeleton when loading', () => {
+    // Arrange & Act
+    const { UNSAFE_getByType } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={[]}
+        marketType="crypto"
+        isLoading
+      />,
+      { state: initialState },
+    );
+
+    // Assert
+    const skeleton = UNSAFE_getByType(asComponentType('PerpsRowSkeleton'));
+    expect(skeleton.props.count).toBe(5);
+  });
+
+  it('returns null when markets array is empty and not loading', () => {
+    // Arrange & Act
+    const { queryByText } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={[]}
+        marketType="crypto"
+        isLoading={false}
+      />,
+      { state: initialState },
+    );
+
+    // Assert
+    expect(queryByText('Crypto')).toBeNull();
+  });
+
+  it('navigates to market list when header is pressed', () => {
+    // Arrange
+    const { getByText } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+        source="perps_home"
+      />,
+      { state: initialState },
+    );
+    const header = getByText('Crypto');
+
+    // Act
+    fireEvent.press(header);
+
+    // Assert
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.PERPS.ROOT, {
+      screen: Routes.PERPS.MARKET_LIST,
+      params: {
+        defaultMarketTypeFilter: 'crypto',
+        source: 'perps_home',
+      },
+    });
+  });
+
+  it('carries transactionActiveAbTests when header opens market list', () => {
+    const transactionActiveAbTests = [
+      createActiveABTestAssignment(
+        'homeTMCU725AbtestHomepagePerpsPillsEmptyState',
+        'treatment',
+      ),
+    ];
+    const { getByText } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+        source="perps_home"
+        transactionActiveAbTests={transactionActiveAbTests}
+      />,
+      { state: initialState },
+    );
+
+    fireEvent.press(getByText('Crypto'));
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.PERPS.ROOT, {
+      screen: Routes.PERPS.MARKET_LIST,
+      params: {
+        defaultMarketTypeFilter: 'crypto',
+        source: 'perps_home',
+        transactionActiveAbTests,
+      },
+    });
+  });
+
+  it('navigates to market details when market is pressed', () => {
+    // Arrange
+    const { UNSAFE_getByType } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+        source="perps_home"
+      />,
+      { state: initialState },
+    );
+    const marketList = UNSAFE_getByType(asComponentType('PerpsMarketList'));
+
+    // Act
+    marketList.props.onMarketPress(mockMarkets[0]);
+
+    // Assert
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.PERPS.ROOT, {
+      screen: Routes.PERPS.MARKET_DETAILS,
+      params: { market: mockMarkets[0], source: 'perps_home' },
+    });
+  });
+
+  it('carries transactionActiveAbTests when a market opens market details', () => {
+    const transactionActiveAbTests = [
+      createActiveABTestAssignment(
+        'homeTMCU725AbtestHomepagePerpsPillsEmptyState',
+        'treatment',
+      ),
+    ];
+    const { UNSAFE_getByType } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+        source="perps_home"
+        transactionActiveAbTests={transactionActiveAbTests}
+      />,
+      { state: initialState },
+    );
+    const marketList = UNSAFE_getByType(asComponentType('PerpsMarketList'));
+
+    marketList.props.onMarketPress(mockMarkets[0]);
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.PERPS.ROOT, {
+      screen: Routes.PERPS.MARKET_DETAILS,
+      params: {
+        market: mockMarkets[0],
+        source: 'perps_home',
+        transactionActiveAbTests,
+      },
+    });
+  });
+
+  it('passes sortBy prop to PerpsMarketList', () => {
+    // Arrange & Act
+    const { UNSAFE_getByType } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+        sortBy="priceChange"
+      />,
+      { state: initialState },
+    );
+
+    // Assert
+    const marketList = UNSAFE_getByType(asComponentType('PerpsMarketList'));
+    expect(marketList.props.sortBy).toBe('priceChange');
+  });
+
+  it('uses default sortBy of volume', () => {
+    // Arrange & Act
+    const { UNSAFE_getByType } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+      />,
+      { state: initialState },
+    );
+
+    // Assert
+    const marketList = UNSAFE_getByType(asComponentType('PerpsMarketList'));
+    expect(marketList.props.sortBy).toBe('volume');
+  });
+
+  it('applies custom testID to section', () => {
+    // Arrange & Act
+    const { getByTestId } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+        testID="custom-section-id"
+      />,
+      { state: initialState },
+    );
+
+    // Assert
+    expect(getByTestId('custom-section-id')).toBeOnTheScreen();
+  });
+
+  it('derives header and market list testIDs from the section testID', () => {
+    // Arrange & Act
+    const { getByTestId } = renderWithProvider(
+      <PerpsMarketTypeSection
+        title="Explore crypto"
+        markets={mockMarkets}
+        marketType="crypto"
+        testID="custom-section-id"
+      />,
+      { state: initialState },
+    );
+
+    // Assert
+    expect(getByTestId('custom-section-id-header')).toBeOnTheScreen();
+    expect(getByTestId('custom-section-id-list')).toBeOnTheScreen();
+  });
+});

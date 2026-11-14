@@ -1,0 +1,373 @@
+import { Hex } from '@metamask/utils';
+import { TransactionType } from '@metamask/transaction-controller';
+import { cloneDeep } from 'lodash';
+import { decimalToHex } from '../../../../../util/conversions';
+import { isTestNet } from '../../../../../util/networks';
+import { stakingDepositConfirmationState } from '../../../../../util/test/confirm-data-helpers';
+import { renderHookWithProvider } from '../../../../../util/test/renderWithProvider';
+import { useFeeCalculations } from './useFeeCalculations';
+import { useIsGaslessSupported } from './useIsGaslessSupported';
+import { toHex } from '@metamask/controller-utils';
+
+jest.mock('../../../../../util/networks', () => ({
+  isTestNet: jest.fn().mockReturnValue(false),
+}));
+
+jest.mock('../../../../../core/Engine', () => ({
+  context: {
+    GasFeeController: {
+      startPolling: jest.fn(),
+      stopPollingByPollingToken: jest.fn(),
+    },
+    NetworkController: {
+      getNetworkConfigurationByNetworkClientId: jest.fn(),
+    },
+  },
+}));
+
+jest.mock('../../utils/token', () => ({
+  ...jest.requireActual('../../../../utils/token'),
+  fetchErc20Decimals: jest.fn().mockResolvedValue(18),
+}));
+
+jest.mock('./useIsGaslessSupported', () => ({
+  useIsGaslessSupported: jest.fn(),
+}));
+
+describe('useFeeCalculations', () => {
+  const mockIsTestNet = jest.mocked(isTestNet);
+  const mockUseIsGaslessSupported = jest.mocked(useIsGaslessSupported);
+
+  beforeEach(() => {
+    jest.resetAllMocks();
+    mockUseIsGaslessSupported.mockReturnValue({
+      isSupported: false,
+      isSmartTransaction: false,
+      pending: false,
+    });
+  });
+
+  const transactionMeta =
+    stakingDepositConfirmationState.engine.backgroundState.TransactionController
+      .transactions[0];
+
+  it('returns fee calculations', () => {
+    const { result } = renderHookWithProvider(
+      () => useFeeCalculations(transactionMeta),
+      {
+        state: stakingDepositConfirmationState,
+      },
+    );
+
+    expect(result.current.estimatedFeeFiat).toBe('$0.34');
+    expect(result.current.estimatedFeeNative).toBe('0.0001');
+    expect(result.current.estimatedFeeFiatPrecise).toBe('0.337875011');
+    expect(result.current.preciseNativeFeeInHex).toBe('0x5572e9c22d00');
+    expect(result.current.calculateGasEstimate).toBeDefined();
+  });
+
+  it('returns zero fee when gas is sponsored', () => {
+    mockUseIsGaslessSupported.mockReturnValue({
+      isSupported: true,
+      isSmartTransaction: false,
+      pending: false,
+    });
+    const { result } = renderHookWithProvider(
+      () =>
+        useFeeCalculations({
+          ...transactionMeta,
+          isGasFeeSponsored: true,
+        }),
+      {
+        state: stakingDepositConfirmationState,
+      },
+    );
+    expect(result.current.estimatedFeeFiat).toBe('$0');
+    expect(result.current.estimatedFeeNative).toBe('0');
+    expect(result.current.estimatedFeeFiatPrecise).toBe('0');
+    expect(result.current.preciseNativeFeeInHex).toBe('0x0');
+    expect(result.current.maxFeeFiat).toBe('$0');
+    expect(result.current.maxFeeNative).toBe('0');
+    expect(result.current.calculateGasEstimate).toBeDefined();
+  });
+
+  it('returns fee calculations when sponsored transaction is revoke delegation', () => {
+    mockUseIsGaslessSupported.mockReturnValue({
+      isSupported: true,
+      isSmartTransaction: false,
+      pending: false,
+    });
+
+    const { result } = renderHookWithProvider(
+      () =>
+        useFeeCalculations({
+          ...transactionMeta,
+          isGasFeeSponsored: true,
+          type: TransactionType.revokeDelegation,
+        }),
+      {
+        state: stakingDepositConfirmationState,
+      },
+    );
+
+    expect(result.current.estimatedFeeFiat).toBe('$0.34');
+    expect(result.current.estimatedFeeNative).toBe('0.0001');
+    expect(result.current.estimatedFeeFiatPrecise).toBe('0.337875011');
+    expect(result.current.preciseNativeFeeInHex).toBe('0x5572e9c22d00');
+    expect(result.current.maxFeeFiat).toBe('$0.86');
+    expect(result.current.maxFeeNative).toBe('0.0002');
+    expect(result.current.calculateGasEstimate).toBeDefined();
+  });
+
+  it('returns correct fee calculations when gas is sponsored but gasless not supported', () => {
+    mockUseIsGaslessSupported.mockReturnValue({
+      isSupported: false,
+      isSmartTransaction: false,
+      pending: false,
+    });
+    const { result } = renderHookWithProvider(
+      () =>
+        useFeeCalculations({
+          ...transactionMeta,
+          isGasFeeSponsored: true,
+        }),
+      {
+        state: stakingDepositConfirmationState,
+      },
+    );
+    expect(result.current.estimatedFeeFiat).toBe('$0.34');
+    expect(result.current.estimatedFeeNative).toBe('0.0001');
+    expect(result.current.estimatedFeeFiatPrecise).toBe('0.337875011');
+    expect(result.current.preciseNativeFeeInHex).toBe('0x5572e9c22d00');
+    expect(result.current.calculateGasEstimate).toBeDefined();
+  });
+
+  it('returns fee calculations but hides fiat on testnets when showFiatOnTestnets is false', () => {
+    mockIsTestNet.mockReturnValue(true);
+    const clonedStakingDepositConfirmationState = cloneDeep(
+      stakingDepositConfirmationState,
+    );
+    clonedStakingDepositConfirmationState.settings.showFiatOnTestnets = false;
+
+    const {
+      result: {
+        current: { calculateGasEstimate },
+      },
+    } = renderHookWithProvider(() => useFeeCalculations(transactionMeta), {
+      state: clonedStakingDepositConfirmationState,
+    });
+
+    const { currentCurrencyFee } = calculateGasEstimate({
+      feePerGas: '0x5572e9c22d00',
+      priorityFeePerGas: '0x0',
+      gas: '0x5572e9c22d00',
+      shouldUseEIP1559FeeLogic: true,
+      gasPrice: '0x5572e9c22d00',
+      receiptGasPrice: undefined,
+    });
+
+    expect(currentCurrencyFee).toBe(null);
+  });
+
+  it('returns fee calculations less than $0.01', () => {
+    const clonedStakingDepositConfirmationState = cloneDeep(
+      stakingDepositConfirmationState,
+    );
+    clonedStakingDepositConfirmationState.engine.backgroundState.AssetsController.assetsPrice[
+      'eip155:1/slip44:60'
+    ] = {
+      assetPriceType: 'fungible',
+      price: 80,
+      usdPrice: 80,
+      lastUpdated: 1732887955694,
+    };
+
+    const { result } = renderHookWithProvider(
+      () => useFeeCalculations(transactionMeta),
+      {
+        state: clonedStakingDepositConfirmationState,
+      },
+    );
+
+    expect(result.current.estimatedFeeFiat).toBe('< $0.01');
+    expect(result.current.estimatedFeeNative).toBe('0.0001');
+    expect(result.current.estimatedFeeFiatPrecise).toBe('0.007516163');
+    expect(result.current.preciseNativeFeeInHex).toBe('0x5572e9c22d00');
+    expect(result.current.calculateGasEstimate).toBeDefined();
+  });
+
+  it('returns native fees but no fiat when conversion rate is null', () => {
+    const clonedState = cloneDeep(stakingDepositConfirmationState);
+
+    delete clonedState.engine.backgroundState.AssetsController.assetsPrice[
+      'eip155:1/slip44:60'
+    ];
+
+    const { result } = renderHookWithProvider(
+      () => useFeeCalculations(transactionMeta),
+      {
+        state: clonedState,
+      },
+    );
+
+    expect(result.current.estimatedFeeFiat).toBeNull();
+    expect(result.current.estimatedFeeFiatPrecise).toBeNull();
+    expect(result.current.estimatedFeeNative).toBe('0.0001');
+    expect(result.current.preciseNativeFeeInHex).toBe('0x5572e9c22d00');
+    expect(result.current.calculateGasEstimate).toBeDefined();
+  });
+
+  it('returns native fees but no fiat when conversion rate is undefined', () => {
+    const clonedState = cloneDeep(stakingDepositConfirmationState);
+
+    delete clonedState.engine.backgroundState.AssetsController.assetsPrice[
+      'eip155:1/slip44:60'
+    ];
+
+    const { result } = renderHookWithProvider(
+      () => useFeeCalculations(transactionMeta),
+      {
+        state: clonedState,
+      },
+    );
+
+    expect(result.current.estimatedFeeFiat).toBeNull();
+    expect(result.current.estimatedFeeFiatPrecise).toBeNull();
+    expect(result.current.estimatedFeeNative).toBe('0.0001');
+    expect(result.current.preciseNativeFeeInHex).toBe('0x5572e9c22d00');
+    expect(result.current.calculateGasEstimate).toBeDefined();
+  });
+
+  it('returns fee calculations including layer1GasFee (L1 + L2)', () => {
+    const clonedStateWithLayer1GasFee = cloneDeep(
+      stakingDepositConfirmationState,
+    );
+    // Add a layer1GasFee to the transactionMeta
+    const layer1GasFee = '0x1000'; // 4096 in hex, small value for test
+    clonedStateWithLayer1GasFee.engine.backgroundState.TransactionController.transactions[0].layer1GasFee =
+      layer1GasFee;
+
+    const transactionMetaWithLayer1GasFee =
+      clonedStateWithLayer1GasFee.engine.backgroundState.TransactionController
+        .transactions[0];
+
+    const { result } = renderHookWithProvider(
+      () => useFeeCalculations(transactionMetaWithLayer1GasFee),
+      {
+        state: clonedStateWithLayer1GasFee,
+      },
+    );
+
+    // The expected values are the sum of the original estimatedFee and layer1GasFee
+    // The original estimatedFee is 0x5572e9c22d00, so the sum is 0x5572e9c23d00
+    expect(result.current.estimatedFeeFiat).toBe('$0.34');
+    expect(result.current.estimatedFeeNative).toBe('0.0001');
+    expect(result.current.estimatedFeeFiatPrecise).toBe('0.337875011');
+    expect(result.current.preciseNativeFeeInHex).toBe('0x5572e9c23d00');
+    expect(result.current.calculateGasEstimate).toBeDefined();
+  });
+
+  it('returs fee calculations using receipt values if present', () => {
+    const state = cloneDeep(stakingDepositConfirmationState);
+
+    state.engine.backgroundState.TransactionController.transactions[0].txReceipt =
+      {
+        gasUsed: toHex(50000),
+        effectiveGasPrice: toHex(300000000000000),
+      };
+
+    const transactionWithReceipt =
+      state.engine.backgroundState.TransactionController.transactions[0];
+
+    const { result } = renderHookWithProvider(
+      () => useFeeCalculations(transactionWithReceipt),
+      {
+        state,
+      },
+    );
+
+    expect(result.current).toMatchObject({
+      estimatedFeeNative: '15',
+    });
+  });
+
+  it('returns fee calculations when gasUsed is present', () => {
+    const clonedStateWithGasUsed = cloneDeep(stakingDepositConfirmationState);
+    const gasUsed = toHex(35000);
+    clonedStateWithGasUsed.engine.backgroundState.TransactionController.transactions[0].gasUsed =
+      gasUsed;
+
+    const transactionMetaWithLayer1GasFee =
+      clonedStateWithGasUsed.engine.backgroundState.TransactionController
+        .transactions[0];
+
+    const { result } = renderHookWithProvider(
+      () => useFeeCalculations(transactionMetaWithLayer1GasFee),
+      {
+        state: clonedStateWithGasUsed,
+      },
+    );
+
+    expect(result.current).toMatchInlineSnapshot(`
+{
+  "calculateGasEstimate": [Function],
+  "estimatedFeeFiat": "$0.16",
+  "estimatedFeeFiatPrecise": "0.164297281",
+  "estimatedFeeNative": "0",
+  "maxFeeFiat": "$0.86",
+  "maxFeeNative": "0.0002",
+  "maxFeeNativeHex": "0xda088e7816a0",
+  "maxFeeNativePrecise": "0.00024 ETH",
+  "preciseNativeFeeInHex": "0x298d09489800",
+}
+`);
+  });
+
+  describe('Max fee', () => {
+    it('EIP-1559 transaction', () => {
+      const clonedState = cloneDeep(stakingDepositConfirmationState);
+      const transactionMetaWithLayer1GasFee =
+        clonedState.engine.backgroundState.TransactionController
+          .transactions[0];
+
+      const { result } = renderHookWithProvider(
+        () => useFeeCalculations(transactionMetaWithLayer1GasFee),
+        {
+          state: clonedState,
+        },
+      );
+
+      expect(result.current.maxFeeFiat).toBe('$0.86');
+      expect(result.current.maxFeeNative).toBe('0.0002');
+      expect(result.current.maxFeeNativePrecise).toBe('0.00024 ETH');
+      expect(result.current.maxFeeNativeHex).toBe('0xda088e7816a0');
+      expect(result.current.calculateGasEstimate).toBeDefined();
+    });
+
+    it('EIP-1559 transaction with layer1GasFee', () => {
+      const clonedStateWithLayer1GasFee = cloneDeep(
+        stakingDepositConfirmationState,
+      );
+      // Add a layer1GasFee to the transactionMeta
+      const layer1GasFee = decimalToHex(4096); // '0x1000' in hex
+      clonedStateWithLayer1GasFee.engine.backgroundState.TransactionController.transactions[0].layer1GasFee =
+        layer1GasFee as Hex;
+      const transactionMetaWithLayer1GasFee =
+        clonedStateWithLayer1GasFee.engine.backgroundState.TransactionController
+          .transactions[0];
+
+      const { result } = renderHookWithProvider(
+        () => useFeeCalculations(transactionMetaWithLayer1GasFee),
+        {
+          state: clonedStateWithLayer1GasFee,
+        },
+      );
+
+      expect(result.current.maxFeeFiat).toBe('$0.86');
+      expect(result.current.maxFeeNative).toBe('0.0002');
+      expect(result.current.maxFeeNativePrecise).toBe('0.00024 ETH');
+      expect(result.current.maxFeeNativeHex).toBe('0xda088e7826a0'); // visually 0x1000 more than the test above
+      expect(result.current.calculateGasEstimate).toBeDefined();
+    });
+  });
+});

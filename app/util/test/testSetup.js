@@ -1,15 +1,215 @@
-import { NativeModules } from 'react-native';
+import { NativeModules, Linking, Keyboard } from 'react-native';
 import mockRNAsyncStorage from '@react-native-async-storage/async-storage/jest/async-storage-mock';
 import mockClipboard from '@react-native-clipboard/clipboard/jest/clipboard-mock.js';
-/* eslint-disable import/no-namespace */
+/* eslint-disable import-x/no-namespace */
 import { mockTheme } from '../theme';
-import Adapter from 'enzyme-adapter-react-16';
-import Enzyme from 'enzyme';
+import base64js from 'base64-js';
 
-Enzyme.configure({ adapter: new Adapter() });
+// Set up global polyfills for base64 functions
+global.base64FromArrayBuffer = base64js.fromByteArray;
+global.base64ToArrayBuffer = base64js.toByteArray;
 
-jest.mock('react-native-quick-crypto', () => ({}));
-jest.mock('react-native-blob-jsi-helper', () => ({}));
+// Augment RN preset Linking mock with missing methods needed by @react-navigation/native
+Linking.removeEventListener = jest.fn();
+Linking.openURL = jest.fn().mockResolvedValue(undefined);
+
+// Keyboard.addListener must return a subscription with .remove() for KeyboardAvoidingView
+// We need to patch the prototype/instance method that KeyboardAvoidingView uses
+const RNKeyboard = require('react-native/Libraries/Components/Keyboard/Keyboard');
+const origAddListener =
+  RNKeyboard.default?.addListener || RNKeyboard.addListener;
+const patchedAddListener = jest.fn((...args) => {
+  try {
+    const sub = origAddListener?.call(
+      RNKeyboard.default || RNKeyboard,
+      ...args,
+    );
+    if (sub && typeof sub.remove === 'function') return sub;
+    return { remove: jest.fn() };
+  } catch {
+    return { remove: jest.fn() };
+  }
+});
+if (RNKeyboard.default) {
+  RNKeyboard.default.addListener = patchedAddListener;
+} else {
+  RNKeyboard.addListener = patchedAddListener;
+}
+Keyboard.addListener = patchedAddListener;
+
+// Mock the redux-devtools-expo-dev-plugin module
+jest.mock('redux-devtools-expo-dev-plugin', () => {});
+
+// Mock expo-modules-core: globalThis.expo.EventEmitter is not available in Jest
+// because the native module installer doesn't run. Provide a minimal stub so
+// that expo-file-system and other Expo packages can be imported.
+jest.mock('expo-modules-core', () => ({
+  EventEmitter: jest.fn().mockImplementation(() => ({
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    removeListener: jest.fn(),
+    removeAllListeners: jest.fn(),
+    emit: jest.fn(),
+  })),
+  NativeModule: jest.fn(),
+  NativeModulesProxy: {},
+  requireNativeModule: jest.fn(() => ({})),
+  requireOptionalNativeModule: jest.fn(() => null),
+  // Native view managers resolve to a host component name so that children
+  // (and their testIDs) still render in tests.
+  requireNativeViewManager: jest.fn((name) => name),
+  Platform: { OS: 'ios' },
+  CodedError: class CodedError extends Error {},
+  UnavailabilityError: class UnavailabilityError extends Error {},
+  LegacyEventEmitter: jest.fn(),
+}));
+
+// Mock expo-screen-capture: it reaches for a native module at import time, so
+// importing it unmocked throws in Jest.
+jest.mock('expo-screen-capture', () => ({
+  preventScreenCaptureAsync: jest.fn().mockResolvedValue(undefined),
+  allowScreenCaptureAsync: jest.fn().mockResolvedValue(undefined),
+  addScreenshotListener: jest.fn(() => ({ remove: jest.fn() })),
+  removeScreenshotListener: jest.fn(),
+  isAvailableAsync: jest.fn().mockResolvedValue(true),
+  usePreventScreenCapture: jest.fn(),
+  useScreenshotListener: jest.fn(),
+}));
+
+// Mock Expo's fetch implementation
+jest.mock('expo/fetch', () => {
+  return {
+    fetch: fetch,
+  };
+});
+
+let mockQuickCryptoUuidCounter = 0;
+let mockQuickCryptoRandomCounter = 0;
+const fillDeterministicBytes = (array) => {
+  mockQuickCryptoRandomCounter += 1;
+  for (let i = 0; i < array.length; i++) {
+    array[i] = ((i + mockQuickCryptoRandomCounter) % 255) + 1;
+  }
+  return array;
+};
+const createMockUuid = () => {
+  mockQuickCryptoUuidCounter += 1;
+  return `mock-uuid-${String(mockQuickCryptoUuidCounter).padStart(9, '0')}`;
+};
+
+jest.mock('react-native-quick-crypto', () => ({
+  __esModule: true,
+  default: {
+    randomBytes: jest.fn((size) =>
+      Buffer.from(Array.from({ length: size }, (_, i) => (i % 255) + 1)),
+    ),
+    randomUUID: jest.fn(() => createMockUuid()),
+    getRandomValues: jest.fn((array) => fillDeterministicBytes(array)),
+    subtle: {
+      importKey: jest.fn(
+        (format, keyData, algorithm, extractable, keyUsages) => {
+          return Promise.resolve({
+            format,
+            keyData,
+            algorithm,
+            extractable,
+            keyUsages,
+          });
+        },
+      ),
+      deriveBits: jest.fn((algorithm, baseKey, length) => {
+        const derivedBits = new Uint8Array(length);
+        return Promise.resolve(fillDeterministicBytes(derivedBits));
+      }),
+      exportKey: jest.fn((format, key) => {
+        return Promise.resolve(new Uint8Array([1, 2, 3, 4]));
+      }),
+      encrypt: jest.fn((algorithm, key, data) => {
+        return Promise.resolve(
+          new Uint8Array([
+            123, 34, 116, 101, 115, 116, 34, 58, 34, 100, 97, 116, 97, 34, 125,
+          ]),
+        );
+      }),
+      decrypt: jest.fn((algorithm, key, data) => {
+        return Promise.resolve(
+          new Uint8Array([
+            123, 34, 116, 101, 115, 116, 34, 58, 34, 100, 97, 116, 97, 34, 125,
+          ]),
+        );
+      }),
+    },
+  },
+  getRandomValues: jest.fn((array) => fillDeterministicBytes(array)),
+  subtle: {
+    importKey: jest.fn((format, keyData, algorithm, extractable, keyUsages) => {
+      return Promise.resolve({
+        format,
+        keyData,
+        algorithm,
+        extractable,
+        keyUsages,
+      });
+    }),
+    deriveBits: jest.fn((algorithm, baseKey, length) => {
+      const derivedBits = new Uint8Array(length);
+      return Promise.resolve(fillDeterministicBytes(derivedBits));
+    }),
+    exportKey: jest.fn((format, key) => {
+      return Promise.resolve(new Uint8Array([1, 2, 3, 4]));
+    }),
+    encrypt: jest.fn((algorithm, key, data) => {
+      return Promise.resolve(
+        new Uint8Array([
+          123, 34, 116, 101, 115, 116, 34, 58, 34, 100, 97, 116, 97, 34, 125,
+        ]),
+      );
+    }),
+    decrypt: jest.fn((algorithm, key, data) => {
+      return Promise.resolve(
+        new Uint8Array([
+          123, 34, 116, 101, 115, 116, 34, 58, 34, 100, 97, 116, 97, 34, 125,
+        ]),
+      );
+    }),
+  },
+  randomUUID: jest.fn(() => createMockUuid()),
+}));
+
+// Mock react-native-quick-base64. v3's `index.ts` calls
+// `TurboModuleRegistry.getEnforcing('QuickBase64')` at import time, which
+// throws in Jest since no native binary is registered. This module is a
+// transitive dependency of `Engine` (via the OAuth login handlers used for
+// seedless onboarding), so it must be mocked globally rather than per-file.
+jest.mock('react-native-quick-base64', () => {
+  // eslint-disable-next-line import-x/no-nodejs-modules
+  const { Buffer: NodeBuffer } = require('buffer');
+  return {
+    byteLength: (b64) => NodeBuffer.from(b64, 'base64').length,
+    toByteArray: (b64) => new Uint8Array(NodeBuffer.from(b64, 'base64')),
+    fromByteArray: (uint8) => NodeBuffer.from(uint8).toString('base64'),
+    btoa: (str) => NodeBuffer.from(str, 'binary').toString('base64'),
+    atob: (b64) => NodeBuffer.from(b64, 'base64').toString('binary'),
+    shim: jest.fn(),
+    getNative: () => ({
+      base64FromArrayBuffer: global.base64FromArrayBuffer,
+      base64ToArrayBuffer: global.base64ToArrayBuffer,
+    }),
+    trimBase64Padding: (str) => str.replace(/[.=]{1,2}$/, ''),
+  };
+});
+
+// Create a persistent mock function that survives Jest teardown.
+// Deliberately a plain function, NOT jest.fn(): RN 0.86 made
+// `unstable_batchedUpdates` writable so this shim is now actually installed,
+// and a jest.fn implementation would be stripped by `jest.resetAllMocks()`
+// in test files (e.g. EngineService.test.ts), turning every batched
+// dispatch into a silent no-op.
+const mockBatchedUpdates = (fn) => {
+  if (typeof fn === 'function') {
+    return fn();
+  }
+  return fn;
+};
 
 jest.mock('react-native', () => {
   const originalModule = jest.requireActual('react-native');
@@ -17,7 +217,71 @@ jest.mock('react-native', () => {
   // Set the Platform.OS property to the desired value
   originalModule.Platform.OS = 'ios'; // or 'android', depending on what you want to test
 
+  // Mock deprecated prop types for third-party packages that haven't been updated
+  originalModule.Text.propTypes = {
+    allowFontScaling: true,
+    style: true,
+  };
+
+  originalModule.ViewPropTypes = {
+    style: true,
+  };
+
   return originalModule;
+});
+
+// Must be patched post-require, and unconditionally. `jest.mock` factories are
+// hoisted above `mockBatchedUpdates`, so assigning it from inside the factory
+// stores `undefined`. Up to RN 0.85 that write silently failed because
+// `unstable_batchedUpdates` was a getter-only export; RN 0.86 exposes it as a
+// writable method, so the stale write clobbered it and react-redux's `batch`
+// became undefined.
+const ReactNative = require('react-native');
+ReactNative.unstable_batchedUpdates = mockBatchedUpdates;
+
+// Shim: BackHandler.removeEventListener was removed in RN 0.75+.
+// Libraries like @metamask/design-system-react-native still call it.
+// Must be patched post-require (the jest.mock factory mutation doesn't persist).
+if (!ReactNative.BackHandler.removeEventListener) {
+  ReactNative.BackHandler.removeEventListener = jest.fn();
+}
+
+// Also mock it globally as a fallback
+global.unstable_batchedUpdates = mockBatchedUpdates;
+
+/*
+ * NOTE: react-native-webview requires a jest mock starting on v12.
+ * More info on https://github.com/react-native-webview/react-native-webview/issues/2934
+ */
+jest.mock('@metamask/react-native-webview', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  const { View } = require('react-native');
+  const WebView = (props) => <View {...props} />;
+
+  return {
+    WebView,
+  };
+});
+
+// Mock @metamask/react-native-button which accesses removed Text.propTypes at parse time
+jest.mock('@metamask/react-native-button', () => {
+  const { Text, TouchableOpacity, View } = require('react-native');
+  const React = require('react');
+  const Button = (props) => {
+    const { children, style, containerStyle, ...rest } = props;
+    return React.createElement(
+      TouchableOpacity,
+      rest,
+      React.createElement(
+        View,
+        { style: containerStyle },
+        typeof children === 'string'
+          ? React.createElement(Text, { style }, children)
+          : children,
+      ),
+    );
+  };
+  return { __esModule: true, default: Button };
 });
 
 jest.mock('../../lib/snaps/preinstalled-snaps');
@@ -94,28 +358,58 @@ jest.mock('../../core/NotificationManager', () => ({
   watchSubmittedTransaction: jest.fn(),
   getTransactionToView: jest.fn(),
   setTransactionToView: jest.fn(),
-  gotIncomingTransaction: jest.fn(),
   requestPushNotificationsPermission: jest.fn(),
   showSimpleNotification: jest.fn(),
 }));
 
+const { createMockUseAnalyticsHook } = require('./analyticsMock');
+
+const mockUseAnalytics = createMockUseAnalyticsHook();
+
+jest.mock('../../components/hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(() => mockUseAnalytics),
+}));
+
+let mockState = {};
+
 jest.mock('../../store', () => ({
   store: {
-    getState: jest.fn(),
+    getState: jest.fn().mockImplementation(() => mockState),
     dispatch: jest.fn(),
+  },
+  runSaga: jest
+    .fn()
+    .mockReturnValue({ toPromise: jest.fn().mockResolvedValue(undefined) }),
+  _updateMockState: (state) => {
+    mockState = state;
+  },
+}));
+
+// Mock SDKConnectV2 singleton to prevent auto-initialization during test setup.
+jest.mock('../../core/SDKConnectV2', () => ({
+  __esModule: true,
+  default: {
+    isMwpDeeplink: jest.fn(() => false),
+    handleMwpDeeplink: jest.fn().mockResolvedValue(undefined),
+    disconnect: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
 jest.mock('../../core/NotificationManager');
 
-jest.mock('react-native/Libraries/EventEmitter/NativeEventEmitter');
+jest.mock('react-native/Libraries/EventEmitter/NativeEventEmitter', () => {
+  const NativeEventEmitter = jest.fn().mockImplementation(() => ({
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    removeListeners: jest.fn(),
+    removeAllListeners: jest.fn(),
+    listenerCount: jest.fn(() => 0),
+    emit: jest.fn(),
+  }));
+  return { __esModule: true, default: NativeEventEmitter };
+});
 
-jest.mock(
-  'react-native/Libraries/Utilities/NativePlatformConstantsIOS',
-  () => ({
-    ...jest.requireActual(
-      'react-native/Libraries/Utilities/NativePlatformConstantsIOS',
-    ),
+jest.mock('react-native/Libraries/Utilities/NativePlatformConstantsIOS', () => {
+  const mock = {
     getConstants: () => ({
       forceTouchAvailable: false,
       interfaceIdiom: 'en',
@@ -124,31 +418,19 @@ jest.mock(
       reactNativeVersion: { major: 60, minor: 1, patch: 0 },
       systemName: 'ios',
     }),
-  }),
-);
+  };
+  return { __esModule: true, default: mock };
+});
 
 jest.mock('react-native-keychain', () => ({
-  SECURITY_LEVEL_ANY: 'MOCK_SECURITY_LEVEL_ANY',
-  SECURITY_LEVEL_SECURE_SOFTWARE: 'MOCK_SECURITY_LEVEL_SECURE_SOFTWARE',
-  SECURITY_LEVEL_SECURE_HARDWARE: 'MOCK_SECURITY_LEVEL_SECURE_HARDWARE',
-  setGenericPassword: jest.fn(),
-  getGenericPassword: jest.fn(),
-  resetGenericPassword: jest.fn(),
-  BIOMETRY_TYPE: {
-    TOUCH_ID: 'TouchID',
-    FACE_ID: 'FaceID',
-    FINGERPRINT: 'Fingerprint',
-    FACE: 'Face',
-    IRIS: 'Iris',
+  // Security Level enum
+  SECURITY_LEVEL: {
+    ANY: 'MOCK_SECURITY_LEVEL_ANY',
+    SECURE_SOFTWARE: 'MOCK_SECURITY_LEVEL_SECURE_SOFTWARE',
+    SECURE_HARDWARE: 'MOCK_SECURITY_LEVEL_SECURE_HARDWARE',
   },
-  getSupportedBiometryType: jest.fn().mockReturnValue('FaceID'),
-  setInternetCredentials: jest
-    .fn(('server', 'username', 'password'))
-    .mockResolvedValue({ service: 'metamask', storage: 'storage' }),
-  getInternetCredentials: jest
-    .fn()
-    .mockResolvedValue({ password: 'mock-credentials-password' }),
-  resetInternetCredentials: jest.fn().mockResolvedValue(),
+
+  // Accessible enum
   ACCESSIBLE: {
     WHEN_UNLOCKED: 'AccessibleWhenUnlocked',
     AFTER_FIRST_UNLOCK: 'AccessibleAfterFirstUnlock',
@@ -158,21 +440,100 @@ jest.mock('react-native-keychain', () => ({
     WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'AccessibleWhenUnlockedThisDeviceOnly',
     AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY:
       'AccessibleAfterFirstUnlockThisDeviceOnly',
-    ALWAYS_THIS_DEVICE_ONLY: 'AccessibleAlwaysThisDeviceOnly',
   },
+
+  // Access Control enum
+  ACCESS_CONTROL: {
+    USER_PRESENCE: 'UserPresence',
+    BIOMETRY_ANY: 'BiometryAny',
+    BIOMETRY_CURRENT_SET: 'BiometryCurrentSet',
+    DEVICE_PASSCODE: 'DevicePasscode',
+    APPLICATION_PASSWORD: 'ApplicationPassword',
+    BIOMETRY_ANY_OR_DEVICE_PASSCODE: 'BiometryAnyOrDevicePasscode',
+    BIOMETRY_CURRENT_SET_OR_DEVICE_PASSCODE:
+      'BiometryCurrentSetOrDevicePasscode',
+  },
+
+  // Authentication Type enum
+  AUTHENTICATION_TYPE: {
+    DEVICE_PASSCODE_OR_BIOMETRICS: 'AuthenticationWithBiometricsDevicePasscode',
+    BIOMETRICS: 'AuthenticationWithBiometrics',
+  },
+
+  // Biometry Type enum
+  BIOMETRY_TYPE: {
+    TOUCH_ID: 'TouchID',
+    FACE_ID: 'FaceID',
+    OPTIC_ID: 'OpticID',
+    FINGERPRINT: 'Fingerprint',
+    FACE: 'Face',
+    IRIS: 'Iris',
+  },
+
+  // Storage Type enum
+  STORAGE_TYPE: {
+    AES_CBC: 'KeystoreAESCBC',
+    AES_GCM_NO_AUTH: 'KeystoreAESGCM_NoAuth',
+    AES_GCM: 'KeystoreAESGCM',
+    RSA: 'KeystoreRSAECB',
+  },
+
+  // Generic password functions
+  setGenericPassword: jest
+    .fn()
+    .mockResolvedValue({ service: 'metamask', storage: 'storage' }),
+  getGenericPassword: jest.fn().mockResolvedValue({
+    service: 'metamask',
+    username: 'mock-username',
+    password: 'mock-password',
+    storage: 'storage',
+  }),
+  hasGenericPassword: jest.fn().mockResolvedValue(true),
+  resetGenericPassword: jest.fn().mockResolvedValue(true),
+  getAllGenericPasswordServices: jest.fn().mockResolvedValue(['metamask']),
+
+  // Internet credentials functions
+  setInternetCredentials: jest
+    .fn()
+    .mockResolvedValue({ service: 'metamask', storage: 'storage' }),
+  getInternetCredentials: jest.fn().mockResolvedValue({
+    server: 'mock-server',
+    username: 'mock-username',
+    password: 'mock-credentials-password',
+    storage: 'storage',
+  }),
+  hasInternetCredentials: jest.fn().mockResolvedValue(true),
+  resetInternetCredentials: jest.fn().mockResolvedValue(),
+
+  // Biometry and authentication functions
+  getSupportedBiometryType: jest.fn().mockResolvedValue('FaceID'),
+  canImplyAuthentication: jest.fn().mockResolvedValue(true),
+  getSecurityLevel: jest
+    .fn()
+    .mockResolvedValue('MOCK_SECURITY_LEVEL_SECURE_SOFTWARE'),
+  isPasscodeAuthAvailable: jest.fn().mockResolvedValue(true),
+
+  // Shared web credentials (iOS only)
+  requestSharedWebCredentials: jest.fn().mockResolvedValue({
+    server: 'mock-server',
+    username: 'mock-username',
+    password: 'mock-password',
+  }),
+  setSharedWebCredentials: jest.fn().mockResolvedValue(),
+
+  // Legacy exports for backward compatibility
+  SECURITY_LEVEL_ANY: 'MOCK_SECURITY_LEVEL_ANY',
+  SECURITY_LEVEL_SECURE_SOFTWARE: 'MOCK_SECURITY_LEVEL_SECURE_SOFTWARE',
+  SECURITY_LEVEL_SECURE_HARDWARE: 'MOCK_SECURITY_LEVEL_SECURE_HARDWARE',
 }));
 
 jest.mock('react-native-share', () => 'RNShare');
 jest.mock('react-native-branch', () => ({
-  BranchSubscriber: () => {
-    () => 'RNBranch';
-  },
+  subscribe: jest.fn(),
 }));
 jest.mock('react-native-sensors', () => 'RNSensors');
 jest.mock('@metamask/react-native-search-api', () => 'SearchApi');
-jest.mock('react-native-reanimated', () =>
-  require('react-native-reanimated/mock'),
-);
+
 jest.mock('react-native-background-timer', () => 'RNBackgroundTimer');
 jest.mock(
   '@react-native-async-storage/async-storage',
@@ -180,14 +541,65 @@ jest.mock(
 );
 jest.mock('@react-native-cookies/cookies', () => 'RNCookies');
 
+/**
+ * Use the official `react-native-worklets` Jest mock. Reanimated 4 depends on
+ * react-native-worklets, and requiring the real package eagerly initializes its
+ * native part (absent under Jest), throwing "Native part of Worklets doesn't
+ * seem to be initialized". The mock also installs `globalThis._getAnimationTimestamp`
+ * and a timestamp-correct `requestAnimationFrame` that animation tests rely on.
+ * See: https://docs.swmansion.com/react-native-worklets/docs/guides/testing/
+ */
+jest.mock('react-native-worklets', () =>
+  require('react-native-worklets/lib/module/mock'),
+);
+
+jest.mock('react-native-mmkv', () => {
+  const createInMemoryMMKV = () => {
+    const store = new Map();
+    return {
+      getString: jest.fn((key) => store.get(key)),
+      set: jest.fn((key, value) => store.set(key, value)),
+      getBoolean: jest.fn((key) => store.get(key)),
+      getNumber: jest.fn((key) => store.get(key)),
+      delete: jest.fn((key) => store.delete(key)),
+      remove: jest.fn((key) => store.delete(key)),
+      contains: jest.fn((key) => store.has(key)),
+      clearAll: jest.fn(() => store.clear()),
+      getAllKeys: jest.fn(() => [...store.keys()]),
+      recrypt: jest.fn(),
+      trim: jest.fn(),
+    };
+  };
+
+  class MMKV {
+    constructor() {
+      const api = createInMemoryMMKV();
+      Object.assign(this, api);
+    }
+  }
+
+  return {
+    MMKV,
+  };
+});
+
 NativeModules.RNGestureHandlerModule = {
-  attachGestureHandler: jest.fn(),
-  createGestureHandler: jest.fn(),
-  dropGestureHandler: jest.fn(),
-  updateGestureHandler: jest.fn(),
-  forceTouchAvailable: jest.fn(),
-  State: {},
-  Directions: {},
+  getConstants: jest.fn(() => ({
+    State: {
+      UNDETERMINED: 0,
+      FAILED: 1,
+      BEGAN: 2,
+      CANCELLED: 3,
+      ACTIVE: 4,
+      END: 5,
+    },
+    Directions: {
+      RIGHT: 1,
+      LEFT: 2,
+      UP: 4,
+      DOWN: 8,
+    },
+  })),
 };
 
 NativeModules.RNCNetInfo = {
@@ -202,6 +614,14 @@ NativeModules.NotifeeApiModule = {
   addListener: jest.fn(),
   eventsAddListener: jest.fn(),
   eventsNotifyReady: jest.fn(),
+};
+
+NativeModules.SNSMobileSDKModule = {
+  launch: jest.fn(() => Promise.resolve({ success: false, status: 'Failed' })),
+  dismiss: jest.fn(),
+  updateAccessToken: jest.fn(),
+  addListener: jest.fn(),
+  removeListeners: jest.fn(),
 };
 
 NativeModules.PlatformConstants = {
@@ -225,29 +645,24 @@ NativeModules.AesForked = {
   decrypt: jest.fn().mockResolvedValue('{"mockData": "mockedPlainTextForked"}'),
 };
 
-jest.mock(
-  'react-native/Libraries/Components/Touchable/TouchableOpacity',
-  () => 'TouchableOpacity',
-);
-jest.mock(
-  'react-native/Libraries/Components/Touchable/TouchableHighlight',
-  () => 'TouchableHighlight',
-);
-jest.mock(
-  'react-native/Libraries/Components/TextInput/TextInput',
-  () => 'TextInput',
-);
+NativeModules.RNTar = {
+  unTar: jest.fn().mockResolvedValue('/document-dir/archive'),
+};
 
-jest.mock('react-native/Libraries/Animated/NativeAnimatedHelper');
+NativeModules.BrazePushModule = {
+  registerPush: jest.fn().mockResolvedValue(undefined),
+  unregisterPush: jest.fn().mockResolvedValue({ success: true }),
+};
 
-jest.mock('react-native/Libraries/Interaction/InteractionManager', () => ({
-  runAfterInteractions: jest.fn(),
-  createInteractionHandle: jest.fn(),
-  clearInteractionHandle: jest.fn(),
-  setDeadline: jest.fn(),
-}));
-
-jest.mock('../../images/static-logos.js', () => ({}));
+jest.mock('react-native/Libraries/Interaction/InteractionManager', () => {
+  const manager = {
+    runAfterInteractions: jest.fn(),
+    createInteractionHandle: jest.fn(),
+    clearInteractionHandle: jest.fn(),
+    setDeadline: jest.fn(),
+  };
+  return { __esModule: true, default: manager, ...manager };
+});
 
 jest.mock('@react-native-clipboard/clipboard', () => mockClipboard);
 
@@ -267,12 +682,103 @@ const initializeMockClient = () => {
     group: jest.fn(),
     alias: jest.fn(),
     reset: jest.fn(),
+    add: jest.fn(),
   };
   return global.segmentMockClient;
 };
 
-jest.mock('@segment/analytics-react-native', () => ({
-  createClient: jest.fn(() => initializeMockClient()),
+jest.mock('@segment/analytics-react-native', () => {
+  class Plugin {
+    type = 'utility';
+    analytics = undefined;
+
+    configure(analytics) {
+      this.analytics = analytics;
+    }
+  }
+
+  class EventPlugin extends Plugin {
+    execute(event) {
+      return event;
+    }
+    identify(event) {
+      return event;
+    }
+    track(event) {
+      return event;
+    }
+    screen(event) {
+      return event;
+    }
+    alias(event) {
+      return event;
+    }
+    group(event) {
+      return event;
+    }
+    flush() {}
+    reset() {}
+  }
+
+  class DestinationPlugin extends EventPlugin {
+    type = 'destination';
+    key = '';
+  }
+
+  class CountFlushPolicy {
+    constructor(count) {
+      this.count = count;
+    }
+  }
+
+  class TimerFlushPolicy {
+    constructor(interval) {
+      this.interval = interval;
+    }
+  }
+
+  return {
+    createClient: jest.fn(() => initializeMockClient()),
+    PluginType: {
+      enrichment: 'enrichment',
+      destination: 'destination',
+      utility: 'utility',
+    },
+    EventType: {
+      TrackEvent: 'track',
+      IdentifyEvent: 'identify',
+    },
+    Plugin,
+    EventPlugin,
+    DestinationPlugin,
+    CountFlushPolicy,
+    TimerFlushPolicy,
+  };
+});
+
+jest.mock('@braze/react-native-sdk', () => ({
+  __esModule: true,
+  default: {
+    changeUser: jest.fn(),
+    logCustomEvent: jest.fn(),
+    logBannerImpression: jest.fn(),
+    logBannerClick: jest.fn(),
+    requestImmediateDataFlush: jest.fn(),
+    setCustomUserAttribute: jest.fn(),
+    setLanguage: jest.fn(),
+    enableSDK: jest.fn(),
+    disableSDK: jest.fn(),
+    wipeData: jest.fn(),
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    requestBannersRefresh: jest.fn(),
+    getBanner: jest.fn().mockResolvedValue(null),
+    dismissBanner: jest.fn(),
+    Events: {
+      PUSH_NOTIFICATION_EVENT: 'push_notification_event',
+      BANNER_CARDS_UPDATED: 'bannerCardsUpdated',
+    },
+    BrazeBannerView: 'BrazeBannerView',
+  },
 }));
 
 jest.mock('@notifee/react-native', () =>
@@ -295,20 +801,355 @@ jest.mock('redux-persist', () => ({
   createMigrate: jest.fn(),
 }));
 
-jest.mock('react-native-default-preference', () => ({
-  get: jest.fn(),
-  set: jest.fn(),
+jest.mock('../../store/storage-wrapper', () => ({
+  getItem: jest.fn(),
+  getItemSync: jest.fn(),
+  removeItem: jest.fn(),
+  setItem: jest.fn(),
+  onKeyChange: jest.fn(() => jest.fn()),
 }));
 
 // eslint-disable-next-line import/no-commonjs
-require('react-native-reanimated/lib/module/reanimated2/jestUtils').setUpTests();
+const Reanimated = require('react-native-reanimated');
+Reanimated.setUpTests();
 global.__reanimatedWorkletInit = jest.fn();
+
+// Patch configureReanimatedLogger so tests that import it don't crash.
+if (typeof Reanimated.configureReanimatedLogger !== 'function') {
+  Reanimated.configureReanimatedLogger = jest.fn();
+}
+if (!Reanimated.ReanimatedLogLevel) {
+  Reanimated.ReanimatedLogLevel = { warn: 1, error: 2 };
+}
+
+// Patch Reanimated's makeMutable so that shared values' toJSON() won't blow up
+// on circular references (the default implementation does JSON.stringify(value)
+// which throws "Converting circular structure to JSON" or causes RangeError).
+try {
+  const mutables = require('react-native-reanimated/lib/module/mutables');
+
+  const origMakeMutable = mutables.makeMutable;
+  if (origMakeMutable) {
+    mutables.makeMutable = function patchedMakeMutable(value) {
+      const mutable = origMakeMutable(value);
+      if (mutable && typeof mutable.toJSON === 'function') {
+        mutable.toJSON = () => {
+          try {
+            const seen = new WeakSet();
+            return JSON.stringify(value, function (_key, val) {
+              if (typeof val === 'object' && val !== null) {
+                if (seen.has(val)) return '[Circular]';
+                seen.add(val);
+              }
+              return val;
+            });
+          } catch {
+            return '"SharedValue(<unserializable>)"';
+          }
+        };
+      }
+      return mutable;
+    };
+  }
+} catch {
+  // Reanimated internals may change — fall through silently
+}
+
 global.__DEV__ = false;
 
-jest.mock(
-  '../../core/Engine',
-  () => require('../../core/__mocks__/MockedEngine').default,
+// Mock react-native-screens so @react-navigation/native-stack renders plain
+// views in Jest. The real Screen components attach Animated listeners that
+// throw "Cannot read properties of undefined (reading 'remove')" during unmount
+// under fake timers. Rendering them as Views keeps native-stack navigators
+// (used by renderScreen and migrated test files) working in jsdom.
+jest.mock('react-native-screens', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  const actual = jest.requireActual('react-native-screens');
+
+  const asView = (displayName) => {
+    const Component = React.forwardRef((props, ref) =>
+      React.createElement(View, { ...props, ref }),
+    );
+    Component.displayName = displayName;
+    return Component;
+  };
+
+  return {
+    ...actual,
+    enableScreens: jest.fn(),
+    enableFreeze: jest.fn(),
+    screensEnabled: jest.fn(() => false),
+    Screen: asView('Screen'),
+    ScreenContainer: asView('ScreenContainer'),
+    ScreenStack: asView('ScreenStack'),
+    ScreenStackHeaderConfig: asView('ScreenStackHeaderConfig'),
+    ScreenStackHeaderSubview: asView('ScreenStackHeaderSubview'),
+  };
+});
+
+// Custom snapshot serializer to handle Reanimated shared value proxies.
+expect.addSnapshotSerializer({
+  test: (val) =>
+    val != null &&
+    typeof val === 'object' &&
+    val._isReanimatedSharedValue === true,
+  serialize: (val) => {
+    try {
+      const v = val.value;
+      return `"SharedValue(${typeof v === 'object' ? JSON.stringify(v) : String(v)})"`;
+    } catch {
+      return '"SharedValue(<circular>)"';
+    }
+  },
+});
+
+// Mock the component-library BottomSheet to render children immediately
+// and handle close/open callbacks synchronously (bypasses reanimated animations).
+// Note: This mock can be overridden by individual test files if needed.
+jest.mock('../../component-library/components/BottomSheets/BottomSheet', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+
+  const BottomSheet = React.forwardRef(
+    (
+      { children, onClose, onOpen, shouldNavigateBack = true, ...props },
+      ref,
+    ) => {
+      // Mimic real BottomSheet: call navigation.goBack() when shouldNavigateBack is true
+      let navigation;
+      try {
+        const { useNavigation } = require('@react-navigation/native');
+        navigation = useNavigation();
+      } catch {
+        // navigation not available in this context
+      }
+      React.useImperativeHandle(ref, () => ({
+        onOpenDialog: () => onOpen?.(),
+        onOpenBottomSheet: () => onOpen?.(),
+        onCloseDialog: () => {
+          onClose?.();
+          if (shouldNavigateBack) navigation?.goBack();
+        },
+        onCloseBottomSheet: (callback) => {
+          onClose?.(!!callback);
+          if (shouldNavigateBack) navigation?.goBack();
+          callback?.();
+        },
+      }));
+      const { testID, style: sheetStyle, accessibilityLabel } = props;
+      return React.createElement(
+        View,
+        {
+          testID: testID || 'bottom-sheet-mock',
+          style: sheetStyle,
+          accessibilityLabel,
+        },
+        children,
+      );
+    },
+  );
+  BottomSheet.displayName = 'BottomSheet';
+
+  return {
+    __esModule: true,
+    default: BottomSheet,
+  };
+});
+
+// Mock @metamask/design-system-react-native BottomSheet to render children immediately
+// and run open/close callbacks synchronously (bypasses reanimated animations).
+// Matches the component-library BottomSheet mock above; components that migrated
+// to the design-system sheet otherwise trigger act() warnings from Animated updates.
+jest.mock('@metamask/design-system-react-native', () => {
+  const React = require('react');
+  const PropTypes = require('prop-types');
+  const { View } = require('react-native');
+  const actual = jest.requireActual('@metamask/design-system-react-native');
+
+  const BottomSheet = React.forwardRef(
+    (
+      {
+        children,
+        onClose,
+        onOpen,
+        goBack,
+        style,
+        twClassName: _twClassName,
+        testID,
+        accessibilityLabel,
+      },
+      ref,
+    ) => {
+      React.useImperativeHandle(ref, () => ({
+        onOpenBottomSheet: (callback) => {
+          onOpen?.();
+          callback?.();
+        },
+        onCloseBottomSheet: (callback) => {
+          const hasCallback = Boolean(callback);
+          onClose?.(hasCallback);
+          goBack?.();
+          callback?.();
+        },
+      }));
+      return React.createElement(
+        View,
+        {
+          testID: testID || 'design-system-bottom-sheet-mock',
+          style,
+          accessibilityLabel,
+        },
+        children,
+      );
+    },
+  );
+  BottomSheet.displayName = 'BottomSheet';
+  BottomSheet.propTypes = {
+    children: PropTypes.node,
+    onClose: PropTypes.func,
+    onOpen: PropTypes.func,
+    goBack: PropTypes.func,
+    style: PropTypes.oneOfType([
+      PropTypes.object,
+      PropTypes.array,
+      PropTypes.number,
+    ]),
+    twClassName: PropTypes.oneOfType([PropTypes.string, PropTypes.object]),
+    testID: PropTypes.string,
+    accessibilityLabel: PropTypes.string,
+  };
+
+  return {
+    ...actual,
+    BottomSheet,
+    // toast() throws unless <Toaster /> is mounted. Unit tests do not mount
+    // App's Toaster, so stub the imperative API on the module mock above.
+    toast: Object.assign(jest.fn(), {
+      dismiss: jest.fn(),
+    }),
+  };
+});
+
+// Mock react-native-modal to render children immediately (bypasses animation)
+jest.mock('react-native-modal', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  const Modal = ({ children, isVisible, testID, ...props }) => {
+    if (isVisible === false) return null;
+    return React.createElement(
+      View,
+      { testID: testID || 'modal-mock' },
+      children,
+    );
+  };
+  Modal.displayName = 'Modal';
+  return { __esModule: true, default: Modal };
+});
+
+// Patch NativeAnimatedHelper to provide nativeEventEmitter.addListener.
+// In RN 0.81+, createAnimatedPropsHook accesses
+// NativeAnimatedHelper.nativeEventEmitter.addListener during useEffect mount.
+// Using Object.defineProperty with a getter ensures the mock is always returned
+// even if the original module uses a getter internally.
+{
+  const emitterMock = {
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+    removeAllListeners: jest.fn(),
+    removeSubscription: jest.fn(),
+  };
+  try {
+    const mod = require('react-native/Libraries/Animated/NativeAnimatedHelper');
+    const target = mod.default || mod;
+    Object.defineProperty(target, 'nativeEventEmitter', {
+      get: () => emitterMock,
+      configurable: true,
+      enumerable: true,
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+jest.mock('../../core/Engine', () =>
+  require('../../core/__mocks__/MockedEngine'),
 );
+
+jest.mock('react-native-safe-area-context', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  const inset = { top: 0, right: 0, bottom: 0, left: 0 };
+  const frame = { x: 0, y: 0, width: 390, height: 844 };
+  return {
+    ...jest.requireActual('react-native-safe-area-context'),
+    SafeAreaInsetsContext: React.createContext(inset),
+    SafeAreaFrameContext: React.createContext(frame),
+    SafeAreaView: ({ children, ...props }) =>
+      React.createElement(View, props, children),
+    SafeAreaProvider: ({ children, ...props }) =>
+      React.createElement(View, props, children),
+    SafeAreaConsumer: ({ children }) => children(inset),
+    useSafeAreaInsets: () => inset,
+    useSafeAreaFrame: () => frame,
+  };
+});
+
+jest.mock(
+  'react-native-keyboard-controller',
+  () => ({
+    KeyboardProvider: ({ children }) => children,
+    KeyboardAwareScrollView: require('react-native').ScrollView,
+    KeyboardGestureArea: require('react-native').View,
+    KeyboardStickyView: require('react-native').View,
+    KeyboardToolbar: require('react-native').View,
+    useKeyboardAnimation: () => ({
+      height: { value: 0 },
+      progress: { value: 0 },
+    }),
+    useReanimatedKeyboardAnimation: () => ({
+      height: { value: 0 },
+      progress: { value: 0 },
+    }),
+    useKeyboardHandler: () => {},
+    useGenericKeyboardHandler: () => {},
+    useKeyboardState: (selector) => {
+      const defaultState = {
+        isVisible: false,
+        height: 0,
+        duration: 0,
+        timestamp: 0,
+      };
+      return selector ? selector(defaultState) : defaultState;
+    },
+    KeyboardEvents: {
+      addListener: jest.fn(() => ({ remove: jest.fn() })),
+    },
+    KeyboardController: {
+      setInputMode: jest.fn(),
+      setDefaultMode: jest.fn(),
+    },
+    AndroidSoftInputModes: {
+      SOFT_INPUT_ADJUST_NOTHING: 0,
+      SOFT_INPUT_ADJUST_PAN: 1,
+      SOFT_INPUT_ADJUST_RESIZE: 2,
+      SOFT_INPUT_ADJUST_UNSPECIFIED: 3,
+    },
+  }),
+  { virtual: true },
+);
+
+// Custom snapshot serializer to handle React Navigation's NavigationStateContext.
+// The default context value uses getter properties (getKey, getIsInitial, etc.) that
+// throw "Couldn't find a navigation context" when accessed. pretty-format triggers
+// these getters during snapshot serialization, causing tests to fail.
+expect.addSnapshotSerializer({
+  test: (val) =>
+    val != null &&
+    typeof val === 'object' &&
+    val.isDefault === true &&
+    Object.getOwnPropertyDescriptor(val, 'getIsInitial')?.get != null,
+  serialize: () => '"NavigationStateContext"',
+});
 
 afterEach(() => {
   jest.restoreAllMocks();
@@ -324,3 +1165,196 @@ global.crypto = {
     return arr;
   },
 };
+
+// Mock Sentry to prevent initialization issues in tests
+jest.mock('@sentry/react-native', () => ({
+  // Core methods
+  init: jest.fn(),
+  wrap: (component) => component,
+
+  // Capture methods
+  captureException: jest.fn(),
+  captureMessage: jest.fn(),
+  captureFeedback: jest.fn(),
+
+  dedupeIntegration: jest.fn(() => ({ name: 'Dedupe' })),
+  extraErrorDataIntegration: jest.fn(() => ({ name: 'ExtraErrorData' })),
+
+  // Breadcrumb and context methods
+  addBreadcrumb: jest.fn(),
+  configureScope: jest.fn(),
+  setContext: jest.fn(),
+  setTag: jest.fn(),
+  setUser: jest.fn(),
+
+  // Scope methods
+  withScope: jest.fn(),
+
+  // Performance/tracing methods
+  setMeasurement: jest.fn(),
+  startSpan: jest.fn(),
+  startSpanManual: jest.fn(),
+  startInactiveSpan: jest.fn(() => ({ end: jest.fn() })),
+  extendAppStart: jest.fn(),
+  getExtendedAppStartSpan: jest.fn(),
+  finishExtendedAppStart: jest.fn(() => Promise.resolve()),
+  spanIsSampled: jest.fn(() => true),
+  startTransaction: jest.fn(),
+  reactNativeTracingIntegration: jest.fn(() => ({
+    name: 'ReactNativeTracing',
+  })),
+  reactNavigationIntegration: jest.fn(() => ({
+    name: 'ReactNavigation',
+    registerNavigationContainer: jest.fn(),
+  })),
+
+  // User feedback
+  lastEventId: jest.fn(),
+
+  // Global scope
+  getGlobalScope: jest.fn(() => ({
+    setTag: jest.fn(),
+  })),
+  getClient: jest.fn(),
+}));
+
+jest.mock('@react-native-firebase/messaging', () => {
+  const module = () => {
+    return {
+      getToken: jest.fn(() => Promise.resolve('fcmToken')),
+      deleteToken: jest.fn(() => Promise.resolve()),
+      subscribeToTopic: jest.fn(),
+      unsubscribeFromTopic: jest.fn(),
+      hasPermission: jest.fn(() =>
+        Promise.resolve(module.AuthorizationStatus.AUTHORIZED),
+      ),
+      requestPermission: jest.fn(() =>
+        Promise.resolve(module.AuthorizationStatus.AUTHORIZED),
+      ),
+      setBackgroundMessageHandler: jest.fn(() => Promise.resolve()),
+      isDeviceRegisteredForRemoteMessages: jest.fn(() =>
+        Promise.resolve(false),
+      ),
+      registerDeviceForRemoteMessages: jest.fn(() =>
+        Promise.resolve('registered'),
+      ),
+      unregisterDeviceForRemoteMessages: jest.fn(() =>
+        Promise.resolve('unregistered'),
+      ),
+      onMessage: jest.fn(),
+      onTokenRefresh: jest.fn(),
+    };
+  };
+
+  module.AuthorizationStatus = {
+    NOT_DETERMINED: -1,
+    DENIED: 0,
+    AUTHORIZED: 1,
+    PROVISIONAL: 2,
+  };
+
+  return module;
+});
+
+// Mock whenEngineReady to prevent async Engine access after Jest teardown.
+// Components that trigger analytics (trackView/trackEvent) cause the queue to call
+// whenEngineReady(), which uses setTimeout and can run after tests finish.
+jest.mock('../analytics/whenEngineReady', () => ({
+  whenEngineReady: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('react-native/Libraries/TurboModule/TurboModuleRegistry', () => {
+  const originalModule = jest.requireActual(
+    'react-native/Libraries/TurboModule/TurboModuleRegistry',
+  );
+  return {
+    getEnforcing: (name) => {
+      if (name === 'RNGestureHandlerModule') {
+        return {
+          attachGestureHandler: jest.fn(),
+          createGestureHandler: jest.fn(),
+          dropGestureHandler: jest.fn(),
+          updateGestureHandler: jest.fn(),
+          forceTouchAvailable: jest.fn(),
+          install: jest.fn(),
+          flushOperations: jest.fn(),
+          State: {
+            UNDETERMINED: 0,
+            FAILED: 1,
+            BEGAN: 2,
+            CANCELLED: 3,
+            ACTIVE: 4,
+            END: 5,
+          },
+          Directions: {
+            RIGHT: 1,
+            LEFT: 2,
+            UP: 4,
+            DOWN: 8,
+          },
+          getConstants: () => ({
+            State: {
+              UNDETERMINED: 0,
+              FAILED: 1,
+              BEGAN: 2,
+              CANCELLED: 3,
+              ACTIVE: 4,
+              END: 5,
+            },
+            Directions: {
+              RIGHT: 1,
+              LEFT: 2,
+              UP: 4,
+              DOWN: 8,
+            },
+          }),
+        };
+      }
+      return originalModule.getEnforcing(name);
+    },
+    get: (name) => {
+      if (name === 'RNGestureHandlerModule') {
+        return {
+          attachGestureHandler: jest.fn(),
+          createGestureHandler: jest.fn(),
+          dropGestureHandler: jest.fn(),
+          updateGestureHandler: jest.fn(),
+          forceTouchAvailable: jest.fn(),
+          install: jest.fn(),
+          flushOperations: jest.fn(),
+          State: {
+            UNDETERMINED: 0,
+            FAILED: 1,
+            BEGAN: 2,
+            CANCELLED: 3,
+            ACTIVE: 4,
+            END: 5,
+          },
+          Directions: {
+            RIGHT: 1,
+            LEFT: 2,
+            UP: 4,
+            DOWN: 8,
+          },
+          getConstants: () => ({
+            State: {
+              UNDETERMINED: 0,
+              FAILED: 1,
+              BEGAN: 2,
+              CANCELLED: 3,
+              ACTIVE: 4,
+              END: 5,
+            },
+            Directions: {
+              RIGHT: 1,
+              LEFT: 2,
+              UP: 4,
+              DOWN: 8,
+            },
+          }),
+        };
+      }
+      return originalModule.get?.(name);
+    },
+  };
+});

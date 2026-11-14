@@ -1,16 +1,19 @@
 import Engine from '../../core/Engine';
-import { MetaMetrics, MetaMetricsEvents } from '../../core/Analytics';
+import { MetaMetricsEvents } from '../../core/Analytics/MetaMetrics.events';
 import { getAddressAccountType } from '../address';
 import NotificationManager from '../../core/NotificationManager';
 import { WALLET_CONNECT_ORIGIN } from '../walletconnect';
 import AppConstants from '../../core/AppConstants';
 import { InteractionManager } from 'react-native';
 import { strings } from '../../../locales/i18n';
-import { selectChainId } from '../../selectors/networkController';
+import { selectEvmChainId } from '../../selectors/networkController';
 import { store } from '../../store';
 import { getBlockaidMetricsParams } from '../blockaid';
 import Device from '../device';
 import { getDecimalChainId } from '../networks';
+import Logger from '../Logger';
+import { analytics } from '../analytics/analytics';
+import { AnalyticsEventBuilder } from '../analytics/AnalyticsEventBuilder';
 
 export const typedSign = {
   V1: 'eth_signTypedData',
@@ -23,31 +26,40 @@ export const getAnalyticsParams = (
   signType,
   securityAlertResponse,
 ) => {
+  if (!messageParams || typeof messageParams !== 'object') {
+    throw new Error('Invalid messageParams provided');
+  }
+
+  const { currentPageInformation = {}, meta = {} } = messageParams;
+  const pageInfo = { ...currentPageInformation, ...meta };
+
+  const analyticsParams = {
+    account_type: getAddressAccountType(messageParams.from),
+    dapp_host_name: 'N/A',
+    chain_id: null,
+    signature_type: signType,
+    version: messageParams?.version || 'N/A',
+    ...pageInfo.analytics,
+  };
+
   try {
-    const { currentPageInformation, meta } = messageParams;
-    const pageInfo = meta || currentPageInformation || {};
+    const chainId = selectEvmChainId(store.getState());
+    analyticsParams.chain_id = getDecimalChainId(chainId);
 
-    const chainId = selectChainId(store.getState());
-
-    const url = pageInfo.url && new URL(pageInfo?.url);
-
-    let blockaidParams = {};
-    if (securityAlertResponse) {
-      blockaidParams = getBlockaidMetricsParams(securityAlertResponse);
+    if (pageInfo.url) {
+      const url = new URL(pageInfo.url);
+      analyticsParams.dapp_host_name = url.host;
     }
 
-    return {
-      account_type: getAddressAccountType(messageParams.from),
-      dapp_host_name: url && url?.host,
-      chain_id: getDecimalChainId(chainId),
-      signature_type: signType,
-      version: messageParams?.version,
-      ...pageInfo?.analytics,
-      ...blockaidParams,
-    };
+    if (securityAlertResponse) {
+      const blockaidParams = getBlockaidMetricsParams(securityAlertResponse);
+      Object.assign(analyticsParams, blockaidParams);
+    }
   } catch (error) {
-    return {};
+    Logger.error(error, 'Error processing analytics parameters:');
   }
+
+  return analyticsParams;
 };
 
 export const walletConnectNotificationTitle = (confirmation, isError) => {
@@ -70,9 +82,18 @@ export const showWalletConnectNotification = (
     const isWCOrigin = origin.startsWith(
       WALLET_CONNECT_ORIGIN.replaceAll(':', '').toLowerCase(),
     );
-    const isSDKOrigin = origin.startsWith(
-      AppConstants.MM_SDK.SDK_REMOTE_ORIGIN.replaceAll(':', '').toLowerCase(),
-    );
+
+    // Check for both V1 and V2 SDK origins
+    const v1OriginPrefix = AppConstants.MM_SDK.SDK_REMOTE_ORIGIN.replaceAll(
+      ':',
+      '',
+    ).toLowerCase();
+    const v2OriginPrefix = AppConstants.MM_SDK.SDK_CONNECT_V2_ORIGIN.replaceAll(
+      ':',
+      '',
+    ).toLowerCase();
+    const isSDKOrigin =
+      origin.startsWith(v1OriginPrefix) || origin.startsWith(v2OriginPrefix);
 
     if (isWCOrigin || isSDKOrigin) {
       NotificationManager.showSimpleNotification({
@@ -94,11 +115,16 @@ export const handleSignatureAction = async (
 ) => {
   await onAction();
   showWalletConnectNotification(messageParams, confirmation);
-  MetaMetrics.getInstance().trackEvent(
-    confirmation
-      ? MetaMetricsEvents.SIGNATURE_APPROVED
-      : MetaMetricsEvents.SIGNATURE_REJECTED,
-    getAnalyticsParams(messageParams, signType, securityAlertResponse),
+  analytics.trackEvent(
+    AnalyticsEventBuilder.createEventBuilder(
+      confirmation
+        ? MetaMetricsEvents.SIGNATURE_APPROVED
+        : MetaMetricsEvents.SIGNATURE_REJECTED,
+    )
+      .addProperties(
+        getAnalyticsParams(messageParams, signType, securityAlertResponse),
+      )
+      .build(),
   );
 };
 

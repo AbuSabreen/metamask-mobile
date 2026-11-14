@@ -1,0 +1,161 @@
+import {
+  TransactionMeta,
+  TransactionStatus,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import { BigNumber } from 'bignumber.js';
+import { useEffect, useRef } from 'react';
+import { useSelector } from 'react-redux';
+import Engine from '../../../../core/Engine';
+import type { RootState } from '../../../../reducers';
+import {
+  ARBITRUM_MAINNET_CHAIN_ID_HEX,
+  USDC_ARBITRUM_MAINNET_ADDRESS,
+} from '@metamask/perps-controller';
+import { usePerpsLiveAccount } from './stream/usePerpsLiveAccount';
+import usePerpsToasts from './usePerpsToasts';
+import { usePerpsTrading } from './usePerpsTrading';
+import { isPerpsPredictMoneyDeposit } from '../../Money/utils/moneyTransactionGuards';
+
+/**
+ * Hook to monitor deposit status and show appropriate toasts
+ *
+ * This hook:
+ * 1. Shows in-progress toast when deposit transaction is approved
+ * 2. Watches live account balance for increases after deposit confirmation
+ * 3. Shows success toast when balance increases (indicating HyperLiquid processed the deposit)
+ * 4. Shows error toast if deposit fails
+ *
+ * This ensures the success toast only shows when HyperLiquid has actually
+ * credited the funds, matching what the user sees in the UI.
+ */
+export const usePerpsDepositStatus = () => {
+  const { clearDepositResult } = usePerpsTrading();
+  const { showToast, PerpsToastOptions } = usePerpsToasts();
+  // Get live account data with fast updates
+  const { account: liveAccount } = usePerpsLiveAccount({ throttleMs: 1000 });
+
+  // Track if we're expecting a deposit
+  const expectingDepositRef = useRef(false);
+  const prevSpendableBalanceRef = useRef<string>('0');
+  const liveAccountRef = useRef(liveAccount);
+
+  // Keep ref in sync without re-subscribing the transaction handler.
+  useEffect(() => {
+    liveAccountRef.current = liveAccount;
+  }, [liveAccount]);
+
+  // Get deposit state from controller
+  const depositInProgress = useSelector(
+    (state: RootState) =>
+      state.engine.backgroundState.PerpsController?.depositInProgress ?? false,
+  );
+
+  const lastDepositResult = useSelector(
+    (state: RootState) =>
+      state.engine.backgroundState.PerpsController?.lastDepositResult ?? null,
+  );
+
+  // Listen for PerpsDeposit approval - Used to display deposit in progress toast
+  useEffect(() => {
+    const handleTransactionApproved = ({
+      transactionMeta,
+    }: {
+      transactionMeta: TransactionMeta;
+    }) => {
+      const { metamaskPay } = transactionMeta;
+
+      const isArbUSDCDeposit =
+        metamaskPay?.chainId === ARBITRUM_MAINNET_CHAIN_ID_HEX &&
+        metamaskPay?.tokenAddress === USDC_ARBITRUM_MAINNET_ADDRESS;
+
+      if (
+        transactionMeta.type === TransactionType.perpsDeposit &&
+        transactionMeta.status === TransactionStatus.approved
+      ) {
+        if (isPerpsPredictMoneyDeposit(transactionMeta)) {
+          return;
+        }
+
+        expectingDepositRef.current = true;
+        prevSpendableBalanceRef.current =
+          liveAccountRef.current?.spendableBalance || '0';
+
+        const processingTimeSeconds = isArbUSDCDeposit ? 0 : 60; // hardcoded to 1 minute to avoid estimation failures of multiple bridges
+
+        showToast(
+          PerpsToastOptions.accountManagement.deposit.inProgress(
+            processingTimeSeconds,
+            transactionMeta.id,
+          ),
+        );
+      }
+    };
+
+    Engine.controllerMessenger.subscribe(
+      'TransactionController:transactionStatusUpdated',
+      handleTransactionApproved,
+    );
+
+    return () => {
+      Engine.controllerMessenger.unsubscribe(
+        'TransactionController:transactionStatusUpdated',
+        handleTransactionApproved,
+      );
+    };
+    // liveAccount.spendableBalance is read via ref to avoid rebinding the
+    // messenger listener on every balance fluctuation.
+  }, [PerpsToastOptions.accountManagement.deposit, showToast]);
+
+  // Watch for spendable-balance increases when expecting a deposit. Using
+  // totalBalance here is incorrect because unrealized PnL can move it without
+  // any deposit settling.
+  const liveSpendable = liveAccount?.spendableBalance;
+  useEffect(() => {
+    if (!expectingDepositRef.current || liveSpendable == null) {
+      return;
+    }
+
+    const currentBalance = Number.parseFloat(liveSpendable || '0');
+    const previousBalance = Number.parseFloat(prevSpendableBalanceRef.current);
+
+    if (currentBalance > previousBalance) {
+      // The toast reports what the deposit credited, so it has to be the
+      // balance delta. Passing the resulting spendable balance made the toast
+      // claim the whole account balance had just been added.
+      const amountAdded = new BigNumber(liveSpendable)
+        .minus(prevSpendableBalanceRef.current)
+        .toFixed();
+
+      showToast(
+        PerpsToastOptions.accountManagement.deposit.success(amountAdded),
+      );
+
+      expectingDepositRef.current = false;
+      prevSpendableBalanceRef.current = liveSpendable;
+    }
+  }, [liveSpendable, showToast, PerpsToastOptions.accountManagement.deposit]);
+
+  // Handle deposit errors from controller state
+  useEffect(() => {
+    if (lastDepositResult && !lastDepositResult.success) {
+      showToast(PerpsToastOptions.accountManagement.deposit.error);
+
+      expectingDepositRef.current = false;
+
+      const timeout = setTimeout(() => {
+        clearDepositResult();
+      }, 500);
+
+      // Clear the error after showing toast
+      return () => clearTimeout(timeout);
+    }
+  }, [
+    lastDepositResult,
+    clearDepositResult,
+    showToast,
+    PerpsToastOptions.accountManagement.deposit.error,
+  ]);
+
+  return { depositInProgress };
+};

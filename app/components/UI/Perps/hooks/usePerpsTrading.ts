@@ -1,0 +1,520 @@
+import { useCallback } from 'react';
+import { useSelector } from 'react-redux';
+import { getSelectedEvmAccountFromMessenger } from '@metamask/perps-controller/utils/accountUtils';
+import Engine from '../../../../core/Engine';
+import {
+  beginPerpsUiSubmission,
+  settlePerpsUiSubmission,
+  beginPerpsUiCancellation,
+  settlePerpsUiCancellation,
+  type PerpsUiScope,
+} from '../utils/perpsUiObservations';
+import { selectPerpsTerminalBackendEnabledFlag } from '../selectors/featureFlags';
+import {
+  normalizeOrderEditRejection,
+  type OrderEditRejection,
+} from '../utils/translatePerpsError';
+import { usePerpsNetworkManagement } from './usePerpsNetworkManagement';
+import {
+  type AccountState,
+  type CancelOrderParams,
+  type CancelOrderResult,
+  type ClosePositionParams,
+  type EditOrderParams,
+  type FeeCalculationParams,
+  type FeeCalculationResult,
+  type FlipPositionParams,
+  type GetAccountStateParams,
+  type GetMarketsParams,
+  type GetOrderFillsParams,
+  type GetOrdersParams,
+  type GetFundingParams,
+  type GetPositionsParams,
+  type OrderFill,
+  type Order,
+  type Funding,
+  type LiquidationPriceParams,
+  type MaintenanceMarginParams,
+  type MarginResult,
+  type MarketInfo,
+  type OrderParams,
+  type OrderResult,
+  type Position,
+  type PositionModifyPreviewParams,
+  type PositionModifyPreviewResult,
+  type SubscribeOrderFillsParams,
+  type SubscribePricesParams,
+  type SubscribePositionsParams,
+  type UpdateMarginParams,
+  type UpdatePositionTPSLParams,
+  type WithdrawParams,
+  type WithdrawResult,
+} from '@metamask/perps-controller';
+import { TraceName } from '../../../../util/trace';
+import {
+  startPerpsCufTrace,
+  endPerpsCufTrace,
+  endPerpsCufRequestAfter,
+  watchPerpsCufOrderAbsent,
+  watchPerpsCufOrderPriceUpdated,
+  acceptPerpsCufRequest,
+} from '../utils/perpsCufTrace';
+import {
+  PERPS_CUF_TAG,
+  PERPS_CUF_END_REASON,
+  PERPS_CUF_STREAM_TIMEOUT_MS,
+} from '../constants/perpsCufTags';
+
+/**
+ * UI-facing params for fetching markets.
+ *
+ * `useTerminalApi` is source-selection policy, not market-query intent, so it is
+ * intentionally hidden from callers. The hook injects the source flag, and the
+ * controller owns Terminal-first fetching with HyperLiquid fallback. Callers
+ * should only describe query intent (symbols, dex, standalone, filters, etc.).
+ */
+export type MobileGetMarketsParams = Omit<GetMarketsParams, 'useTerminalApi'>;
+
+/** A controller edit result, with a refused edit's outcome normalized for the UI. */
+export type EditOrderResult = OrderResult & { rejection?: OrderEditRejection };
+
+type MobileCancelOrderParams = CancelOrderParams & {
+  skipCufConfirmationTrace?: boolean;
+};
+
+/** Read public issuing identity synchronously inside the diagnostic capture guard. */
+function getIssuingPerpsUiScope(
+  controller: typeof Engine.context.PerpsController,
+  params: Pick<CancelOrderParams, 'symbol' | 'providerId'>,
+): PerpsUiScope {
+  return {
+    account:
+      getSelectedEvmAccountFromMessenger(
+        Engine.controllerMessenger,
+      )?.address.toLowerCase() ?? null,
+    provider: params.providerId ?? controller.state?.activeProvider ?? null,
+    network:
+      controller.state?.isTestnet === undefined
+        ? null
+        : controller.state.isTestnet
+          ? 'testnet'
+          : 'mainnet',
+    market: params.symbol,
+  };
+}
+
+/**
+ * Hook for trading operations
+ * Provides methods for placing, canceling, and closing trading positions
+ */
+export function usePerpsTrading() {
+  const { ensureArbitrumNetworkExists } = usePerpsNetworkManagement();
+  const useTerminalApi = useSelector(selectPerpsTerminalBackendEnabledFlag);
+
+  const placeOrder = useCallback(
+    async (params: OrderParams): Promise<OrderResult> => {
+      const controller = Engine.context.PerpsController;
+      const requestId = __DEV__
+        ? beginPerpsUiSubmission(
+            () => getIssuingPerpsUiScope(controller, params),
+            params,
+          )
+        : undefined;
+      try {
+        const result = await controller.placeOrder(params);
+        settlePerpsUiSubmission(requestId, result);
+        return result;
+      } catch (error) {
+        settlePerpsUiSubmission(requestId);
+        throw error;
+      }
+    },
+    [],
+  );
+
+  const cancelOrder = useCallback(
+    async ({
+      skipCufConfirmationTrace,
+      ...params
+    }: MobileCancelOrderParams): Promise<CancelOrderResult> => {
+      const controller = Engine.context.PerpsController;
+      const requestId = __DEV__
+        ? beginPerpsUiCancellation(
+            () => getIssuingPerpsUiScope(controller, params),
+            params,
+          )
+        : undefined;
+      const dispatch = async (): Promise<CancelOrderResult> => {
+        let result: CancelOrderResult;
+        try {
+          result = await controller.cancelOrder(params);
+        } catch (error) {
+          settlePerpsUiCancellation(requestId);
+          throw error;
+        }
+        // Diagnostic sanitization is nonthrowing and cannot change this outcome.
+        settlePerpsUiCancellation(requestId, result);
+        return result;
+      };
+      if (skipCufConfirmationTrace) {
+        return dispatch();
+      }
+      // Confirmation CUF: every cancel UI path funnels through here; the span
+      // ends when the stream no longer lists the order.
+      const cancelCufOpId = startPerpsCufTrace({
+        name: TraceName.PerpsCancelOrderToConfirmation,
+      });
+      watchPerpsCufOrderAbsent(cancelCufOpId, params.orderId);
+      let controllerSettled = false;
+      endPerpsCufRequestAfter(
+        cancelCufOpId,
+        () => controllerSettled,
+        PERPS_CUF_STREAM_TIMEOUT_MS,
+      );
+      try {
+        const result = await dispatch();
+        controllerSettled = true;
+        if (!result?.success) {
+          endPerpsCufTrace({
+            id: cancelCufOpId,
+            data: {
+              [PERPS_CUF_TAG.SUCCESS]: false,
+              [PERPS_CUF_TAG.REASON]: PERPS_CUF_END_REASON.REQUEST_FAILED,
+            },
+          });
+        } else {
+          // Only now may a stream absence complete the span as a success — the
+          // controller accepted the cancel. If the order already vanished while
+          // the request was in flight, the render instant was recorded and the
+          // span ends at it here.
+          acceptPerpsCufRequest(cancelCufOpId);
+        }
+        return result;
+      } catch (error) {
+        endPerpsCufTrace({
+          id: cancelCufOpId,
+          data: {
+            [PERPS_CUF_TAG.SUCCESS]: false,
+            [PERPS_CUF_TAG.REASON]: PERPS_CUF_END_REASON.EXCEPTION,
+          },
+        });
+        throw error;
+      }
+    },
+    [],
+  );
+
+  const editOrder = useCallback(
+    async (
+      params: EditOrderParams & {
+        /**
+         * When true (default if `newOrder.price` is set), arm an
+         * ORDER_PRICE_UPDATED stream watcher. Pass false for size-only edits
+         * that still send an unchanged limit price to the venue.
+         */
+        watchPriceUpdate?: boolean;
+      },
+    ): Promise<EditOrderResult> => {
+      const { watchPriceUpdate, ...controllerParams } = params;
+      const controller = Engine.context.PerpsController;
+      const editCufOpId = startPerpsCufTrace({
+        name: TraceName.PerpsEditOrder,
+      });
+      const expectedPrice = controllerParams.newOrder.price;
+      const shouldWatchPriceUpdate = watchPriceUpdate ?? Boolean(expectedPrice);
+      if (expectedPrice && shouldWatchPriceUpdate) {
+        watchPerpsCufOrderPriceUpdated(
+          editCufOpId,
+          String(controllerParams.orderId),
+          expectedPrice,
+        );
+      }
+      let controllerSettled = false;
+      endPerpsCufRequestAfter(
+        editCufOpId,
+        () => controllerSettled,
+        PERPS_CUF_STREAM_TIMEOUT_MS,
+      );
+      try {
+        const result = await controller.editOrder(controllerParams);
+        controllerSettled = true;
+        if (!result?.success) {
+          endPerpsCufTrace({
+            id: editCufOpId,
+            data: {
+              [PERPS_CUF_TAG.SUCCESS]: false,
+              [PERPS_CUF_TAG.REASON]: PERPS_CUF_END_REASON.REQUEST_FAILED,
+            },
+          });
+        } else if (expectedPrice && shouldWatchPriceUpdate) {
+          acceptPerpsCufRequest(editCufOpId);
+        } else {
+          endPerpsCufTrace({
+            id: editCufOpId,
+            data: {
+              [PERPS_CUF_TAG.SUCCESS]: true,
+            },
+          });
+        }
+        return result?.success
+          ? result
+          : {
+              ...result,
+              success: false,
+              rejection: normalizeOrderEditRejection(result?.error),
+            };
+      } catch (error) {
+        endPerpsCufTrace({
+          id: editCufOpId,
+          data: {
+            [PERPS_CUF_TAG.SUCCESS]: false,
+            [PERPS_CUF_TAG.REASON]: PERPS_CUF_END_REASON.EXCEPTION,
+          },
+        });
+        throw error;
+      }
+    },
+    [],
+  );
+
+  const closePosition = useCallback(
+    async (params: ClosePositionParams): Promise<OrderResult> => {
+      const controller = Engine.context.PerpsController;
+      return controller.closePosition(params);
+    },
+    [],
+  );
+
+  const getMarkets = useCallback(
+    async (params?: MobileGetMarketsParams): Promise<MarketInfo[]> => {
+      const controller = Engine.context.PerpsController;
+      return controller.getMarkets({
+        ...params,
+        useTerminalApi,
+      });
+    },
+    [useTerminalApi],
+  );
+
+  const getPositions = useCallback(
+    async (params?: GetPositionsParams): Promise<Position[]> => {
+      const controller = Engine.context.PerpsController;
+      return controller.getPositions(params);
+    },
+    [],
+  );
+
+  const getAccountState = useCallback(
+    async (params?: GetAccountStateParams): Promise<AccountState> => {
+      const controller = Engine.context.PerpsController;
+      return controller.getAccountState(params);
+    },
+    [],
+  );
+
+  const subscribeToPrices = useCallback(
+    (subscription: SubscribePricesParams): (() => void) => {
+      const controller = Engine.context.PerpsController;
+      return controller.subscribeToPrices(subscription);
+    },
+    [],
+  );
+
+  const subscribeToPositions = useCallback(
+    (subscription: SubscribePositionsParams): (() => void) => {
+      const controller = Engine.context.PerpsController;
+      return controller.subscribeToPositions(subscription);
+    },
+    [],
+  );
+
+  const subscribeToOrderFills = useCallback(
+    (subscription: SubscribeOrderFillsParams): (() => void) => {
+      const controller = Engine.context.PerpsController;
+      return controller.subscribeToOrderFills(subscription);
+    },
+    [],
+  );
+
+  const depositWithConfirmation = useCallback(
+    async (
+      amount?: string,
+    ): Promise<{
+      result: Promise<string>;
+    }> => {
+      await ensureArbitrumNetworkExists();
+      const controller = Engine.context.PerpsController;
+      return controller.depositWithConfirmation({ amount, placeOrder: false });
+    },
+    [ensureArbitrumNetworkExists],
+  );
+
+  const depositWithOrder = useCallback(async (): Promise<{
+    result: Promise<string>;
+  }> => {
+    await ensureArbitrumNetworkExists();
+    const controller = Engine.context.PerpsController;
+    return controller.depositWithOrder();
+  }, [ensureArbitrumNetworkExists]);
+
+  const clearDepositResult = useCallback((): void => {
+    const controller = Engine.context.PerpsController;
+    controller.clearDepositResult();
+  }, []);
+
+  const withdraw = useCallback(
+    async (params: WithdrawParams): Promise<WithdrawResult> => {
+      const controller = Engine.context.PerpsController;
+      return controller.withdraw(params);
+    },
+    [],
+  );
+
+  const calculateLiquidationPrice = useCallback(
+    async (params: LiquidationPriceParams): Promise<string> => {
+      const controller = Engine.context.PerpsController;
+      return controller.calculateLiquidationPrice(params);
+    },
+    [],
+  );
+
+  const previewPositionModify = useCallback(
+    async (
+      params: PositionModifyPreviewParams,
+    ): Promise<PositionModifyPreviewResult> => {
+      const controller = Engine.context.PerpsController;
+      return controller.previewPositionModify(params);
+    },
+    [],
+  );
+
+  const calculateMaintenanceMargin = useCallback(
+    async (params: MaintenanceMarginParams): Promise<number> => {
+      const controller = Engine.context.PerpsController;
+      return controller.calculateMaintenanceMargin(params);
+    },
+    [],
+  );
+
+  const getMaxLeverage = useCallback(async (asset: string): Promise<number> => {
+    const controller = Engine.context.PerpsController;
+    return controller.getMaxLeverage(asset);
+  }, []);
+
+  const updatePositionTPSL = useCallback(
+    async (params: UpdatePositionTPSLParams): Promise<OrderResult> => {
+      const controller = Engine.context.PerpsController;
+      return controller.updatePositionTPSL(params);
+    },
+    [],
+  );
+
+  const updateMargin = useCallback(
+    async (params: UpdateMarginParams): Promise<MarginResult> => {
+      const controller = Engine.context.PerpsController;
+      return controller.updateMargin(params);
+    },
+    [],
+  );
+
+  const flipPosition = useCallback(
+    async (params: FlipPositionParams): Promise<OrderResult> => {
+      const controller = Engine.context.PerpsController;
+      return controller.flipPosition(params);
+    },
+    [],
+  );
+
+  const calculateFees = useCallback(
+    async (params: FeeCalculationParams): Promise<FeeCalculationResult> => {
+      const controller = Engine.context.PerpsController;
+      return controller.calculateFees(params);
+    },
+    [],
+  );
+
+  const validateOrder = useCallback(
+    async (
+      params: OrderParams,
+    ): Promise<{ isValid: boolean; error?: string }> => {
+      const controller = Engine.context.PerpsController;
+      return controller.validateOrder(params);
+    },
+    [],
+  );
+
+  const getOrderFills = useCallback(
+    async (params?: GetOrderFillsParams): Promise<OrderFill[]> => {
+      const controller = Engine.context.PerpsController;
+      return controller.getOrderFills(params);
+    },
+    [],
+  );
+
+  const validateClosePosition = useCallback(
+    async (
+      params: ClosePositionParams,
+    ): Promise<{ isValid: boolean; error?: string }> => {
+      const controller = Engine.context.PerpsController;
+      return controller.validateClosePosition(params);
+    },
+    [],
+  );
+
+  const getOrders = useCallback(
+    async (params?: GetOrdersParams): Promise<Order[]> => {
+      const controller = Engine.context.PerpsController;
+      return controller.getOrders(params);
+    },
+    [],
+  );
+
+  const validateWithdrawal = useCallback(
+    async (
+      params: WithdrawParams,
+    ): Promise<{ isValid: boolean; error?: string }> => {
+      const controller = Engine.context.PerpsController;
+      return controller.validateWithdrawal(params);
+    },
+    [],
+  );
+
+  const getFunding = useCallback(
+    async (params?: GetFundingParams): Promise<Funding[]> => {
+      const controller = Engine.context.PerpsController;
+      return controller.getFunding(params);
+    },
+    [],
+  );
+
+  return {
+    placeOrder,
+    cancelOrder,
+    editOrder,
+    closePosition,
+    getMarkets,
+    getPositions,
+    getAccountState,
+    subscribeToPrices,
+    subscribeToPositions,
+    subscribeToOrderFills,
+    depositWithConfirmation,
+    depositWithOrder,
+    clearDepositResult,
+    withdraw,
+    calculateLiquidationPrice,
+    previewPositionModify,
+    calculateMaintenanceMargin,
+    getMaxLeverage,
+    updatePositionTPSL,
+    updateMargin,
+    flipPosition,
+    calculateFees,
+    validateOrder,
+    validateClosePosition,
+    validateWithdrawal,
+    getOrderFills,
+    getOrders,
+    getFunding,
+  };
+}

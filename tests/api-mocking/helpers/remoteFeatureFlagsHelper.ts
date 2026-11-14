@@ -1,0 +1,239 @@
+/**
+ * Helper for creating remote feature flags mock configurations
+ */
+
+import type { Mockttp } from 'mockttp';
+import { setupMockRequest } from './mockHelpers.ts';
+import { MockApiEndpoint } from '../../framework';
+import { getProductionRemoteFlagApiResponse } from '../../feature-flags';
+
+/**
+ * Deep merge utility that properly handles nested objects
+ */
+function deepMerge(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = { ...target };
+
+  Object.keys(source).forEach((key) => {
+    const sourceValue = source[key];
+    const targetValue = result[key];
+
+    if (
+      typeof sourceValue === 'object' &&
+      typeof targetValue === 'object' &&
+      sourceValue !== null &&
+      targetValue !== null &&
+      !Array.isArray(sourceValue) &&
+      !Array.isArray(targetValue)
+    ) {
+      // Recursively merge nested objects
+      result[key] = deepMerge(
+        targetValue as Record<string, unknown>,
+        sourceValue as Record<string, unknown>,
+      );
+    } else {
+      // Replace with source value (handles primitives, arrays, null, type mismatches)
+      result[key] = sourceValue;
+    }
+  });
+
+  return result;
+}
+
+/**
+ * Returns the default feature flags array from the central registry.
+ * The registry is the single source of truth for all production flag defaults.
+ *
+ * @see tests/feature-flags/feature-flag-registry.ts
+ */
+function getDefaultFeatureFlagsArray(): Record<string, unknown>[] {
+  return getProductionRemoteFlagApiResponse() as Record<string, unknown>[];
+}
+
+/**
+ * E2E-safe overrides applied before user overrides.
+ * Production flag values that would block debug/test builds are neutralized here.
+ * Individual tests can still override these by passing their own values in flagOverrides.
+ */
+const E2E_SAFE_DEFAULTS: Record<string, unknown> = {
+  // Production appMinimumBuild (3727) exceeds Android debug versionCode (3607),
+  // triggering the UpdateNeeded modal and blocking all Android E2E tests.
+  mobileMinimumVersions: {
+    appMinimumBuild: 1,
+  },
+  // Pin onboarding interest questionnaire to control so wallet E2E flows do not
+  // encounter the screen (dismissOnboardingInterestQuestionnaire uses Playwright
+  // APIs that are not available under Detox).
+  tradeTO880AbtestOnboardingInterestQuestion: 'control',
+  // Production serves a threshold array. Pin a boolean so AccountActivity
+  // subscribe tests do not depend on canonical or MetaMetrics IDs.
+  backendWebSocketConnection: true,
+  // 2026-10-06 prod sync turned these on at versions the 8.14.0 E2E build
+  // meets. Keep the registry at the prod values; pin the pre-sync UI here so
+  // smoke tests do not pick up the new chrome, account set, or notices.
+  mobileUxBftcOnsolidation: {
+    enabled: false,
+    minimumVersion: '0.0.0',
+  },
+  earnExploreSectionEnabled: {
+    enabled: false,
+    minimumVersion: '0.0.0',
+  },
+  earnTradeMenuRowRedesignEnabled: {
+    enabled: false,
+    minimumVersion: '0.0.0',
+  },
+  earnMoneyAssetOverviewFooterCtaEnabled: {
+    enabled: false,
+    minimumVersion: '0.0.0',
+  },
+  earnMoneyCardFlipAnimationEnabled: {
+    enabled: false,
+    minimumVersion: '0.0.0',
+  },
+  earnMoneyBalanceAnimationEnabled: {
+    enabled: false,
+    minimumVersion: '0.0.0',
+  },
+  brazeBannerHomeMinVersion: {
+    enabled: false,
+    minimumVersion: '0.0.0',
+  },
+  nativeTabBarEnabled: true,
+  // predictHomeRedesign stays at the prod value. Predict smoke waits for
+  // predict-home-container, which only mounts when the redesign is enabled.
+  cardUkMigration: {
+    enabled: false,
+    minimumVersion: '8.13.0',
+    startDate: '',
+    endDate: '',
+  },
+  cardIntercomSupport: {
+    enabled: false,
+    minimumVersion: '0.0.0',
+  },
+  crossmintApplePayCheckout: {
+    enabled: false,
+    minimumVersion: '0.0.0',
+  },
+  // The 2026-10-13 prod sync turns DeFi V2 on. Keep the registry at the prod
+  // value and pin the pre-sync homepage/controller path for smoke tests.
+  defiControllerV2: {
+    enabled: false,
+  },
+  // Prod serves BRL on to every user at a version the E2E build meets. Keep
+  // the registry at the prod values and keep new VBA signups closed in smoke.
+  moneyMovementNeobankBrl: {
+    enabled: false,
+    minimumVersion: '8.19.0',
+    currency: 'BRL',
+    regions: ['BR'],
+    layout: 'Pix',
+  },
+  moneyMovementNeobankUsd: {
+    enabled: false,
+    minimumVersion: '8.19.0',
+    currency: 'USD',
+    regions: ['US'],
+    layout: 'UsBank',
+  },
+};
+
+/**
+ * Creates a remote feature flags mock with custom overrides
+ * @param flagOverrides - Object containing flag overrides (e.g., { rewards: true })
+ * @param distribution - Distribution type (main, flask)
+ * @returns Mock configuration object with array response format matching real API
+ */
+export const createRemoteFeatureFlagsMock = (
+  flagOverrides: Record<string, unknown> = {},
+  distribution: string = 'main',
+  environment: string = 'dev',
+): MockApiEndpoint => {
+  const result = JSON.parse(
+    JSON.stringify(getDefaultFeatureFlagsArray()),
+  ) as Record<string, unknown>[];
+
+  // Deep merge E2E-safe defaults with user overrides so nested safe values
+  // (e.g. appMinimumBuild: 1) survive when a test overrides a sibling property.
+  const effectiveOverrides = deepMerge(E2E_SAFE_DEFAULTS, flagOverrides);
+
+  // Apply overrides by finding and merging with existing objects or adding new ones
+  Object.entries(effectiveOverrides).forEach(([flagName, flagValue]) => {
+    const existingIndex = result.findIndex((obj) =>
+      Object.prototype.hasOwnProperty.call(obj, flagName),
+    );
+
+    if (existingIndex >= 0) {
+      // Flag exists, merge the values
+      const existingObj = result[existingIndex] as Record<string, unknown>;
+      const existingFlag = existingObj[flagName];
+      if (
+        typeof existingFlag === 'object' &&
+        typeof flagValue === 'object' &&
+        flagValue !== null &&
+        existingFlag !== null &&
+        !Array.isArray(existingFlag) &&
+        !Array.isArray(flagValue)
+      ) {
+        const existingRecord = existingFlag as Record<string, unknown>;
+        const overrideRecord = flagValue as Record<string, unknown>;
+        // Versioned client-config flags must not deep-merge with RC/test fixtures:
+        // newer registry `versions` keys (e.g. 8.9.0) would otherwise outrank a flat
+        // or older versioned override and change Pay confirmation UI under E2E.
+        if ('versions' in existingRecord || 'versions' in overrideRecord) {
+          existingObj[flagName] = flagValue;
+        } else {
+          existingObj[flagName] = deepMerge(existingRecord, overrideRecord);
+        }
+      } else {
+        // Replace simple values, arrays, or when types don't match
+        existingObj[flagName] = flagValue;
+      }
+    } else {
+      // Flag doesn't exist, add new object
+      result.push({ [flagName]: flagValue });
+    }
+  });
+
+  return {
+    urlEndpoint: `https://client-config.api.cx.metamask.io/v1/flags?client=mobile&distribution=${distribution}&environment=${environment}`,
+    response: result,
+    responseCode: 200,
+  };
+};
+
+/**
+ * Sets up default remote feature flags mock on mockttp server for both main and flask distributions
+ * This will be called automatically and can be overridden by testSpecificMock
+ */
+export const setupRemoteFeatureFlagsMock = async (
+  mockServer: Mockttp,
+  flagOverrides: Record<string, unknown> = {},
+  priority?: number,
+): Promise<void> => {
+  const environments = ['dev', 'test', 'prod'] as const;
+  const distributions = ['main', 'flask'] as const;
+
+  const mockPromises = distributions.flatMap((distribution) =>
+    environments.map((environment) => {
+      const { urlEndpoint, response, responseCode } =
+        createRemoteFeatureFlagsMock(flagOverrides, distribution, environment);
+
+      return setupMockRequest(
+        mockServer,
+        {
+          requestMethod: 'GET',
+          url: urlEndpoint,
+          response,
+          responseCode,
+        },
+        priority,
+      );
+    }),
+  );
+
+  await Promise.all(mockPromises);
+};

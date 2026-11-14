@@ -1,0 +1,44 @@
+import { test as perfTest } from '../../framework/fixtures/playwright';
+import TimerHelper from '../../framework/TimerHelper';
+import { loginToAppPlaywright } from '../../flows/wallet.flow';
+import { AppiumAssertions } from '../../framework';
+import WalletView from '../../page-objects/wallet/WalletView';
+import TokenOverview from '../../page-objects/wallet/TokenOverview';
+import {
+  Performance,
+  PerformanceLogin,
+  PerformanceAssetLoading,
+} from '../../tags.performance.js';
+import { enableHermesAppProfiling } from '../helpers/appProfiling';
+
+/* Scenario 8: Asset View, SRP 1 + SRP 2 + SRP 3 */
+perfTest.describe(
+  `${Performance} ${PerformanceLogin} ${PerformanceAssetLoading}`,
+  () => {
+    perfTest(
+      'Asset View, SRP 1 + SRP 2 + SRP 3',
+      { tag: '@assets-dev-team' },
+      async ({ currentDeviceDetails, performanceTracker }) => {
+        await loginToAppPlaywright();
+
+        const assetViewScreen = new TimerHelper(
+          'Time since the user clicks on the asset view button until the user sees the token overview screen',
+          { ios: 6000, android: 4000 },
+          currentDeviceDetails.platform,
+        );
+
+        await WalletView.tapOnTokensSection();
+        await enableHermesAppProfiling();
+        await WalletView.tapOnToken('ETH');
+
+        await assetViewScreen.measure(async () => {
+          await AppiumAssertions.expectElementToBeVisible(
+            TokenOverview.container,
+          );
+        });
+
+        performanceTracker.addTimer(assetViewScreen);
+      },
+    );
+  },
+);

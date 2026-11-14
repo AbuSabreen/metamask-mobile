@@ -1,0 +1,491 @@
+import React from 'react';
+import { fireEvent } from '@testing-library/react-native';
+import {
+  TokenDetailsActions,
+  TokenDetailsActionsProps,
+} from './TokenDetailsActions';
+import { TokenOverviewSelectorsIDs } from '../../AssetOverview/TokenOverview.testIds';
+import { TokenI } from '../../Tokens/types';
+import { TokenDetailsAction } from '../constants/constants';
+import renderWithProvider from '../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../util/test/initial-root-state';
+import { MOCK_ACCOUNTS_CONTROLLER_STATE } from '../../../../util/test/accountsControllerTestUtils';
+import { GLASS_SURFACE_SHEEN_TEST_ID } from '../../../../component-library/components-temp/BoxGlass';
+
+// The glass tests need the OS to draw glass, which Jest can't.
+jest.mock('../../../../component-library/hooks/useLiquidGlass', () => {
+  const actual = jest.requireActual(
+    '../../../../component-library/hooks/useLiquidGlass',
+  );
+  return {
+    ...actual,
+    useLiquidGlass: () => ({
+      ...actual.useLiquidGlass(),
+      isGlassEnabled: true,
+    }),
+  };
+});
+
+const mockNavigate = jest.fn();
+
+jest.mock('@react-navigation/native', () => {
+  const actualNav = jest.requireActual('@react-navigation/native');
+  const actualReact = jest.requireActual('react');
+  return {
+    ...actualNav,
+    useNavigation: () => ({
+      navigate: mockNavigate,
+      addListener: jest.fn(() => jest.fn()),
+    }),
+    // Defer via useEffect to match real useFocusEffect timing.
+    useFocusEffect: jest.fn((callback) => {
+      actualReact.useEffect(callback, []);
+    }),
+  };
+});
+
+jest.mock('../../Ramp/hooks/useDepositEnabled', () => ({
+  __esModule: true,
+  default: () => ({ isDepositEnabled: true }),
+}));
+
+jest.mock('../../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => ({
+    trackEvent: jest.fn(),
+    createEventBuilder: jest.fn(() => ({
+      addProperties: jest.fn(() => ({ build: jest.fn() })),
+    })),
+  }),
+}));
+
+const mockInitialState = {
+  engine: {
+    backgroundState: {
+      ...backgroundState,
+      AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE,
+    },
+  },
+};
+
+describe('TokenDetailsActions', () => {
+  const mockToken: TokenI = {
+    address: '0x123',
+    chainId: '0x1',
+    symbol: 'TEST',
+    name: 'Test Token',
+    decimals: 18,
+    balance: '100',
+    balanceFiat: '$100',
+    logo: '',
+    image: '',
+    isETH: false,
+    hasBalanceError: false,
+    aggregators: [],
+  };
+
+  const defaultProps: TokenDetailsActionsProps = {
+    hasPerpsMarket: false,
+    hasBalance: false,
+    isBuyable: true,
+    isNativeCurrency: false,
+    token: mockToken,
+    onBuy: jest.fn(),
+    onLong: jest.fn(),
+    onShort: jest.fn(),
+    onSend: jest.fn(),
+    onReceive: jest.fn(),
+    isLoading: false,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('loading state', () => {
+    it('renders skeleton when isLoading is true', () => {
+      const { UNSAFE_queryAllByType } = renderWithProvider(
+        <TokenDetailsActions {...defaultProps} isLoading />,
+        { state: mockInitialState },
+      );
+
+      const { Skeleton } = jest.requireActual(
+        '../../../../component-library/components-temp/Skeleton',
+      );
+      const skeletons = UNSAFE_queryAllByType(Skeleton);
+      expect(skeletons).toHaveLength(4);
+    });
+  });
+
+  describe('token does not have perps market', () => {
+    describe('token is buyable', () => {
+      describe('token has balance', () => {
+        it('renders Cash Buy, Send, Receive, More buttons', () => {
+          const { getByTestId, queryByTestId } = renderWithProvider(
+            <TokenDetailsActions
+              {...defaultProps}
+              hasPerpsMarket={false}
+              isBuyable
+              hasBalance
+            />,
+            { state: mockInitialState },
+          );
+
+          assertButtonsVisibility({
+            visibleButtonIds: [
+              TokenOverviewSelectorsIDs.BUY_BUTTON,
+              TokenOverviewSelectorsIDs.SEND_BUTTON,
+              TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+              TokenOverviewSelectorsIDs.MORE_BUTTON,
+            ],
+            hiddenButtonIds: [
+              TokenOverviewSelectorsIDs.LONG_BUTTON,
+              TokenOverviewSelectorsIDs.SHORT_BUTTON,
+            ],
+            getByTestId,
+            queryByTestId,
+          });
+        });
+      });
+
+      describe('token has no balance', () => {
+        it('renders Cash Buy, Receive, More buttons', () => {
+          const { getByTestId, queryByTestId } = renderWithProvider(
+            <TokenDetailsActions
+              {...defaultProps}
+              hasPerpsMarket={false}
+              isBuyable
+              hasBalance={false}
+            />,
+            { state: mockInitialState },
+          );
+
+          assertButtonsVisibility({
+            visibleButtonIds: [
+              TokenOverviewSelectorsIDs.BUY_BUTTON,
+              TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+              TokenOverviewSelectorsIDs.MORE_BUTTON,
+            ],
+            hiddenButtonIds: [
+              TokenOverviewSelectorsIDs.LONG_BUTTON,
+              TokenOverviewSelectorsIDs.SHORT_BUTTON,
+              TokenOverviewSelectorsIDs.SEND_BUTTON,
+            ],
+            getByTestId,
+            queryByTestId,
+          });
+        });
+      });
+    });
+
+    describe('token is not buyable', () => {
+      describe('token has balance', () => {
+        it('renders Send, Receive, More buttons', () => {
+          const { getByTestId, queryByTestId } = renderWithProvider(
+            <TokenDetailsActions
+              {...defaultProps}
+              hasPerpsMarket={false}
+              isBuyable={false}
+              hasBalance
+            />,
+            { state: mockInitialState },
+          );
+
+          assertButtonsVisibility({
+            visibleButtonIds: [
+              TokenOverviewSelectorsIDs.SEND_BUTTON,
+              TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+              TokenOverviewSelectorsIDs.MORE_BUTTON,
+            ],
+            hiddenButtonIds: [
+              TokenOverviewSelectorsIDs.LONG_BUTTON,
+              TokenOverviewSelectorsIDs.SHORT_BUTTON,
+              TokenOverviewSelectorsIDs.BUY_BUTTON,
+            ],
+            getByTestId,
+            queryByTestId,
+          });
+        });
+      });
+
+      describe('token has no balance', () => {
+        it('renders Receive, More buttons', () => {
+          const { getByTestId, queryByTestId } = renderWithProvider(
+            <TokenDetailsActions
+              {...defaultProps}
+              hasPerpsMarket={false}
+              isBuyable={false}
+              hasBalance={false}
+            />,
+            { state: mockInitialState },
+          );
+
+          assertButtonsVisibility({
+            visibleButtonIds: [
+              TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+              TokenOverviewSelectorsIDs.MORE_BUTTON,
+            ],
+            hiddenButtonIds: [
+              TokenOverviewSelectorsIDs.LONG_BUTTON,
+              TokenOverviewSelectorsIDs.SHORT_BUTTON,
+              TokenOverviewSelectorsIDs.BUY_BUTTON,
+              TokenOverviewSelectorsIDs.SEND_BUTTON,
+            ],
+            getByTestId,
+            queryByTestId,
+          });
+        });
+      });
+    });
+  });
+
+  describe('token has perps market', () => {
+    describe('token has balance', () => {
+      it('renders Long, Short, Send, Receive, More buttons', () => {
+        const { getByTestId, queryByTestId } = renderWithProvider(
+          <TokenDetailsActions {...defaultProps} hasPerpsMarket hasBalance />,
+          { state: mockInitialState },
+        );
+
+        assertButtonsVisibility({
+          visibleButtonIds: [
+            TokenOverviewSelectorsIDs.LONG_BUTTON,
+            TokenOverviewSelectorsIDs.SHORT_BUTTON,
+            TokenOverviewSelectorsIDs.SEND_BUTTON,
+            TokenOverviewSelectorsIDs.MORE_BUTTON,
+          ],
+          hiddenButtonIds: [
+            TokenOverviewSelectorsIDs.BUY_BUTTON,
+            TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+          ],
+          getByTestId,
+          queryByTestId,
+        });
+      });
+    });
+
+    describe('token has no balance', () => {
+      it('renders Long, Short, Receive, More buttons', () => {
+        const { getByTestId, queryByTestId } = renderWithProvider(
+          <TokenDetailsActions
+            {...defaultProps}
+            hasPerpsMarket
+            hasBalance={false}
+          />,
+          { state: mockInitialState },
+        );
+
+        assertButtonsVisibility({
+          visibleButtonIds: [
+            TokenOverviewSelectorsIDs.LONG_BUTTON,
+            TokenOverviewSelectorsIDs.SHORT_BUTTON,
+            TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+            TokenOverviewSelectorsIDs.MORE_BUTTON,
+          ],
+          hiddenButtonIds: [
+            TokenOverviewSelectorsIDs.BUY_BUTTON,
+            TokenOverviewSelectorsIDs.SEND_BUTTON,
+          ],
+          getByTestId,
+          queryByTestId,
+        });
+      });
+    });
+  });
+
+  describe('onActionTapped tracking', () => {
+    it('fires onActionTapped with send when Send is pressed', () => {
+      const mockOnActionTapped = jest.fn();
+      const { getByTestId } = renderWithProvider(
+        <TokenDetailsActions
+          {...defaultProps}
+          hasBalance
+          onActionTapped={mockOnActionTapped}
+        />,
+        { state: mockInitialState },
+      );
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.SEND_BUTTON));
+      expect(mockOnActionTapped).toHaveBeenCalledWith(TokenDetailsAction.Send);
+    });
+
+    it('fires onActionTapped with receive when Receive is pressed', () => {
+      const mockOnActionTapped = jest.fn();
+      const { getByTestId } = renderWithProvider(
+        <TokenDetailsActions
+          {...defaultProps}
+          onActionTapped={mockOnActionTapped}
+        />,
+        { state: mockInitialState },
+      );
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.RECEIVE_BUTTON));
+      expect(mockOnActionTapped).toHaveBeenCalledWith(
+        TokenDetailsAction.Receive,
+      );
+    });
+
+    it('fires onActionTapped with more_opened when More is pressed', () => {
+      const mockOnActionTapped = jest.fn();
+      const { getByTestId } = renderWithProvider(
+        <TokenDetailsActions
+          {...defaultProps}
+          onActionTapped={mockOnActionTapped}
+        />,
+        { state: mockInitialState },
+      );
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.MORE_BUTTON));
+      expect(mockOnActionTapped).toHaveBeenCalledWith(
+        TokenDetailsAction.MoreOpened,
+      );
+    });
+  });
+
+  describe('navigation lock', () => {
+    it('calls onSend once when Send is pressed twice before the lock resets', () => {
+      const onSend = jest.fn();
+      const resetNavigationLockRef: { current: (() => void) | null } = {
+        current: null,
+      };
+
+      const { getByTestId } = renderWithProvider(
+        <TokenDetailsActions
+          {...defaultProps}
+          hasBalance
+          onSend={onSend}
+          resetNavigationLockRef={resetNavigationLockRef}
+        />,
+        { state: mockInitialState },
+      );
+
+      const sendButton = getByTestId(TokenOverviewSelectorsIDs.SEND_BUTTON);
+      fireEvent.press(sendButton);
+      fireEvent.press(sendButton);
+
+      expect(onSend).toHaveBeenCalledTimes(1);
+
+      resetNavigationLockRef.current?.();
+      fireEvent.press(sendButton);
+
+      expect(onSend).toHaveBeenCalledTimes(2);
+    });
+
+    it('calls onActionTapped when the navigation lock drops the Send handler', () => {
+      const onSend = jest.fn();
+      const onActionTapped = jest.fn();
+
+      const { getByTestId } = renderWithProvider(
+        <TokenDetailsActions
+          {...defaultProps}
+          hasBalance
+          onSend={onSend}
+          onActionTapped={onActionTapped}
+        />,
+        { state: mockInitialState },
+      );
+
+      const sendButton = getByTestId(TokenOverviewSelectorsIDs.SEND_BUTTON);
+      fireEvent.press(sendButton);
+      fireEvent.press(sendButton);
+
+      expect(onSend).toHaveBeenCalledTimes(1);
+      expect(onActionTapped.mock.calls).toStrictEqual([
+        [TokenDetailsAction.Send],
+        [TokenDetailsAction.Send],
+      ]);
+    });
+  });
+
+  describe('button order', () => {
+    it('renders Cash Buy, Send, Receive, then More', () => {
+      const { UNSAFE_getAllByType: getButtonsByType } = renderWithProvider(
+        <TokenDetailsActions {...defaultProps} isBuyable hasBalance />,
+        { state: mockInitialState },
+      );
+
+      const MainActionButton = jest.requireActual(
+        '../../../../component-library/components-temp/MainActionButton',
+      ).default;
+
+      expect(
+        getButtonsByType(MainActionButton).map(
+          (button: { props: { testID?: string } }) => button.props.testID,
+        ),
+      ).toStrictEqual([
+        TokenOverviewSelectorsIDs.BUY_BUTTON,
+        TokenOverviewSelectorsIDs.SEND_BUTTON,
+        TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+        TokenOverviewSelectorsIDs.MORE_BUTTON,
+      ]);
+    });
+
+    it('renders Long, Short, Receive, then More when there is no balance', () => {
+      const { UNSAFE_getAllByType: getButtonsByType } = renderWithProvider(
+        <TokenDetailsActions
+          {...defaultProps}
+          hasPerpsMarket
+          hasBalance={false}
+        />,
+        { state: mockInitialState },
+      );
+
+      const MainActionButton = jest.requireActual(
+        '../../../../component-library/components-temp/MainActionButton',
+      ).default;
+
+      expect(
+        getButtonsByType(MainActionButton).map(
+          (button: { props: { testID?: string } }) => button.props.testID,
+        ),
+      ).toStrictEqual([
+        TokenOverviewSelectorsIDs.LONG_BUTTON,
+        TokenOverviewSelectorsIDs.SHORT_BUTTON,
+        TokenOverviewSelectorsIDs.RECEIVE_BUTTON,
+        TokenOverviewSelectorsIDs.MORE_BUTTON,
+      ]);
+    });
+  });
+
+  describe('glass', () => {
+    it('keeps the opaque tiles by default', () => {
+      const { queryAllByTestId } = renderWithProvider(
+        <TokenDetailsActions {...defaultProps} />,
+        { state: mockInitialState },
+      );
+
+      expect(queryAllByTestId(GLASS_SURFACE_SHEEN_TEST_ID)).toHaveLength(0);
+    });
+
+    it('draws every tile on glass with the sheen when isGlass is set', () => {
+      const { getAllByTestId } = renderWithProvider(
+        <TokenDetailsActions
+          {...defaultProps}
+          hasPerpsMarket={false}
+          isBuyable
+          hasBalance
+          isGlass
+        />,
+        { state: mockInitialState },
+      );
+
+      expect(getAllByTestId(GLASS_SURFACE_SHEEN_TEST_ID)).toHaveLength(4);
+    });
+  });
+});
+
+function assertButtonsVisibility({
+  visibleButtonIds,
+  hiddenButtonIds,
+  getByTestId,
+  queryByTestId,
+}: {
+  visibleButtonIds: string[];
+  hiddenButtonIds: string[];
+  getByTestId: ReturnType<typeof renderWithProvider>['getByTestId'];
+  queryByTestId: ReturnType<typeof renderWithProvider>['queryByTestId'];
+}) {
+  visibleButtonIds.forEach((id) => expect(getByTestId(id)).toBeOnTheScreen());
+  hiddenButtonIds.forEach((id) =>
+    expect(queryByTestId(id)).not.toBeOnTheScreen(),
+  );
+}

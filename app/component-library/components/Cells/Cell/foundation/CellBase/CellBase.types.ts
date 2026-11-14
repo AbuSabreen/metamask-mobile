@@ -3,7 +3,7 @@ import { StyleProp, ViewStyle } from 'react-native';
 
 // External dependencies.
 import { AvatarProps } from '../../../../Avatars/Avatar/Avatar.types';
-
+import { TextProps } from '../../../../Texts/Text/Text.types';
 /**
  * Cell Account component props.
  */
@@ -16,7 +16,11 @@ export interface CellBaseProps {
   /**
    * Title of the Cell Account, 1 line truncation.
    */
-  title: string;
+  title: React.ReactNode;
+  /**
+   * Optional props for title.
+   */
+  titleProps?: Partial<TextProps>;
   /**
    * Optional secondary text below the title, 1 line truncation.
    */
@@ -37,6 +41,11 @@ export interface CellBaseProps {
    * Optional prop to control the style of the CellBase.
    */
   style?: StyleProp<ViewStyle> | undefined;
+
+  /**
+   * Optional prop to control the visibility of the secondary text icon.
+   */
+  showSecondaryTextIcon?: boolean;
 }
 
 /**

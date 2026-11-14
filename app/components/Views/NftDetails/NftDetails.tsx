@@ -1,0 +1,692 @@
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  NativeSyntheticEvent,
+  TextLayoutEventData,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import Text, {
+  TextVariant,
+} from '../../../component-library/components/Texts/Text';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import { useParams } from '../../../util/navigation/navUtils';
+import { useStyles } from '../../../component-library/hooks';
+import styleSheet from './NftDetails.styles';
+import Routes from '../../../constants/navigation/Routes';
+import { NftDetailsParams } from './NftDetails.types';
+import { ScrollView } from 'react-native-gesture-handler';
+import {
+  Button,
+  ButtonVariant,
+  Icon as DesignSystemIcon,
+  IconName as DSIconName,
+  IconSize as DesignSystemIconSize,
+} from '@metamask/design-system-react-native';
+import NftDetailsBox from './NftDetailsBox';
+import NftDetailsInformationRow from './NftDetailsInformationRow';
+import { renderShortAddress } from '../../../util/address';
+import Icon, {
+  IconName,
+  IconSize,
+} from '../../../component-library/components/Icons/Icon';
+import ClipboardManager from '../../../core/ClipboardManager';
+import { useDispatch, useSelector } from 'react-redux';
+import { showAlert } from '../../../actions/alert';
+import { strings } from '../../../../locales/i18n';
+import {
+  selectChainId,
+  selectEvmTicker,
+} from '../../../selectors/networkController';
+import etherscanLink from '@metamask/etherscan-link';
+import {
+  selectConversionRate,
+  selectCurrentCurrency,
+} from '../../../selectors/currencyRateController';
+import { formatCurrency } from '../../../util/confirm-tx';
+import CollectibleMedia from '../../../components/UI/CollectibleMedia';
+import ContentDisplay from '../../../components/UI/AssetOverview/AboutAsset/ContentDisplay';
+import BigNumber from 'bignumber.js';
+import { getDecimalChainId } from '../../../util/networks';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
+import { trackBlockExplorerLinkClicked } from '../../../util/analytics/externalLinkTracking';
+import { renderShortText } from '../../../util/general';
+import { prefixUrlWithProtocol } from '../../../util/browser';
+import { formatTimestampToYYYYMMDD } from '../../../util/date';
+import MAX_TOKEN_ID_LENGTH from './nftDetails.utils';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { InitSendLocation } from '../confirmations/constants/send';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { useSendNavigation } from '../confirmations/hooks/useSendNavigation';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
+
+const NftDetails = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
+  const { collectible, source } = useParams<NftDetailsParams>();
+  const chainId = useSelector(selectChainId);
+  const dispatch = useDispatch();
+  const currentCurrency = useSelector(selectCurrentCurrency);
+  const ticker = useSelector(selectEvmTicker);
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const selectedNativeConversionRate = useSelector(selectConversionRate);
+  const { navigateToSendPage } = useSendNavigation();
+  const hasLastSalePrice = Boolean(
+    collectible.lastSale?.price?.amount?.usd &&
+      collectible.lastSale?.price?.amount?.native,
+  );
+  const hasFloorAskPrice = Boolean(
+    collectible.collection?.floorAsk?.price?.amount?.usd &&
+      collectible.collection?.floorAsk?.price?.amount?.native,
+  );
+  const hasOnlyContractAddress =
+    !hasLastSalePrice && !hasFloorAskPrice && !collectible?.rarityRank;
+
+  const {
+    styles,
+    theme: { colors },
+  } = useStyles(styleSheet, {});
+
+  const openNftOptions = useCallback(() => {
+    navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: 'NftOptions',
+      params: {
+        collectible,
+      },
+    });
+  }, [collectible, navigation]);
+
+  useEffect(() => {
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.NFT_DETAILS_OPENED)
+        .addProperties({
+          chain_id: getDecimalChainId(chainId),
+          ...(source && { source }),
+        })
+        .build(),
+    );
+    // The linter wants `trackEvent` to be added as a dependency,
+    // But the event fires twice if I do that.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chainId, source]);
+
+  const viewHighestFloorPriceSource = () => {
+    const url =
+      hasFloorAskPrice &&
+      Boolean(collectible?.collection?.floorAsk?.source?.url)
+        ? collectible?.collection?.floorAsk?.source?.url
+        : undefined;
+
+    navigation.navigate('Webview', {
+      screen: 'SimpleWebview',
+      params: { url },
+    });
+  };
+
+  const viewLastSalePriceSource = () => {
+    const source = collectible?.lastSale?.orderSource;
+    if (source) {
+      const url = prefixUrlWithProtocol(source);
+      navigation.navigate('Webview', {
+        screen: 'SimpleWebview',
+        params: { url },
+      });
+    }
+  };
+
+  const copyAddressToClipboard = async (address?: string) => {
+    if (!address) {
+      return;
+    }
+    await ClipboardManager.setString(address);
+    dispatch(
+      showAlert({
+        isVisible: true,
+        autodismiss: 1500,
+        content: 'clipboard-alert',
+        data: { msg: strings('detected_tokens.address_copied_to_clipboard') },
+      }),
+    );
+  };
+
+  const blockExplorerTokenLink = () =>
+    etherscanLink.createTokenTrackerLink(collectible?.address, chainId);
+
+  const blockExplorerAccountLink = () => {
+    if (collectible.collection?.creator) {
+      return etherscanLink.createAccountLink(
+        collectible?.collection?.creator,
+        chainId,
+      );
+    }
+  };
+
+  const openBlockExplorer = useCallback(
+    (url: string | undefined, text: string) => {
+      if (!url) {
+        return;
+      }
+      trackBlockExplorerLinkClicked(trackEvent, createEventBuilder, {
+        location: 'nft_details',
+        text,
+        url,
+      });
+      navigation.navigate('Webview', {
+        screen: 'SimpleWebview',
+        params: { url },
+      });
+    },
+    [createEventBuilder, navigation, trackEvent],
+  );
+
+  const getDateCreatedTimestamp = (dateString: string) => {
+    const date = new Date(dateString);
+    return Math.floor(date.getTime() / 1000);
+  };
+
+  const onSend = useCallback(() => {
+    navigateToSendPage({
+      location: InitSendLocation.NftDetails,
+      asset: collectible,
+    });
+  }, [collectible, navigateToSendPage]);
+
+  const isTradable = useCallback(
+    () =>
+      (collectible.standard === 'ERC721' ||
+        collectible.standard === 'ERC1155') &&
+      collectible.isCurrentlyOwned === true,
+    [collectible],
+  );
+
+  const getCurrentHighestBidValue = () => {
+    if (
+      collectible?.topBid?.price?.amount?.native &&
+      collectible.collection?.topBid?.price?.amount?.native
+    ) {
+      // return the max between collection top Bid and token topBid
+      const topBidValue = Math.max(
+        collectible?.topBid?.price?.amount?.native,
+        collectible.collection?.topBid?.price?.amount?.native,
+      );
+      return `${topBidValue}${ticker}`;
+    }
+    // return the one that is available
+    const topBidValue =
+      collectible.topBid?.price?.amount?.native ||
+      collectible.collection?.topBid?.price?.amount?.native;
+    if (!topBidValue) {
+      return null;
+    }
+    return `${topBidValue}${ticker}`;
+  };
+
+  const getTopBidSourceDomain = () =>
+    collectible?.topBid?.source?.url ||
+    (collectible?.collection?.topBid?.sourceDomain
+      ? `https://${collectible?.collection.topBid?.sourceDomain}`
+      : undefined);
+
+  const [numberOfLines, setNumberOfLines] = useState(0);
+
+  const handleTextLayout = (
+    event: NativeSyntheticEvent<TextLayoutEventData>,
+  ) => {
+    setNumberOfLines(event.nativeEvent.lines.length);
+  };
+
+  const renderDescription = () => {
+    if (!collectible.description) {
+      return null;
+    } else if (numberOfLines <= 2) {
+      // Render Text component if lines are less than or equal to 2
+      return (
+        <Text style={styles.description} onTextLayout={handleTextLayout}>
+          {collectible.description}
+        </Text>
+      );
+    }
+    return (
+      <ContentDisplay
+        content={collectible?.description}
+        numberOfLines={3}
+        textStyle={styles.description}
+      />
+    );
+  };
+
+  const applyConversionRate = (value: BigNumber, rate?: number) => {
+    if (typeof rate === 'undefined') {
+      return value;
+    }
+
+    const conversionRate = new BigNumber(rate, 10);
+    return value.times(conversionRate);
+  };
+
+  const getValueInFormattedCurrency = (
+    nativeValue: number,
+    usdValue: number,
+  ) => {
+    const numericVal = new BigNumber(nativeValue, 10);
+    // if current currency is usd or if fetching conversion rate failed then always return USD value
+    if (!selectedNativeConversionRate || currentCurrency === 'usd') {
+      const usdValueFormatted = formatCurrency(usdValue.toString(), 'usd');
+      return usdValueFormatted;
+    }
+    const value = applyConversionRate(
+      numericVal,
+      selectedNativeConversionRate,
+    ).toNumber();
+    return formatCurrency(new BigNumber(value, 10).toString(), currentCurrency);
+  };
+
+  const getFormattedDate = (dateString: number) => {
+    const date = new Date(dateString * 1000).getTime();
+    return formatTimestampToYYYYMMDD(date);
+  };
+
+  const onMediaPress = useCallback(() => {
+    // Navigate to new NFT details page
+    navigation.navigate('NftDetailsFullImage', {
+      collectible,
+    });
+  }, [collectible, navigation]);
+
+  const goToTokenIdSheet = (tokenId: string) => {
+    navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.SHEET.SHOW_TOKEN_ID,
+      params: {
+        tokenId,
+      },
+    });
+  };
+
+  const shouldShowTokenIdBottomSheet = (tokenId: string) =>
+    tokenId.length > MAX_TOKEN_ID_LENGTH;
+
+  const hasPriceSection =
+    getCurrentHighestBidValue() || collectible?.lastSale?.timestamp;
+  const hasCollectionSection =
+    collectible?.collection?.name ||
+    collectible?.collection?.ownerCount ||
+    collectible?.collection?.tokenCount ||
+    collectible?.collection?.creator;
+  const hasAttributesSection =
+    collectible?.attributes && collectible?.attributes?.length !== 0;
+
+  return (
+    <SafeAreaView style={styles.wrapper} edges={['left', 'right', 'bottom']}>
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        includesTopInset
+        onBack={() => navigation.goBack()}
+        endButtonIconProps={[
+          {
+            iconName: DSIconName.MoreVertical,
+            onPress: openNftOptions,
+          },
+        ]}
+      />
+      <ScrollView>
+        <View style={styles.infoContainer}>
+          <TouchableOpacity
+            style={[styles.collectibleMediaWrapper]}
+            onPress={onMediaPress}
+          >
+            <CollectibleMedia
+              style={styles.collectibleMediaStyle}
+              cover
+              renderAnimation
+              collectible={collectible}
+              isTokenImage
+              isFullRatio
+            />
+          </TouchableOpacity>
+          <View>
+            <View style={styles.nameWrapper}>
+              <Text style={styles.heading}>{collectible.name}</Text>
+              {collectible.collection?.openseaVerificationStatus ===
+              'verified' ? (
+                <Icon
+                  name={IconName.SecurityTick}
+                  size={IconSize.Md}
+                  style={styles.iconVerified}
+                />
+              ) : null}
+            </View>
+            {renderDescription()}
+          </View>
+          <View style={styles.generalInfoFrame}>
+            {hasLastSalePrice || hasFloorAskPrice ? (
+              <>
+                <NftDetailsBox
+                  titleTextStyle={styles.generalInfoTitleTextStyle}
+                  titleStyle={styles.generalInfoTitleStyle}
+                  valueStyle={styles.generalInfoValueStyle}
+                  title={strings('nft_details.bought_for')}
+                  value={
+                    collectible.lastSale?.price?.amount?.native &&
+                    collectible.lastSale?.price?.amount?.usd
+                      ? getValueInFormattedCurrency(
+                          collectible.lastSale?.price?.amount?.native,
+                          collectible.lastSale?.price?.amount?.usd,
+                        )
+                      : strings('nft_details.data_unavailable')
+                  }
+                  valueTextStyle={
+                    hasLastSalePrice
+                      ? styles.generalInfoValueTextStyle
+                      : styles.generalInfoTitleTextStyle
+                  }
+                  icon={
+                    hasLastSalePrice && collectible?.lastSale?.orderSource ? (
+                      <TouchableOpacity
+                        onPress={() => viewLastSalePriceSource()}
+                      >
+                        <Icon
+                          name={IconName.ArrowSquareOut}
+                          size={IconSize.Xs}
+                          style={styles.iconExport}
+                        />
+                      </TouchableOpacity>
+                    ) : null
+                  }
+                />
+                <NftDetailsBox
+                  titleTextStyle={styles.generalInfoTitleTextStyle}
+                  titleStyle={styles.generalInfoTitleStyle}
+                  valueStyle={styles.generalInfoValueStyle}
+                  title={strings('nft_details.highest_floor_price')}
+                  value={
+                    collectible.collection?.floorAsk?.price?.amount?.native &&
+                    collectible.collection?.floorAsk?.price?.amount?.usd
+                      ? getValueInFormattedCurrency(
+                          collectible.collection?.floorAsk?.price?.amount
+                            ?.native,
+                          collectible.collection?.floorAsk?.price?.amount?.usd,
+                        )
+                      : strings('nft_details.price_unavailable')
+                  }
+                  valueTextStyle={
+                    hasFloorAskPrice
+                      ? styles.generalInfoValueTextStyle
+                      : styles.generalInfoTitleTextStyle
+                  }
+                  icon={
+                    hasFloorAskPrice ? (
+                      <TouchableOpacity
+                        onPress={() => viewHighestFloorPriceSource()}
+                      >
+                        <Icon
+                          name={IconName.ArrowSquareOut}
+                          size={IconSize.Xs}
+                          style={styles.iconExport}
+                        />
+                      </TouchableOpacity>
+                    ) : null
+                  }
+                />
+              </>
+            ) : null}
+
+            {collectible.rarityRank ? (
+              <NftDetailsBox
+                titleTextStyle={styles.generalInfoTitleTextStyle}
+                titleStyle={styles.generalInfoTitleStyle}
+                valueStyle={styles.generalInfoValueStyle}
+                title={strings('nft_details.rank')}
+                value={`#${collectible.rarityRank}`}
+                valueTextStyle={styles.generalInfoValueTextStyle}
+              />
+            ) : null}
+            {hasLastSalePrice || hasFloorAskPrice || collectible?.rarityRank ? (
+              <NftDetailsBox
+                titleTextStyle={styles.generalInfoTitleTextStyle}
+                titleStyle={styles.generalInfoTitleStyle}
+                valueStyle={styles.generalInfoValueStyle}
+                title={strings('nft_details.contract_address')}
+                value={renderShortAddress(collectible.address)}
+                valueTextStyle={styles.generalInfoValueTextAddressStyle}
+                icon={
+                  <TouchableOpacity
+                    onPress={() => copyAddressToClipboard(collectible.address)}
+                  >
+                    <Icon
+                      name={IconName.Copy}
+                      size={IconSize.Xs}
+                      color={colors.primary.default}
+                    />
+                  </TouchableOpacity>
+                }
+                onValuePress={() => {
+                  openBlockExplorer(
+                    blockExplorerTokenLink(),
+                    strings('nft_details.contract_address'),
+                  );
+                }}
+              />
+            ) : null}
+          </View>
+          <View style={styles.sectionsContainer}>
+            <View style={styles.sectionList}>
+              {hasOnlyContractAddress ? (
+                <NftDetailsInformationRow
+                  title={strings('nft_details.contract_address')}
+                  value={renderShortAddress(collectible.address)}
+                  icon={
+                    <TouchableOpacity
+                      onPress={() =>
+                        copyAddressToClipboard(collectible.address)
+                      }
+                    >
+                      <DesignSystemIcon
+                        name={DSIconName.Copy}
+                        size={DesignSystemIconSize.Sm}
+                      />
+                    </TouchableOpacity>
+                  }
+                  onValuePress={() => {
+                    if (collectible.collection?.creator) {
+                      openBlockExplorer(
+                        blockExplorerTokenLink(),
+                        strings('nft_details.contract_address'),
+                      );
+                    }
+                  }}
+                />
+              ) : null}
+              <NftDetailsInformationRow
+                title={strings('nft_details.token_id')}
+                value={
+                  shouldShowTokenIdBottomSheet(collectible.tokenId)
+                    ? renderShortText(collectible.tokenId, 5)
+                    : collectible.tokenId
+                }
+                icon={
+                  shouldShowTokenIdBottomSheet(collectible.tokenId) ? (
+                    <TouchableOpacity
+                      onPress={() => goToTokenIdSheet(collectible.tokenId)}
+                    >
+                      <Icon
+                        name={IconName.ArrowDown}
+                        size={IconSize.Xs}
+                        color={colors.text.default}
+                      />
+                    </TouchableOpacity>
+                  ) : null
+                }
+              />
+              <NftDetailsInformationRow
+                title={strings('nft_details.token_symbol')}
+                value={collectible?.collection?.symbol}
+              />
+              <NftDetailsInformationRow
+                title={strings('nft_details.token_standard')}
+                value={collectible.standard}
+              />
+              <NftDetailsInformationRow
+                title={strings('nft_details.date_created')}
+                value={
+                  collectible.collection?.contractDeployedAt
+                    ? getFormattedDate(
+                        getDateCreatedTimestamp(
+                          collectible.collection?.contractDeployedAt,
+                        ),
+                      )
+                    : undefined
+                }
+              />
+            </View>
+
+            {hasCollectionSection ? (
+              <View>
+                <Text
+                  variant={TextVariant.HeadingMD}
+                  style={styles.sectionHeading}
+                >
+                  {strings('collectible.collection')}
+                </Text>
+                <View style={styles.sectionList}>
+                  <NftDetailsInformationRow
+                    title={strings('collectible.collection')}
+                    value={collectible.collection?.name}
+                  />
+                  <NftDetailsInformationRow
+                    title={strings('nft_details.unique_token_holders')}
+                    value={collectible.collection?.ownerCount}
+                  />
+                  <NftDetailsInformationRow
+                    title={strings('nft_details.tokens_in_collection')}
+                    value={collectible?.collection?.tokenCount}
+                  />
+                  <NftDetailsInformationRow
+                    title={strings('nft_details.creator_address')}
+                    value={
+                      collectible?.collection?.creator
+                        ? renderShortAddress(collectible?.collection?.creator)
+                        : null
+                    }
+                    icon={
+                      <TouchableOpacity
+                        onPress={() =>
+                          copyAddressToClipboard(
+                            collectible?.collection?.creator,
+                          )
+                        }
+                      >
+                        <DesignSystemIcon
+                          name={DSIconName.Copy}
+                          size={DesignSystemIconSize.Sm}
+                        />
+                      </TouchableOpacity>
+                    }
+                    onValuePress={() => {
+                      if (collectible.collection?.creator) {
+                        openBlockExplorer(
+                          blockExplorerAccountLink(),
+                          strings('nft_details.creator'),
+                        );
+                      }
+                    }}
+                  />
+                </View>
+              </View>
+            ) : null}
+
+            {hasPriceSection ? (
+              <View>
+                <Text
+                  variant={TextVariant.HeadingMD}
+                  style={styles.sectionHeading}
+                >
+                  Price
+                </Text>
+                <View style={styles.sectionList}>
+                  <NftDetailsInformationRow
+                    title={strings('nft_details.last_sold')}
+                    value={
+                      collectible.lastSale?.timestamp
+                        ? getFormattedDate(collectible.lastSale?.timestamp)
+                        : null
+                    }
+                  />
+                  <NftDetailsInformationRow
+                    title={strings('nft_details.highest_current_bid')}
+                    value={getCurrentHighestBidValue()}
+                    icon={
+                      getTopBidSourceDomain() ? (
+                        <TouchableOpacity
+                          onPress={() => {
+                            navigation.navigate('Webview', {
+                              screen: 'SimpleWebview',
+                              params: { url: getTopBidSourceDomain() },
+                            });
+                          }}
+                        >
+                          <Icon
+                            name={IconName.ArrowSquareOut}
+                            size={IconSize.Xs}
+                            style={styles.iconExport}
+                          />
+                        </TouchableOpacity>
+                      ) : null
+                    }
+                  />
+                </View>
+              </View>
+            ) : null}
+
+            {hasAttributesSection ? (
+              <View>
+                <Text
+                  variant={TextVariant.HeadingMD}
+                  style={styles.sectionHeading}
+                >
+                  {strings('nft_details.attributes')}
+                </Text>
+                <View style={styles.attributesFrame}>
+                  {collectible.attributes?.map((elm, idx) => {
+                    const { key, value } = elm;
+                    return (
+                      <NftDetailsBox
+                        key={`${key}-${value}-${idx}`}
+                        title={key}
+                        value={value}
+                        titleTextStyle={styles.informationRowTitleStyle}
+                        valueTextStyle={styles.informationRowValueStyle}
+                      />
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
+          </View>
+          <View style={styles.disclaimer}>
+            <Text style={styles.disclaimerText}>
+              {strings('nft_details.disclaimer')}
+            </Text>
+          </View>
+        </View>
+      </ScrollView>
+
+      {isTradable() ? (
+        <View style={styles.buttonSendWrapper}>
+          <Button
+            variant={ButtonVariant.Primary}
+            twClassName="flex-1"
+            onPress={onSend}
+          >
+            {strings('transaction.send')}
+          </Button>
+        </View>
+      ) : null}
+    </SafeAreaView>
+  );
+};
+
+export default NftDetails;

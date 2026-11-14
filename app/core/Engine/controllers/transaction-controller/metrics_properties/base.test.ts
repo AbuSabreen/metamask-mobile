@@ -1,0 +1,180 @@
+import {
+  TransactionType,
+  TransactionMeta,
+} from '@metamask/transaction-controller';
+
+import { getTransactionTypeValue } from './base';
+
+describe('getTransactionTypeValue', () => {
+  it('returns correct string value for snake case conversion cases', () => {
+    expect(getTransactionTypeValue(TransactionType.bridgeApproval)).toBe(
+      'bridge_approval',
+    );
+    expect(getTransactionTypeValue(TransactionType.contractInteraction)).toBe(
+      'contract_interaction',
+    );
+    expect(getTransactionTypeValue(TransactionType.deployContract)).toBe(
+      'deploy_contract',
+    );
+    expect(
+      getTransactionTypeValue(TransactionType.ethGetEncryptionPublicKey),
+    ).toBe('eth_get_encryption_public_key');
+    expect(getTransactionTypeValue(TransactionType.signTypedData)).toBe(
+      'eth_sign_typed_data',
+    );
+    expect(getTransactionTypeValue(TransactionType.simpleSend)).toBe(
+      'simple_send',
+    );
+    expect(getTransactionTypeValue(TransactionType.stakingClaim)).toBe(
+      'staking_claim',
+    );
+    expect(getTransactionTypeValue(TransactionType.stakingDeposit)).toBe(
+      'staking_deposit',
+    );
+    expect(getTransactionTypeValue(TransactionType.stakingUnstake)).toBe(
+      'staking_unstake',
+    );
+    expect(getTransactionTypeValue(TransactionType.swapAndSend)).toBe(
+      'swap_and_send',
+    );
+    expect(getTransactionTypeValue(TransactionType.swapApproval)).toBe(
+      'swap_approval',
+    );
+    expect(getTransactionTypeValue(TransactionType.tokenMethodApprove)).toBe(
+      'token_method_approve',
+    );
+    expect(
+      getTransactionTypeValue(TransactionType.tokenMethodIncreaseAllowance),
+    ).toBe('token_method_increase_allowance');
+    expect(
+      getTransactionTypeValue(TransactionType.tokenMethodSafeTransferFrom),
+    ).toBe('token_method_safe_transfer_from');
+    expect(
+      getTransactionTypeValue(TransactionType.tokenMethodSetApprovalForAll),
+    ).toBe('token_method_set_approval_for_all');
+    expect(getTransactionTypeValue(TransactionType.tokenMethodTransfer)).toBe(
+      'token_method_transfer',
+    );
+    expect(
+      getTransactionTypeValue(TransactionType.tokenMethodTransferFrom),
+    ).toBe('token_method_transfer_from');
+  });
+
+  it('returns same value for non-snake case types', () => {
+    expect(getTransactionTypeValue(TransactionType.ethDecrypt)).toBe(
+      TransactionType.ethDecrypt,
+    );
+    expect(getTransactionTypeValue(TransactionType.personalSign)).toBe(
+      TransactionType.personalSign,
+    );
+    expect(getTransactionTypeValue(TransactionType.bridge)).toBe(
+      TransactionType.bridge,
+    );
+    expect(getTransactionTypeValue(TransactionType.cancel)).toBe(
+      TransactionType.cancel,
+    );
+    expect(getTransactionTypeValue(TransactionType.incoming)).toBe(
+      TransactionType.incoming,
+    );
+    expect(getTransactionTypeValue(TransactionType.retry)).toBe(
+      TransactionType.retry,
+    );
+    expect(getTransactionTypeValue(TransactionType.smart)).toBe(
+      TransactionType.smart,
+    );
+    expect(getTransactionTypeValue(TransactionType.swap)).toBe(
+      TransactionType.swap,
+    );
+  });
+
+  it('returns a value for undefined type', () => {
+    // When transactionType is undefined, function returns based on switch fallthrough
+    const result = getTransactionTypeValue(undefined);
+    expect(typeof result).toBe('string');
+  });
+
+  it('returns "unknown" for unhandled transaction type', () => {
+    expect(getTransactionTypeValue('nonexistentType' as TransactionType)).toBe(
+      'unknown',
+    );
+  });
+
+  it.each([
+    ['predict_claim', TransactionType.predictClaim],
+    ['predict_deposit', TransactionType.predictDeposit],
+    ['predict_withdraw', TransactionType.predictWithdraw],
+    ['perps_withdraw', TransactionType.perpsWithdraw],
+    ['money_account_deposit', TransactionType.moneyAccountDeposit],
+    ['money_account_withdraw', TransactionType.moneyAccountWithdraw],
+    ['musd_conversion', TransactionType.musdConversion],
+    ['musd_claim', TransactionType.musdClaim],
+  ])('returns %s if nested transaction type is %s', (expected, nestedType) => {
+    const mockTransactionMeta = {
+      type: TransactionType.simpleSend,
+      nestedTransactions: [
+        {
+          type: nestedType,
+        },
+      ],
+    } as TransactionMeta;
+
+    expect(
+      getTransactionTypeValue(mockTransactionMeta.type, mockTransactionMeta),
+    ).toBe(expected);
+  });
+
+  it.each([
+    ['perps_deposit_batch', TransactionType.perpsRelayDeposit],
+    ['predict_deposit_batch', TransactionType.predictRelayDeposit],
+    ['musd_conversion_batch', TransactionType.musdRelayDeposit],
+  ])(
+    'returns %s for batch transaction with nested %s type',
+    (expected, nestedType) => {
+      const mockTransactionMeta = {
+        type: TransactionType.batch,
+        nestedTransactions: [
+          { type: TransactionType.tokenMethodApprove },
+          { type: nestedType },
+        ],
+      } as TransactionMeta;
+
+      expect(
+        getTransactionTypeValue(mockTransactionMeta.type, mockTransactionMeta),
+      ).toBe(expected);
+    },
+  );
+
+  it.each([
+    ['musd_relay_deposit', TransactionType.musdRelayDeposit],
+    ['perps_relay_deposit', TransactionType.perpsRelayDeposit],
+    ['predict_relay_deposit', TransactionType.predictRelayDeposit],
+  ])('returns %s for standalone relay deposit type %s', (expected, txType) => {
+    expect(getTransactionTypeValue(txType)).toBe(expected);
+  });
+
+  it.each([
+    [
+      'standalone predictDepositAndOrder',
+      {
+        type: TransactionType.predictDepositAndOrder,
+      } as TransactionMeta,
+    ],
+    [
+      'PWAT batch with nested predictDepositAndOrder',
+      {
+        type: TransactionType.batch,
+        nestedTransactions: [
+          { type: TransactionType.tokenMethodApprove },
+          { type: TransactionType.predictDepositAndOrder },
+        ],
+      } as TransactionMeta,
+    ],
+  ])(
+    'returns predict_deposit_and_order for %s',
+    (_name, mockTransactionMeta) => {
+      expect(
+        getTransactionTypeValue(mockTransactionMeta.type, mockTransactionMeta),
+      ).toBe('predict_deposit_and_order');
+    },
+  );
+});

@@ -1,0 +1,46 @@
+import type { RewardsControllerState } from './types';
+
+/**
+ * Get the default state for the RewardsController.
+ */
+export const getRewardsControllerDefaultState = (): RewardsControllerState => ({
+  activeAccount: null,
+  accounts: {},
+  subscriptions: {},
+  subscriptionBenefits: {},
+  vipDashboard: {},
+  vipRefereeDashboard: {},
+  vipPerpsFees: {},
+  vipTransactions: {},
+  seasons: {},
+  subscriptionReferralDetails: {},
+  seasonStatuses: {},
+  activeBoosts: {},
+  unlockedRewards: {},
+  pointsEvents: {},
+  offDeviceSubscriptionAccounts: {},
+  campaigns: {},
+  campaignParticipantStatus: {},
+  ondoCampaignLeaderboard: {},
+  ondoCampaignLeaderboardPositions: {},
+  ondoCampaignPortfolio: {},
+  ondoCampaignActivity: {},
+  ondoCampaignDeposits: {},
+  perpsTradingCampaignLeaderboard: {},
+  perpsTradingCampaignLeaderboardPositions: {},
+  perpsTradingCampaignVolume: {},
+  perpsTradingCampaignPrizePool: {},
+  predictThePitchLeaderboard: {},
+  predictThePitchLeaderboardPositions: {},
+  predictThePitchPositions: {},
+  predictThePitchPrizePool: {},
+  moneyAccountSweepstakesStats: {},
+  moneyAccountSweepstakesPrizePool: {},
+  moneyAccountSweepstakesVolumeStats: {},
+  moneyAccountSweepstakesDrawProof: {},
+  clientVersionRequirements: null,
+  pointsEstimateHistory: [],
+  rewardsEnvUrl: null,
+});
+
+export const defaultRewardsControllerState = getRewardsControllerDefaultState();

@@ -1,0 +1,1539 @@
+/**
+ * Shared formatting utilities for Perps components
+ */
+import { BigNumber } from 'bignumber.js';
+import I18n, { strings } from '../../../../../locales/i18n';
+import {
+  getIntlDateTimeFormatter,
+  getIntlNumberFormatter,
+} from '../../../../util/intl';
+import { LIQUIDATION_DISTANCE_DECIMALS } from '../constants/perpsConfig';
+import {
+  type FiatRangeConfig,
+  formatPerpsFiat,
+  formatHyperLiquidPrice,
+  formatWithSignificantDigits,
+  PRICE_RANGES_UNIVERSAL,
+} from '@metamask/perps-controller';
+
+// Decimal formatters moved to controller for cross-platform sharing
+export type { FiatRangeConfig };
+export {
+  PRICE_THRESHOLD,
+  formatWithSignificantDigits,
+  PRICE_RANGES_MINIMAL_VIEW,
+  PRICE_RANGES_UNIVERSAL,
+  formatPositionSize,
+  formatPnl,
+  formatPercentage,
+  formatFundingRate,
+} from '@metamask/perps-controller';
+export { formatPerpsFiat }; // re-export via local import (needed by formatPositiveFiat below)
+
+const DEFAULT_PERPS_LOCALE = 'en-US';
+
+interface PerpsLocaleSeparators {
+  grouping: string;
+  decimal: string;
+}
+
+const getCurrentPerpsLocale = (locale?: string): string =>
+  locale || I18n?.locale || DEFAULT_PERPS_LOCALE;
+
+const getPerpsNumberFormatter = (
+  locale: string | undefined,
+  options: Intl.NumberFormatOptions,
+): Intl.NumberFormat => {
+  try {
+    return getIntlNumberFormatter(getCurrentPerpsLocale(locale), options);
+  } catch {
+    return getIntlNumberFormatter(DEFAULT_PERPS_LOCALE, options);
+  }
+};
+
+interface PerpsLocaleGrouping {
+  groupingSeparator: string;
+  primaryGroupSize: number;
+  secondaryGroupSize: number;
+  localizedDigits: readonly string[];
+}
+
+const perpsLocaleGroupingCache = new Map<string, PerpsLocaleGrouping>();
+
+/**
+ * Reads locale grouping rules from a safe integer without relying on BigInt or
+ * NumberFormat.formatToParts, which is not available in every app runtime.
+ */
+const getPerpsLocaleGrouping = (locale?: string): PerpsLocaleGrouping => {
+  const currentLocale = getCurrentPerpsLocale(locale);
+  const cachedGrouping = perpsLocaleGroupingCache.get(currentLocale);
+
+  if (cachedGrouping) {
+    return cachedGrouping;
+  }
+
+  const groupingFormatter = getPerpsNumberFormatter(locale, {
+    useGrouping: true,
+    maximumFractionDigits: 0,
+  });
+  const digitFormatter = getPerpsNumberFormatter(locale, {
+    useGrouping: false,
+    maximumFractionDigits: 0,
+  });
+  const localizedDigits = Array.from({ length: 10 }, (_, digitValue) =>
+    digitFormatter.format(digitValue),
+  );
+  const localizedDigitEntries = localizedDigits
+    .map((formattedDigit, digitValue) => ({
+      formattedDigit,
+      digitValue: String(digitValue),
+    }))
+    .sort(
+      (leftEntry, rightEntry) =>
+        rightEntry.formattedDigit.length - leftEntry.formattedDigit.length,
+    );
+  const formattedSample = groupingFormatter.format(1234567890123);
+  const groupSizes: number[] = [];
+  let currentGroupSize = 0;
+  let pendingSeparator = '';
+  let groupingSeparator = '';
+  let position = 0;
+
+  while (position < formattedSample.length) {
+    let matchedDigit: (typeof localizedDigitEntries)[number] | undefined;
+
+    for (const localizedDigitEntry of localizedDigitEntries) {
+      if (
+        formattedSample.startsWith(localizedDigitEntry.formattedDigit, position)
+      ) {
+        matchedDigit = localizedDigitEntry;
+        break;
+      }
+    }
+
+    if (matchedDigit) {
+      if (pendingSeparator) {
+        if (currentGroupSize > 0) {
+          groupSizes.push(currentGroupSize);
+          groupingSeparator = pendingSeparator;
+          currentGroupSize = 0;
+        }
+
+        pendingSeparator = '';
+      }
+
+      currentGroupSize += 1;
+      position += matchedDigit.formattedDigit.length;
+      continue;
+    }
+
+    pendingSeparator += formattedSample.charAt(position);
+    position += 1;
+  }
+
+  if (currentGroupSize > 0) {
+    groupSizes.push(currentGroupSize);
+  }
+
+  const primaryGroupSize = groupSizes[groupSizes.length - 1] || 3;
+  const secondaryGroupSize =
+    groupSizes[groupSizes.length - 2] || primaryGroupSize;
+  const localeGrouping = {
+    groupingSeparator,
+    primaryGroupSize,
+    secondaryGroupSize,
+    localizedDigits,
+  };
+
+  perpsLocaleGroupingCache.set(currentLocale, localeGrouping);
+
+  return localeGrouping;
+};
+
+const getPerpsLocaleSeparators = (locale?: string): PerpsLocaleSeparators => {
+  const localeGrouping = getPerpsLocaleGrouping(locale);
+  const groupingFormatter = getPerpsNumberFormatter(locale, {
+    useGrouping: true,
+    maximumFractionDigits: 0,
+  });
+  const decimalFormatter = getPerpsNumberFormatter(locale, {
+    useGrouping: false,
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+  const groupedInteger = Array.from(groupingFormatter.format(1000));
+  const formattedDecimal = Array.from(decimalFormatter.format(1.1));
+  const localizedDigits = new Set(localeGrouping.localizedDigits);
+  const decimalSeparators = formattedDecimal.filter(
+    (character) => !localizedDigits.has(character),
+  );
+
+  return {
+    grouping:
+      localeGrouping.groupingSeparator ||
+      groupedInteger.slice(1, -3).join('') ||
+      ',',
+    decimal: decimalSeparators.join('') || '.',
+  };
+};
+
+const normalizePerpsLocalizedDigits = (
+  value: string,
+  localeGrouping: PerpsLocaleGrouping,
+): string => {
+  const localizedDigitEntries = localeGrouping.localizedDigits.map(
+    (localizedDigit, digitValue) => ({
+      localizedDigit,
+      digitValue: String(digitValue),
+    }),
+  );
+  let normalizedValue = '';
+
+  for (let position = 0; position < value.length; ) {
+    const localizedDigitEntry = localizedDigitEntries.find(
+      ({ localizedDigit }) => value.startsWith(localizedDigit, position),
+    );
+
+    if (localizedDigitEntry) {
+      normalizedValue += localizedDigitEntry.digitValue;
+      position += localizedDigitEntry.localizedDigit.length;
+    } else {
+      normalizedValue += value[position];
+      position += 1;
+    }
+  }
+
+  return normalizedValue;
+};
+
+export interface PerpsInputSelection {
+  start: number;
+  end: number;
+}
+
+export interface NormalizePerpsNumericInputContext {
+  previousDisplayValue: string;
+  previousSelection?: PerpsInputSelection;
+}
+
+const isLocaleGroupedInteger = (
+  value: string,
+  localeGrouping: PerpsLocaleGrouping,
+): boolean => {
+  const { groupingSeparator, primaryGroupSize, secondaryGroupSize } =
+    localeGrouping;
+  const unsignedValue = value.replace(/^[+-]/, '');
+  const integerGroups = unsignedValue.split(groupingSeparator);
+
+  if (
+    !groupingSeparator ||
+    integerGroups.length < 2 ||
+    integerGroups.some((integerGroup) => !/^\d+$/.test(integerGroup))
+  ) {
+    return false;
+  }
+
+  const firstGroup = integerGroups[0];
+  const groupedDigits = integerGroups.slice(1);
+
+  return (
+    firstGroup.length > 0 &&
+    firstGroup.length <= secondaryGroupSize &&
+    groupedDigits.every(
+      (integerGroup, index) =>
+        integerGroup.length ===
+        (index === groupedDigits.length - 1
+          ? primaryGroupSize
+          : secondaryGroupSize),
+    )
+  );
+};
+
+/**
+ * Groups and localizes an integer string without converting its value to a
+ * JavaScript number.
+ */
+const formatIntegerWithLocaleGrouping = (
+  integerPart: string,
+  localeGrouping: PerpsLocaleGrouping,
+): string => {
+  const integerGroups: string[] = [];
+  let remainingDigits = integerPart;
+  let nextGroupSize = localeGrouping.primaryGroupSize;
+
+  while (
+    localeGrouping.groupingSeparator &&
+    remainingDigits.length > nextGroupSize
+  ) {
+    integerGroups.unshift(remainingDigits.slice(-nextGroupSize));
+    remainingDigits = remainingDigits.slice(0, -nextGroupSize);
+    nextGroupSize = localeGrouping.secondaryGroupSize;
+  }
+
+  integerGroups.unshift(remainingDigits);
+
+  return integerGroups
+    .map((integerGroup) =>
+      Array.from(integerGroup, (digit) => {
+        const digitIndex = digit.charCodeAt(0) - 48;
+        return localeGrouping.localizedDigits[digitIndex] ?? digit;
+      }).join(''),
+    )
+    .join(localeGrouping.groupingSeparator);
+};
+
+/**
+ * Localizes a canonical decimal string without converting the fractional part
+ * to a number. This preserves precision and trailing zeros in editable values.
+ */
+const formatNumericStringWithLocale = (
+  value: string,
+  locale?: string,
+): string => {
+  const match = value.match(/^([+-]?)(\d*)(?:\.(\d*))?$/);
+
+  if (!match || (match[2] === '' && match[3] === undefined)) {
+    return value;
+  }
+
+  const sign = match[1] ?? '';
+  const integerPart = match[2] || '0';
+  const decimalPart = match[3];
+  const localeGrouping = getPerpsLocaleGrouping(locale);
+  const separators = getPerpsLocaleSeparators(locale);
+  const formattedInteger = formatIntegerWithLocaleGrouping(
+    integerPart,
+    localeGrouping,
+  );
+
+  return `${sign}${formattedInteger}${
+    decimalPart === undefined ? '' : `${separators.decimal}${decimalPart}`
+  }`;
+};
+
+/**
+ * Normalizes a user-entered perps number to the canonical `.` decimal form.
+ *
+ * The active locale determines the meaning of a single separator. When both
+ * comma and period are present, the last one is treated as the decimal
+ * separator so both locale-formatted and controller-formatted values can be
+ * parsed safely.
+ * The locale-blind `normalizeToDotDecimal` utility cannot distinguish a
+ * grouping separator from a decimal separator for inputs such as `1,200`.
+ */
+const normalizePerpsCanonicalValue = (
+  sanitizedValue: string,
+): string | undefined => {
+  if (!/^[+-]?[\d.]*$/.test(sanitizedValue)) {
+    return undefined;
+  }
+
+  const sign = /^[+-]/.test(sanitizedValue) ? sanitizedValue.slice(0, 1) : '';
+  const unsignedValue = sign ? sanitizedValue.slice(1) : sanitizedValue;
+  let normalizedValue = '';
+  let hasDecimalSeparator = false;
+
+  for (const character of unsignedValue) {
+    if (character !== '.') {
+      normalizedValue += character;
+      continue;
+    }
+
+    if (!hasDecimalSeparator) {
+      normalizedValue += '.';
+      hasDecimalSeparator = true;
+    }
+  }
+
+  return `${sign}${normalizedValue}`;
+};
+
+const normalizePerpsNumericValue = (value: string, locale?: string): string => {
+  if (!value) {
+    return value;
+  }
+
+  const localeGrouping = getPerpsLocaleGrouping(locale);
+  const separators = getPerpsLocaleSeparators(locale);
+  const localizedValue = normalizePerpsLocalizedDigits(
+    value.trim().replace(/\$/g, '').replace(/\s/g, ''),
+    localeGrouping,
+  );
+  const commaIndex = localizedValue.lastIndexOf(',');
+  const periodIndex = localizedValue.lastIndexOf('.');
+  let decimalSeparator: string | undefined;
+  let decimalSeparatorIndex = -1;
+
+  if (commaIndex >= 0 && periodIndex >= 0) {
+    decimalSeparator = commaIndex > periodIndex ? ',' : '.';
+    const lastGroupingIndex =
+      decimalSeparator === ',' ? periodIndex : commaIndex;
+    decimalSeparatorIndex = localizedValue.indexOf(
+      decimalSeparator,
+      lastGroupingIndex + 1,
+    );
+  } else if (commaIndex >= 0 && separators.decimal === ',') {
+    decimalSeparator = ',';
+    decimalSeparatorIndex = localizedValue.indexOf(',');
+  } else if (periodIndex >= 0) {
+    decimalSeparator =
+      separators.decimal === '.' ||
+      !isLocaleGroupedInteger(localizedValue, localeGrouping)
+        ? '.'
+        : undefined;
+    decimalSeparatorIndex = decimalSeparator ? localizedValue.indexOf('.') : -1;
+  } else if (localizedValue.includes(separators.decimal)) {
+    decimalSeparator = separators.decimal;
+    decimalSeparatorIndex = localizedValue.indexOf(separators.decimal);
+  }
+
+  let sanitizedValue = '';
+
+  for (let index = 0; index < localizedValue.length; index += 1) {
+    const character = localizedValue[index];
+    const isDecimalSeparator =
+      character === decimalSeparator && index === decimalSeparatorIndex;
+
+    if (
+      (character === separators.grouping && !isDecimalSeparator) ||
+      ((character === ',' || character === '.') && !isDecimalSeparator)
+    ) {
+      continue;
+    }
+
+    sanitizedValue += isDecimalSeparator ? '.' : character;
+  }
+
+  return normalizePerpsCanonicalValue(sanitizedValue) ?? value;
+};
+
+const getPerpsPreviousSelection = ({
+  previousDisplayValue,
+  nextDisplayValue,
+  previousSelection,
+}: {
+  previousDisplayValue: string;
+  nextDisplayValue: string;
+  previousSelection?: PerpsInputSelection;
+}): PerpsInputSelection | undefined => {
+  if (previousSelection) {
+    return previousSelection;
+  }
+
+  if (
+    nextDisplayValue.startsWith(previousDisplayValue) ||
+    previousDisplayValue.startsWith(nextDisplayValue)
+  ) {
+    return {
+      start: previousDisplayValue.length,
+      end: previousDisplayValue.length,
+    };
+  }
+
+  return undefined;
+};
+
+export const normalizePerpsNumericInput = (
+  value: string,
+  locale?: string,
+  context?: NormalizePerpsNumericInputContext,
+): string => {
+  if (!value) {
+    return value;
+  }
+
+  if (context) {
+    const previousSelection = getPerpsPreviousSelection({
+      previousDisplayValue: context.previousDisplayValue,
+      nextDisplayValue: value,
+      previousSelection: context.previousSelection,
+    });
+    const normalizedEdit = previousSelection
+      ? normalizePerpsNumericEdit(value, locale, {
+          ...context,
+          previousSelection,
+        })
+      : undefined;
+
+    if (normalizedEdit !== undefined) {
+      return normalizedEdit;
+    }
+  }
+
+  return normalizePerpsNumericValue(value, locale);
+};
+
+/**
+ * Formats a canonical editable value for the current locale.
+ */
+export const formatPerpsInput = (value: string, locale?: string): string => {
+  if (!value) {
+    return value;
+  }
+
+  if (/^[+-]?\d*(?:\.\d*)?$/.test(value)) {
+    return formatNumericStringWithLocale(value, locale);
+  }
+
+  return formatNumericStringWithLocale(
+    normalizePerpsNumericInput(value, locale),
+    locale,
+  );
+};
+
+const clampInputCursor = (cursor: number, length: number): number =>
+  Math.min(Math.max(cursor, 0), length);
+
+const getPerpsFormattedTokenLength = ({
+  canonicalCharacter,
+  formattedValue,
+  formattedIndex,
+  localizedDigits,
+}: {
+  canonicalCharacter: string;
+  formattedValue: string;
+  formattedIndex: number;
+  localizedDigits: readonly string[];
+}): number => {
+  if (formattedValue.startsWith(canonicalCharacter, formattedIndex)) {
+    return canonicalCharacter.length;
+  }
+
+  const canonicalDigit = Number(canonicalCharacter);
+
+  if (
+    Number.isInteger(canonicalDigit) &&
+    canonicalDigit >= 0 &&
+    canonicalDigit <= 9
+  ) {
+    const localizedDigit = localizedDigits[canonicalDigit];
+
+    if (
+      localizedDigit &&
+      formattedValue.startsWith(localizedDigit, formattedIndex)
+    ) {
+      return localizedDigit.length;
+    }
+  }
+
+  return canonicalCharacter === '.' &&
+    /\D/u.test(formattedValue[formattedIndex])
+    ? 1
+    : 0;
+};
+
+const mapFormattedPerpsCursorToCanonical = ({
+  canonicalValue,
+  formattedValue,
+  formattedCursor,
+  localizedDigits,
+}: {
+  canonicalValue: string;
+  formattedValue: string;
+  formattedCursor: number;
+  localizedDigits: readonly string[];
+}): number => {
+  const boundedCursor = clampInputCursor(
+    formattedCursor,
+    formattedValue.length,
+  );
+  let canonicalIndex = 0;
+  let formattedIndex = 0;
+
+  while (
+    formattedIndex < boundedCursor &&
+    canonicalIndex < canonicalValue.length
+  ) {
+    const canonicalCharacter = canonicalValue[canonicalIndex];
+    const tokenLength = getPerpsFormattedTokenLength({
+      canonicalCharacter,
+      formattedValue,
+      formattedIndex,
+      localizedDigits,
+    });
+
+    if (tokenLength > 0 && formattedIndex + tokenLength <= boundedCursor) {
+      canonicalIndex += 1;
+      formattedIndex += tokenLength;
+    } else {
+      formattedIndex += 1;
+    }
+  }
+
+  return canonicalIndex;
+};
+
+const mapCanonicalPerpsCursorToFormatted = ({
+  canonicalValue,
+  formattedValue,
+  canonicalCursor,
+  localizedDigits,
+}: {
+  canonicalValue: string;
+  formattedValue: string;
+  canonicalCursor: number;
+  localizedDigits: readonly string[];
+}): number => {
+  const boundedCursor = clampInputCursor(
+    canonicalCursor,
+    canonicalValue.length,
+  );
+  let canonicalIndex = 0;
+  let formattedIndex = 0;
+
+  while (
+    formattedIndex < formattedValue.length &&
+    canonicalIndex < boundedCursor
+  ) {
+    const canonicalCharacter = canonicalValue[canonicalIndex];
+    const tokenLength = getPerpsFormattedTokenLength({
+      canonicalCharacter,
+      formattedValue,
+      formattedIndex,
+      localizedDigits,
+    });
+
+    if (tokenLength > 0) {
+      canonicalIndex += 1;
+      formattedIndex += tokenLength;
+    } else {
+      formattedIndex += 1;
+    }
+  }
+
+  return formattedIndex;
+};
+
+interface PerpsDisplayEdit {
+  start: number;
+  end: number;
+  insertedValue: string;
+}
+
+const createPerpsDisplayEdit = ({
+  previousDisplayValue,
+  nextDisplayValue,
+  start,
+  end,
+}: {
+  previousDisplayValue: string;
+  nextDisplayValue: string;
+  start: number;
+  end: number;
+}): PerpsDisplayEdit | undefined => {
+  const prefix = previousDisplayValue.slice(0, start);
+  const suffix = previousDisplayValue.slice(end);
+
+  if (
+    !nextDisplayValue.startsWith(prefix) ||
+    !nextDisplayValue.endsWith(suffix) ||
+    nextDisplayValue.length < prefix.length + suffix.length
+  ) {
+    return undefined;
+  }
+
+  return {
+    start,
+    end,
+    insertedValue: nextDisplayValue.slice(
+      prefix.length,
+      nextDisplayValue.length - suffix.length,
+    ),
+  };
+};
+
+const getPerpsDisplayEdit = (
+  previousDisplayValue: string,
+  nextDisplayValue: string,
+  previousSelection: PerpsInputSelection,
+): PerpsDisplayEdit | undefined => {
+  const selectionStart = clampInputCursor(
+    previousSelection.start,
+    previousDisplayValue.length,
+  );
+  const selectionEnd = clampInputCursor(
+    Math.max(previousSelection.end, selectionStart),
+    previousDisplayValue.length,
+  );
+  const selectedLength = selectionEnd - selectionStart;
+  const insertedLength =
+    nextDisplayValue.length - (previousDisplayValue.length - selectedLength);
+
+  if (insertedLength >= 0) {
+    const selectedEdit = createPerpsDisplayEdit({
+      previousDisplayValue,
+      nextDisplayValue,
+      start: selectionStart,
+      end: selectionEnd,
+    });
+
+    if (selectedEdit && selectedEdit.insertedValue.length === insertedLength) {
+      return selectedEdit;
+    }
+  }
+
+  if (
+    selectedLength === 0 &&
+    nextDisplayValue.length < previousDisplayValue.length
+  ) {
+    const removedLength = previousDisplayValue.length - nextDisplayValue.length;
+    const deletionRanges = [
+      {
+        start: Math.max(selectionStart - removedLength, 0),
+        end: selectionStart,
+      },
+      {
+        start: selectionStart,
+        end: Math.min(
+          selectionStart + removedLength,
+          previousDisplayValue.length,
+        ),
+      },
+    ];
+
+    for (const deletionRange of deletionRanges) {
+      const deletionEdit = createPerpsDisplayEdit({
+        previousDisplayValue,
+        nextDisplayValue,
+        ...deletionRange,
+      });
+
+      if (deletionEdit?.insertedValue === '') {
+        return deletionEdit;
+      }
+    }
+  }
+
+  return undefined;
+};
+
+/**
+ * Applies a native text edit to the canonical value represented by the
+ * previous localized display. This preserves the meaning of retained grouping
+ * characters instead of inferring it again from the complete next string.
+ */
+function normalizePerpsNumericEdit(
+  value: string,
+  locale: string | undefined,
+  context: NormalizePerpsNumericInputContext,
+): string | undefined {
+  const previousSelection = context.previousSelection;
+
+  if (!previousSelection) {
+    return undefined;
+  }
+
+  const previousCanonicalValue = normalizePerpsNumericValue(
+    context.previousDisplayValue,
+    locale,
+  );
+
+  if (!/^[+-]?\d*(?:\.\d*)?$/.test(previousCanonicalValue)) {
+    return undefined;
+  }
+
+  if (value === context.previousDisplayValue) {
+    return previousCanonicalValue;
+  }
+
+  const localeGrouping = getPerpsLocaleGrouping(locale);
+  const normalizedPreviousDisplay = normalizePerpsLocalizedDigits(
+    context.previousDisplayValue,
+    localeGrouping,
+  );
+  const normalizedValue = normalizePerpsLocalizedDigits(value, localeGrouping);
+
+  if (
+    normalizedPreviousDisplay.length !== context.previousDisplayValue.length ||
+    normalizedValue.length !== value.length
+  ) {
+    return undefined;
+  }
+
+  const edit = getPerpsDisplayEdit(
+    normalizedPreviousDisplay,
+    normalizedValue,
+    previousSelection,
+  );
+
+  if (!edit) {
+    return undefined;
+  }
+
+  const canonicalStart = mapFormattedPerpsCursorToCanonical({
+    canonicalValue: previousCanonicalValue,
+    formattedValue: normalizedPreviousDisplay,
+    formattedCursor: edit.start,
+    localizedDigits: localeGrouping.localizedDigits,
+  });
+  const canonicalEnd = mapFormattedPerpsCursorToCanonical({
+    canonicalValue: previousCanonicalValue,
+    formattedValue: normalizedPreviousDisplay,
+    formattedCursor: edit.end,
+    localizedDigits: localeGrouping.localizedDigits,
+  });
+  const separators = getPerpsLocaleSeparators(locale);
+  const normalizedInsertedValue =
+    edit.insertedValue.length === 1 &&
+    (edit.insertedValue === '.' ||
+      edit.insertedValue === ',' ||
+      edit.insertedValue === separators.decimal)
+      ? '.'
+      : normalizePerpsNumericValue(edit.insertedValue, locale);
+  const editedCanonicalValue = `${previousCanonicalValue.slice(
+    0,
+    canonicalStart,
+  )}${normalizedInsertedValue}${previousCanonicalValue.slice(canonicalEnd)}`;
+
+  return normalizePerpsCanonicalValue(editedCanonicalValue);
+}
+
+const getPerpsDisplayCursorAfterEdit = (
+  previousDisplayValue: string,
+  nextDisplayValue: string,
+  previousSelection: PerpsInputSelection,
+): number => {
+  const edit = getPerpsDisplayEdit(
+    previousDisplayValue,
+    nextDisplayValue,
+    previousSelection,
+  );
+
+  if (edit) {
+    return clampInputCursor(
+      edit.start + edit.insertedValue.length,
+      nextDisplayValue.length,
+    );
+  }
+
+  return clampInputCursor(
+    previousSelection.start +
+      nextDisplayValue.length -
+      previousDisplayValue.length,
+    nextDisplayValue.length,
+  );
+};
+
+export const getPerpsFormattedInputSelection = ({
+  previousDisplayValue,
+  nextDisplayValue,
+  nextFormattedValue,
+  previousSelection,
+  locale,
+}: {
+  previousDisplayValue: string;
+  nextDisplayValue: string;
+  nextFormattedValue: string;
+  previousSelection?: PerpsInputSelection;
+  locale?: string;
+}): PerpsInputSelection | undefined => {
+  const resolvedPreviousSelection = getPerpsPreviousSelection({
+    previousDisplayValue,
+    nextDisplayValue,
+    previousSelection,
+  });
+
+  if (!resolvedPreviousSelection) {
+    return undefined;
+  }
+
+  const nextCanonicalValue = normalizePerpsNumericInput(
+    nextDisplayValue,
+    locale,
+    {
+      previousDisplayValue,
+      previousSelection: resolvedPreviousSelection,
+    },
+  );
+  const nextDisplayCursor = getPerpsDisplayCursorAfterEdit(
+    previousDisplayValue,
+    nextDisplayValue,
+    resolvedPreviousSelection,
+  );
+  const localeGrouping = getPerpsLocaleGrouping(locale);
+  const nextCanonicalCursor = mapFormattedPerpsCursorToCanonical({
+    canonicalValue: nextCanonicalValue,
+    formattedValue: nextDisplayValue,
+    formattedCursor: nextDisplayCursor,
+    localizedDigits: localeGrouping.localizedDigits,
+  });
+  const formattedCursor = mapCanonicalPerpsCursorToFormatted({
+    canonicalValue: nextCanonicalValue,
+    formattedValue: nextFormattedValue,
+    canonicalCursor: nextCanonicalCursor,
+    localizedDigits: localeGrouping.localizedDigits,
+  });
+
+  return { start: formattedCursor, end: formattedCursor };
+};
+
+/**
+ * Formats a perps market price for display using Hyperliquid price precision
+ * when market size decimals are known. Falls back to the shared fiat formatter
+ * for generic fiat display sites.
+ */
+export const formatPerpsPrice = (
+  price: number | string,
+  options?: {
+    szDecimals?: number | null;
+    includeCurrencySymbol?: boolean;
+  },
+): string => {
+  const includeCurrencySymbol = options?.includeCurrencySymbol ?? true;
+  const numericPrice =
+    typeof price === 'number' ? price : Number.parseFloat(String(price));
+
+  if (Number.isNaN(numericPrice) || !Number.isFinite(numericPrice)) {
+    return '$---';
+  }
+
+  const fallback = () =>
+    formatPerpsFiat(price, { ranges: PRICE_RANGES_UNIVERSAL });
+
+  if (options?.szDecimals === undefined || options.szDecimals === null) {
+    return fallback();
+  }
+
+  try {
+    const formattedPrice = formatHyperLiquidPrice({
+      price,
+      szDecimals: options.szDecimals,
+    });
+    return includeCurrencySymbol ? `$${formattedPrice}` : formattedPrice;
+  } catch {
+    return fallback();
+  }
+};
+
+/**
+ * Formats one side of a position's take profit / stop loss summary.
+ *
+ * A position can carry several reduce-only trigger orders on the same side, and the controller's
+ * summary price then describes none of them — it reports the tally in `takeProfitCount` /
+ * `stopLossCount` for clients to render instead. A single order keeps showing its trigger price,
+ * whether or not it closes the whole position. Returns `null` when the side has neither, so each
+ * card can apply its own empty state.
+ */
+export const formatPositionTriggerSummary = (params: {
+  count?: number;
+  price?: string | null;
+  szDecimals?: number | null;
+}): string | null => {
+  const { count = 0, price, szDecimals } = params;
+
+  if (count > 1) {
+    return strings('perps.position.card.tpsl_count_multiple', { count });
+  }
+
+  if (price && parseFloat(price) > 0) {
+    return formatPerpsPrice(price, { szDecimals });
+  }
+
+  return null;
+};
+
+/**
+ * Fraction digits `PRICE_RANGES_UNIVERSAL` would use for a market price.
+ * A dollar price change should use this count so it matches the price,
+ * instead of picking a finer range from the change's own magnitude.
+ */
+export const getUniversalPriceFractionDigits = (price: number): number => {
+  const absPrice = Math.abs(price);
+  if (!Number.isFinite(absPrice) || absPrice === 0) {
+    return 0;
+  }
+
+  const rangeConfig = PRICE_RANGES_UNIVERSAL.find((range) =>
+    range.condition(absPrice),
+  );
+
+  if (!rangeConfig) {
+    return 2;
+  }
+
+  if (rangeConfig.significantDigits) {
+    const { decimals } = formatWithSignificantDigits(
+      absPrice,
+      rangeConfig.significantDigits,
+      rangeConfig.minimumDecimals,
+      rangeConfig.maximumDecimals,
+    );
+    return decimals;
+  }
+
+  return rangeConfig.maximumDecimals;
+};
+
+/**
+ * Truncates a number to 2 decimal places without rounding up.
+ * Uses BigNumber to avoid IEEE 754 floating-point errors
+ * (e.g. `Math.floor(10.29 * 100) / 100` = 10.28).
+ */
+export const truncateToTwoDecimals = (value: number): number =>
+  new BigNumber(value).decimalPlaces(2, BigNumber.ROUND_DOWN).toNumber();
+
+/**
+ * Formats a fee value as USD currency with appropriate decimal places
+ * @param fee - Raw numeric or string fee value (e.g., 1234.56, not token minimal denomination)
+ * @returns Formatted currency string with variable decimals based on configured ranges
+ * @example formatPositiveFiat(1234.56) => "$1,234.56"
+ * @example formatPositiveFiat(0.005) => "< $0.01"
+ * @example formatPositiveFiat(0) => "$0"
+ */
+export const formatPositiveFiat = (fee: number | string): string => {
+  const smallFeeThreshold = 0.01;
+
+  if (BigNumber(fee).isEqualTo(0)) {
+    return '$0';
+  }
+  if (BigNumber(fee).isLessThan(smallFeeThreshold)) {
+    return '< $0.01';
+  }
+  return formatPerpsFiat(fee);
+};
+
+/**
+ * Default price range configurations
+ * Applied in order - first matching condition wins
+ */
+export const DEFAULT_PRICE_RANGES: FiatRangeConfig[] = [
+  {
+    // Medium-large numbers (>= 1000)
+    condition: (val: number) => Math.abs(val) >= 1000,
+    minimumDecimals: 2,
+    maximumDecimals: 4,
+    threshold: 100,
+  },
+  {
+    // Default range (1 <= val < 1000)
+    condition: () => true,
+    minimumDecimals: 2,
+    maximumDecimals: 4,
+    threshold: 0.0001,
+  },
+];
+
+/**
+ * Configuration for large number range formatting
+ */
+export interface LargeNumberRangeConfig {
+  /** The minimum value threshold for this range (inclusive). Use 0 to catch numbers below the lowest suffix threshold */
+  threshold: number;
+  /** The suffix to use for this range (e.g., 'T', 'B', 'M', 'K', or '' for no suffix) */
+  suffix: string;
+  /** Number of decimal places for this range */
+  decimals: number;
+}
+
+/**
+ * Default large number range configurations
+ * Applied in order from largest to smallest
+ */
+export const DEFAULT_LARGE_NUMBER_RANGES: LargeNumberRangeConfig[] = [
+  {
+    threshold: 1000000000000, // >= 1T
+    suffix: 'T',
+    decimals: 0,
+  },
+  {
+    threshold: 1000000000, // >= 1B
+    suffix: 'B',
+    decimals: 0,
+  },
+  {
+    threshold: 1000000, // >= 1M
+    suffix: 'M',
+    decimals: 0,
+  },
+  {
+    threshold: 1000, // >= 1K
+    suffix: 'K',
+    decimals: 0,
+  },
+  {
+    threshold: 0, // < 1K (all remaining numbers)
+    suffix: '',
+    decimals: 2,
+  },
+];
+
+/**
+ * Preset for detailed large number formatting with more decimal precision
+ * Useful for displaying precise statistics or detailed financial data
+ */
+export const LARGE_NUMBER_RANGES_DETAILED: LargeNumberRangeConfig[] = [
+  {
+    threshold: 1000000000000, // >= 1T
+    suffix: 'T',
+    decimals: 2,
+  },
+  {
+    threshold: 1000000000, // >= 1B
+    suffix: 'B',
+    decimals: 2,
+  },
+  {
+    threshold: 1000000, // >= 1M
+    suffix: 'M',
+    decimals: 2,
+  },
+  {
+    threshold: 1000, // >= 1K
+    suffix: 'K',
+    decimals: 0,
+  },
+  {
+    threshold: 0, // < 1K (all remaining numbers)
+    suffix: '',
+    decimals: 0,
+  },
+];
+
+/**
+ * Formats large numbers with magnitude suffixes (K, M, B, T)
+ * @param value - The number to format
+ * @param options - Optional formatting options
+ * @param options.decimals - Legacy: Number of decimal places for all suffixed values (overrides range configs)
+ * @param options.rawDecimals - Legacy: Number of decimal places for numbers below all thresholds (overrides range config for threshold: 0)
+ * @param options.ranges - Custom range configurations for fine-grained control over decimals per range
+ * @returns Formatted string with appropriate suffix
+ * @example
+ * // Using defaults
+ * formatLargeNumber(1500000) => "2M"
+ * formatLargeNumber(1234) => "1K"
+ * formatLargeNumber(999) => "999.00"
+ *
+ * // Legacy: same decimals for all ranges
+ * formatLargeNumber(1500000, { decimals: 1 }) => "1.5M"
+ * formatLargeNumber(1234, { decimals: 2 }) => "1.23K"
+ *
+ * // New: custom decimals per range (including all remaining numbers)
+ * formatLargeNumber(1500000, {
+ *   ranges: [
+ *     { threshold: 1000000000000, suffix: 'T', decimals: 2 },
+ *     { threshold: 1000000000, suffix: 'B', decimals: 1 },
+ *     { threshold: 1000000, suffix: 'M', decimals: 1 },
+ *     { threshold: 1000, suffix: 'K', decimals: 0 },
+ *     { threshold: 0, suffix: '', decimals: 4 }, // < 1K (all remaining numbers)
+ *   ]
+ * }) => "1.5M"
+ */
+export const formatLargeNumber = (
+  value: string | number,
+  options?: {
+    decimals?: number; // Legacy: applies to all suffixed ranges
+    rawDecimals?: number; // Legacy: applies to numbers below all thresholds
+    ranges?: LargeNumberRangeConfig[]; // Custom range configurations
+  },
+): string => {
+  const num = typeof value === 'string' ? parseFloat(value) : value;
+  const ranges = options?.ranges ?? DEFAULT_LARGE_NUMBER_RANGES;
+
+  if (isNaN(num)) {
+    return '0';
+  }
+
+  const absNum = Math.abs(num);
+  const sign = num < 0 ? '-' : '';
+
+  // Check each range in order
+  for (const range of ranges) {
+    if (absNum >= range.threshold) {
+      // Calculate divisor based on threshold (or 1 for no scaling)
+      const divisor = range.threshold > 0 ? range.threshold : 1;
+      const scaledValue = absNum / divisor;
+
+      // Determine decimals to use
+      let decimalPlaces = range.decimals;
+
+      // Legacy support: override with options.decimals for suffixed values
+      if (options?.decimals !== undefined && range.suffix !== '') {
+        decimalPlaces = options.decimals;
+      }
+
+      // Legacy support: override with options.rawDecimals for non-suffixed values
+      if (options?.rawDecimals !== undefined && range.suffix === '') {
+        decimalPlaces = options.rawDecimals;
+      }
+
+      return `${sign}${scaledValue.toFixed(decimalPlaces)}${range.suffix}`;
+    }
+  }
+
+  // This should never be reached if ranges includes a threshold: 0 entry
+  // But keep as fallback for safety
+  return num.toFixed(options?.rawDecimals ?? 2);
+};
+
+/**
+ * Formats volume with appropriate magnitude suffixes
+ * @param volume - Raw volume value
+ * @param decimals - Number of decimal places to show (optional, auto-determined by default)
+ * @returns Format: "$XB" / "$X.XXM" / "$XK" / "$X.XX"
+ * @example formatVolume(1234567890) => "$1.23B"
+ * @example formatVolume(12345678) => "$12.35M"
+ * @example formatVolume(123456) => "$123K"
+ */
+export const formatVolume = (
+  volume: string | number,
+  decimals?: number,
+): string => {
+  const num = typeof volume === 'string' ? parseFloat(volume) : volume;
+
+  // Handle invalid inputs - return fallback display for NaN/Infinity
+  if (isNaN(num) || !isFinite(num)) {
+    return '$---';
+  }
+
+  const absNum = Math.abs(num);
+
+  // Auto-determine decimals based on magnitude if not specified
+  let autoDecimals;
+  if (decimals === undefined) {
+    if (absNum >= 1000000000) {
+      // Billions: 2 decimals
+      autoDecimals = 2;
+    } else if (absNum >= 1000000) {
+      // Millions: 2 decimals
+      autoDecimals = 2;
+    } else if (absNum >= 1000) {
+      // Thousands: 0 decimals
+      autoDecimals = 0;
+    } else {
+      // Under 1000: 2 decimals
+      autoDecimals = 2;
+    }
+  } else {
+    autoDecimals = decimals;
+  }
+
+  const formatted = formatLargeNumber(volume, {
+    decimals: autoDecimals,
+    rawDecimals: autoDecimals,
+  });
+
+  // Handle negative values - ensure dollar sign comes after negative sign
+  if (formatted.startsWith('-')) {
+    return `-$${formatted.slice(1)}`;
+  }
+
+  return `$${formatted}`;
+};
+
+/**
+ * Formats coin (base-asset) volume with the same magnitude suffixes as
+ * {@link formatVolume}, without a fiat `$` prefix.
+ * Candle volume from Hyperliquid is denominated in coins, not USD.
+ *
+ * @example formatCoinVolume(0.33) => "0.33"
+ * @example formatCoinVolume(123456) => "123K"
+ */
+export const formatCoinVolume = (
+  volume: string | number,
+  decimals?: number,
+): string => formatVolume(volume, decimals).replace('$', '');
+
+/**
+ * Formats leverage value with 'x' suffix
+ * @param leverage - Raw leverage multiplier value
+ * @returns Format: "X.Xx" (1 decimal place with 'x' suffix)
+ * @example formatLeverage(5) => "5.0x"
+ * @example formatLeverage(10.5) => "10.5x"
+ * @example formatLeverage(1) => "1.0x"
+ */
+export const formatLeverage = (leverage: string | number): string => {
+  const num = typeof leverage === 'string' ? parseFloat(leverage) : leverage;
+
+  if (isNaN(num)) {
+    return '1x';
+  }
+
+  return `${num.toFixed(1)}x`;
+};
+
+/**
+ * Formats how far (in %) the price must move from `entryPrice` to reach
+ * `liquidationPrice`, e.g. `"30.05%"`.
+ *
+ * @returns `undefined` when either price is missing, non-finite or
+ * non-positive, so callers can hide the figure instead of showing `NaN%`.
+ * @example formatLiquidationDistance(100, 70) => "30.00%"
+ * @example formatLiquidationDistance(100, '130') => "30.00%"
+ * @example formatLiquidationDistance(100, undefined) => undefined
+ */
+export const formatLiquidationDistance = (
+  entryPrice: number | string | null | undefined,
+  liquidationPrice: number | string | null | undefined,
+): string | undefined => {
+  const entry =
+    typeof entryPrice === 'string' ? parseFloat(entryPrice) : entryPrice;
+  const liquidation =
+    typeof liquidationPrice === 'string'
+      ? parseFloat(liquidationPrice)
+      : liquidationPrice;
+
+  if (
+    entry === null ||
+    entry === undefined ||
+    liquidation === null ||
+    liquidation === undefined ||
+    !Number.isFinite(entry) ||
+    !Number.isFinite(liquidation) ||
+    entry <= 0 ||
+    liquidation <= 0
+  ) {
+    return undefined;
+  }
+
+  const distance = (Math.abs(entry - liquidation) / entry) * 100;
+  return `${distance.toFixed(LIQUIDATION_DISTANCE_DECIMALS)}%`;
+};
+
+/**
+ * Parses formatted currency strings back to numeric values
+ * @param formattedValue - Formatted currency string (handles $, commas, negative values)
+ * @returns Raw numeric value
+ * @example parseCurrencyString("$1,234.56") => 1234.56
+ * @example parseCurrencyString("-$500.00") => -500
+ * @example parseCurrencyString("$-123.45") => -123.45
+ * @example parseCurrencyString("1.1e-7") => 1.1e-7
+ */
+export const parseCurrencyString = (formattedValue: string): number => {
+  if (!formattedValue) return 0;
+
+  // Already a plain numeric string — including exponential notation, which a
+  // balance below 1e-6 serializes to. The de-formatting below reads the
+  // exponent's minus sign as a negative amount, so never let it see one.
+  const numeric = Number(formattedValue);
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+
+  // Check for negative values (can be -$123.45 or $-123.45)
+  const isNegative = formattedValue.includes('-');
+
+  // Remove all non-numeric characters except dots
+  // This regex removes currency symbols ($, €, etc.), commas, minus signs, and other formatting
+  const cleanedValue = formattedValue
+    .replace(/[^0-9.]/g, '') // Remove everything except digits and dots
+    .trim();
+
+  // Handle multiple dots by keeping only the last one as decimal separator
+  // NOTE: This assumes US format (comma for thousands, dot for decimal)
+  // Numbers with dots as thousand separators (e.g., European format) will be parsed incorrectly
+  const parts = cleanedValue.split('.');
+  const integerPart = parts[0] || '0';
+  const decimalPart = parts.length > 1 ? parts[parts.length - 1] : '';
+
+  const finalValue = decimalPart
+    ? `${integerPart}.${decimalPart}`
+    : integerPart;
+  const parsed = parseFloat(finalValue);
+
+  if (isNaN(parsed)) return 0;
+
+  return isNegative ? -parsed : parsed;
+};
+
+/**
+ * Formats a perps balance (availableBalance, totalBalance, etc.) as fiat,
+ * truncating down to 2 decimals first so the displayed value never exceeds
+ * the actual withdrawable amount. Use this for any balance that a user might
+ * try to act on (withdraw Max, insufficient-balance comparisons), so the
+ * display matches what the underlying flow can actually transact.
+ *
+ * Accepts raw numeric strings (e.g. "50.389"), formatted strings
+ * (e.g. "$1,232.39"), or numbers. See `parseCurrencyString`.
+ */
+export const formatPerpsBalance = (
+  balance: string | number | null | undefined,
+): string => {
+  if (balance === null || balance === undefined || balance === '') {
+    return formatPerpsFiat(0);
+  }
+  const numeric =
+    typeof balance === 'string' ? parseCurrencyString(balance) : balance;
+  return formatPerpsFiat(truncateToTwoDecimals(numeric));
+};
+
+/**
+ * Parses formatted percentage strings back to numeric values
+ * @param formattedValue - Formatted percentage string (handles %, +/- signs)
+ * @returns Raw numeric percentage value
+ * @example parsePercentageString("+2.50%") => 2.5
+ * @example parsePercentageString("-10.75%") => -10.75
+ * @example parsePercentageString("5%") => 5
+ */
+export const parsePercentageString = (formattedValue: string): number => {
+  if (!formattedValue) return 0;
+  const cleanedValue = formattedValue
+    .replace(/%/g, '')
+    .replace(/\s/g, '')
+    .trim();
+  const parsed = parseFloat(cleanedValue);
+  return isNaN(parsed) ? 0 : parsed;
+};
+
+/**
+ * Formats a timestamp for transaction detail views with time
+ * @param timestamp - Unix timestamp in milliseconds
+ * @returns Formatted date string with time (e.g., "July 24, 2025 at 2:30 PM")
+ * @example formatTransactionDate(1642492800000) => "January 18, 2022 at 12:00 AM"
+ */
+export const formatTransactionDate = (timestamp: number): string => {
+  const date = new Date(timestamp);
+  const dateStr = getIntlDateTimeFormatter('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  }).format(date);
+  const timeStr = getIntlDateTimeFormatter('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(date);
+  return `${dateStr} at ${timeStr}`;
+};
+
+/**
+ * Formats a timestamp for order cards with time
+ * @param timestamp - Unix timestamp in milliseconds
+ * @returns Formatted date string with time (e.g., "July 24, 2025 at 2:30 PM")
+ * @example formatOrderCardDate(1642492800000) => "Jan 18"
+ */
+export const formatOrderCardDate = (timestamp: number): string => {
+  const date = new Date(timestamp);
+  const dateStr = getIntlDateTimeFormatter('en-US', {
+    month: 'short',
+    day: 'numeric',
+  }).format(date);
+  const timeStr = getIntlDateTimeFormatter('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(date);
+  return `${dateStr} at ${timeStr}`;
+};
+
+const PRO_ORDER_CARD_MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+const padTwoDigits = (value: number): string => String(value).padStart(2, '0');
+
+/**
+ * Formats an open-order placement timestamp for Pro order cards.
+ * Matches Figma: "06 Apr 26 • 19:13:54"
+ *
+ * Built only from Date getters — Hermes `formatToParts` often omits
+ * hour/minute/second and renders as "06 Apr 26 • ::".
+ *
+ * @param timestamp - Unix timestamp in milliseconds
+ */
+export const formatProOrderCardTimestamp = (timestamp: number): string => {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const day = padTwoDigits(date.getDate());
+  const month = PRO_ORDER_CARD_MONTHS[date.getMonth()];
+  const year = String(date.getFullYear()).slice(-2);
+  const hours = padTwoDigits(date.getHours());
+  const minutes = padTwoDigits(date.getMinutes());
+  const seconds = padTwoDigits(date.getSeconds());
+
+  return `${day} ${month} ${year} • ${hours}:${minutes}:${seconds}`;
+};
+
+/**
+ * Formats a timestamp for transaction section headers
+ * @param timestamp - Unix timestamp in milliseconds
+ * @returns Formatted date section string ("Today", "Yesterday", or "Month Day")
+ * @example formatDateSection(Date.now()) => "Today"
+ */
+export const formatDateSection = (timestamp: number): string => {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  // Check if it's today
+  if (
+    date.getDate() === today.getDate() &&
+    date.getMonth() === today.getMonth() &&
+    date.getFullYear() === today.getFullYear()
+  ) {
+    return strings('perps.today');
+  }
+
+  // Check if it's yesterday
+  if (
+    date.getDate() === yesterday.getDate() &&
+    date.getMonth() === yesterday.getMonth() &&
+    date.getFullYear() === yesterday.getFullYear()
+  ) {
+    return strings('perps.yesterday');
+  }
+
+  const month = getIntlDateTimeFormatter('en-US', {
+    month: 'short',
+  }).format(new Date(timestamp));
+  const day = getIntlDateTimeFormatter('en-US', {
+    day: 'numeric',
+  }).format(new Date(timestamp));
+
+  return `${month} ${day}`; // 'Jul, 26'
+};
+
+/**
+ * Formats a limit price for display while preserving in-progress input — a
+ * trailing "." or trailing zeros after the decimal survive, which
+ * `formatPerpsFiat` alone would collapse.
+ */
+export const formatLimitPriceInput = (price: string): string => {
+  if (!price || price === '0') {
+    return '';
+  }
+
+  if (price.endsWith('.') || /\.\d*0$/.test(price)) {
+    const parts = price.split('.');
+    const integerPart = parts[0] || '0';
+    const decimalPart = parts.length > 1 ? `.${parts[1]}` : '.';
+
+    const formatted = formatPerpsFiat(integerPart, {
+      ranges: [
+        {
+          condition: () => true,
+          threshold: 0,
+          maximumDecimals: 0,
+          minimumDecimals: 0,
+        },
+      ],
+    });
+
+    return `${formatted}${decimalPart}`;
+  }
+
+  return formatPerpsFiat(price, {
+    ranges: [
+      {
+        condition: () => true,
+        threshold: 0.00000001,
+        maximumDecimals: 7,
+        minimumDecimals: Math.min(price.split('.')[1]?.length || 0, 7),
+      },
+    ],
+  });
+};

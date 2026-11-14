@@ -1,38 +1,70 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import {
-  Alert,
-  TouchableOpacity,
-  TextInput,
   Text,
-  View,
-  ActivityIndicator,
-} from 'react-native';
+  TextVariant,
+  TextColor,
+} from '@metamask/design-system-react-native';
+import { useSelector } from 'react-redux';
+import { Alert, TextInput, View, DimensionValue } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import StyledButton from '../../UI/StyledButton';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
 import { ScreenshotDeterrent } from '../../UI/ScreenshotDeterrent';
-import Icon from 'react-native-vector-icons/Feather';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
-import MaterialIcon from 'react-native-vector-icons/MaterialIcons';
 import { strings } from '../../../../locales/i18n';
 import Device from '../../../util/device';
-import { importAccountFromPrivateKey } from '../../../util/address';
 import { useAppTheme } from '../../../util/theme';
 import { createStyles } from './styles';
-import { ImportAccountFromPrivateKeySelectorsIDs } from '../../../../e2e/selectors/ImportAccountFromPrivateKey.selectors';
+import { ImportAccountFromPrivateKeyIDs } from './ImportAccountFromPrivateKey.testIds';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { QRTabSwitcherScreens, type ScanSuccess } from '../QRTabSwitcher';
+import Routes from '../../../constants/navigation/Routes';
+import { useAccountsWithNetworkActivitySync } from '../../hooks/useAccountsWithNetworkActivitySync';
+import { Authentication } from '../../../core';
+import Button, {
+  ButtonVariants,
+  ButtonSize,
+  ButtonWidthTypes,
+} from '../../../component-library/components/Buttons/Button';
+import TitleStandard from '../../../component-library/components-temp/TitleStandard';
+import { selectSeedlessOnboardingAuthConnection } from '../../../selectors/seedlessOnboardingController';
+import { AuthConnection } from '../../../core/OAuthService/OAuthInterface';
+import {
+  IMPORT_WALLET_PRIVATE_KEY_URL,
+  IMPORT_WALLET_GUIDE_URL,
+} from '../../../constants/urls';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
 
 /**
  * View that's displayed the first time a user receives funds
  */
 const ImportPrivateKey = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
   const [privateKey, setPrivateKey] = useState('');
   const [loading, setLoading] = useState(false);
-  const [inputWidth, setInputWidth] = useState(
+  const [inputWidth, setInputWidth] = useState<DimensionValue | undefined>(
     Device.isAndroid() ? '99%' : undefined,
   );
-  const navigation = useNavigation();
+  const navigation = useNavigation<AppNavigationProp>();
+  const insets = useSafeAreaInsets();
   const mounted = useRef<boolean>(false);
-  const { colors, themeAppearance } = useAppTheme();
-  const styles = createStyles(colors);
+  const { colors, themeAppearance, typography } = useAppTheme();
+  const styles = createStyles(colors, typography);
+  const footerStyle = useMemo(
+    () => [styles.buttonWrapper, { marginBottom: insets.bottom, flex: 0 }],
+    [insets.bottom, styles.buttonWrapper],
+  );
+  const { fetchAccountsWithActivity } = useAccountsWithNetworkActivitySync({
+    onFirstLoad: false,
+    onTransactionComplete: false,
+  });
+  const authConnection = useSelector(selectSeedlessOnboardingAuthConnection);
+
+  const isSRP =
+    authConnection !== AuthConnection.Apple &&
+    authConnection !== AuthConnection.Google &&
+    authConnection !== AuthConnection.Telegram;
 
   useEffect(() => {
     mounted.current = true;
@@ -53,7 +85,7 @@ const ImportPrivateKey = () => {
     navigation.navigate('Webview', {
       screen: 'SimpleWebview',
       params: {
-        url: 'https://metamask.zendesk.com/hc/en-us/articles/360015289932-What-are-imported-accounts-',
+        url: isSRP ? IMPORT_WALLET_PRIVATE_KEY_URL : IMPORT_WALLET_GUIDE_URL,
         title: strings('drawer.metamask_support'),
       },
     });
@@ -76,25 +108,30 @@ const ImportPrivateKey = () => {
     setLoading(true);
     // Import private key
     try {
-      await importAccountFromPrivateKey(privateKeyToProcess);
-      navigation.navigate('ImportPrivateKeyView', {
-        screen: 'ImportPrivateKeySuccess',
-      });
-      setLoading(false);
-      setPrivateKey('');
+      const isImported =
+        await Authentication.importAccountFromPrivateKey(privateKeyToProcess);
+      // no need to handle error here, password outdated state will trigger modal that force user to log out
+      if (isImported) {
+        navigation.navigate('ImportPrivateKeyView', {
+          screen: 'ImportPrivateKeySuccess',
+        });
+        setPrivateKey('');
+        fetchAccountsWithActivity();
+      }
     } catch (e) {
       Alert.alert(
         strings('import_private_key.error_title'),
         strings('import_private_key.error_message'),
       );
+    } finally {
       setLoading(false);
     }
   };
 
-  const onScanSuccess = (data: { private_key: string; seed: string }) => {
+  const onScanSuccess = async (data: ScanSuccess) => {
     if (data.private_key) {
       setPrivateKey(data.private_key);
-      goNext(data.private_key);
+      await goNext(data.private_key);
     } else if (data.seed) {
       Alert.alert(
         strings('wallet.error'),
@@ -109,99 +146,122 @@ const ImportPrivateKey = () => {
   };
 
   const scanPkey = () => {
-    navigation.navigate('QRScanner', {
+    navigation.navigate(Routes.QR_TAB_SWITCHER, {
+      initialScreen: QRTabSwitcherScreens.Scanner,
+      disableTabber: true,
       onScanSuccess,
     });
   };
 
   return (
     <View style={styles.mainWrapper}>
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        includesTopInset
+        backButtonProps={{
+          onPress: dismiss,
+          testID: ImportAccountFromPrivateKeyIDs.CLOSE_BUTTON,
+        }}
+      />
       <KeyboardAwareScrollView
         contentContainerStyle={styles.wrapper}
         style={styles.topOverlay}
         resetScrollToCoords={{ x: 0, y: 0 }}
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="none"
+        enableOnAndroid
+        enableAutomaticScroll
+        extraScrollHeight={100}
+        showsVerticalScrollIndicator={false}
       >
-        <View
-          style={styles.content}
-          testID={
-            ImportAccountFromPrivateKeySelectorsIDs.IMPORT_ACCOUNT_SCREEN_ID
-          }
-        >
-          <TouchableOpacity onPress={dismiss} style={styles.navbarRightButton}>
-            <MaterialIcon
-              name="close"
-              size={15}
-              style={styles.closeIcon}
-              testID={
-                ImportAccountFromPrivateKeySelectorsIDs.CLOSE_BUTTON_ON_IMPORT_ACCOUNT_SCREEN_ID
-              }
-            />
-          </TouchableOpacity>
-          <View style={styles.top}>
-            <Icon name="download" style={styles.icon} />
-            <Text style={styles.title}>
-              {strings('import_private_key.title')}
-            </Text>
-            <View style={styles.dataRow}>
-              <Text style={styles.label}>
-                {strings('import_private_key.description_one')}
-              </Text>
-            </View>
-            <View style={styles.dataRow}>
-              <Text style={styles.label} onPress={learnMore}>
-                {strings('import_private_key.learn_more_here')}
-              </Text>
-            </View>
-          </View>
+        <View testID={ImportAccountFromPrivateKeyIDs.CONTAINER}>
+          <TitleStandard
+            title={strings('import_private_key.title')}
+            bottomAccessory={
+              <View style={styles.descriptionContainer}>
+                {isSRP ? (
+                  <Text
+                    variant={TextVariant.BodyMd}
+                    color={TextColor.TextAlternative}
+                  >
+                    {strings('import_private_key.description_srp')}{' '}
+                    <Text
+                      variant={TextVariant.BodyMd}
+                      color={TextColor.PrimaryDefault}
+                      onPress={learnMore}
+                    >
+                      {strings('import_private_key.learn_more')}
+                    </Text>
+                  </Text>
+                ) : (
+                  <>
+                    <Text
+                      variant={TextVariant.BodyMd}
+                      color={TextColor.TextAlternative}
+                    >
+                      {strings('import_private_key.description_one')}
+                    </Text>
+                    <Text
+                      variant={TextVariant.BodyMd}
+                      color={TextColor.TextAlternative}
+                      onPress={learnMore}
+                    >
+                      <Text
+                        variant={TextVariant.BodyMd}
+                        color={TextColor.PrimaryDefault}
+                      >
+                        {strings('import_private_key.learn_more')}{' '}
+                      </Text>
+                      {strings('import_private_key.learn_more_here')}
+                    </Text>
+                  </>
+                )}
+              </View>
+            }
+            twClassName="px-4 pt-3 pb-6"
+          />
           <View style={styles.bottom}>
-            <View style={styles.subtitleText}>
-              <Text style={styles.subtitleText}>
-                {strings('import_private_key.subtitle')}
-              </Text>
-            </View>
             <TextInput
               value={privateKey}
               numberOfLines={3}
               multiline
               style={[styles.input, inputWidth ? { width: inputWidth } : {}]}
               onChangeText={setPrivateKey}
-              testID={
-                ImportAccountFromPrivateKeySelectorsIDs.PRIVATE_KEY_INPUT_BOX_ID
-              }
-              blurOnSubmit
+              testID={ImportAccountFromPrivateKeyIDs.PRIVATE_KEY_INPUT_BOX}
+              // Multiline inputs default to inserting a newline. blurAndSubmit
+              // keeps the previous blurOnSubmit behavior: Return blurs and submits.
+              submitBehavior="blurAndSubmit"
               onSubmitEditing={() => goNext()}
               returnKeyType={'next'}
-              placeholder={strings('import_private_key.example')}
+              placeholder={strings('import_private_key.subtitle')}
               placeholderTextColor={colors.text.muted}
               autoCapitalize={'none'}
               keyboardAppearance={themeAppearance}
             />
             <View style={styles.scanPkeyRow}>
-              <TouchableOpacity onPress={scanPkey}>
-                <Text style={styles.scanPkeyText}>
-                  {strings('import_private_key.or_scan_a_qr_code')}
-                </Text>
-              </TouchableOpacity>
+              <Button
+                onPress={scanPkey}
+                label={strings('import_private_key.or_scan_a_qr_code')}
+                variant={ButtonVariants.Link}
+                size={ButtonSize.Lg}
+              />
             </View>
           </View>
         </View>
-        <View style={styles.buttonWrapper}>
-          <StyledButton
-            containerStyle={styles.button}
-            type={'confirm'}
-            onPress={() => goNext()}
-            testID={
-              ImportAccountFromPrivateKeySelectorsIDs.IMPORT_PRIVATE_KEY_BUTTON_ID
-            }
-          >
-            {loading ? (
-              <ActivityIndicator size="small" color={colors.primary.inverse} />
-            ) : (
-              strings('import_private_key.cta_text')
-            )}
-          </StyledButton>
-        </View>
       </KeyboardAwareScrollView>
+      <View style={footerStyle}>
+        <Button
+          onPress={() => goNext()}
+          label={strings('import_private_key.cta_text')}
+          variant={ButtonVariants.Primary}
+          size={ButtonSize.Lg}
+          width={ButtonWidthTypes.Full}
+          loading={loading}
+          isDisabled={loading}
+          testID={ImportAccountFromPrivateKeyIDs.IMPORT_BUTTON}
+        />
+      </View>
       <ScreenshotDeterrent enabled isSRP={false} />
     </View>
   );

@@ -4,6 +4,7 @@ import { render } from '@testing-library/react-native';
 import { BannerAlertSeverity } from '../../../component-library/components/Banners/Banner';
 import { strings } from '../../../../locales/i18n';
 import { useSelector } from 'react-redux';
+import { PopularList } from '../../../util/networks/customNetworks';
 
 const mockNetworkInfo = {
   chainName: 'Test Chain',
@@ -33,15 +34,64 @@ describe('NetworkVerificationInfo', () => {
   it('renders correctly', () => {
     (useSelector as jest.Mock).mockReturnValue(true);
     const { toJSON } = render(
-      <NetworkVerificationInfo customNetworkInformation={mockNetworkInfo} />,
+      <NetworkVerificationInfo
+        customNetworkInformation={mockNetworkInfo}
+        onReject={() => undefined}
+        onConfirm={() => undefined}
+      />,
     );
 
-    expect(toJSON()).toMatchSnapshot();
+    expect(toJSON()).not.toBeNull();
   });
+
+  it('renders updated details when isNetworkRpcUpdate is true', () => {
+    (useSelector as jest.Mock).mockReturnValue(true);
+
+    const networkWithCustomRpcUrl = {
+      ...PopularList[0],
+      chainName: 'Test Chain',
+      rpcUrl: 'https://custom-rpc-url.io',
+      pageMeta: { url: 'http://metamask.github.io/test-dapp' },
+      alerts: [],
+    };
+
+    const { getByText } = render(
+      <NetworkVerificationInfo
+        // @ts-expect-error - The CustomNetworkInformation type is missing the pageMeta property
+        customNetworkInformation={networkWithCustomRpcUrl}
+        onReject={() => undefined}
+        onConfirm={() => undefined}
+        isNetworkRpcUpdate
+      />,
+    );
+
+    expect(
+      getByText(
+        strings(
+          'switch_custom_network.update_network_and_give_dapp_permission_warning',
+          {
+            dapp_origin: 'metamask.github.io',
+          },
+        ),
+      ),
+    ).toBeDefined();
+    expect(
+      getByText(
+        strings('networks.update_network', {
+          network_name: networkWithCustomRpcUrl.chainName,
+        }),
+      ),
+    ).toBeDefined();
+  });
+
   it('renders one alert', () => {
     (useSelector as jest.Mock).mockReturnValue(true);
     const { getByText } = render(
-      <NetworkVerificationInfo customNetworkInformation={mockNetworkInfo} />,
+      <NetworkVerificationInfo
+        customNetworkInformation={mockNetworkInfo}
+        onReject={() => undefined}
+        onConfirm={() => undefined}
+      />,
     );
     expect(
       getByText(strings('add_custom_network.unrecognized_chain_name')),
@@ -51,7 +101,11 @@ describe('NetworkVerificationInfo', () => {
   it('should render the banner', () => {
     (useSelector as jest.Mock).mockReturnValue(false);
     const { getByText } = render(
-      <NetworkVerificationInfo customNetworkInformation={mockNetworkInfo} />,
+      <NetworkVerificationInfo
+        customNetworkInformation={mockNetworkInfo}
+        onReject={() => undefined}
+        onConfirm={() => undefined}
+      />,
     );
     expect(
       getByText(strings('wallet.turn_on_network_check_cta')),
@@ -61,7 +115,11 @@ describe('NetworkVerificationInfo', () => {
   it('should not render alert', () => {
     (useSelector as jest.Mock).mockReturnValue(false);
     const { getByText } = render(
-      <NetworkVerificationInfo customNetworkInformation={mockNetworkInfo} />,
+      <NetworkVerificationInfo
+        customNetworkInformation={mockNetworkInfo}
+        onReject={() => undefined}
+        onConfirm={() => undefined}
+      />,
     );
 
     expect(() =>
@@ -69,12 +127,56 @@ describe('NetworkVerificationInfo', () => {
     ).toThrow('Unable to find an element with text');
   });
 
-  it('should render chainId on decimal', () => {
+  it('renders chainId as a decimal', () => {
     (useSelector as jest.Mock).mockReturnValue(true);
+
     const { getByText } = render(
-      <NetworkVerificationInfo customNetworkInformation={mockNetworkInfo} />,
+      <NetworkVerificationInfo
+        customNetworkInformation={mockNetworkInfo}
+        onReject={() => undefined}
+        onConfirm={() => undefined}
+      />,
     );
 
     expect(getByText('10')).toBeTruthy();
+  });
+
+  it('should not render Network URL warning banner when the custom rpc url has all ascii characters', () => {
+    (useSelector as jest.Mock).mockReturnValue(true);
+    const { getByText } = render(
+      <NetworkVerificationInfo
+        customNetworkInformation={mockNetworkInfo}
+        onReject={() => undefined}
+        onConfirm={() => undefined}
+      />,
+    );
+
+    expect(() =>
+      getByText(
+        "Attackers sometimes mimic sites by making small changes to the site address. Make sure you're interacting with the intended Network URL before you continue. Punycode version: https://xn--ifura-dig.io/gnosis",
+      ),
+    ).toThrow('Unable to find an element with text');
+  });
+
+  describe('when the custom rpc url has non-ascii characters', () => {
+    it('should render Network URL warning banner and display punycode encoded version', () => {
+      (useSelector as jest.Mock).mockReturnValue(true);
+      const { getByText } = render(
+        <NetworkVerificationInfo
+          customNetworkInformation={{
+            ...mockNetworkInfo,
+            rpcUrl: 'https://iոfura.io/gnosis',
+          }}
+          onReject={() => undefined}
+          onConfirm={() => undefined}
+        />,
+      );
+
+      expect(
+        getByText(
+          "Attackers sometimes mimic sites by making small changes to the site address. Make sure you're interacting with the intended Network URL before you continue. Punycode version: https://xn--ifura-dig.io/gnosis",
+        ),
+      ).toBeTruthy();
+    });
   });
 });

@@ -5,9 +5,9 @@ import {
   SimulationErrorCode,
 } from '@metamask/transaction-controller';
 
-import { useMetrics } from '../../../components/hooks/useMetrics';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
 import { MetaMetricsEvents } from '../../../core/Analytics';
-import { updateTransactionMetrics } from '../../../core/redux/slices/transactionMetrics';
+import { updateConfirmationMetric } from '../../../core/redux/slices/confirmationMetrics';
 import {
   UseDisplayNameRequest,
   UseDisplayNameResponse,
@@ -58,6 +58,7 @@ export function useSimulationMetrics({
       value: asset.address ?? '',
       type: NameType.EthereumAddress,
       preferContractSymbol: true,
+      variation: asset.chainId,
     }),
   );
 
@@ -89,14 +90,11 @@ export function useSimulationMetrics({
     simulation_latency: simulationLatency,
     ...getProperties(receivingAssets, 'simulation_receiving_assets_'),
     ...getProperties(sendingAssets, 'simulation_sending_assets_'),
+    ...getTotalValueProperty(receivingAssets, 'simulation_receiving_assets_'),
+    ...getTotalValueProperty(sendingAssets, 'simulation_sending_assets_'),
   };
 
-  const sensitiveProperties = {
-    ...getSensitiveProperties(receivingAssets, 'simulation_receiving_assets_'),
-    ...getSensitiveProperties(sendingAssets, 'simulation_sending_assets_'),
-  };
-
-  const params = { properties, sensitiveProperties };
+  const params = { properties };
 
   const shouldSkipMetrics =
     !enableMetrics ||
@@ -110,7 +108,7 @@ export function useSimulationMetrics({
       return;
     }
 
-    dispatch(updateTransactionMetrics({ transactionId, params }));
+    dispatch(updateConfirmationMetric({ id: transactionId, params }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldSkipMetrics, transactionId, JSON.stringify(params), dispatch]);
 }
@@ -119,7 +117,7 @@ function useIncompleteAssetEvent(
   balanceChanges: BalanceChange[],
   displayNamesByAddress: { [address: string]: UseDisplayNameResponse },
 ) {
-  const { trackEvent } = useMetrics();
+  const { trackEvent, createEventBuilder } = useAnalytics();
   const [processedAssets, setProcessedAssets] = useState<string[]>([]);
 
   for (const change of balanceChanges) {
@@ -134,17 +132,21 @@ function useIncompleteAssetEvent(
       continue;
     }
 
-    trackEvent(MetaMetricsEvents.INCOMPLETE_ASSET_DISPLAYED, {
-      asset_address: change.asset.address,
-      // Petnames doesn't exist in mobile so we set as unknown for now
-      asset_petname: 'unknown',
-      asset_symbol: displayName.contractDisplayName,
-      asset_type: change.asset.type,
-      fiat_conversion_available: change.fiatAmount
-        ? FiatType.Available
-        : FiatType.NotAvailable,
-      location: 'confirmation',
-    });
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.INCOMPLETE_ASSET_DISPLAYED)
+        .addProperties({
+          asset_address: change.asset.address,
+          // Petnames doesn't exist in mobile so we set as unknown for now
+          asset_petname: 'unknown',
+          asset_symbol: displayName.contractDisplayName,
+          asset_type: change.asset.type,
+          fiat_conversion_available: change.fiatAmount
+            ? FiatType.Available
+            : FiatType.NotAvailable,
+          location: 'confirmation',
+        })
+        .build(),
+    );
 
     setProcessedAssets([...processedAssets, assetAddress]);
   }
@@ -164,10 +166,10 @@ function getProperties(changes: BalanceChange[], prefix: string) {
   return getPrefixProperties({ quantity, type, value }, prefix);
 }
 
-function getSensitiveProperties(changes: BalanceChange[], prefix: string) {
-  const fiatAmounts = changes.map((change) => change.fiatAmount);
+function getTotalValueProperty(changes: BalanceChange[], prefix: string) {
+  const fiatAmounts = changes.map((change) => change.usdAmount);
   const totalFiat = calculateTotalFiat(fiatAmounts);
-  const totalValue = totalFiat ? Math.abs(totalFiat) : undefined;
+  const totalValue = totalFiat ? totalFiat.abs().toNumber() : undefined;
 
   return getPrefixProperties({ total_value: totalValue }, prefix);
 }

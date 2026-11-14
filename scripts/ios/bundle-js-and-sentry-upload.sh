@@ -26,12 +26,40 @@ export SENTRY_DISABLE_AUTO_UPLOAD=${SENTRY_DISABLE_AUTO_UPLOAD:-"true"}
 export SENTRY_DIST=$CURRENT_PROJECT_VERSION
 export SENTRY_RELEASE="$PRODUCT_BUNDLE_IDENTIFIER@$MARKETING_VERSION+$SENTRY_DIST"
 
+# Write source map to a fixed absolute path so CI can
+# deploy it AND Sentry CLI can locate it for upload.
+# Using a relative path breaks Sentry: react-native-xcode.sh writes the file
+# with CWD=repo_root, but sentry-cli resolves SOURCEMAP_FILE relative to its
+# own CWD (ios/), causing a path mismatch. An absolute path anchored on
+# $PROJECT_DIR (set by Xcode to the ios/ directory) is unambiguous for all
+# sub-processes.
+REPO_ROOT="$(cd "${PROJECT_DIR}/.." && pwd)"
+mkdir -p "$REPO_ROOT/sourcemaps/ios"
+export SOURCEMAP_FILE="${SOURCEMAP_FILE:-$REPO_ROOT/sourcemaps/ios/index.js.map}"
+
+# react-native-xcode.sh always composes Metro + Hermes source maps when
+# SOURCEMAP_FILE is set. compose-source-maps.js holds both maps in memory and
+# OOMs Node's default ~4GB old-space on the iOS Expo dev-client archive,
+# which fails the Bundle JS phase (xcodebuild 65) and blocks ios-app-main-dev-expo.
+export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=8192"
+
+# Bundle through Expo CLI (matches android/app/build.gradle). Expo's transform
+# worker emits packed source maps that only `expo export:embed` knows how to
+# serialize; React Native's default `bundle` command crashes with
+# "Unexpected module with full source map found" when emitting a source map.
+if [[ -z "$CLI_PATH" ]]; then
+  export CLI_PATH="$("$NODE_BINARY" --print "require.resolve('@expo/cli', { paths: [require.resolve('expo/package.json')] })")"
+fi
+if [[ -z "$BUNDLE_COMMAND" ]]; then
+  export BUNDLE_COMMAND="export:embed"
+fi
 
 # Generate JS bundle and upload Sentry source maps
+# Note: with-environment.sh was already sourced above, so environment is set.
+# Run sentry-xcode.sh directly passing react-native-xcode.sh as the bundler.
 REACT_NATIVE_XCODE="../node_modules/react-native/scripts/react-native-xcode.sh"
 SENTRY_XCODE="../node_modules/@sentry/react-native/scripts/sentry-xcode.sh"
-BUNDLE_REACT_NATIVE="/bin/sh $SENTRY_XCODE $REACT_NATIVE_XCODE"
-/bin/sh -c "$WITH_ENVIRONMENT \"$BUNDLE_REACT_NATIVE\""
+/bin/sh "$SENTRY_XCODE" "$REACT_NATIVE_XCODE"
 
 # Upload Sentry debug symbols
 if [ "$SENTRY_DISABLE_AUTO_UPLOAD" == "false" ]; then

@@ -1,0 +1,106 @@
+import {
+  GasFeeEstimateLevel,
+  UserFeeLevel,
+  type TransactionMeta,
+} from '@metamask/transaction-controller';
+import { Hex } from '@metamask/utils';
+import { getNativeTokenAddress } from '@metamask/assets-controllers';
+import { BigNumber } from 'bignumber.js';
+
+import type {
+  TransactionMetrics,
+  TransactionMetricsBuilderRequest,
+} from '../types';
+import type { RootState } from '../../../../../reducers';
+import { selectAccountsByChainId } from '../../../../../selectors/accountTrackerController';
+import { safeToChecksumAddress } from '../../../../../util/address';
+
+export function getGasMetricsProperties({
+  transactionMeta,
+  getState,
+}: TransactionMetricsBuilderRequest): TransactionMetrics {
+  const {
+    chainId,
+    dappSuggestedGasFees,
+    gasFeeEstimatesLoaded,
+    gasFeeTokens,
+    selectedGasFeeToken,
+    txParams,
+    userFeeLevel,
+  } = transactionMeta;
+
+  const { from } = txParams ?? {};
+
+  let presentedGasFeeOption: string = 'not_loaded';
+
+  if (dappSuggestedGasFees) {
+    presentedGasFeeOption = 'dapp_proposed';
+  } else if (gasFeeEstimatesLoaded) {
+    presentedGasFeeOption = GasFeeEstimateLevel.Medium;
+  }
+
+  const gas_payment_tokens_available = gasFeeTokens?.map(
+    (token) => token.symbol,
+  );
+
+  const { metamaskPay } = transactionMeta;
+  const gasFeeTokenAddress = metamaskPay?.tokenAddress ?? selectedGasFeeToken;
+  const gasFeeChainId = metamaskPay?.chainId ?? chainId;
+
+  let gas_paid_with = gasFeeTokens?.find(
+    (token) =>
+      token.tokenAddress.toLowerCase() === gasFeeTokenAddress?.toLowerCase(),
+  )?.symbol;
+
+  if (
+    gasFeeTokenAddress?.toLowerCase() === getNativeTokenAddress(gasFeeChainId)
+  ) {
+    gas_paid_with = 'pre-funded_ETH';
+  }
+
+  const state = getState();
+  const gas_insufficient_native_asset = getNativeBalance(
+    state,
+    gasFeeChainId,
+    from,
+  ).lt(getMaxGasCost(transactionMeta));
+
+  return {
+    properties: {
+      gas_estimation_failed: !gasFeeEstimatesLoaded,
+      gas_fee_presented: presentedGasFeeOption,
+      gas_fee_selected:
+        userFeeLevel === UserFeeLevel.DAPP_SUGGESTED
+          ? 'dapp_proposed'
+          : userFeeLevel,
+      gas_insufficient_native_asset,
+      gas_paid_with,
+      gas_payment_tokens_available,
+    },
+    sensitiveProperties: {},
+  };
+}
+
+function getMaxGasCost(transactionMeta: TransactionMeta): BigNumber {
+  const { gas, gasPrice, maxFeePerGas } = transactionMeta.txParams ?? {};
+
+  return new BigNumber(gas ?? '0x0').multipliedBy(
+    maxFeePerGas ?? gasPrice ?? '0x0',
+  );
+}
+
+function getNativeBalance(
+  state: RootState,
+  chainId: string,
+  address: string,
+): BigNumber {
+  const accountsByChainId = selectAccountsByChainId(state);
+
+  const checksummedAddress = safeToChecksumAddress(address);
+  const account =
+    checksummedAddress !== undefined
+      ? accountsByChainId?.[chainId]?.[checksummedAddress]
+      : undefined;
+
+  return new BigNumber((account?.balance as Hex) ?? '0x0');
+}

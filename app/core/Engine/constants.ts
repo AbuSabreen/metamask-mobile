@@ -1,0 +1,160 @@
+import { NETWORK_CHAIN_ID } from '../../util/networks/customNetworks';
+
+/**
+ * Messageable modules that are part of the Engine's context, but are not defined with state.
+ * TODO: Replace with type guard once consistent inheritance for non-controllers is implemented. See: https://github.com/MetaMask/decisions/pull/41
+ */
+export const STATELESS_NON_CONTROLLER_NAMES = [
+  'AssetsContractController',
+  'ExecutionService',
+  'NftDetectionController',
+  'RewardsDataService',
+  'RewardsMoneyDataService',
+  'StorageService',
+  'SubscriptionService',
+  'SubscriptionDelegationService',
+  'ShieldApiService',
+  'ClaimsService',
+  'WebSocketService',
+  'BackendWebSocketService',
+  'AccountActivityService',
+  'OHLCVService',
+  'MultichainAccountService',
+  'SnapAccountService',
+  'GeolocationApiService',
+  'ProfileMetricsService',
+  'ProofOfOwnershipService',
+  'ProfileService',
+  'RampsService',
+  'TransakService',
+  'NeoBankService',
+  'ComplianceService',
+  'KycService',
+  'QrSyncProvisioningService',
+  'SocialService',
+  'SocialRealtimeService',
+  'AuthenticatedUserStorageService',
+  'MoneyAccountBalanceService',
+  'MoneyAccountApiDataService',
+  'ConfigRegistryApiService',
+  'ChompApiService',
+  'SentinelApiService',
+  'PredictMarketDataService',
+  'PredictLiveDataService',
+  'PredictPortfolioService',
+  'PredictOrderService',
+  'PredictDeviceAuthService',
+  'RecurringOrdersDataService',
+  'LimitOrdersDataService',
+  'SentinelFeeTokensDataService',
+] as const;
+
+export const BACKGROUND_STATE_CHANGE_EVENT_NAMES = [
+  'AccountsController:stateChange',
+  'AccountTreeController:stateChange',
+  'AddressBookController:stateChange',
+  'AnalyticsController:stateChange',
+  'AppMetadataController:stateChange',
+  'AssetsController:stateChange',
+  'ConnectivityController:stateChange',
+  'ConfigRegistryController:stateChanged',
+  'ApprovalController:stateChange',
+  'GasFeeController:stateChange',
+  'GeolocationController:stateChange',
+  'KeyringController:stateChange',
+  'LoggingController:stateChange',
+  'NetworkController:stateChange',
+  'NftController:stateChange',
+  'PermissionController:stateChange',
+  'PhishingController:stateChange',
+  'PreferencesController:stateChange',
+  'RemoteFeatureFlagController:stateChange',
+  'RampsController:stateChange',
+  'SelectedNetworkController:stateChange',
+  'SignatureController:stateChange',
+  'SmartTransactionsController:stateChange',
+  'SubscriptionController:stateChange',
+  'ShieldController:stateChange',
+  'ClaimsController:stateChange',
+  'TokensController:stateChange',
+  'TokenSearchDiscoveryDataController:stateChange',
+  'TransactionController:stateChange',
+  'TransactionPayController:stateChange',
+  'MultichainNetworkController:stateChange',
+  'SnapController:stateChange',
+  'SnapRegistryController:stateChange',
+  'SubjectMetadataController:stateChange',
+  'AuthenticationController:stateChange',
+  'UserStorageController:stateChange',
+  'NotificationServicesController:stateChange',
+  'NotificationServicesPushController:stateChange',
+  'SnapInterfaceController:stateChange',
+  'CronjobController:stateChange',
+  'MultichainTransactionsController:stateChange',
+  'BridgeController:stateChange',
+  'BridgeStatusController:stateChange',
+  'EarnController:stateChange',
+  'MoneyAccountController:stateChange',
+  'MoneyAccountUpgradeController:stateChanged',
+  'PerpsController:stateChange',
+  'RewardsController:stateChange',
+  'RewardsMoneyController:stateChange',
+  'DeFiPositionsController:stateChange',
+  'DeFiPositionsControllerV2:stateChanged',
+  'SeedlessOnboardingController:stateChange',
+  ...(process.env.INCLUDE_SAMPLE_FEATURE === 'true'
+    ? (['SamplePetnamesController:stateChange'] as const)
+    : []),
+  'NetworkConnectionBannerController:stateChanged',
+  'NetworkEnablementController:stateChange',
+  'PredictController:stateChange',
+  'CardController:stateChange',
+  'UiSlotsController:stateChanged',
+  'PredictVenueController:stateChanged',
+  'ClientController:stateChange',
+  'DelegationController:stateChange',
+  'ProfileMetricsController:stateChange',
+  'ComplianceController:stateChange',
+  'KycController:stateChange',
+  'SocialController:stateChange',
+  'ProfileController:stateChanged',
+  'QrSyncController:stateChange',
+] as const;
+
+export const MAINNET_DISPLAY_NAME = 'Ethereum';
+export const LINEA_MAINNET_DISPLAY_NAME = 'Linea';
+export const POLYGON_DISPLAY_NAME = 'Polygon';
+export const AVALANCHE_DISPLAY_NAME = 'Avalanche';
+export const ARBITRUM_DISPLAY_NAME = 'Arbitrum';
+export const BNB_DISPLAY_NAME = 'BNB Chain';
+export const OPTIMISM_DISPLAY_NAME = 'OP';
+export const ZK_SYNC_ERA_DISPLAY_NAME = 'zkSync Era';
+export const BASE_DISPLAY_NAME = 'Base';
+export const SOLANA_DISPLAY_NAME = 'Solana';
+export const SEI_DISPLAY_NAME = 'Sei';
+export const MONAD_DISPLAY_NAME = 'Monad';
+export const HYPEREVM_DISPLAY_NAME = 'HyperEVM';
+export const MEGAETH_DISPLAY_NAME = 'MegaETH';
+
+// `NETWORK_CHAIN_ID` is sourced from `customNetworks`, which several test
+// suites mock to a partial object. Guard against an undefined value so that
+// importing this module (e.g. from UI utils consuming `NETWORK_TO_NAME_MAP`)
+// never throws while the map is built at module-eval time.
+const CHAIN_ID = NETWORK_CHAIN_ID ?? ({} as typeof NETWORK_CHAIN_ID);
+
+export const NETWORK_TO_NAME_MAP = {
+  [CHAIN_ID.MAINNET]: MAINNET_DISPLAY_NAME,
+  [CHAIN_ID.LINEA_MAINNET]: LINEA_MAINNET_DISPLAY_NAME,
+  [CHAIN_ID.POLYGON]: POLYGON_DISPLAY_NAME,
+  [CHAIN_ID.AVALANCHE]: AVALANCHE_DISPLAY_NAME,
+  [CHAIN_ID.ARBITRUM]: ARBITRUM_DISPLAY_NAME,
+  [CHAIN_ID.BSC]: BNB_DISPLAY_NAME,
+  [CHAIN_ID.OPTIMISM]: OPTIMISM_DISPLAY_NAME,
+  [CHAIN_ID.ZKSYNC_ERA]: ZK_SYNC_ERA_DISPLAY_NAME,
+  [CHAIN_ID.BASE]: BASE_DISPLAY_NAME,
+  [CHAIN_ID.SEI]: SEI_DISPLAY_NAME,
+  // TODO: Update to use CHAIN_IDS.MONAD when it is added to the transaction controller
+  [CHAIN_ID.MONAD]: MONAD_DISPLAY_NAME,
+  [CHAIN_ID.HYPE]: HYPEREVM_DISPLAY_NAME,
+  [CHAIN_ID.MEGAETH_MAINNET]: MEGAETH_DISPLAY_NAME,
+} as const;

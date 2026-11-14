@@ -1,0 +1,228 @@
+import React, { useCallback } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { Box, BoxFlexDirection } from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  PredictMarket as PredictMarketType,
+  PredictMarketStatus,
+  PredictOutcomeToken,
+} from '../../types';
+import { PredictEntryPoint } from '../../types/navigation';
+import { PredictEventValues } from '../../constants/eventNames';
+import { usePredictPreviewSheet } from '../../contexts';
+import { useResolvedPredictEntryPoint } from '../../hooks/useResolvedPredictEntryPoint';
+import { Skeleton } from '../../../../../component-library/components-temp/Skeleton';
+import { PredictActionButtons } from '../PredictActionButtons';
+import { PredictPicksForCard } from '../PredictPicks';
+import { usePredictPositions } from '../../hooks/usePredictPositions';
+import { usePredictActionGuard } from '../../hooks/usePredictActionGuard';
+import { usePredictClaim } from '../../hooks/usePredictClaim';
+import { isActionableClaimablePosition } from '../../utils/positions';
+import { PREDICT_SPORT_CARD_FOOTER_TEST_IDS } from './PredictSportCardFooter.testIds';
+
+interface PredictSportCardFooterProps {
+  market: PredictMarketType;
+  testID?: string;
+  entryPoint?: PredictEntryPoint;
+  isCarousel?: boolean;
+  /** Called when the user taps a buy button (before betslip opens). */
+  onBuyButtonPress?: (marketId: string) => void;
+}
+
+const PredictSportCardFooter: React.FC<PredictSportCardFooterProps> = ({
+  market,
+  testID,
+  entryPoint: propEntryPoint,
+  isCarousel,
+  onBuyButtonPress,
+}) => {
+  const tw = useTailwind();
+  const navigation = useNavigation<AppNavigationProp>();
+
+  const resolvedEntryPoint = useResolvedPredictEntryPoint(propEntryPoint);
+
+  const { data: positions = [], isLoading } = usePredictPositions({
+    marketId: market.id,
+    claimable: false,
+    livePriceUpdates: true,
+  });
+
+  const { data: claimablePositions = [] } = usePredictPositions({
+    marketId: market.id,
+    claimable: true,
+  });
+
+  const { executeGuardedAction } = usePredictActionGuard({
+    navigation,
+  });
+
+  const { claim, isClaimPending } = usePredictClaim();
+  const { openBuySheet } = usePredictPreviewSheet();
+
+  const outcome = market.outcomes?.[0];
+  const isMarketOpen =
+    market.status === PredictMarketStatus.OPEN &&
+    market.game?.status !== 'ended';
+
+  const handleBetPress = useCallback(
+    (token: PredictOutcomeToken) => {
+      const matchingOutcome =
+        market.outcomes.find((marketOutcome) =>
+          marketOutcome.tokens.some(
+            (marketToken) => marketToken.id === token.id,
+          ),
+        ) ?? market.outcomes?.[0];
+
+      onBuyButtonPress?.(market.id);
+      executeGuardedAction(
+        () => {
+          openBuySheet({
+            market,
+            outcome: matchingOutcome,
+            outcomeToken: token,
+            entryPoint: resolvedEntryPoint,
+          });
+        },
+        {
+          attemptedAction: PredictEventValues.ATTEMPTED_ACTION.PREDICT,
+        },
+      );
+    },
+    [
+      executeGuardedAction,
+      resolvedEntryPoint,
+      openBuySheet,
+      market,
+      onBuyButtonPress,
+    ],
+  );
+
+  const handleClaimPress = useCallback(async () => {
+    await executeGuardedAction(
+      async () => {
+        // Claims are aggregate; market attribution is derived controller-side.
+        await claim({
+          entryPoint:
+            resolvedEntryPoint ?? PredictEventValues.ENTRY_POINT.PREDICT_FEED,
+        });
+      },
+      { attemptedAction: PredictEventValues.ATTEMPTED_ACTION.CLAIM },
+    );
+  }, [executeGuardedAction, claim, resolvedEntryPoint]);
+
+  const hasPositions = positions.length > 0;
+  const winningClaimablePositions = claimablePositions.filter(
+    isActionableClaimablePosition,
+  );
+  const hasClaimablePositions = winningClaimablePositions.length > 0;
+  const claimableAmount = winningClaimablePositions.reduce(
+    (sum, p) => sum + (p.currentValue ?? 0),
+    0,
+  );
+
+  const showBetButtons =
+    isMarketOpen && (!hasPositions || isCarousel) && outcome;
+  const showClaimButton = hasClaimablePositions && outcome;
+
+  if (isLoading) {
+    return (
+      <Box
+        flexDirection={BoxFlexDirection.Row}
+        twClassName="w-full gap-3"
+        testID={
+          testID
+            ? `${testID}-skeleton`
+            : PREDICT_SPORT_CARD_FOOTER_TEST_IDS.FALLBACK_FOOTER_SKELETON
+        }
+      >
+        <Box twClassName="flex-1">
+          <Skeleton
+            width="100%"
+            height={48}
+            style={tw.style('rounded-md')}
+            testID={
+              testID
+                ? `${testID}-skeleton-1`
+                : PREDICT_SPORT_CARD_FOOTER_TEST_IDS.FALLBACK_FOOTER_SKELETON_1
+            }
+          />
+        </Box>
+        <Box twClassName="flex-1">
+          <Skeleton
+            width="100%"
+            height={48}
+            style={tw.style('rounded-md')}
+            testID={
+              testID
+                ? `${testID}-skeleton-2`
+                : PREDICT_SPORT_CARD_FOOTER_TEST_IDS.FALLBACK_FOOTER_SKELETON_2
+            }
+          />
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <>
+      {!isCarousel && hasPositions && (
+        <PredictPicksForCard
+          marketId={market.id}
+          positions={positions}
+          showSeparator
+          testID={
+            testID
+              ? `${testID}${PREDICT_SPORT_CARD_FOOTER_TEST_IDS.PICK_SKELETON}`
+              : undefined
+          }
+        />
+      )}
+      {hasClaimablePositions && (
+        <PredictPicksForCard
+          marketId={market.id}
+          positions={winningClaimablePositions}
+          showSeparator
+          testID={
+            testID
+              ? `${testID}${PREDICT_SPORT_CARD_FOOTER_TEST_IDS.PICK_SKELETON}`
+              : undefined
+          }
+        />
+      )}
+
+      {showClaimButton && (
+        <PredictActionButtons
+          market={market}
+          outcome={outcome}
+          onBetPress={handleBetPress}
+          onClaimPress={handleClaimPress}
+          claimableAmount={claimableAmount}
+          isClaimPending={isClaimPending}
+          testID={
+            testID
+              ? `${testID}${PREDICT_SPORT_CARD_FOOTER_TEST_IDS.ACTION_BUTTONS}`
+              : undefined
+          }
+          isCarousel={isCarousel}
+        />
+      )}
+
+      {showBetButtons && !showClaimButton && (
+        <PredictActionButtons
+          market={market}
+          outcome={outcome}
+          onBetPress={handleBetPress}
+          testID={
+            testID
+              ? `${testID}${PREDICT_SPORT_CARD_FOOTER_TEST_IDS.ACTION_BUTTONS}`
+              : undefined
+          }
+          isCarousel={isCarousel}
+        />
+      )}
+    </>
+  );
+};
+
+export default PredictSportCardFooter;

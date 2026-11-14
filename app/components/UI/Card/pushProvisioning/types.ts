@@ -1,0 +1,200 @@
+/**
+ * Push Provisioning Types
+ *
+ * Core types and interfaces for the push provisioning feature.
+ * Supports adding cards to mobile wallets (Google Wallet, Apple Pay)
+ * from card providers.
+ */
+
+import type { CardWalletProvisioningInfo } from '../../../../core/Engine/controllers/card-controller/provider-types';
+
+/** Supported mobile wallet types */
+export type WalletType = 'google_wallet' | 'apple_wallet';
+
+/** Supported card networks (currently only Mastercard) */
+export type CardNetwork = 'MASTERCARD';
+
+/** Card token status in the wallet */
+export type CardTokenStatus =
+  | 'not_found'
+  | 'active'
+  | 'pending'
+  | 'suspended'
+  | 'deactivated'
+  | 'requires_activation';
+
+/** Provisioning operation status */
+export type ProvisioningStatus =
+  | 'idle'
+  | 'provisioning'
+  | 'success'
+  | 'error'
+  | 'canceled';
+
+/** Provisioning error codes */
+export enum ProvisioningErrorCode {
+  WALLET_NOT_AVAILABLE = 'WALLET_NOT_AVAILABLE',
+  CARD_PROVIDER_NOT_FOUND = 'CARD_PROVIDER_NOT_FOUND',
+  CARD_NOT_ELIGIBLE = 'CARD_NOT_ELIGIBLE',
+  ENCRYPTION_FAILED = 'ENCRYPTION_FAILED',
+  NETWORK_ERROR = 'NETWORK_ERROR',
+  TIMEOUT = 'TIMEOUT',
+  WALLET_DECLINED = 'WALLET_DECLINED',
+  PROVIDER_UNAVAILABLE = 'PROVIDER_UNAVAILABLE',
+  INVALID_CARD_DATA = 'INVALID_CARD_DATA',
+  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
+  PLATFORM_NOT_SUPPORTED = 'PLATFORM_NOT_SUPPORTED',
+}
+
+/** User address for card provisioning */
+export interface UserAddress {
+  name: string;
+  addressOne: string;
+  addressTwo?: string;
+  administrativeArea: string;
+  locality: string;
+  countryCode: string;
+  postalCode: string;
+  phoneNumber: string;
+}
+
+/** Card information for display during provisioning */
+export interface CardDisplayInfo {
+  cardId: string;
+  cardholderName: string;
+  lastFourDigits: string;
+  cardNetwork: CardNetwork;
+  cardDescription?: string;
+}
+
+/** Encrypted payload for wallet provisioning */
+export interface EncryptedPayload {
+  opaquePaymentCard?: string;
+}
+
+/**
+ * Apple Pay encrypted payload returned by the card provider
+ * after sending nonce, nonceSignature, and certificates.
+ */
+export interface ApplePayEncryptedPayload {
+  encryptedPassData: string;
+  activationData: string;
+  ephemeralPublicKey: string;
+}
+
+/** Parameters for provisioning a card to a wallet */
+export interface ProvisionCardParams {
+  cardNetwork: CardNetwork;
+  cardholderName: string;
+  lastFourDigits: string;
+  cardDescription?: string;
+  /**
+   * Opaque issuer id forwarded to PassKit.
+   * It is not used to look up an existing pass.
+   */
+  primaryAccountIdentifier?: string;
+  encryptedPayload: EncryptedPayload;
+  userAddress?: UserAddress;
+  /** Callback for Apple Pay: PassKit provides nonce/certs, returns encrypted payload */
+  issuerEncryptCallback?: (
+    nonce: string,
+    nonceSignature: string,
+    certificates: string[],
+  ) => Promise<ApplePayEncryptedPayload>;
+}
+
+/** Result of a provisioning operation */
+export interface ProvisioningResult {
+  status: 'success' | 'canceled' | 'error';
+  tokenId?: string;
+  activationState?: CardTokenStatus;
+  error?: ProvisioningError;
+}
+
+/** Recommended action based on card status */
+export type WalletAction =
+  | 'add_card'
+  | 'resume'
+  | 'none'
+  | 'contact_support'
+  | 'wait';
+
+/** A device that can hold an Apple Wallet pass. */
+export type WalletPassDevice = 'phone' | 'watch';
+
+/** Wallet eligibility check result */
+export interface WalletEligibility {
+  isAvailable: boolean;
+  canAddCard: boolean;
+  existingCardStatus?: CardTokenStatus;
+  ineligibilityReason?: string;
+  recommendedAction?: WalletAction;
+  /** Token reference ID for resume flow (requires_activation status) */
+  tokenReferenceId?: string;
+  /** Pass state on each Apple device that already has this card. */
+  devices?: Partial<Record<WalletPassDevice, CardTokenStatus>>;
+  /** Devices whose pass is waiting on issuer verification. */
+  pendingVerificationDevices?: WalletPassDevice[];
+}
+
+/** Card activation event from wallet */
+export interface CardActivationEvent {
+  tokenId?: string;
+  status: 'activated' | 'canceled' | 'failed';
+}
+
+/** Provisioning error with detailed information */
+export class ProvisioningError extends Error {
+  public code: ProvisioningErrorCode;
+  public originalError?: Error;
+  public metadata?: Record<string, unknown>;
+
+  constructor(
+    code: ProvisioningErrorCode,
+    message: string,
+    originalError?: Error,
+    metadata?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'ProvisioningError';
+    this.code = code;
+    this.originalError = originalError;
+    this.metadata = metadata;
+  }
+}
+
+/** Options for usePushProvisioning hook */
+export interface UsePushProvisioningOptions {
+  cardId?: string;
+  walletProvisioning?: CardWalletProvisioningInfo | null;
+  userAddress?: UserAddress;
+  onSuccess?: (result: ProvisioningResult) => void;
+  onError?: (error: ProvisioningError) => void;
+  onCancel?: () => void;
+}
+
+/** Return type for usePushProvisioning hook */
+export interface UsePushProvisioningReturn {
+  status: ProvisioningStatus;
+  error: ProvisioningError | null;
+  initiateProvisioning: () => Promise<ProvisioningResult>;
+  resetStatus: () => void;
+  isProvisioning: boolean;
+  isSuccess: boolean;
+  isError: boolean;
+  isLoading: boolean;
+  canAddToWallet: boolean;
+  /** True when this card is already in the wallet, including right after a successful add. */
+  isCardInWallet: boolean;
+  /** Devices whose pass is waiting on issuer verification. */
+  pendingVerificationDevices: WalletPassDevice[];
+  /** True when this iPhone has a pass for the card that can be opened. */
+  canOpenInWallet: boolean;
+  /** Open this card's iPhone pass in Apple Wallet. */
+  openInWallet: () => Promise<void>;
+  /**
+   * True when Immersve Apple Pay is switched off. Callers hide every wallet
+   * entry, including manual instructions.
+   */
+  hideProvisioningUi: boolean;
+}

@@ -1,0 +1,266 @@
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { Nft } from '@metamask/assets-controllers';
+import { View } from 'react-native';
+import { useSelector } from 'react-redux';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../../core/NavigationService/types';
+
+import { strings } from '../../../../../../../locales/i18n';
+import { selectPrimaryCurrency } from '../../../../../../selectors/settings';
+import CollectibleMedia from '../../../../../UI/CollectibleMedia';
+import {
+  AnimatedAmountDisplay,
+  getFontSizeForInputLength,
+} from '../../../../../../component-library/components-temp/AnimatedAmountDisplay';
+import { Skeleton } from '../../../../../../component-library/components-temp/Skeleton';
+import { useStyles } from '../../../../../hooks/useStyles';
+import Device from '../../../../../../util/device';
+import { AssetType, TokenStandard } from '../../../types/token';
+import { formatToFixedDecimals } from '../../../utils/send';
+import { useAmountSelectionMetrics } from '../../../hooks/send/metrics/useAmountSelectionMetrics';
+import { useAmountValidation } from '../../../hooks/send/useAmountValidation';
+import { useBalance } from '../../../hooks/send/useBalance';
+import { useCurrencyConversions } from '../../../hooks/send/useCurrencyConversions';
+import { useRouteParams } from '../../../hooks/send/useRouteParams';
+import { useSendContext } from '../../../context/send-context';
+import { useSendNavbar } from '../../../hooks/send/useSendNavbar';
+import { useParams } from '../../../../../../util/navigation/navUtils';
+import { AmountKeyboard } from './amount-keyboard';
+import { styleSheet } from './amount.styles';
+import { formatAmountWithCommas } from '../../../utils/format-amount';
+import { InitSendLocation } from '../../../constants/send';
+import {
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  FontFamily,
+  FontWeight,
+  IconName,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+
+const INPUT_SIDE_MARGIN_CHARACTER_RESERVE = 2;
+
+export const Amount = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const { header: renderAmountHeader } = useSendNavbar().Amount;
+  const { location, predefinedAmount } = useParams<{
+    location?: string;
+    predefinedAmount?: string;
+  }>();
+  const primaryCurrency = useSelector(selectPrimaryCurrency);
+  const { asset, updateValue, value } = useSendContext();
+  const { balance } = useBalance();
+  const { amountError } = useAmountValidation();
+  const [amount, setAmount] = useState('');
+  const [fiatMode, setFiatMode] = useState(primaryCurrency === 'Fiat');
+  const {
+    conversionSupportedForAsset,
+    fiatCurrencySymbol,
+    getFiatValue,
+    getFiatDisplayValue,
+  } = useCurrencyConversions();
+  const isNFT =
+    asset?.standard === TokenStandard.ERC721 ||
+    asset?.standard === TokenStandard.ERC1155;
+  const assetSymbol = isNFT
+    ? undefined
+    : ((asset as AssetType)?.ticker ?? (asset as AssetType)?.symbol);
+  const assetDisplaySymbol = assetSymbol ?? (isNFT ? 'NFT' : '');
+  const displaySuffix = fiatMode
+    ? (fiatCurrencySymbol ?? '')
+    : assetDisplaySymbol;
+  const defaultValue = fiatMode ? '0.00' : '0';
+  const displayAmount = useMemo(
+    () => formatAmountWithCommas(amount.length ? amount : defaultValue),
+    [amount, defaultValue],
+  );
+  const inputFontSize = getFontSizeForInputLength(
+    displayAmount.length +
+      displaySuffix.length +
+      INPUT_SIDE_MARGIN_CHARACTER_RESERVE,
+  );
+  const { styles } = useStyles(styleSheet, { inputFontSize });
+  const isIos = Device.isIos();
+  const { setAmountInputTypeFiat, setAmountInputTypeToken } =
+    useAmountSelectionMetrics();
+  const { isLoading: isNftLoading } = useRouteParams();
+  const hasSeededPredefinedAmountRef = useRef(false);
+
+  useEffect(() => {
+    if (predefinedAmount) {
+      setFiatMode(false);
+      return;
+    }
+    setFiatMode(primaryCurrency === 'Fiat');
+  }, [primaryCurrency, predefinedAmount, setFiatMode]);
+
+  // Seed once from navigation params. Do not re-run when the user clears the
+  // field — that would restore the QR amount while send-context value stays
+  // empty (AmountKeyboard already called updateValue('')).
+  useEffect(() => {
+    if (!predefinedAmount || hasSeededPredefinedAmountRef.current) {
+      return;
+    }
+    hasSeededPredefinedAmountRef.current = true;
+    setAmountInputTypeToken();
+    setAmount(predefinedAmount);
+    updateValue(predefinedAmount);
+  }, [predefinedAmount, setAmountInputTypeToken, updateValue]);
+
+  useEffect(() => {
+    if (location && location === InitSendLocation.AssetOverview) {
+      navigation.setOptions({
+        headerRight: () => null,
+      });
+    }
+  }, [navigation, location]);
+
+  const alternateDisplayValue = useMemo(
+    () =>
+      fiatMode
+        ? `${formatToFixedDecimals(value ?? '0', 5)} ${assetSymbol}`
+        : getFiatDisplayValue(amount),
+    [amount, assetSymbol, fiatMode, getFiatDisplayValue, value],
+  );
+
+  const toggleFiatMode = useCallback(() => {
+    const newFiatMode = !fiatMode;
+    if (newFiatMode) {
+      setAmountInputTypeFiat();
+    } else {
+      setAmountInputTypeToken();
+    }
+    setFiatMode(newFiatMode);
+    if (value === undefined || value === '') {
+      setAmount('');
+    } else {
+      setAmount(newFiatMode ? getFiatValue(value) : value);
+    }
+  }, [
+    fiatMode,
+    getFiatValue,
+    setAmount,
+    setAmountInputTypeFiat,
+    setAmountInputTypeToken,
+    setFiatMode,
+    value,
+  ]);
+
+  const balanceUnit =
+    assetSymbol ??
+    (parseInt(balance) === 1 ? strings('send.unit') : strings('send.units'));
+
+  const balanceDisplayValue = useMemo(
+    () =>
+      fiatMode
+        ? `${getFiatDisplayValue(balance)} ${strings('send.available')}`
+        : `${balance} ${balanceUnit} ${strings('send.available')}`,
+    [balance, balanceUnit, fiatMode, getFiatDisplayValue],
+  );
+
+  let textColor: TextColor = TextColor.TextDefault;
+  if (amountError) {
+    textColor = TextColor.ErrorDefault;
+  }
+  if (!amount.length) {
+    textColor = TextColor.TextMuted;
+  }
+
+  return (
+    <SafeAreaView
+      edges={isIos ? ['left', 'right'] : ['left', 'right', 'bottom']}
+      style={styles.container}
+    >
+      {renderAmountHeader()}
+      <View style={styles.topSection}>
+        {isNFT && (
+          <View style={styles.nftImageWrapper}>
+            <CollectibleMedia
+              style={styles.nftImage}
+              collectible={asset as Nft}
+              isTokenImage
+            />
+            <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Bold}>
+              {asset?.name}
+            </Text>
+            <Text
+              color={TextColor.TextAlternative}
+              variant={TextVariant.BodyMd}
+              fontWeight={FontWeight.Bold}
+            >
+              {asset?.tokenId}
+            </Text>
+          </View>
+        )}
+        {isNftLoading && (
+          <View style={styles.nftImageWrapper}>
+            <Skeleton twClassName="h-[100px] w-[100px] rounded-lg mb-2" />
+            <Skeleton twClassName="h-4 w-32 rounded mb-1" />
+            <Skeleton twClassName="h-3 w-20 rounded" />
+          </View>
+        )}
+        <View style={styles.inputSection}>
+          <View style={styles.inputWrapper}>
+            <AnimatedAmountDisplay
+              amountTestID="send_amount"
+              accessibilityLabel={
+                displaySuffix
+                  ? `${displayAmount} ${displaySuffix}`
+                  : displayAmount
+              }
+              color={textColor}
+              cursor={{
+                animated: true,
+                style: styles.cursor,
+                testID: 'send-amount-cursor',
+              }}
+              fontFamily={FontFamily.Hero}
+              style={styles.inputText}
+              suffix={displaySuffix}
+              suffixColor={
+                amountError ? TextColor.ErrorDefault : TextColor.TextMuted
+              }
+              suffixStyle={styles.inputText}
+              value={displayAmount}
+              variant={TextVariant.DisplayMd}
+            />
+          </View>
+        </View>
+        {isNftLoading ? (
+          <Skeleton twClassName="h-4 w-40 rounded self-center mt-2" />
+        ) : (
+          <Text color={TextColor.TextAlternative} style={styles.balanceText}>
+            {balanceDisplayValue}
+          </Text>
+        )}
+        {conversionSupportedForAsset && (
+          <Button
+            endIconName={IconName.SwapVertical}
+            onPress={toggleFiatMode}
+            size={ButtonSize.Md}
+            testID="fiat_toggle"
+            twClassName="mt-4 self-center"
+            variant={ButtonVariant.Secondary}
+          >
+            {alternateDisplayValue}
+          </Button>
+        )}
+      </View>
+      <AmountKeyboard
+        amount={amount}
+        fiatMode={fiatMode}
+        updateAmount={setAmount}
+      />
+    </SafeAreaView>
+  );
+};

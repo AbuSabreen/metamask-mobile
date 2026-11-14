@@ -1,0 +1,452 @@
+import React from 'react';
+import { act, fireEvent, screen } from '@testing-library/react-native';
+import TestRenderer from 'react-test-renderer';
+import renderWithProvider from '../../../../util/test/renderWithProvider';
+import SelectHardwareWallet, { getHardwareThemeAssets } from './index';
+import { strings } from '../../../../../locales/i18n';
+import Routes from '../../../../constants/navigation/Routes';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { HardwareDeviceTypes } from '../../../../constants/keyringTypes';
+import { getConnectedDevicesCount } from '../../../../core/HardwareWallets/analytics';
+import { mockTheme } from '../../../../util/theme';
+import { AppThemeKey } from '../../../../util/theme/models';
+import SelectHardwareTestIds from './SelectHardware.testIds';
+
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: jest.fn(),
+}));
+
+jest.mock('../../../../../locales/i18n', () => ({
+  strings: jest.fn((key: string) => key),
+}));
+
+jest.mock('../../../../core/HardwareWallets/analytics');
+
+const mockNavigate = jest.fn();
+const mockSetOptions = jest.fn();
+const mockTrackEvent = jest.fn();
+const mockCreateEventBuilder = jest.fn(() => ({
+  addProperties: jest.fn().mockReturnThis(),
+  build: jest.fn().mockReturnValue({}),
+}));
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    navigate: mockNavigate,
+    setOptions: mockSetOptions,
+  }),
+}));
+
+jest.mock('../../../../components/hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => ({
+    trackEvent: mockTrackEvent,
+    createEventBuilder: mockCreateEventBuilder,
+  }),
+}));
+
+const mockGetConnectedDevicesCount =
+  getConnectedDevicesCount as jest.MockedFunction<
+    typeof getConnectedDevicesCount
+  >;
+
+const initialState = {
+  user: {
+    appTheme: AppThemeKey.light,
+  },
+};
+
+describe('SelectHardwareWallet', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetConnectedDevicesCount.mockResolvedValue(0);
+    // Reset mockCreateEventBuilder to return proper chained object
+    mockCreateEventBuilder.mockReturnValue({
+      addProperties: jest.fn().mockReturnThis(),
+      build: jest.fn().mockReturnValue({}),
+    });
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('getHardwareThemeAssets', () => {
+    it('returns light theme classes by default', () => {
+      const assets = getHardwareThemeAssets(AppThemeKey.light);
+
+      expect(assets.qrIconTileClassName).toBe('bg-black');
+      expect(assets.qrIconClassName).toBe('text-white');
+    });
+
+    it('returns dark theme classes', () => {
+      const assets = getHardwareThemeAssets(AppThemeKey.dark);
+
+      expect(assets.qrIconTileClassName).toBe('bg-white');
+      expect(assets.qrIconClassName).toBe('text-black');
+    });
+  });
+
+  it('renders component with correct text', () => {
+    renderWithProvider(<SelectHardwareWallet />, { state: initialState });
+
+    expect(strings).toHaveBeenCalledWith(
+      'connect_hardware.title_select_hardware',
+    );
+    expect(
+      screen.getByText('connect_hardware.title_select_hardware'),
+    ).toBeTruthy();
+    expect(screen.getByText('Keystone')).toBeTruthy();
+    expect(screen.getByText('OneKey')).toBeTruthy();
+    expect(screen.getByText('Other QR wallet')).toBeTruthy();
+  });
+
+  it('sets navigation options on mount', () => {
+    renderWithProvider(<SelectHardwareWallet />, { state: initialState });
+
+    expect(mockSetOptions).toHaveBeenCalled();
+  });
+
+  it('renders hardware options in dark mode', () => {
+    renderWithProvider(<SelectHardwareWallet />, {
+      state: initialState,
+      theme: {
+        ...mockTheme,
+        themeAppearance: AppThemeKey.dark,
+      },
+    });
+
+    expect(screen.getByText(HardwareDeviceTypes.LEDGER)).toBeTruthy();
+    expect(screen.getByText('Keystone')).toBeTruthy();
+    expect(screen.getByText('OneKey')).toBeTruthy();
+    expect(screen.getByText('Other QR wallet')).toBeTruthy();
+  });
+
+  it('applies pressed opacity to hardware buttons', () => {
+    let renderer: TestRenderer.ReactTestRenderer | undefined;
+
+    act(() => {
+      renderer = TestRenderer.create(<SelectHardwareWallet />);
+    });
+
+    if (!renderer) {
+      throw new Error('SelectHardwareWallet failed to render');
+    }
+
+    const ledgerButton = renderer.root.findByProps({
+      testID: SelectHardwareTestIds.LEDGER_BUTTON,
+    });
+
+    const pressedStyle = ledgerButton.props.style({ pressed: true });
+
+    expect(pressedStyle).toEqual(
+      expect.objectContaining({
+        opacity: 0.8,
+      }),
+    );
+
+    act(() => {
+      renderer?.unmount();
+    });
+  });
+
+  describe('Ledger button navigation', () => {
+    it('tracks event and navigates to Ledger connection when pressed', async () => {
+      const connectedDeviceCount = 2;
+      mockGetConnectedDevicesCount.mockResolvedValue(connectedDeviceCount);
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const ledgerButton = getByTestId(SelectHardwareTestIds.LEDGER_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(ledgerButton);
+      });
+
+      expect(mockGetConnectedDevicesCount).toHaveBeenCalled();
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.CONNECT_HARDWARE_WALLET,
+      );
+      expect(mockTrackEvent).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.HW.CONNECT_LEDGER);
+    });
+
+    it('includes connected devices count in metrics event', async () => {
+      const connectedDeviceCount = 5;
+      mockGetConnectedDevicesCount.mockResolvedValue(connectedDeviceCount);
+      const mockAddProperties = jest.fn().mockReturnThis();
+      const mockBuild = jest.fn().mockReturnValue({});
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+        build: mockBuild,
+      });
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const ledgerButton = getByTestId(SelectHardwareTestIds.LEDGER_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(ledgerButton);
+      });
+
+      expect(mockAddProperties).toHaveBeenCalledWith({
+        device_type: HardwareDeviceTypes.LEDGER,
+        connected_device_count: connectedDeviceCount.toString(),
+      });
+      expect(mockBuild).toHaveBeenCalled();
+    });
+
+    it('handles zero connected devices count', async () => {
+      mockGetConnectedDevicesCount.mockResolvedValue(0);
+      const mockAddProperties = jest.fn().mockReturnThis();
+      const mockBuild = jest.fn().mockReturnValue({});
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+        build: mockBuild,
+      });
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const ledgerButton = getByTestId(SelectHardwareTestIds.LEDGER_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(ledgerButton);
+      });
+
+      expect(mockAddProperties).toHaveBeenCalledWith({
+        device_type: HardwareDeviceTypes.LEDGER,
+        connected_device_count: '0',
+      });
+    });
+  });
+
+  describe('QR Hardware button navigation', () => {
+    it('tracks event and navigates to QR device connection when pressed', async () => {
+      const connectedDeviceCount = 3;
+      mockGetConnectedDevicesCount.mockResolvedValue(connectedDeviceCount);
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const qrButton = getByTestId(SelectHardwareTestIds.OTHER_QR_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(qrButton);
+      });
+
+      expect(mockGetConnectedDevicesCount).toHaveBeenCalled();
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.CONNECT_HARDWARE_WALLET,
+      );
+      expect(mockTrackEvent).toHaveBeenCalled();
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.HW.CONNECT_QR_DEVICE, {
+        hideMarketingContent: true,
+      });
+    });
+
+    it('includes connected devices count in metrics event', async () => {
+      const connectedDeviceCount = 1;
+      mockGetConnectedDevicesCount.mockResolvedValue(connectedDeviceCount);
+      const mockAddProperties = jest.fn().mockReturnThis();
+      const mockBuild = jest.fn().mockReturnValue({});
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+        build: mockBuild,
+      });
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const qrButton = getByTestId(SelectHardwareTestIds.OTHER_QR_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(qrButton);
+      });
+
+      expect(mockAddProperties).toHaveBeenCalledWith({
+        device_type: HardwareDeviceTypes.QR,
+        connected_device_count: connectedDeviceCount.toString(),
+      });
+      expect(mockBuild).toHaveBeenCalled();
+    });
+    it('navigates to QR device connection when Keystone is pressed', async () => {
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const keystoneButton = getByTestId(SelectHardwareTestIds.KEYSTONE_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(keystoneButton);
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.HW.CONNECT_QR_DEVICE);
+    });
+
+    it('navigates to QR device connection when OneKey is pressed', async () => {
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const oneKeyButton = getByTestId(SelectHardwareTestIds.ONEKEY_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(oneKeyButton);
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.HW.CONNECT_QR_DEVICE, {
+        hideMarketingContent: true,
+      });
+    });
+  });
+
+  describe('useAnalytics integration', () => {
+    it('uses the useAnalytics hook', () => {
+      renderWithProvider(<SelectHardwareWallet />, { state: initialState });
+
+      expect(mockCreateEventBuilder).toBeDefined();
+      expect(mockTrackEvent).toBeDefined();
+    });
+
+    it('creates event builder with correct event type', async () => {
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const ledgerButton = getByTestId(SelectHardwareTestIds.LEDGER_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(ledgerButton);
+      });
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.CONNECT_HARDWARE_WALLET,
+      );
+    });
+  });
+
+  describe('error handling', () => {
+    it('continues navigation to Ledger when getConnectedDevicesCount fails', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      const error = new Error('Failed to get device count');
+      mockGetConnectedDevicesCount.mockRejectedValue(error);
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const ledgerButton = getByTestId(SelectHardwareTestIds.LEDGER_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(ledgerButton);
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.HW.CONNECT_LEDGER);
+
+      consoleSpy.mockRestore();
+    });
+
+    it('continues navigation to QR when getConnectedDevicesCount fails', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      const error = new Error('Failed to get device count');
+      mockGetConnectedDevicesCount.mockRejectedValue(error);
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const qrButton = getByTestId(SelectHardwareTestIds.OTHER_QR_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(qrButton);
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.HW.CONNECT_QR_DEVICE, {
+        hideMarketingContent: true,
+      });
+
+      consoleSpy.mockRestore();
+    });
+
+    it('logs error when analytics tracking fails for Ledger', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      const error = new Error('Analytics failure');
+      mockGetConnectedDevicesCount.mockRejectedValue(error);
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const ledgerButton = getByTestId(SelectHardwareTestIds.LEDGER_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(ledgerButton);
+      });
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[SelectHardware] Failed to track analytics:',
+        error,
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it('logs error when analytics tracking fails for QR', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      const error = new Error('Analytics failure');
+      mockGetConnectedDevicesCount.mockRejectedValue(error);
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const qrButton = getByTestId(SelectHardwareTestIds.OTHER_QR_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(qrButton);
+      });
+
+      expect(consoleSpy).toHaveBeenCalledWith(
+        '[SelectHardware] Failed to track analytics:',
+        error,
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it('does not track analytics event when getConnectedDevicesCount fails for Ledger', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      const error = new Error('Failed to get device count');
+      mockGetConnectedDevicesCount.mockRejectedValue(error);
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const ledgerButton = getByTestId(SelectHardwareTestIds.LEDGER_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(ledgerButton);
+      });
+
+      expect(mockTrackEvent).not.toHaveBeenCalled();
+
+      consoleSpy.mockRestore();
+    });
+
+    it('does not track analytics event when getConnectedDevicesCount fails for QR', async () => {
+      const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+      const error = new Error('Failed to get device count');
+      mockGetConnectedDevicesCount.mockRejectedValue(error);
+
+      const { getByTestId } = renderWithProvider(<SelectHardwareWallet />, {
+        state: initialState,
+      });
+      const qrButton = getByTestId(SelectHardwareTestIds.OTHER_QR_BUTTON);
+
+      await act(async () => {
+        fireEvent.press(qrButton);
+      });
+
+      expect(mockTrackEvent).not.toHaveBeenCalled();
+
+      consoleSpy.mockRestore();
+    });
+  });
+});

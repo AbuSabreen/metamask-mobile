@@ -1,0 +1,561 @@
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+
+import { FlashList } from '@shopify/flash-list';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  ActivityIndicator,
+  RefreshControl,
+  ScrollView,
+  View,
+} from 'react-native';
+import { useSelector } from 'react-redux';
+import { strings } from '../../../../../../locales/i18n';
+import {
+  Text,
+  TextVariant,
+  TextColor,
+  ButtonSize,
+} from '@metamask/design-system-react-native';
+import { useStyles } from '../../../../../component-library/hooks';
+import { TabEmptyState } from '../../../../../component-library/components-temp/TabEmptyState';
+import ButtonFilter from '../../../../../component-library/components-temp/ButtonFilter';
+import { selectSelectedAccountGroupEvmInternalAccount } from '../../../../../selectors/multichainAccounts/accountTreeController';
+import { selectChainId } from '../../../../../selectors/networkController';
+import {
+  formatAccountToCaipAccountId,
+  PERPS_TRANSACTIONS_HISTORY_CONSTANTS,
+} from '@metamask/perps-controller';
+
+// Import PerpsController hooks
+import PerpsTransactionItem from '../../components/PerpsTransactionItem';
+import PerpsTransactionsSkeleton from '../../components/PerpsTransactionsSkeleton';
+import {
+  usePerpsConnection,
+  usePerpsNetwork,
+  usePerpsTransactionHistory,
+} from '../../hooks';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MonetizedPrimitive } from '../../../../../core/Analytics/MetaMetrics.types';
+import {
+  ACTIVITY_DETAIL_EVENTS,
+  TransactionDetailLocation,
+} from '../../../../../core/Analytics/events/transactions';
+import { PERPS_BALANCE_CHAIN_ID } from '../../constants/perpsConfig';
+import {
+  FilterTab,
+  ListItem,
+  PerpsTransaction,
+  TransactionSection,
+} from '../../types/transactionHistory';
+import { formatDateSection } from '../../utils/formatUtils';
+import { navigateToPerpsTransactionDetails } from '../../utils/navigateToPerpsTransactionDetails';
+import { PerpsTransactionsViewSelectorsIDs } from '../../Perps.testIds';
+import { styleSheet } from './PerpsTransactionsView.styles';
+import { usePerpsMeasurement } from '../../hooks/usePerpsMeasurement';
+import { TraceName } from '../../../../../util/trace';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import PerpsAggregatedFillsCheckbox from '../../components/PerpsAggregatedFillsCheckbox';
+
+const PerpsTransactionsView: React.FC = () => {
+  const { styles } = useStyles(styleSheet, {});
+  const tw = useTailwind();
+  const navigation = useNavigation<AppNavigationProp>();
+
+  const [activeFilter, setActiveFilter] = useState<FilterTab>('Trades');
+  const [aggregateFills, setAggregateFills] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [isFocusRefreshing, setIsFocusRefreshing] = useState(false);
+
+  // Ref for FlashList to control scrolling
+  const flashListRef = useRef(null);
+
+  const { isConnected, isConnecting } = usePerpsConnection();
+
+  const evmAccount = useSelector(selectSelectedAccountGroupEvmInternalAccount);
+  const selectedAddress = evmAccount?.address;
+  const currentChainId = useSelector(selectChainId);
+  const isTestnet = usePerpsNetwork() === 'testnet';
+  const accountId = useMemo(() => {
+    if (!selectedAddress || !currentChainId) {
+      return undefined;
+    }
+    return (
+      formatAccountToCaipAccountId(selectedAddress, currentChainId) ?? undefined
+    );
+  }, [selectedAddress, currentChainId]);
+
+  // Use single source of truth for all transaction data (includes deposits/withdrawals from user history)
+  const {
+    transactions: allTransactions,
+    isLoading: transactionsLoading,
+    refetch: refreshTransactions,
+    loadMoreFunding,
+    hasFundingMore,
+    isFetchingMoreFunding,
+  } = usePerpsTransactionHistory({
+    skipInitialFetch: !isConnected,
+    accountId,
+    aggregateFills,
+  });
+
+  // Helper function to group transactions by date
+  const groupTransactionsByDate = useCallback(
+    (transactions: PerpsTransaction[]): TransactionSection[] => {
+      const grouped = transactions.reduce(
+        (acc, transaction) => {
+          const dateKey = formatDateSection(transaction.timestamp);
+          if (!acc[dateKey]) {
+            acc[dateKey] = [];
+          }
+          acc[dateKey].push(transaction);
+          return acc;
+        },
+        {} as Record<string, PerpsTransaction[]>,
+      );
+
+      return Object.entries(grouped).map(([title, data]) => ({ title, data }));
+    },
+    [],
+  );
+
+  // Helper function to flatten grouped data for FlashList with unique IDs
+  const flattenGroupedTransactions = (
+    sections: TransactionSection[],
+    filterType: FilterTab,
+  ): ListItem[] => {
+    const flattened: ListItem[] = [];
+
+    sections.forEach((section) => {
+      // Add section header with filter-specific ID to avoid collisions
+      flattened.push({
+        type: 'header',
+        title: section.title,
+        id: `${filterType}-header-${section.title}`,
+      });
+
+      // Add transactions with filter-specific ID to avoid collisions
+      section.data.forEach((transaction, index) => {
+        flattened.push({
+          type: 'transaction',
+          transaction,
+          id: `${filterType}-${transaction.id}-${index}`,
+        });
+      });
+    });
+
+    return flattened;
+  };
+
+  // Filter transactions by type from the single source of truth
+  const fillTransactions = useMemo(
+    () => allTransactions.filter((tx) => tx.type === 'trade'),
+    [allTransactions],
+  );
+
+  const orderTransactions = useMemo(
+    () => allTransactions.filter((tx) => tx.type === 'order'),
+    [allTransactions],
+  );
+
+  const fundingTransactions = useMemo(
+    () => allTransactions.filter((tx) => tx.type === 'funding'),
+    [allTransactions],
+  );
+
+  const depositWithdrawalTransactions = useMemo(
+    () =>
+      allTransactions.filter(
+        (tx) => tx.type === 'deposit' || tx.type === 'withdrawal',
+      ),
+    [allTransactions],
+  );
+
+  // Memoized grouped transactions to avoid recalculation on every filter change
+  const allGroupedTransactions = useMemo(() => {
+    const grouped = {
+      Trades: groupTransactionsByDate(fillTransactions),
+      Orders: groupTransactionsByDate(orderTransactions),
+      Funding: groupTransactionsByDate(fundingTransactions),
+      Deposits: groupTransactionsByDate(depositWithdrawalTransactions),
+    };
+
+    return grouped;
+  }, [
+    fillTransactions,
+    orderTransactions,
+    fundingTransactions,
+    depositWithdrawalTransactions,
+    groupTransactionsByDate,
+  ]);
+
+  const flatListData = useMemo(() => {
+    const currentGrouped = allGroupedTransactions[activeFilter] || [];
+    return flattenGroupedTransactions(currentGrouped, activeFilter);
+  }, [activeFilter, allGroupedTransactions]);
+
+  // Note: Removed automatic scroll to top on tab change to allow switching tabs while scrolling
+
+  const onRefresh = useCallback(async () => {
+    if (!isConnected) {
+      return;
+    }
+    setRefreshing(true);
+    try {
+      // Refresh all transaction data from single source
+      await refreshTransactions();
+    } catch (error) {
+      console.warn('Failed to refresh transaction data:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [isConnected, refreshTransactions]);
+
+  // Auto-advance funding cursor when the Funding tab is empty but more data
+  // exists. FlashList does not reliably call onEndReached on empty lists, so
+  // we trigger loadMoreFunding directly when the tab shows no results.
+  useEffect(() => {
+    if (
+      activeFilter === 'Funding' &&
+      !transactionsLoading &&
+      !isFetchingMoreFunding &&
+      hasFundingMore &&
+      fundingTransactions.length === 0
+    ) {
+      loadMoreFunding();
+    }
+  }, [
+    activeFilter,
+    transactionsLoading,
+    isFetchingMoreFunding,
+    hasFundingMore,
+    fundingTransactions,
+    loadMoreFunding,
+  ]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!isConnected) {
+        setIsFocusRefreshing(false);
+        return;
+      }
+
+      let isMounted = true;
+
+      const refreshOnFocus = async () => {
+        setIsFocusRefreshing(true);
+        try {
+          await refreshTransactions();
+        } catch (error) {
+          console.warn('Failed to refresh perps transactions on focus:', error);
+        } finally {
+          if (isMounted) {
+            setIsFocusRefreshing(false);
+          }
+        }
+      };
+
+      refreshOnFocus();
+
+      return () => {
+        isMounted = false;
+      };
+    }, [isConnected, refreshTransactions]),
+  );
+
+  const renderFilterTab = useCallback(
+    (tab: FilterTab, index: number) => {
+      const isActive = activeFilter === tab;
+
+      // Convert tab to i18n key
+      const i18nKeys = ['trades', 'orders', 'funding', 'deposits'];
+      const i18nKey = i18nKeys[index];
+      const tabTestIDs = [
+        PerpsTransactionsViewSelectorsIDs.TAB_TRADES,
+        PerpsTransactionsViewSelectorsIDs.TAB_ORDERS,
+        PerpsTransactionsViewSelectorsIDs.TAB_FUNDING,
+        PerpsTransactionsViewSelectorsIDs.TAB_DEPOSITS,
+      ];
+
+      const handleTabPress = () => {
+        // Immediately scroll to top and switch tabs
+        if (flashListRef.current) {
+          (
+            flashListRef.current as unknown as {
+              scrollToOffset: (offset: {
+                offset: number;
+                animated: boolean;
+              }) => void;
+            }
+          )?.scrollToOffset({
+            offset: 0,
+            animated: false,
+          });
+        }
+        setActiveFilter(tab);
+      };
+
+      return (
+        <ButtonFilter
+          key={tab}
+          isActive={isActive}
+          size={ButtonSize.Md}
+          onPress={handleTabPress}
+          accessibilityRole="button"
+          testID={tabTestIDs[index]}
+        >
+          {strings(`perps.transactions.tabs.${i18nKey}`)}
+        </ButtonFilter>
+      );
+    },
+    [activeFilter],
+  );
+
+  const { trackEvent, createEventBuilder } = useAnalytics();
+
+  const handleTransactionPress = (transaction: PerpsTransaction) => {
+    trackEvent(
+      createEventBuilder(ACTIVITY_DETAIL_EVENTS.OPENED)
+        .addProperties({
+          transaction_type: `perps_${transaction.type}`,
+          transaction_status:
+            transaction.depositWithdrawal?.status ?? 'confirmed',
+          location: TransactionDetailLocation.Home,
+          chain_id_source: PERPS_BALANCE_CHAIN_ID,
+          chain_id_destination: PERPS_BALANCE_CHAIN_ID,
+          monetized_primitive: MonetizedPrimitive.Perps,
+        })
+        .build(),
+    );
+
+    navigateToPerpsTransactionDetails(navigation, transaction, isTestnet);
+  };
+
+  // Render right content based on transaction type
+  const renderRightContent = (item: PerpsTransaction) => {
+    if (item.fill) {
+      return (
+        <Text
+          variant={TextVariant.BodySm}
+          style={
+            item.fill.isPositive === undefined
+              ? undefined
+              : item.fill.isPositive
+                ? styles.profitAmount
+                : styles.lossAmount
+          }
+        >
+          {item.fill.amount}
+        </Text>
+      );
+    }
+
+    if (item.order) {
+      let statusStyle;
+      if (item.order.statusType === 'filled') {
+        statusStyle = styles.statusFilled;
+      } else if (item.order.statusType === 'canceled') {
+        statusStyle = styles.statusCanceled;
+      } else {
+        statusStyle = styles.statusPending;
+      }
+
+      return (
+        <Text variant={TextVariant.BodySm} style={statusStyle}>
+          {item.order.text}
+        </Text>
+      );
+    }
+
+    if (item.fundingAmount) {
+      return (
+        <Text
+          variant={TextVariant.BodySm}
+          style={
+            item.fundingAmount.isPositive
+              ? styles.profitAmount
+              : styles.lossAmount
+          }
+        >
+          {item.fundingAmount.fee}
+        </Text>
+      );
+    }
+
+    return null;
+  };
+
+  // Render function for FlashList items (handles both headers and transactions)
+  const renderListItem = ({ item }: { item: ListItem }) => {
+    if (item.type === 'header') {
+      return (
+        <View style={styles.sectionHeader}>
+          <Text color={TextColor.TextAlternative}>{item.title}</Text>
+        </View>
+      );
+    }
+
+    // Transaction item
+    return (
+      <PerpsTransactionItem
+        item={item.transaction}
+        styles={styles}
+        onPress={handleTransactionPress}
+        renderRightContent={renderRightContent}
+      />
+    );
+  };
+
+  const renderEmptyState = () => (
+    <View style={styles.emptyContainer}>
+      <TabEmptyState
+        description={strings('perps.transactions.empty_state.no_transactions', {
+          type: activeFilter.toLowerCase(),
+        })}
+      ></TabEmptyState>
+    </View>
+  );
+
+  const filterTabs: FilterTab[] = ['Trades', 'Orders', 'Funding', 'Deposits'];
+
+  const renderFilterBar = () => (
+    <View style={styles.filterContainer} pointerEvents="box-none">
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={tw.style('flex-row items-center gap-2')}
+        pointerEvents="auto"
+        scrollEnabled
+      >
+        {filterTabs.map(renderFilterTab)}
+        {activeFilter === 'Trades' ? (
+          <PerpsAggregatedFillsCheckbox
+            isSelected={aggregateFills}
+            onChange={setAggregateFills}
+            testID={PerpsTransactionsViewSelectorsIDs.AGGREGATED_CHECKBOX}
+          />
+        ) : null}
+      </ScrollView>
+    </View>
+  );
+
+  const filterTabDescription = useMemo(() => {
+    if (activeFilter === 'Funding') {
+      return strings('perps.transactions.tabs.funding_description');
+    }
+    return null;
+  }, [activeFilter]);
+
+  // Determine if we should show loading skeleton
+  const isInitialLoading = useMemo(
+    () =>
+      // Show loading for connection/data fetch states and focus-refresh with no cached rows.
+      isConnecting ||
+      transactionsLoading ||
+      (!isConnected && flatListData.length === 0) ||
+      (isFocusRefreshing && flatListData.length === 0),
+    [
+      isConnecting,
+      transactionsLoading,
+      isConnected,
+      isFocusRefreshing,
+      flatListData.length,
+    ],
+  );
+
+  // Track screen load performance - measures time until all data is loaded and UI is interactive
+  // Only measures once per session (no reset on refresh/tab switch)
+  usePerpsMeasurement({
+    traceName: TraceName.PerpsTransactionsView,
+    conditions: [!isInitialLoading],
+    resetConditions: [], // Prevent automatic reset on subsequent loads
+  });
+
+  // Determine if we should show empty state (only after loading is complete and no data)
+  const shouldShowEmptyState = useMemo(() => {
+    if (isInitialLoading) return false;
+    if (!isConnected) return false;
+
+    // Show empty state only if loading is complete and we have no data
+    return flatListData.length === 0;
+  }, [isInitialLoading, isConnected, flatListData.length]);
+
+  // Show loading skeleton during initial load
+  if (isInitialLoading) {
+    return (
+      <View style={styles.container}>
+        {renderFilterBar()}
+
+        {filterTabDescription && (
+          <View style={styles.tabDescription}>
+            <Text variant={TextVariant.BodySm}>{filterTabDescription}</Text>
+          </View>
+        )}
+
+        <PerpsTransactionsSkeleton testID="perps-transactions-loading-skeleton" />
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      {renderFilterBar()}
+
+      {filterTabDescription && (
+        <View style={styles.tabDescription}>
+          <Text variant={TextVariant.BodySm}>{filterTabDescription}</Text>
+        </View>
+      )}
+
+      <FlashList
+        testID="perps-transactions-flash-list"
+        ref={flashListRef}
+        data={flatListData}
+        renderItem={renderListItem}
+        keyExtractor={(item) => item.id}
+        getItemType={(item) =>
+          item.type === 'header' ? 'header' : 'transaction'
+        }
+        ListEmptyComponent={shouldShowEmptyState ? renderEmptyState : null}
+        ListFooterComponent={
+          activeFilter === 'Funding' && isFetchingMoreFunding ? (
+            <View style={styles.loadMoreContainer}>
+              <ActivityIndicator
+                testID={
+                  PerpsTransactionsViewSelectorsIDs.FUNDING_LOAD_MORE_SPINNER
+                }
+              />
+            </View>
+          ) : null
+        }
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+        onEndReached={
+          activeFilter === 'Funding' && hasFundingMore
+            ? loadMoreFunding
+            : undefined
+        }
+        onEndReachedThreshold={0.5}
+        showsVerticalScrollIndicator={false}
+        drawDistance={
+          PERPS_TRANSACTIONS_HISTORY_CONSTANTS.FLASH_LIST_DRAW_DISTANCE
+        }
+        ItemSeparatorComponent={() => null}
+        scrollEventThrottle={
+          PERPS_TRANSACTIONS_HISTORY_CONSTANTS.FLASH_LIST_SCROLL_EVENT_THROTTLE
+        }
+        removeClippedSubviews
+        keyboardShouldPersistTaps="handled"
+      />
+    </View>
+  );
+};
+
+export default PerpsTransactionsView;

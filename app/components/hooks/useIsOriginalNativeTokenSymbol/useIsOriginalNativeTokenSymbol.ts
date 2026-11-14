@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { CURRENCY_SYMBOL_BY_CHAIN_ID } from '../../../constants/network';
 import { selectUseSafeChainsListValidation } from '../../../selectors/preferencesController';
-import axios from 'axios';
-
-const CHAIN_ID_NETWORK_URL = 'https://chainid.network/chains.json';
+import { selectEvmNetworkConfigurationsByChainId } from '../../../selectors/networkController';
+import { useSafeChains } from '../useSafeChains';
+import { isNonEvmChainId } from '../../../core/Multichain/utils';
+import type { Hex } from '@metamask/utils';
 
 /**
  * Hook that check if the used symbol match with the original symbol of given network
@@ -15,17 +16,32 @@ function useIsOriginalNativeTokenSymbol(
   chainId: string,
   ticker: string | undefined,
   type: string,
-): boolean {
-  const [isOriginalNativeSymbol, setIsOriginalNativeSymbol] =
-    useState<boolean>(false);
+): boolean | null {
+  const { safeChains: safeChainsList, error: safeChainsError } =
+    useSafeChains();
+  const [isOriginalNativeSymbol, setIsOriginalNativeSymbol] = useState<
+    boolean | null
+  >(null);
 
   const useSafeChainsListValidation = useSelector(
     selectUseSafeChainsListValidation,
+  );
+  const evmNetworkConfigurationsByChainId = useSelector(
+    selectEvmNetworkConfigurationsByChainId,
   );
 
   useEffect(() => {
     async function getNativeTokenSymbol(networkId: string) {
       try {
+        // Non-EVM or not in networkConfigurationsByChainId: treat as original (no scam warning)
+        if (
+          isNonEvmChainId(chainId) ||
+          evmNetworkConfigurationsByChainId?.[chainId as Hex] === undefined
+        ) {
+          setIsOriginalNativeSymbol(true);
+          return;
+        }
+
         // Skip if the network doesn't have symbol
         if (!ticker) {
           setIsOriginalNativeSymbol(true);
@@ -48,12 +64,21 @@ function useIsOriginalNativeTokenSymbol(
           return;
         }
 
-        // check safety network using a third part
-        const { data: safeChainsList } = await axios.get(CHAIN_ID_NETWORK_URL);
+        // If chains API failed, can't verify - assume unsafe
+        if (safeChainsError) {
+          setIsOriginalNativeSymbol(false);
+          return;
+        }
 
+        // Wait for safeChainsList to load before checking
+        // Keep state as null (loading) to avoid false warnings
+        if (!safeChainsList || safeChainsList.length === 0) {
+          return;
+        }
+
+        // check safety network using a third part
         const matchedChain = safeChainsList.find(
-          (network: { chainId: number }) =>
-            network.chainId === parseInt(networkId),
+          (network) => network.chainId === parseInt(networkId),
         );
 
         const symbol = matchedChain?.nativeCurrency?.symbol ?? null;
@@ -67,11 +92,13 @@ function useIsOriginalNativeTokenSymbol(
     }
     getNativeTokenSymbol(chainId);
   }, [
-    isOriginalNativeSymbol,
     chainId,
     ticker,
     type,
     useSafeChainsListValidation,
+    safeChainsList,
+    safeChainsError,
+    evmNetworkConfigurationsByChainId,
   ]);
 
   return isOriginalNativeSymbol;

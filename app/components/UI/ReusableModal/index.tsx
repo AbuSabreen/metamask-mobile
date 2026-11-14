@@ -2,6 +2,7 @@
 
 // Third party dependencies.
 import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
 import React, {
   forwardRef,
   useCallback,
@@ -11,14 +12,10 @@ import React, {
   useRef,
 } from 'react';
 import { TouchableOpacity, useWindowDimensions, View } from 'react-native';
-import {
-  PanGestureHandler,
-  PanGestureHandlerGestureEvent,
-} from 'react-native-gesture-handler';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   interpolate,
   runOnJS,
-  useAnimatedGestureHandler,
   useAnimatedStyle,
   useDerivedValue,
   useSharedValue,
@@ -46,14 +43,35 @@ import {
 // Export to make compatible with components that use this file.
 export type { ReusableModalRef } from './ReusableModal.types';
 
+/**
+ * @deprecated The `<ReusableModal />` component has been deprecated in favor of the new `<BottomSheet>` component from the component-library.
+ * Please update your code to use the new `<BottomSheet>` component instead, which can be found at app/component-library/components/BottomSheets/BottomSheet/BottomSheet.tsx.
+ * You can find documentation for the new BottomSheet component in the README:
+ * {@link https://github.com/MetaMask/metamask-mobile/tree/main/app/component-library/components/BottomSheets/BottomSheet}
+ * If you would like to help with the replacement of the old ReusableModal component, please submit a pull request against this GitHub issue:
+ * {@link https://github.com/MetaMask/metamask-mobile/issues/12656}
+ */
 const ReusableModal = forwardRef<ReusableModalRef, ReusableModalProps>(
-  ({ children, onDismiss, isInteractable = true, style, ...props }, ref) => {
-    const postCallback = useRef<ReusableModalPostCallback>();
+  (
+    {
+      children,
+      onDismiss,
+      isInteractable = true,
+      shouldGoBack = true,
+      style,
+      ...props
+    },
+    ref,
+  ) => {
+    const postCallback = useRef<ReusableModalPostCallback | undefined>(
+      undefined,
+    );
     const { height: screenHeight } = useWindowDimensions();
     const { styles } = useStyles(styleSheet, {});
     const currentYOffset = useSharedValue(screenHeight);
     const visibleYOffset = useSharedValue(0);
     const sheetHeight = useSharedValue(screenHeight);
+    const gestureStartY = useSharedValue(0);
     const overlayOpacity = useDerivedValue(() =>
       interpolate(
         currentYOffset.value,
@@ -61,65 +79,69 @@ const ReusableModal = forwardRef<ReusableModalRef, ReusableModalProps>(
         [1, 0],
       ),
     );
-    const navigation = useNavigation();
+    const navigation = useNavigation<AppNavigationProp>();
     const isMounted = useRef(false);
 
     const onHidden = useCallback(() => {
       // Sheet is automatically unmounted from the navigation stack.
-      navigation.goBack();
+      if (shouldGoBack) {
+        navigation.goBack();
+      }
       onDismiss?.(!!postCallback.current);
       postCallback.current?.();
-    }, [navigation, onDismiss]);
+    }, [navigation, onDismiss, shouldGoBack]);
 
-    const gestureHandler = useAnimatedGestureHandler<
-      PanGestureHandlerGestureEvent,
-      { startY: number }
-    >({
-      onStart: (_, ctx) => {
-        ctx.startY = currentYOffset.value;
-      },
-      onActive: (event, ctx) => {
-        const { translationY } = event;
-        currentYOffset.value = ctx.startY + translationY;
-        if (currentYOffset.value >= sheetHeight.value) {
-          currentYOffset.value = sheetHeight.value;
-        }
-        if (currentYOffset.value <= visibleYOffset.value) {
-          currentYOffset.value = visibleYOffset.value;
-        }
-      },
-      onEnd: (event, ctx) => {
-        const { translationY, velocityY } = event;
-        let finalOffset: number;
-        const latestOffset = ctx.startY + translationY;
-        const hasReachedDismissOffset =
-          latestOffset > sheetHeight.value * DISMISS_DISTANCE_THRESHOLD;
-        const hasReachedSwipeThreshold =
-          Math.abs(velocityY) > DISMISS_SWIPE_SPEED_THRESHOLD;
-        const isDismissing = velocityY > 0;
+    const gestureHandler = useMemo(
+      () =>
+        Gesture.Pan()
+          .enabled(isInteractable)
+          .onStart(() => {
+            gestureStartY.value = currentYOffset.value;
+          })
+          .onUpdate((event) => {
+            currentYOffset.value = gestureStartY.value + event.translationY;
+            if (currentYOffset.value >= sheetHeight.value) {
+              currentYOffset.value = sheetHeight.value;
+            }
+            if (currentYOffset.value <= visibleYOffset.value) {
+              currentYOffset.value = visibleYOffset.value;
+            }
+          })
+          .onEnd((event) => {
+            const { translationY, velocityY } = event;
+            let finalOffset: number;
+            const latestOffset = gestureStartY.value + translationY;
+            const hasReachedDismissOffset =
+              latestOffset > sheetHeight.value * DISMISS_DISTANCE_THRESHOLD;
+            const hasReachedSwipeThreshold =
+              Math.abs(velocityY) > DISMISS_SWIPE_SPEED_THRESHOLD;
+            const isDismissing = velocityY > 0;
 
-        if (hasReachedSwipeThreshold) {
-          // Quick swipe takes priority
-          if (isDismissing) {
-            finalOffset = sheetHeight.value;
-          } else {
-            finalOffset = visibleYOffset.value;
-          }
-        } else if (hasReachedDismissOffset) {
-          finalOffset = sheetHeight.value;
-        } else {
-          finalOffset = visibleYOffset.value;
-        }
+            if (hasReachedSwipeThreshold) {
+              // Quick swipe takes priority
+              if (isDismissing) {
+                finalOffset = sheetHeight.value;
+              } else {
+                finalOffset = visibleYOffset.value;
+              }
+            } else if (hasReachedDismissOffset) {
+              finalOffset = sheetHeight.value;
+            } else {
+              finalOffset = visibleYOffset.value;
+            }
 
-        const isDismissed = finalOffset === sheetHeight.value;
+            const isDismissed = finalOffset === sheetHeight.value;
 
-        currentYOffset.value = withTiming(
-          finalOffset,
-          { duration: SWIPE_TRIGGERED_ANIMATION_DURATION },
-          () => isDismissed && runOnJS(onHidden)(),
-        );
-      },
-    });
+            currentYOffset.value = withTiming(
+              finalOffset,
+              { duration: SWIPE_TRIGGERED_ANIMATION_DURATION },
+              () => isDismissed && runOnJS(onHidden)(),
+            );
+          }),
+      // Shared values are stable refs; only the enabled flag and onHidden matter.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [isInteractable, onHidden],
+    );
 
     // Animate in on initial render.
     const show = useCallback(() => {
@@ -190,20 +212,19 @@ const ReusableModal = forwardRef<ReusableModalRef, ReusableModalProps>(
 
     return (
       <View style={styles.absoluteFill} {...props}>
-        <Animated.View style={combinedOverlayStyle}></Animated.View>
-        <PanGestureHandler
-          enabled={isInteractable}
-          onGestureEvent={gestureHandler}
+        <TouchableOpacity
+          style={styles.absoluteFill}
+          activeOpacity={1}
+          disabled={!isInteractable}
+          onPress={debouncedHide}
         >
+          <Animated.View style={combinedOverlayStyle} />
+        </TouchableOpacity>
+        <GestureDetector gesture={gestureHandler}>
           <Animated.View style={[combinedModalStyle, style]}>
-            <TouchableOpacity
-              disabled={!isInteractable}
-              style={styles.absoluteFill}
-              onPress={debouncedHide}
-            />
             {children}
           </Animated.View>
-        </PanGestureHandler>
+        </GestureDetector>
       </View>
     );
   },

@@ -1,0 +1,223 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { renderHook } from '@testing-library/react-hooks';
+import { useSelector } from 'react-redux';
+
+import { useTronResources } from './useTronResources';
+import {
+  selectTronSpecialAssetsBySelectedAccountGroup,
+  TronSpecialAssetsMap,
+} from '../../../../selectors/assets/assets-list';
+
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(),
+}));
+
+jest.mock('../../../../selectors/assets/assets-list', () => ({
+  __esModule: true,
+  ...jest.requireActual('../../../../selectors/assets/assets-list'),
+  selectTronSpecialAssetsBySelectedAccountGroup: jest.fn(),
+}));
+
+const mockUseSelector = useSelector as jest.MockedFunction<typeof useSelector>;
+const mockSelectTronSpecialAssetsBySelectedAccountGroup =
+  selectTronSpecialAssetsBySelectedAccountGroup as jest.MockedFunction<
+    typeof selectTronSpecialAssetsBySelectedAccountGroup
+  >;
+
+interface MockTronAsset {
+  symbol?: string;
+  balance?: string | number;
+}
+
+const createEmptySpecialAssetsMap = (): TronSpecialAssetsMap => ({
+  energy: undefined,
+  bandwidth: undefined,
+  maxEnergy: undefined,
+  maxBandwidth: undefined,
+  stakedTrxForEnergy: undefined,
+  stakedTrxForBandwidth: undefined,
+  totalStakedTrx: 0,
+  status: 'ready',
+  trxReadyForWithdrawal: undefined,
+  trxStakingRewards: undefined,
+  trxInLockPeriod: undefined,
+});
+
+const createTronAsset = (
+  symbol: string,
+  balance: string | number,
+): MockTronAsset => ({
+  symbol,
+  balance,
+});
+
+describe('useTronResources', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    mockUseSelector.mockImplementation((selector: any) => selector());
+    mockSelectTronSpecialAssetsBySelectedAccountGroup.mockReturnValue(
+      createEmptySpecialAssetsMap(),
+    );
+  });
+
+  it('builds energy and bandwidth resources from base max capacity', () => {
+    const tronSpecialAssetsMap: TronSpecialAssetsMap = {
+      energy: createTronAsset('energy', '500') as any,
+      bandwidth: createTronAsset('bandwidth', '300') as any,
+      maxEnergy: createTronAsset('max-energy', '1000') as any,
+      maxBandwidth: createTronAsset('max-bandwidth', '600') as any,
+      stakedTrxForEnergy: createTronAsset('strx-energy', '500') as any,
+      stakedTrxForBandwidth: createTronAsset('strx-bandwidth', 0) as any,
+      totalStakedTrx: 500,
+      status: 'ready',
+      trxReadyForWithdrawal: undefined,
+      trxStakingRewards: undefined,
+      trxInLockPeriod: undefined,
+    };
+
+    mockSelectTronSpecialAssetsBySelectedAccountGroup.mockReturnValue(
+      tronSpecialAssetsMap,
+    );
+
+    const { result } = renderHook(() => useTronResources());
+
+    expect(result.current.energy.current).toBe(500);
+    expect(result.current.energy.max).toBe(1000);
+    expect(result.current.energy.percentage).toBe(50);
+
+    expect(result.current.bandwidth.current).toBe(300);
+    expect(result.current.bandwidth.max).toBe(600);
+    expect(result.current.bandwidth.percentage).toBe(50);
+  });
+
+  it('flags resources as unknown when the upstream metadata value is null', () => {
+    const tronSpecialAssetsMap: TronSpecialAssetsMap = {
+      ...createEmptySpecialAssetsMap(),
+      energy: {
+        assetId: 'energy',
+        balance: '0',
+        fiat: undefined,
+        unknown: true,
+      },
+      maxEnergy: {
+        assetId: 'max-energy',
+        balance: '0',
+        fiat: undefined,
+        unknown: true,
+      },
+      bandwidth: { assetId: 'bandwidth', balance: '300', fiat: undefined },
+      maxBandwidth: {
+        assetId: 'max-bandwidth',
+        balance: '600',
+        fiat: undefined,
+      },
+    };
+
+    mockSelectTronSpecialAssetsBySelectedAccountGroup.mockReturnValue(
+      tronSpecialAssetsMap,
+    );
+
+    const { result } = renderHook(() => useTronResources());
+
+    expect(result.current.energy).toEqual({
+      type: 'energy',
+      current: 0,
+      max: 0,
+      percentage: 0,
+      unknown: true,
+    });
+    expect(result.current.bandwidth.unknown).toBe(false);
+    expect(result.current.bandwidth.current).toBe(300);
+    expect(result.current.bandwidth.max).toBe(600);
+    expect(result.current.isLoading).toBe(false);
+  });
+
+  it('returns zeroed resources when no Tron resources exist', () => {
+    mockSelectTronSpecialAssetsBySelectedAccountGroup.mockReturnValue(
+      createEmptySpecialAssetsMap(),
+    );
+    const { result } = renderHook(() => useTronResources());
+
+    expect(result.current.energy).toEqual({
+      type: 'energy',
+      current: 0,
+      max: 0,
+      percentage: 0,
+      unknown: false,
+    });
+
+    expect(result.current.bandwidth).toEqual({
+      type: 'bandwidth',
+      current: 0,
+      max: 0,
+      percentage: 0,
+      unknown: false,
+    });
+  });
+
+  it('parses balances with comma separators', () => {
+    const tronSpecialAssetsMap: TronSpecialAssetsMap = {
+      ...createEmptySpecialAssetsMap(),
+      energy: createTronAsset('energy', '1,000') as any,
+      maxEnergy: createTronAsset('max-energy', '2,000') as any,
+    };
+
+    mockSelectTronSpecialAssetsBySelectedAccountGroup.mockReturnValue(
+      tronSpecialAssetsMap,
+    );
+
+    const { result } = renderHook(() => useTronResources());
+
+    expect(result.current.energy.current).toBe(1000);
+    expect(result.current.energy.max).toBe(2000);
+    expect(result.current.energy.percentage).toBe(50);
+  });
+
+  it('caps percentage at one hundred when current exceeds max', () => {
+    const tronSpecialAssetsMap: TronSpecialAssetsMap = {
+      ...createEmptySpecialAssetsMap(),
+      energy: createTronAsset('energy', 200) as any,
+      maxEnergy: createTronAsset('max-energy', 100) as any,
+    };
+
+    mockSelectTronSpecialAssetsBySelectedAccountGroup.mockReturnValue(
+      tronSpecialAssetsMap,
+    );
+
+    const { result } = renderHook(() => useTronResources());
+
+    expect(result.current.energy.max).toBe(100);
+    expect(result.current.energy.percentage).toBe(100);
+  });
+
+  it('sets percentage to zero when balances cannot be parsed', () => {
+    const tronSpecialAssetsMap: TronSpecialAssetsMap = {
+      ...createEmptySpecialAssetsMap(),
+      energy: createTronAsset('energy', 'invalid') as any,
+      maxEnergy: createTronAsset('max-energy', '1000') as any,
+    };
+
+    mockSelectTronSpecialAssetsBySelectedAccountGroup.mockReturnValue(
+      tronSpecialAssetsMap,
+    );
+
+    const { result } = renderHook(() => useTronResources());
+
+    expect(result.current.energy.current).toBe(0);
+    expect(result.current.energy.max).toBe(1000);
+    expect(result.current.energy.percentage).toBe(0);
+  });
+
+  it('reports loading while the balance request has not completed', () => {
+    mockSelectTronSpecialAssetsBySelectedAccountGroup.mockReturnValue({
+      ...createEmptySpecialAssetsMap(),
+      status: 'loading',
+    });
+    const { result } = renderHook(() => useTronResources());
+
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.energy.unknown).toBe(false);
+    expect(result.current.bandwidth.unknown).toBe(false);
+  });
+});

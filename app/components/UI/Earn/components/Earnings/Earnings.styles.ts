@@ -1,0 +1,37 @@
+import { StyleSheet, TextStyle } from 'react-native';
+import type { Theme } from '../../../../../util/theme/models';
+
+const styleSheet = (params: { theme: Theme }) => {
+  const { theme } = params;
+  const { colors } = theme;
+
+  return StyleSheet.create({
+    earningsContainer: {
+      paddingTop: 24,
+    },
+    title: {
+      paddingBottom: 8,
+    } as TextStyle,
+    keyValueRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingVertical: 8,
+    },
+    keyValuePrimaryTextWrapperCentered: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    keyValuePrimaryText: {
+      color: colors.text.alternative,
+    },
+    keyValueSecondaryText: {
+      alignItems: 'flex-end',
+    },
+    earningsHistory: {
+      marginTop: 16,
+      paddingBottom: 24,
+    },
+  });
+};
+
+export default styleSheet;

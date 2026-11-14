@@ -12,15 +12,22 @@ import Avatar, { AvatarVariant } from '../../../../Avatars/Avatar';
 import { BadgeNetworkProps } from './BadgeNetwork.types';
 import styleSheet from './BadgeNetwork.styles';
 import {
-  BADGE_NETWORK_TEST_ID,
+  BADGENETWORK_TEST_ID,
   DEFAULT_BADGENETWORK_NETWORKICON_SIZE,
 } from './BadgeNetwork.constants';
 
+/**
+ * @deprecated Please update your code to use `BadgeNetwork` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/BadgeNetwork/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#badgenetwork-component Migration docs}
+ */
 const BadgeNetwork = ({
   style,
   name,
   imageSource,
   size = DEFAULT_BADGENETWORK_NETWORKICON_SIZE,
+  isScaled = true,
 }: BadgeNetworkProps) => {
   const { size: containerSize, onLayout: onLayoutContainerSize } =
     useComponentSize();
@@ -28,11 +35,12 @@ const BadgeNetwork = ({
     style,
     containerSize,
     size,
+    isScaled,
   });
   return (
     <BadgeBase
       style={styles.base}
-      testID={BADGE_NETWORK_TEST_ID}
+      testID={BADGENETWORK_TEST_ID}
       onLayout={onLayoutContainerSize}
     >
       <Avatar

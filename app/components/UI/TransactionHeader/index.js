@@ -15,6 +15,8 @@ import {
   selectNickname,
   selectProviderType,
 } from '../../../selectors/networkController';
+import { INTERNAL_ORIGINS } from '../../../constants/transaction';
+import { TransactionReviewSelectorsIDs } from './TransactionReview.testIds';
 
 const { ORIGIN_DEEPLINK, ORIGIN_QR_CODE } = AppConstants.DEEPLINKS;
 
@@ -134,8 +136,8 @@ const TransactionHeader = (props) => {
         originIsWalletConnect
           ? origin.split(WALLET_CONNECT_ORIGIN)[1]
           : originIsMMSDKRemoteConn
-          ? origin.split(AppConstants.MM_SDK.SDK_REMOTE_ORIGIN)[1]
-          : url,
+            ? origin.split(AppConstants.MM_SDK.SDK_REMOTE_ORIGIN)[1]
+            : url,
       ).protocol === 'https:'
         ? 'lock'
         : 'warning';
@@ -192,19 +194,33 @@ const TransactionHeader = (props) => {
     return <Text style={styles.domainUrl}>{title}</Text>;
   };
 
+  const renderDomainUrlContainer = () => (
+    <View
+      style={styles.domanUrlContainer}
+      testID={TransactionReviewSelectorsIDs.TRANSACTION_HEADER_ORIGIN}
+    >
+      {renderSecureIcon()}
+      {renderTitle()}
+    </View>
+  );
+
+  const renderNetworkContainer = () => (
+    <View style={styles.networkContainer}>
+      {renderNetworkStatusIndicator()}
+      <Text style={styles.network}>
+        {props.nickname || networkList[props.networkType]?.shortName}
+      </Text>
+    </View>
+  );
+  const showOrigin = !INTERNAL_ORIGINS.includes(
+    props.currentPageInformation.origin,
+  );
+
   return (
     <View style={styles.transactionHeader}>
       {renderTopIcon()}
-      <View style={styles.domanUrlContainer}>
-        {renderSecureIcon()}
-        {renderTitle()}
-      </View>
-      <View style={styles.networkContainer}>
-        {renderNetworkStatusIndicator()}
-        <Text style={styles.network}>
-          {props.nickname || networkList[props.networkType]?.shortName}
-        </Text>
-      </View>
+      {!showOrigin ? null : renderDomainUrlContainer()}
+      {renderNetworkContainer()}
     </View>
   );
 };

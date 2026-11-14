@@ -1,70 +1,48 @@
-interface FirebaseAppOptions {
-  appId?: string;
-  apiKey?: string;
-  databaseURL?: string;
-  projectId?: string;
-  gaTrackingId?: string;
-  storageBucket?: string;
-  messagingSenderId?: string;
-  clientId?: string;
-  androidClientId?: string;
-  deepLinkURLScheme?: string;
-  [name: string]: any;
-}
+import Engine from '../../../core/Engine';
+import { hasTestOverrides } from '../../test/utils';
 
-const getEnvStr = (test: string, prod: string, override?: string) =>
-  override ?? (process.env.NODE_ENV !== 'production' ? test : prod);
-
-const parseConfig = <T>(configStr: string): T | null => {
-  try {
-    return JSON.parse(configStr) as T;
-  } catch {
-    return null;
+/**
+ * This feature flag compromises of a build-time flag as well as a remote flag.
+ * NOTE: this does not use the remote flag redux selectors, so UI is prone to being stale.
+ * - This is okay in our case as we make this function call on all notification actions.
+ *
+ * @returns boolean if notifications feature is enabled.
+ */
+export const isNotificationsFeatureEnabled = () => {
+  if (hasTestOverrides) {
+    return true;
   }
+
+  const notificationsRemoteFlagEnabled = Boolean(
+    Engine?.context?.RemoteFeatureFlagController?.state?.remoteFeatureFlags
+      ?.assetsNotificationsEnabled,
+  );
+
+  return (
+    process.env.MM_NOTIFICATIONS_UI_ENABLED === 'true' &&
+    notificationsRemoteFlagEnabled
+  );
 };
 
-export const NOTIFICATION_AUTH_URL = getEnvStr(
-  'https://authentication.uat-api.cx.metamask.io',
-  'https://authentication.api.cx.metamask.io',
-  process.env.NOTIFICATION_AUTH_URL,
-);
-export const USER_STORAGE_SERVICE_URL = getEnvStr(
-  'https://user-storage.uat-api.cx.metamask.io',
-  'https://user-storage.api.cx.metamask.io',
-  process.env.USER_STORAGE_SERVICE_URL,
-);
-export const TRIGGERS_SERVICE_URL = getEnvStr(
-  'https://trigger.uat-api.cx.metamask.io',
-  'https://trigger.api.cx.metamask.io',
-  process.env.TRIGGERS_SERVICE_URL,
-);
-export const NOTIFICATIONS_SERVICE_URL = getEnvStr(
-  'https://notification.uat-api.cx.metamask.io',
-  'https://notification.api.cx.metamask.io',
-  process.env.NOTIFICATIONS_SERVICE_URL,
-);
-
-export const PUSH_NOTIFICATIONS_SERVICE_URL = getEnvStr(
-  'https://push.uat-api.cx.metamask.io',
-  'https://push.api.cx.metamask.io',
-  process.env.PUSH_NOTIFICATIONS_SERVICE_URL,
-);
-
-export const VAPID_KEY = process.env.FCM_VAPID_KEY ?? '';
-
-function getFirebaseConfigEnv(): FirebaseAppOptions | null {
-  if (process.env.FCM_CONFIG)
-    return parseConfig<FirebaseAppOptions>(process.env.FCM_CONFIG);
-
-  return {
-    apiKey: process.env.FCM_CONFIG_API_KEY,
-    authDomain: process.env.FCM_CONFIG_AUTH_DOMAIN,
-    projectId: process.env.FCM_CONFIG_PROJECT_ID,
-    storageBucket: process.env.FCM_CONFIG_STORAGE_BUCKET,
-    messagingSenderId: process.env.FCM_CONFIG_MESSAGING_SENDER_ID,
-    appId: process.env.FCM_CONFIG_APP_ID,
-    measurementId: process.env.FCM_CONFIG_MEASUREMENT_ID,
-  };
+export enum ModalFieldType {
+  ASSET = 'ModalField-Asset',
+  ADDRESS = 'ModalField-Address',
+  ANNOUNCEMENT_DESCRIPTION = 'ModalField-AnnouncementDescription',
+  TRANSACTION = 'ModalField-Transaction',
+  STAKING_PROVIDER = 'ModalField-StakingProvider',
+  NETWORK_FEE = 'ModalField-NetworkFee',
+  NETWORK = 'ModalField-Network',
+  NFT_IMAGE = 'ModalField-NFTImage',
+  NFT_COLLECTION_IMAGE = 'ModalField-NFTCollectionImage',
+  SWAP_RATE = 'ModalField-SwapsRate',
 }
 
-export const FIREBASE_CONFIG = getFirebaseConfigEnv();
+export enum ModalFooterType {
+  BLOCK_EXPLORER = 'ModalFooter-BlockExplorer',
+  ANNOUNCEMENT_CTA = 'ModalFooter-AnnouncementCta',
+}
+
+export enum ModalHeaderType {
+  NFT_IMAGE = 'ModalHeader-NFTImage',
+  ANNOUNCEMENT_IMAGE = 'ModalHeader-AnnouncementImage',
+}

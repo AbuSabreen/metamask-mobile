@@ -1,0 +1,1107 @@
+import React from 'react';
+import { fireEvent, act } from '@testing-library/react-native';
+import { Pressable as MockPressable, View as MockView } from 'react-native';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import AssetOverviewContent, {
+  type AssetOverviewContentProps,
+} from './AssetOverviewContent';
+import { TokenOverviewSelectorsIDs } from '../../AssetOverview/TokenOverview.testIds';
+import { TokenI } from '../../Tokens/types';
+import renderWithProvider from '../../../../util/test/renderWithProvider';
+import { MAINACTIONBUTTON_GLASS_TEST_ID } from '../../../../component-library/components-temp/MainActionButton/MainActionButton.constants';
+import { backgroundState } from '../../../../util/test/initial-root-state';
+import { MOCK_ACCOUNTS_CONTROLLER_STATE } from '../../../../util/test/accountsControllerTestUtils';
+import { MetaMetricsEvents } from '../../../../core/Analytics/MetaMetrics.events';
+import Routes from '../../../../constants/navigation/Routes';
+import {
+  PERPS_EVENT_PROPERTY,
+  PERPS_EVENT_VALUE,
+} from '@metamask/perps-controller';
+import { strings } from '../../../../../locales/i18n';
+import type { TokenSecurityData } from '@metamask/assets-controllers';
+// eslint-disable-next-line import-x/no-namespace
+import * as TokenDetailsActionsModule from './TokenDetailsActions';
+import { MOCK_RECURRING_OPEN_ORDER } from '../../Bridge/api/recurringOrders.mock';
+import { RecurringOrderDetailsViewSelectorsIDs } from '../../Bridge/Views/RecurringOrderDetailsView/RecurringOrderDetailsView.testIds';
+import { BridgeTabKey } from '../../Bridge/Views/BridgeView/BridgeView.constants';
+import { SwapBridgeNavigationLocation } from '../../Bridge/hooks/useSwapBridgeNavigation';
+
+const mockGoToSwaps = jest.fn();
+const mockUseSwapBridgeNavigation = jest.fn((args: unknown) => ({
+  goToSwaps: mockGoToSwaps,
+}));
+jest.mock('../../Bridge/hooks/useSwapBridgeNavigation', () => ({
+  ...jest.requireActual('../../Bridge/hooks/useSwapBridgeNavigation'),
+  useSwapBridgeNavigation: (args: unknown) => mockUseSwapBridgeNavigation(args),
+}));
+
+jest.mock('../../../../core/Engine', () => ({
+  context: {
+    NetworkController: {
+      state: {
+        selectedNetworkClientId: 'mainnet',
+      },
+    },
+  },
+}));
+
+const mockHandlePerpsAction = jest.fn();
+const mockTrack = jest.fn();
+const mockNavigate = jest.fn();
+const mockTrackEvent = jest.fn();
+const mockBuild = jest.fn().mockReturnValue({});
+const mockAddProperties = jest.fn(() => ({ build: mockBuild }));
+const mockCreateEventBuilder = jest.fn();
+const mockUseMarketInsights = jest.fn();
+const mockSelectMarketInsightsEnabled = jest.fn(() => true);
+const mockUsePerpsPositionForAsset = jest.fn();
+
+jest.mock('../../MarketInsights', () => ({
+  __esModule: true,
+  MarketInsightsEntryCardSkeleton: () => null,
+  MarketInsightsEntryCard: ({
+    onPress,
+    testID,
+    isGlass,
+  }: {
+    onPress?: () => void;
+    testID?: string;
+    isGlass?: boolean;
+  }) => (
+    <MockPressable
+      onPress={onPress}
+      testID={isGlass ? `${testID}-glass` : testID}
+    />
+  ),
+  useMarketInsights: (...args: unknown[]) => mockUseMarketInsights(...args),
+  useMarketInsightsEntryTrace: () =>
+    'token_details:entry_card:eip155:1/erc20:0x123',
+  getMarketInsightsTraceId: (
+    assetIdentifier: string,
+    source: string,
+    stage: string,
+  ) => `${source}:${stage}:${assetIdentifier}`,
+  getMarketInsightsTraceTags: (
+    context: { source: string; stage: string; assetType: string },
+    cacheState: string,
+  ) => ({
+    feature: 'market_insights',
+    source: context.source,
+    stage: context.stage,
+    asset_type: context.assetType,
+    cache_state: cacheState,
+  }),
+  selectMarketInsightsEnabled: () => mockSelectMarketInsightsEnabled(),
+}));
+
+let mockIsTokenDetailsGlass = false;
+jest.mock('../../../hooks/useIsGlassSurfaceEnabled', () => ({
+  useIsGlassSurfaceEnabled: () => mockIsTokenDetailsGlass,
+}));
+
+const mockEarnBalance = jest.fn((_props: Record<string, unknown>) => null);
+jest.mock('../../Earn/components/EarnBalance', () => ({
+  __esModule: true,
+  default: (props: Record<string, unknown>) => mockEarnBalance(props),
+}));
+
+jest.mock('../hooks/usePerpsActions', () => ({
+  usePerpsActions: () => ({
+    hasPerpsMarket: true,
+    marketData: { symbol: 'ETH', name: 'ETH', maxLeverage: '50x' },
+    isLoading: false,
+    error: null,
+    handlePerpsAction: mockHandlePerpsAction,
+  }),
+}));
+
+jest.mock('../../Perps/hooks/usePerpsEventTracking', () => ({
+  usePerpsEventTracking: () => ({ track: mockTrack }),
+}));
+
+jest.mock('../../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(() => ({
+    trackEvent: mockTrackEvent,
+    createEventBuilder: mockCreateEventBuilder.mockReturnValue({
+      addProperties: mockAddProperties,
+      build: mockBuild,
+    }),
+  })),
+}));
+
+// Use a stable wrapper so jest.restoreAllMocks() (from testSetup.js afterEach)
+// does not wipe the implementation between tests.
+const mockPerpsBottomSheetTooltipInner = jest.fn((..._args: unknown[]) => null);
+jest.mock('../../Perps/components/PerpsBottomSheetTooltip', () => ({
+  __esModule: true,
+  default: (...args: unknown[]) => mockPerpsBottomSheetTooltipInner(...args),
+}));
+
+jest.mock('../../Perps/hooks/usePerpsPositionForAsset', () => ({
+  usePerpsPositionForAsset: (...args: unknown[]) =>
+    mockUsePerpsPositionForAsset(...args),
+}));
+
+jest.mock('../../Perps/components/PerpsCard', () => ({
+  __esModule: true,
+  default: ({ testID }: { testID?: string }) => <MockView testID={testID} />,
+}));
+
+jest.mock('../../Perps/components/PerpsDiscoveryBanner', () => ({
+  __esModule: true,
+  default: ({ testID }: { testID?: string }) => <MockView testID={testID} />,
+}));
+
+jest.mock('../../AssetOverview/TokenDetails', () => () => null);
+
+jest.mock(
+  '../../SecurityTrust/components/SecurityTrustEntryCard/SecurityTrustEntryCard',
+  () => ({
+    __esModule: true,
+    default: ({ testID }: { testID?: string }) => <MockView testID={testID} />,
+  }),
+);
+
+jest.mock('@react-navigation/native', () => {
+  const actual = jest.requireActual('@react-navigation/native');
+  const actualReact = jest.requireActual('react');
+  return {
+    ...actual,
+    useNavigation: () => ({
+      navigate: mockNavigate,
+      addListener: jest.fn(() => jest.fn()),
+    }),
+    // Defer via useEffect to match real useFocusEffect timing.
+    useFocusEffect: jest.fn((cb: () => void) => {
+      actualReact.useEffect(cb, []);
+    }),
+  };
+});
+
+const mockGate = jest.fn(
+  async (action: () => Promise<unknown>) => await action(),
+);
+jest.mock('../../Compliance', () => ({
+  useComplianceGate: () => ({
+    gate: (action: () => Promise<unknown>) => mockGate(action),
+    isBlocked: false,
+    isComplianceEnabled: false,
+    checkCompliance: jest.fn(),
+  }),
+}));
+
+function createState(isEligible: boolean) {
+  return {
+    engine: {
+      backgroundState: {
+        ...backgroundState,
+        PerpsController: {
+          ...(backgroundState as { PerpsController?: object }).PerpsController,
+          isEligible,
+        },
+        RemoteFeatureFlagController: {
+          ...(backgroundState as { RemoteFeatureFlagController?: object })
+            .RemoteFeatureFlagController,
+          remoteFeatureFlags: {},
+        },
+        AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE,
+      },
+    },
+  };
+}
+
+const defaultToken: TokenI = {
+  address: '0x123',
+  chainId: '0x1',
+  symbol: 'ETH',
+  name: 'Ethereum',
+  decimals: 18,
+  balance: '1',
+  balanceFiat: '$2000',
+  logo: '',
+  image: '',
+  isETH: false,
+  hasBalanceError: false,
+  aggregators: [],
+};
+
+const defaultProps: AssetOverviewContentProps = {
+  token: defaultToken,
+  balance: '1',
+  mainBalance: '$2000',
+  secondaryBalance: '1 ETH',
+  currentPrice: 2000,
+  priceDiff: 0,
+  comparePrice: 2000,
+  prices: [],
+  isLoading: false,
+  timePeriod: '1d',
+  setTimePeriod: jest.fn(),
+  chartNavigationButtons: ['1d', '1w', '1m', '3m', '1y', '3y'],
+  currentCurrency: 'USD',
+  onBuy: jest.fn(),
+  onSend: jest.fn().mockResolvedValue(undefined),
+  onReceive: jest.fn(),
+};
+
+const createMockSecurityData = (
+  resultType: TokenSecurityData['resultType'],
+): TokenSecurityData => ({
+  resultType,
+  maliciousScore: '0',
+  fees: {
+    transfer: 0,
+    transferFeeMaxAmount: null,
+    buy: 0,
+    sell: 0,
+  },
+  features: [],
+  financialStats: {
+    supply: 1000000,
+    topHolders: [],
+    holdersCount: 100,
+    tradeVolume24h: null,
+    lockedLiquidityPct: null,
+    markets: [],
+  },
+  metadata: {
+    externalLinks: {
+      homepage: null,
+      twitterPage: null,
+      telegramChannelId: null,
+    },
+  },
+  created: '2023-01-01T00:00:00Z',
+});
+
+const defaultMarketInsightsResult = {
+  report: {
+    digestId: 'a8154c57-c665-449c-8bb5-fcaae96ef922',
+    asset: 'eth',
+    generatedAt: '2026-02-17T11:55:00.000Z',
+    headline: 'ETH outlook stays positive',
+    summary: 'Momentum remains constructive.',
+    trends: [],
+    sources: [],
+  },
+  isLoading: false,
+  error: null,
+  timeAgo: '5m ago',
+  cacheState: 'cold',
+};
+
+const createQueryClient = () =>
+  new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+
+/**
+ * The Price section reads TanStack Query state, so the component tree needs a
+ * QueryClientProvider even when every chart hook is left unmocked.
+ */
+const renderAssetOverviewContent = (
+  element: React.ReactElement,
+  providerValues?: Parameters<typeof renderWithProvider>[1],
+) =>
+  renderWithProvider(
+    <QueryClientProvider client={createQueryClient()}>
+      {element}
+    </QueryClientProvider>,
+    providerValues,
+  );
+
+describe('AssetOverviewContent', () => {
+  const defaultPerpsPositionResult = {
+    position: null,
+    hasFundsInPerps: false,
+    isLoading: false,
+  };
+
+  describe('Long / Short with perps eligibility', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockBuild.mockReturnValue({ category: 'market-insights-opened' });
+      mockAddProperties.mockReturnValue({ build: mockBuild });
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+      });
+      mockSelectMarketInsightsEnabled.mockReturnValue(true);
+      mockUseMarketInsights.mockReturnValue(defaultMarketInsightsResult);
+      mockUsePerpsPositionForAsset.mockReturnValue(defaultPerpsPositionResult);
+    });
+
+    it('shows geo block modal and tracks event when Long is pressed and user is not eligible', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} />,
+        { state: createState(false) },
+      );
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.LONG_BUTTON));
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+        {
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+          [PERPS_EVENT_PROPERTY.SOURCE]:
+            PERPS_EVENT_VALUE.SOURCE.ASSET_DETAIL_SCREEN,
+        },
+      );
+      expect(mockHandlePerpsAction).not.toHaveBeenCalled();
+    });
+
+    it('shows geo block modal and tracks event when Short is pressed and user is not eligible', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} />,
+        { state: createState(false) },
+      );
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.SHORT_BUTTON));
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+        {
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+          [PERPS_EVENT_PROPERTY.SOURCE]:
+            PERPS_EVENT_VALUE.SOURCE.ASSET_DETAIL_SCREEN,
+        },
+      );
+      expect(mockHandlePerpsAction).not.toHaveBeenCalled();
+    });
+
+    it('calls handlePerpsAction with long when Long is pressed and user is eligible', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} />,
+        { state: createState(true) },
+      );
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.LONG_BUTTON));
+
+      expect(mockHandlePerpsAction).toHaveBeenCalledWith('long');
+      expect(mockTrack).not.toHaveBeenCalled();
+    });
+
+    it('calls handlePerpsAction with short when Short is pressed and user is eligible', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} />,
+        { state: createState(true) },
+      );
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.SHORT_BUTTON));
+
+      expect(mockHandlePerpsAction).toHaveBeenCalledWith('short');
+      expect(mockTrack).not.toHaveBeenCalled();
+    });
+
+    it('releases the navigation lock when gate() settles without navigating so Long can be pressed again', async () => {
+      // Simulate a blocked wallet: gate() shows the compliance modal and
+      // returns without invoking the action. Without releasing the nav lock
+      // in the finally(), the second press would be silently ignored.
+      mockGate.mockImplementationOnce(async () => undefined);
+      mockGate.mockImplementationOnce(async () => undefined);
+
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} />,
+        { state: createState(true) },
+      );
+
+      await act(async () => {
+        fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.LONG_BUTTON));
+        // Flush the gate().finally() microtask that releases the nav lock,
+        // so the next press below isn't blocked by it.
+        await Promise.resolve();
+      });
+      expect(mockGate).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.LONG_BUTTON));
+        await Promise.resolve();
+      });
+      expect(mockGate).toHaveBeenCalledTimes(2);
+      expect(mockHandlePerpsAction).not.toHaveBeenCalled();
+    });
+
+    it('releases the navigation lock when gate() settles without navigating so Short can be pressed again', async () => {
+      mockGate.mockImplementationOnce(async () => undefined);
+      mockGate.mockImplementationOnce(async () => undefined);
+
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} />,
+        { state: createState(true) },
+      );
+
+      await act(async () => {
+        fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.SHORT_BUTTON));
+        await Promise.resolve();
+      });
+      expect(mockGate).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.SHORT_BUTTON));
+        await Promise.resolve();
+      });
+      expect(mockGate).toHaveBeenCalledTimes(2);
+      expect(mockHandlePerpsAction).not.toHaveBeenCalled();
+    });
+
+    it('closes geo block modal when closeEligibilityModal is called', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} />,
+        { state: createState(false) },
+      );
+
+      // Open the geo block modal by pressing Long when not eligible
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.LONG_BUTTON));
+
+      // Verify the tooltip was rendered with the expected props
+      expect(mockPerpsBottomSheetTooltipInner).toHaveBeenCalledWith(
+        expect.objectContaining({
+          onClose: expect.any(Function),
+          contentKey: 'geo_block',
+        }),
+        undefined,
+      );
+
+      // Extract onClose from the last render call and invoke it
+      const lastCallProps = mockPerpsBottomSheetTooltipInner.mock.calls[
+        mockPerpsBottomSheetTooltipInner.mock.calls.length - 1
+      ][0] as { onClose: () => void };
+      mockPerpsBottomSheetTooltipInner.mockClear();
+
+      act(() => {
+        lastCallProps.onClose();
+      });
+
+      // Modal dismissed — tooltip no longer rendered
+      expect(mockPerpsBottomSheetTooltipInner).not.toHaveBeenCalled();
+    });
+
+    it('renders market insights entry card and navigates to market insights view on press', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} />,
+        { state: createState(true) },
+      );
+
+      fireEvent.press(getByTestId('market-insights-entry-card'));
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.MARKET_INSIGHTS.VIEW,
+        expect.objectContaining({
+          assetSymbol: 'ETH',
+          token: expect.objectContaining({
+            address: '0x123',
+            chainId: '0x1',
+          }),
+        }),
+      );
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.MARKET_INSIGHTS_OPENED,
+      );
+      expect(mockAddProperties).toHaveBeenCalledWith({
+        caip19: 'eip155:1/erc20:0x123',
+        source: 'token_details',
+        asset_symbol: 'eth',
+        digest_id: 'a8154c57-c665-449c-8bb5-fcaae96ef922',
+      });
+      expect(mockTrackEvent).toHaveBeenCalledWith({
+        category: 'market-insights-opened',
+      });
+    });
+
+    it('resolves market insights display as false when feature flag is disabled', () => {
+      mockSelectMarketInsightsEnabled.mockReturnValue(false);
+      const onMarketInsightsDisplayResolved = jest.fn();
+
+      renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          onMarketInsightsDisplayResolved={onMarketInsightsDisplayResolved}
+        />,
+        { state: createState(true) },
+      );
+
+      expect(onMarketInsightsDisplayResolved).toHaveBeenCalledWith({
+        isDisplayed: false,
+        severity: undefined,
+      });
+    });
+
+    it('does not resolve market insights display while market insights is loading', () => {
+      mockUseMarketInsights.mockReturnValue({
+        ...defaultMarketInsightsResult,
+        report: null,
+        isLoading: true,
+      });
+      const onMarketInsightsDisplayResolved = jest.fn();
+
+      renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          onMarketInsightsDisplayResolved={onMarketInsightsDisplayResolved}
+        />,
+        { state: createState(true) },
+      );
+
+      expect(onMarketInsightsDisplayResolved).not.toHaveBeenCalled();
+    });
+
+    it('resolves market insights display as true when report is available', () => {
+      const onMarketInsightsDisplayResolved = jest.fn();
+
+      renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          onMarketInsightsDisplayResolved={onMarketInsightsDisplayResolved}
+        />,
+        { state: createState(true) },
+      );
+
+      expect(onMarketInsightsDisplayResolved).toHaveBeenCalledWith({
+        isDisplayed: true,
+        severity: undefined,
+      });
+    });
+
+    it('resolves market insights display as false when report is unavailable after loading', () => {
+      mockUseMarketInsights.mockReturnValue({
+        ...defaultMarketInsightsResult,
+        report: null,
+        isLoading: false,
+      });
+      const onMarketInsightsDisplayResolved = jest.fn();
+
+      renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          onMarketInsightsDisplayResolved={onMarketInsightsDisplayResolved}
+        />,
+        { state: createState(true) },
+      );
+
+      expect(onMarketInsightsDisplayResolved).toHaveBeenCalledWith({
+        isDisplayed: false,
+        severity: undefined,
+      });
+    });
+  });
+
+  describe('brand refresh glass', () => {
+    const insightsProps: AssetOverviewContentProps = {
+      ...defaultProps,
+      token: { ...defaultToken, aggregators: ['uniswap', 'sushiswap'] },
+    };
+
+    beforeEach(() => {
+      mockSelectMarketInsightsEnabled.mockReturnValue(true);
+      mockUseMarketInsights.mockReturnValue(defaultMarketInsightsResult);
+    });
+
+    afterEach(() => {
+      mockIsTokenDetailsGlass = false;
+    });
+
+    it('keeps the action tiles, insights card and stake buttons plain by default', () => {
+      const { getByTestId, queryAllByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...insightsProps} />,
+        { state: createState(true) },
+      );
+
+      expect(queryAllByTestId(MAINACTIONBUTTON_GLASS_TEST_ID)).toHaveLength(0);
+      expect(getByTestId('market-insights-entry-card')).toBeOnTheScreen();
+      expect(mockEarnBalance).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isGlass: false }),
+      );
+    });
+
+    it('puts the action tiles, insights card and stake buttons on glass when the flag is on', () => {
+      mockIsTokenDetailsGlass = true;
+
+      const { getAllByTestId, getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...insightsProps} />,
+        { state: createState(true) },
+      );
+
+      expect(
+        getAllByTestId(MAINACTIONBUTTON_GLASS_TEST_ID).length,
+      ).toBeGreaterThan(0);
+      expect(getByTestId('market-insights-entry-card-glass')).toBeOnTheScreen();
+      expect(mockEarnBalance).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isGlass: true }),
+      );
+    });
+  });
+
+  describe('Perps / Market Insights layout ordering', () => {
+    // Token with enough aggregators to pass isTokenTrustworthyForPerps (requires >= 2)
+    const trustworthyToken: TokenI = {
+      ...defaultToken,
+      aggregators: ['uniswap', 'sushiswap'],
+    };
+
+    const trustworthyProps: AssetOverviewContentProps = {
+      ...defaultProps,
+      token: trustworthyToken,
+    };
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockBuild.mockReturnValue({ category: 'market-insights-opened' });
+      mockAddProperties.mockReturnValue({ build: mockBuild });
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+      });
+      mockSelectMarketInsightsEnabled.mockReturnValue(true);
+      mockUseMarketInsights.mockReturnValue(defaultMarketInsightsResult);
+      mockUsePerpsPositionForAsset.mockReturnValue({
+        position: null,
+        hasFundsInPerps: false,
+        isLoading: false,
+      });
+    });
+
+    it('renders perps position card above market insights when a position exists', () => {
+      mockUsePerpsPositionForAsset.mockReturnValue({
+        position: { symbol: 'ETH', size: '1', side: 'long' },
+        hasFundsInPerps: true,
+        isLoading: false,
+      });
+
+      const { getByTestId, queryByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...trustworthyProps} />,
+        { state: createState(true) },
+      );
+
+      expect(
+        getByTestId(TokenOverviewSelectorsIDs.PERPS_POSITION_CARD),
+      ).toBeOnTheScreen();
+      expect(getByTestId('market-insights-entry-card')).toBeOnTheScreen();
+      expect(
+        queryByTestId(TokenOverviewSelectorsIDs.PERPS_DISCOVERY_BANNER),
+      ).toBeNull();
+    });
+
+    it('renders discovery banner below market insights when no position exists', () => {
+      const { getByTestId, queryByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...trustworthyProps} />,
+        { state: createState(true) },
+      );
+
+      expect(getByTestId('market-insights-entry-card')).toBeOnTheScreen();
+      expect(
+        getByTestId(TokenOverviewSelectorsIDs.PERPS_DISCOVERY_BANNER),
+      ).toBeOnTheScreen();
+      expect(
+        queryByTestId(TokenOverviewSelectorsIDs.PERPS_POSITION_CARD),
+      ).toBeNull();
+    });
+
+    it('does not render discovery banner when a position exists', () => {
+      mockUsePerpsPositionForAsset.mockReturnValue({
+        position: { symbol: 'ETH', size: '1', side: 'long' },
+        hasFundsInPerps: true,
+        isLoading: false,
+      });
+
+      const { queryByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...trustworthyProps} />,
+        { state: createState(true) },
+      );
+
+      expect(
+        queryByTestId(TokenOverviewSelectorsIDs.PERPS_DISCOVERY_BANNER),
+      ).toBeNull();
+    });
+
+    it('does not render position card when no position exists', () => {
+      const { queryByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...trustworthyProps} />,
+        { state: createState(true) },
+      );
+
+      expect(
+        queryByTestId(TokenOverviewSelectorsIDs.PERPS_POSITION_CARD),
+      ).toBeNull();
+    });
+  });
+
+  describe('Orders section', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockBuild.mockReturnValue({ category: 'market-insights-opened' });
+      mockAddProperties.mockReturnValue({ build: mockBuild });
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+      });
+      mockSelectMarketInsightsEnabled.mockReturnValue(false);
+      mockUseMarketInsights.mockReturnValue({
+        report: null,
+        isLoading: false,
+        error: null,
+        timeAgo: null,
+      });
+      mockUsePerpsPositionForAsset.mockReturnValue(defaultPerpsPositionResult);
+    });
+
+    it('renders the section only when an order is available', () => {
+      // Rerender keeps this client alive so the Price section's queries keep
+      // their provider across both trees.
+      const queryClient = createQueryClient();
+      const wrapInQueryClient = (element: React.ReactElement) => (
+        <QueryClientProvider client={queryClient}>
+          {element}
+        </QueryClientProvider>
+      );
+      const { getByTestId, queryByTestId, rerender } = renderWithProvider(
+        wrapInQueryClient(
+          <AssetOverviewContent
+            {...defaultProps}
+            mostRecentOrder={{
+              type: BridgeTabKey.Recurring,
+              order: MOCK_RECURRING_OPEN_ORDER,
+            }}
+          />,
+        ),
+        { state: createState(true) },
+      );
+
+      expect(
+        getByTestId(TokenOverviewSelectorsIDs.ORDERS_SECTION),
+      ).toBeOnTheScreen();
+
+      rerender(wrapInQueryClient(<AssetOverviewContent {...defaultProps} />));
+
+      expect(
+        queryByTestId(TokenOverviewSelectorsIDs.ORDERS_SECTION),
+      ).toBeNull();
+    });
+
+    it('exits the current action and opens the recurring orders tab on header press', () => {
+      const onExitAction = jest.fn();
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          mostRecentOrder={{
+            type: BridgeTabKey.Recurring,
+            order: MOCK_RECURRING_OPEN_ORDER,
+          }}
+          onExitAction={onExitAction}
+        />,
+        { state: createState(true) },
+      );
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.ORDERS_HEADER));
+
+      expect(onExitAction).toHaveBeenCalledTimes(1);
+      expect(mockUseSwapBridgeNavigation).toHaveBeenCalledWith({
+        sourcePage: 'TokenDetails',
+        location: SwapBridgeNavigationLocation.TokenView,
+      });
+      expect(mockGoToSwaps).toHaveBeenCalledWith(
+        undefined,
+        undefined,
+        undefined,
+        true,
+        undefined,
+        BridgeTabKey.Recurring,
+      );
+    });
+
+    it('exits the current action and opens recurring order details on row press', () => {
+      const onExitAction = jest.fn();
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          mostRecentOrder={{
+            type: BridgeTabKey.Recurring,
+            order: MOCK_RECURRING_OPEN_ORDER,
+          }}
+          onExitAction={onExitAction}
+        />,
+        { state: createState(true) },
+      );
+
+      fireEvent.press(
+        getByTestId(
+          RecurringOrderDetailsViewSelectorsIDs.OPEN_ORDER_ROW(
+            MOCK_RECURRING_OPEN_ORDER.id,
+          ),
+        ),
+      );
+
+      expect(onExitAction).toHaveBeenCalledTimes(1);
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.BRIDGE.ROOT, {
+        screen: Routes.BRIDGE.RECURRING_ORDER_DETAILS,
+        params: { order: MOCK_RECURRING_OPEN_ORDER },
+      });
+    });
+  });
+
+  describe('Security Badge', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockBuild.mockReturnValue({ category: 'test-event' });
+      mockAddProperties.mockReturnValue({ build: mockBuild });
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+      });
+      mockSelectMarketInsightsEnabled.mockReturnValue(false);
+      mockUseMarketInsights.mockReturnValue({
+        report: null,
+        isLoading: false,
+        error: null,
+        timeAgo: null,
+      });
+      mockUsePerpsPositionForAsset.mockReturnValue(defaultPerpsPositionResult);
+    });
+
+    it('does not render badge when securityData resultType is Benign', () => {
+      const { queryByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Benign')}
+        />,
+        { state: createState(true) },
+      );
+
+      expect(queryByTestId('security-banner-warning')).toBeNull();
+      expect(queryByTestId('security-banner-malicious')).toBeNull();
+    });
+
+    it('renders warning badge when securityData resultType is Warning', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Warning')}
+        />,
+        { state: createState(true) },
+      );
+
+      const banner = getByTestId('security-banner-warning');
+      expect(banner).toBeOnTheScreen();
+    });
+
+    it('renders warning badge when securityData resultType is Spam', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Spam')}
+        />,
+        { state: createState(true) },
+      );
+
+      const banner = getByTestId('security-banner-warning');
+      expect(banner).toBeOnTheScreen();
+    });
+
+    it('renders malicious badge when securityData resultType is Malicious', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Malicious')}
+        />,
+        { state: createState(true) },
+      );
+
+      const banner = getByTestId('security-banner-malicious');
+      expect(banner).toBeOnTheScreen();
+    });
+
+    it('navigates to security badge bottom sheet when warning badge is pressed', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Warning')}
+        />,
+        { state: createState(true) },
+      );
+
+      fireEvent.press(getByTestId('security-banner-warning'));
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.MODAL.ROOT_MODAL_FLOW, {
+        screen: Routes.MODAL.SECURITY_BADGE_BOTTOM_SHEET,
+        params: expect.objectContaining({
+          title: expect.any(String),
+          description: expect.any(String),
+          source: 'badge',
+          severity: 'Warning',
+          tokenAddress: '0x123',
+          tokenSymbol: 'ETH',
+          chainId: '0x1',
+        }),
+      });
+    });
+
+    it('navigates to security badge bottom sheet when spam badge is pressed', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Spam')}
+        />,
+        { state: createState(true) },
+      );
+
+      fireEvent.press(getByTestId('security-banner-warning'));
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.MODAL.ROOT_MODAL_FLOW, {
+        screen: Routes.MODAL.SECURITY_BADGE_BOTTOM_SHEET,
+        params: expect.objectContaining({
+          title: expect.any(String),
+          description: expect.any(String),
+          source: 'badge',
+          severity: 'Spam',
+          tokenAddress: '0x123',
+          tokenSymbol: 'ETH',
+          chainId: '0x1',
+        }),
+      });
+    });
+
+    it('navigates to security badge bottom sheet when malicious badge is pressed', () => {
+      const { getByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Malicious')}
+        />,
+        { state: createState(true) },
+      );
+
+      fireEvent.press(getByTestId('security-banner-malicious'));
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.MODAL.ROOT_MODAL_FLOW, {
+        screen: Routes.MODAL.SECURITY_BADGE_BOTTOM_SHEET,
+        params: expect.objectContaining({
+          title: expect.any(String),
+          description: expect.any(String),
+          source: 'badge',
+          severity: 'Malicious',
+          tokenAddress: '0x123',
+          tokenSymbol: 'ETH',
+          chainId: '0x1',
+        }),
+      });
+    });
+
+    it('does not navigate when benign badge is pressed', () => {
+      renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Benign')}
+        />,
+        { state: createState(true) },
+      );
+
+      // Benign should not render any badge, so there's nothing to press
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    it('does not render security banners when securityData is null', () => {
+      const { queryByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} securityData={null} />,
+        { state: createState(true) },
+      );
+
+      expect(queryByTestId('security-banner-warning')).toBeNull();
+      expect(queryByTestId('security-banner-malicious')).toBeNull();
+    });
+
+    it('does not render security banners when securityData is undefined', () => {
+      const { queryByTestId } = renderAssetOverviewContent(
+        <AssetOverviewContent {...defaultProps} securityData={undefined} />,
+        { state: createState(true) },
+      );
+
+      expect(queryByTestId('security-banner-warning')).toBeNull();
+      expect(queryByTestId('security-banner-malicious')).toBeNull();
+    });
+
+    it('renders malicious warning banner when resultType is Malicious', () => {
+      const { getByText } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Malicious')}
+        />,
+        { state: createState(true) },
+      );
+
+      expect(
+        getByText(strings('security_trust.malicious_token_title')),
+      ).toBeOnTheScreen();
+      expect(
+        getByText(
+          strings('security_trust.malicious_token_description', {
+            symbol: 'ETH',
+          }),
+        ),
+      ).toBeOnTheScreen();
+    });
+
+    it('does not render malicious warning banner when resultType is not Malicious', () => {
+      const { queryByText } = renderAssetOverviewContent(
+        <AssetOverviewContent
+          {...defaultProps}
+          securityData={createMockSecurityData('Verified')}
+        />,
+        { state: createState(true) },
+      );
+
+      expect(
+        queryByText(strings('security_trust.malicious_token_title')),
+      ).toBeNull();
+    });
+  });
+
+  describe('TokenDetailsActions hasBalance prop', () => {
+    let tokenDetailsActionsSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockBuild.mockReturnValue({ category: 'test-event' });
+      mockAddProperties.mockReturnValue({ build: mockBuild });
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: mockAddProperties,
+      });
+      mockSelectMarketInsightsEnabled.mockReturnValue(false);
+      mockUseMarketInsights.mockReturnValue({
+        report: null,
+        isLoading: false,
+        error: null,
+        timeAgo: null,
+      });
+      mockUsePerpsPositionForAsset.mockReturnValue({
+        position: null,
+        hasFundsInPerps: false,
+        isLoading: false,
+      });
+      tokenDetailsActionsSpy = jest.spyOn(
+        TokenDetailsActionsModule,
+        'TokenDetailsActions',
+      );
+    });
+
+    afterEach(() => {
+      tokenDetailsActionsSpy.mockRestore();
+    });
+
+    it.each([
+      [false, undefined],
+      [false, ''],
+      [false, '0'],
+      [true, '1,000.50'],
+      [true, '1.000,50'],
+    ])(
+      'passes hasBalance %s when balance is %s',
+      (expectedHasBalance, balance) => {
+        renderAssetOverviewContent(
+          <AssetOverviewContent {...defaultProps} balance={balance} />,
+          { state: createState(true) },
+        );
+
+        expect(tokenDetailsActionsSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ hasBalance: expectedHasBalance }),
+          undefined,
+        );
+      },
+    );
+  });
+});

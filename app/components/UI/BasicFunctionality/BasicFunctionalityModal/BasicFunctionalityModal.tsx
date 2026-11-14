@@ -1,5 +1,6 @@
 // Third party dependencies.
-import React, { useRef } from 'react';
+import React, { useCallback, useRef } from 'react';
+import { RouteProp, useRoute } from '@react-navigation/native';
 import { View } from 'react-native';
 
 // External dependencies.
@@ -7,39 +8,96 @@ import BottomSheet, {
   BottomSheetRef,
 } from '../../../../component-library/components/BottomSheets/BottomSheet';
 import { strings } from '../../../../../locales/i18n';
-import Text, {
-  TextVariant,
-} from '../../../../component-library/components/Texts/Text';
 import { useTheme } from '../../../../util/theme';
-import Button, {
-  ButtonSize,
-  ButtonVariants,
-} from '../../../../component-library/components/Buttons/Button';
 import Checkbox from '../../../../component-library/components/Checkbox/Checkbox';
-import { useDispatch, useSelector } from 'react-redux';
+import { useSelector } from 'react-redux';
 import { toggleBasicFunctionality } from '../../../../actions/settings';
-import createStyles from './BasicFunctionalityModal.styles';
+import createStyles from '../../Notification/Modal/styles';
 import { RootState } from 'app/reducers';
 import Icon, {
   IconColor,
   IconName,
   IconSize,
 } from '../../../../component-library/components/Icons/Icon';
+import Routes from '../../../../constants/navigation/Routes';
+import NotificationsService from '../../../../util/notifications/services/NotificationService';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { useEnableNotifications } from '../../../../util/notifications/hooks/useNotifications';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { selectIsMetamaskNotificationsEnabled } from '../../../../selectors/notifications';
+import { selectIsBackupAndSyncEnabled } from '../../../../selectors/identity';
+import useThunkDispatch from '../../../hooks/useThunkDispatch';
+import {
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  Text,
+  TextVariant,
+  FontWeight,
+} from '@metamask/design-system-react-native';
+
+interface BasicFunctionalityModalRouteParams {
+  caller: string;
+}
 
 const BasicFunctionalityModal = () => {
+  const route =
+    useRoute<
+      RouteProp<{ params: BasicFunctionalityModalRouteParams }, 'params'>
+    >();
+  const { trackEvent, createEventBuilder } = useAnalytics();
   const { colors } = useTheme();
   const styles = createStyles(colors);
   const bottomSheetRef = useRef<BottomSheetRef>(null);
   const [isChecked, setIsChecked] = React.useState(false);
-  const dispatch = useDispatch();
+  const dispatch = useThunkDispatch();
   const isEnabled = useSelector(
     (state: RootState) => state?.settings?.basicFunctionalityEnabled,
   );
+  const isBackupAndSyncEnabled = useSelector(selectIsBackupAndSyncEnabled);
+  const isNotificationsFeatureEnabled = useSelector(
+    selectIsMetamaskNotificationsEnabled,
+  );
 
-  const closeBottomSheet = () => {
-    bottomSheetRef.current?.onCloseBottomSheet(() =>
-      dispatch(toggleBasicFunctionality(!isEnabled)),
-    );
+  const { enableNotifications } = useEnableNotifications();
+
+  const enableNotificationsFromModal = useCallback(async () => {
+    const { permission } = await NotificationsService.getAllPermissions(false);
+    if (permission !== 'authorized') {
+      return;
+    }
+    enableNotifications();
+  }, [enableNotifications]);
+
+  const closeBottomSheet = async () => {
+    bottomSheetRef.current?.onCloseBottomSheet(async () => {
+      await dispatch(toggleBasicFunctionality(!isEnabled));
+
+      trackEvent(
+        createEventBuilder(
+          !isEnabled
+            ? MetaMetricsEvents.BASIC_FUNCTIONALITY_ENABLED
+            : MetaMetricsEvents.BASIC_FUNCTIONALITY_DISABLED,
+        ).build(),
+      );
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.SETTINGS_UPDATED)
+          .addProperties({
+            settings_group: 'security_privacy',
+            settings_type: 'basic_functionality',
+            old_value: isEnabled,
+            new_value: !isEnabled,
+            was_notifications_on: isEnabled
+              ? isNotificationsFeatureEnabled
+              : false,
+            was_profile_syncing_on: isEnabled ? isBackupAndSyncEnabled : false,
+          })
+          .build(),
+      );
+    });
+    if (route.params?.caller === Routes.SETTINGS.NOTIFICATIONS) {
+      await enableNotificationsFromModal();
+    }
   };
 
   const handleSwitchToggle = () => {
@@ -58,11 +116,35 @@ const BasicFunctionalityModal = () => {
         size={IconSize.Xl}
         style={styles.icon}
       />
-      <Text variant={TextVariant.HeadingMD} style={styles.title}>
+      <Text variant={TextVariant.HeadingMd} style={styles.title}>
         {strings('default_settings.sheet.title_off')}
       </Text>
-      <Text variant={TextVariant.BodyMD} style={styles.description}>
+      <Text variant={TextVariant.BodyMd} style={styles.description}>
         {strings('default_settings.sheet.description_off')}
+      </Text>
+      <Text variant={TextVariant.BodyMd} style={styles.description}>
+        {strings('default_settings.sheet.description_off2')}{' '}
+        <Text
+          variant={TextVariant.BodyMd}
+          style={styles.description}
+          fontWeight={FontWeight.Bold}
+        >
+          {strings(
+            'default_settings.sheet.description_off2_related_features1',
+          )}{' '}
+        </Text>
+        <Text variant={TextVariant.BodyMd} style={styles.description}>
+          {strings(
+            'default_settings.sheet.description_off2_related_features1_and',
+          )}{' '}
+        </Text>
+        <Text
+          variant={TextVariant.BodyMd}
+          style={styles.description}
+          fontWeight={FontWeight.Bold}
+        >
+          {strings('default_settings.sheet.description_off2_related_features2')}
+        </Text>
       </Text>
       <View style={styles.bottom}>
         <Checkbox
@@ -72,26 +154,27 @@ const BasicFunctionalityModal = () => {
         />
         <View style={styles.buttonsContainer}>
           <Button
-            variant={ButtonVariants.Secondary}
+            variant={ButtonVariant.Secondary}
             size={ButtonSize.Lg}
             style={styles.button}
             accessibilityRole={'button'}
             accessible
-            label={strings('default_settings.sheet.buttons.cancel')}
             onPress={handleCancel}
-          />
-          <View style={styles.spacer} />
+          >
+            {strings('default_settings.sheet.buttons.cancel')}
+          </Button>
           <Button
-            variant={ButtonVariants.Primary}
+            variant={ButtonVariant.Primary}
             isDisabled={!isChecked}
             isDanger
             size={ButtonSize.Lg}
             style={styles.button}
             accessibilityRole={'button'}
             accessible
-            label={strings('default_settings.sheet.buttons.turn_off')}
             onPress={handleSwitchToggle}
-          />
+          >
+            {strings('default_settings.sheet.buttons.turn_off')}
+          </Button>
         </View>
       </View>
     </View>
@@ -99,32 +182,33 @@ const BasicFunctionalityModal = () => {
 
   const renderTurnOnContent = () => (
     <View style={styles.container}>
-      <Text variant={TextVariant.HeadingMD} style={styles.title}>
+      <Text variant={TextVariant.HeadingMd} style={styles.title}>
         {strings('default_settings.sheet.title_on')}
       </Text>
-      <Text variant={TextVariant.BodyMD} style={styles.subtitle}>
+      <Text variant={TextVariant.BodyMd} style={styles.subtitle}>
         {strings('default_settings.sheet.description_on')}
       </Text>
       <View style={styles.buttonsContainer}>
         <Button
-          variant={ButtonVariants.Secondary}
+          variant={ButtonVariant.Secondary}
           size={ButtonSize.Lg}
           style={styles.button}
           accessibilityRole={'button'}
           accessible
-          label={strings('default_settings.sheet.buttons.cancel')}
           onPress={handleCancel}
-        />
-        <View style={styles.spacer} />
+        >
+          {strings('default_settings.sheet.buttons.cancel')}
+        </Button>
         <Button
-          variant={ButtonVariants.Primary}
+          variant={ButtonVariant.Primary}
           size={ButtonSize.Lg}
           style={styles.button}
           accessibilityRole={'button'}
           accessible
-          label={strings('default_settings.sheet.buttons.turn_on')}
           onPress={handleSwitchToggle}
-        />
+        >
+          {strings('default_settings.sheet.buttons.turn_on')}
+        </Button>
       </View>
     </View>
   );

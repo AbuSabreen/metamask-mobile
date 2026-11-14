@@ -1,0 +1,193 @@
+import React, { useMemo, useState } from 'react';
+import { TouchableWithoutFeedback, View } from 'react-native';
+import { FlatList } from 'react-native-gesture-handler';
+import { useStyles } from '../../hooks/useStyles';
+import styleSheet from './SRPListItem.styles';
+import { SRPListItemProps } from './SRPListItem.type';
+import Icon, {
+  IconName,
+  IconColor,
+} from '../../../component-library/components/Icons/Icon';
+import { strings } from '../../../../locales/i18n';
+import Button, {
+  ButtonVariants,
+} from '../../../component-library/components/Buttons/Button';
+import { SRPListItemSelectorsIDs } from './SRPListItem.testIds';
+import Avatar, {
+  AvatarSize,
+  AvatarVariant,
+} from '../../../component-library/components/Avatars/Avatar';
+import { useSelector } from 'react-redux';
+import { MetaMetricsEvents } from '../../../core/Analytics/MetaMetrics.events';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { selectAvatarAccountType } from '../../../selectors/settings';
+import { selectAccountGroupsByKeyringId } from '../../../selectors/multisrp';
+import { RootState } from '../../../reducers';
+import { selectIconSeedAddressByAccountGroupId } from '../../../selectors/multichainAccounts/accounts';
+import { AccountGroupWithInternalAccounts } from '../../../selectors/multichainAccounts/accounts.type';
+import {
+  Text,
+  TextVariant,
+  TextColor,
+  FontWeight,
+} from '@metamask/design-system-react-native';
+
+/**
+ * Renders an individual account group item with avatar and name.
+ * Used in the expanded account list within SRPListItem.
+ */
+const AccountGroupItem = ({
+  accountGroup,
+  accountAvatarType,
+}: {
+  accountGroup: AccountGroupWithInternalAccounts;
+  accountAvatarType: ReturnType<typeof selectAvatarAccountType>;
+}) => {
+  const { styles } = useStyles(styleSheet, {});
+  const selectSeedAddress = useMemo(
+    () => selectIconSeedAddressByAccountGroupId(accountGroup.id),
+    [accountGroup.id],
+  );
+  const seedAddress = useSelector(selectSeedAddress);
+
+  return (
+    <View style={styles.accountItem}>
+      <Avatar
+        variant={AvatarVariant.Account}
+        type={accountAvatarType}
+        accountAddress={seedAddress}
+        size={AvatarSize.Sm}
+      />
+      <Text variant={TextVariant.BodySm} color={TextColor.TextDefault}>
+        {accountGroup.metadata.name}
+      </Text>
+    </View>
+  );
+};
+
+const SRPListItem = ({
+  name,
+  keyring,
+  onActionComplete,
+  testID,
+  showArrowName = '',
+}: SRPListItemProps) => {
+  const { styles } = useStyles(styleSheet, {});
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const [showAccounts, setShowAccounts] = useState(false);
+  const accountAvatarType = useSelector(selectAvatarAccountType);
+
+  const accountGroups = useSelector((state: RootState) =>
+    selectAccountGroupsByKeyringId(state, keyring.metadata.id),
+  );
+
+  const handleSRPSelection = () => {
+    trackEvent(
+      createEventBuilder(
+        MetaMetricsEvents.SECRET_RECOVERY_PHRASE_PICKER_CLICKED,
+      )
+        .addProperties({
+          button_type: 'srp_select',
+        })
+        .build(),
+    );
+    onActionComplete(keyring.metadata.id);
+  };
+
+  return (
+    <TouchableWithoutFeedback
+      onPress={handleSRPSelection}
+      testID={
+        testID ??
+        `${SRPListItemSelectorsIDs.SRP_LIST_ITEM}-${keyring.metadata.id}`
+      }
+    >
+      <View style={styles.srpItem}>
+        <View style={styles.srpItemContent}>
+          <View>
+            <View style={styles.srpItemIconContainer}>
+              <Text
+                variant={TextVariant.BodyMd}
+                color={TextColor.TextDefault}
+                fontWeight={FontWeight.Medium}
+              >
+                {name}
+              </Text>
+              <View style={styles.srpIconContainer}>
+                {Boolean(showArrowName) && (
+                  <Text
+                    variant={TextVariant.BodyMd}
+                    color={TextColor.TextAlternative}
+                    fontWeight={FontWeight.Medium}
+                  >
+                    {showArrowName}
+                  </Text>
+                )}
+                <Icon
+                  name={IconName.ArrowRight}
+                  style={styles.srpItemIcon}
+                  color={IconColor.Alternative}
+                />
+              </View>
+            </View>
+
+            <Button
+              testID={`${SRPListItemSelectorsIDs.SRP_LIST_ITEM_TOGGLE_SHOW}-${keyring.metadata.id}`}
+              variant={ButtonVariants.Link}
+              onPress={() => {
+                trackEvent(
+                  createEventBuilder(
+                    MetaMetricsEvents.SECRET_RECOVERY_PHRASE_PICKER_CLICKED,
+                  )
+                    .addProperties({
+                      button_type: 'details',
+                    })
+                    .build(),
+                );
+                setShowAccounts(!showAccounts);
+              }}
+              label={
+                <Text
+                  variant={TextVariant.BodySm}
+                  color={TextColor.PrimaryDefault}
+                  fontWeight={FontWeight.Medium}
+                >
+                  {`${strings(
+                    !showAccounts
+                      ? 'accounts.show_accounts'
+                      : 'accounts.hide_accounts',
+                  )} ${accountGroups.length} ${strings('accounts.accounts')}`}
+                </Text>
+              }
+            />
+          </View>
+          {showAccounts && (
+            <>
+              <View style={styles.horizontalLine} />
+              <View style={styles.accountsList}>
+                <FlatList
+                  testID={`${SRPListItemSelectorsIDs.SRP_LIST_ITEM_ACCOUNTS_LIST}-${keyring.metadata.id}`}
+                  contentContainerStyle={styles.accountsListContentContainer}
+                  data={accountGroups}
+                  keyExtractor={(item) => item.id}
+                  renderItem={({ item }) => (
+                    <AccountGroupItem
+                      accountGroup={item}
+                      accountAvatarType={accountAvatarType}
+                    />
+                  )}
+                  removeClippedSubviews={false}
+                  scrollEnabled
+                  nestedScrollEnabled
+                  alwaysBounceVertical
+                />
+              </View>
+            </>
+          )}
+        </View>
+      </View>
+    </TouchableWithoutFeedback>
+  );
+};
+
+export default SRPListItem;

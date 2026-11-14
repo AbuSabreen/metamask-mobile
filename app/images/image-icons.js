@@ -1,4 +1,5 @@
 import MATIC from './matic.png';
+import POL from './pol.png';
 import PALM from './palm.png';
 import AETH from './arbitrum.png';
 import OPTIMISM from './optimism.png';
@@ -10,10 +11,68 @@ import AVAX from './avalanche.png';
 import LINEA_TESTNET from './linea-testnet-logo.png';
 import SEPOLIA from './sepolia-logo-dark.png';
 import LINEA_MAINNET from './linea-mainnet-logo.png';
+import SOLANA from './solana-logo.png';
+import SOLANA_DEVNET from './solana-devnet.jpg';
+import GRAVITY from './gravity.png';
+import KAIA_MAINNET from './kaia.png';
+import FOX_LOGO from '../../app/images/branding/tiny-logo.png';
+import BTC from './bitcoin-logo.png';
+import CHZ from './chiliz.png';
+import BTC_TESTNET from './bitcoin-testnet-logo.png';
+import BTC_MUTINYNET from './bitcoin-mutinynet-logo.png';
+import BTC_SIGNET from './bitcoin-signet-logo.svg';
+import BASE from './base.png';
+import MEGAETH_TESTNET from './megaeth-testnet-logo.png';
+import HL from './HL_symbol_mint_green.png';
+import XRPLEVM_TOKEN from './xrp-logo.png';
+import SEI from './sei-native.png';
+import MONAD_TESTNET from './monad-testnet-logo.png';
+import MONAD_MAINNET from './monad-mainnet-logo.png';
+import MATCHAIN from './matchain.png';
+import FLOW from './flow.png';
+import LENS from './lens.png';
+import PLUME from './plume-native.png';
+import GENESYS from './genesys.png';
+import KATANA from './katana.png';
+import SOPHON from './sophon.png';
+import SOPHON_TESTNET from './sophon-testnet.png';
+import APECHAIN_TOKEN from './apechain-token.png';
+import BERACHAIN_TOKEN from './berachain-token.png';
+import EDU from './edu.png';
+import ABSTRACT from './abstract.png';
+import NOMINA from './nomina.png';
+import FRAX from './frax.png';
+import XDC from './xdc.png';
+import MEGAETH_MAINNET from './megaeth-mainnet-logo.png';
+import AAVE from './aave-token-round.png';
+import HEMI from './hemi.png';
+import LUKSO from './lukso.png';
+import INJECTIVE from './injective-native.png';
+import PLASMA from './plasma-native.png';
+import CRONOS from './cronos.png';
+import HYPE from './hyperevm.png';
+import X_LAYER from './x-layer-native.png';
+import ETHERLINK_NATIVE from './etherlink-native.png';
+import MSU_NATIVE from './msu-native.png';
+import BOB from './bob.png';
+import ROOTSTOCK from './rootstock-native.png';
+import STABLE from './stable.png';
+import STABLE_NATIVE from './stable-native.png';
+import MANTLE from './mantle.png';
+import MANTLE_NATIVE from './mantle-native.png';
+import TEMPO_NATIVE from './tempo-native.png';
+import ARC_NATIVE from './arc-native-token-logo.png';
+import ROBINHOOD from './robinhood.png';
+import GNOSIS_NATIVE from './gnosis-native-token-logo.png';
+import ZERO_G_NATIVE from './0g-native-logo.png';
+import SOMNIA_NATIVE from './somnia.png';
+import TRON from './tron-logo.png';
+import STELLAR from './xlm.png';
 
 export default {
   PALM,
   MATIC,
+  POL,
   OPTIMISM,
   ONE,
   FTM,
@@ -21,8 +80,72 @@ export default {
   BNB,
   AETH,
   AVAX,
+  AAVE,
   'LINEA-GOERLI': LINEA_TESTNET,
   'LINEA-SEPOLIA': LINEA_TESTNET,
   SEPOLIA,
   'LINEA-MAINNET': LINEA_MAINNET,
+  G: GRAVITY,
+  'KAIA-MAINNET': KAIA_MAINNET,
+  'KAIA-KAIROS-TESTNET': KAIA_MAINNET,
+  SOLANA,
+  SOLANA_DEVNET,
+  FOX_LOGO,
+  BTC,
+  TRON,
+  TRX: TRON,
+  sTRX: TRON,
+  STELLAR,
+  XLM: STELLAR,
+  'BTC-TESTNET': BTC_TESTNET,
+  'BTC-MUTINYNET': BTC_MUTINYNET,
+  'BTC-SIGNET': BTC_SIGNET,
+  BASE,
+  'MEGAETH-TESTNET': MEGAETH_TESTNET,
+  'MEGAETH-TESTNET-V2': MEGAETH_TESTNET,
+  XRP: XRPLEVM_TOKEN,
+  SEI,
+  'MONAD-TESTNET': MONAD_TESTNET,
+  MON: MONAD_MAINNET,
+  MATCHAIN,
+  FLOW,
+  LENS,
+  PLUME,
+  GENESYS,
+  KATANA,
+  SOPHON,
+  'SOPHON-TESTNET': SOPHON_TESTNET,
+  APE: APECHAIN_TOKEN,
+  BERA: BERACHAIN_TOKEN,
+  EDU,
+  ABSTRACT,
+  NOM: NOMINA,
+  HL,
+  FRAX,
+  XDC,
+  'MEGAETH-MAINNET': MEGAETH_MAINNET,
+  HEMI,
+  LYX: LUKSO,
+  INJ: INJECTIVE,
+  XPL: PLASMA,
+  CRO: CRONOS,
+  HYPE,
+  OKB: X_LAYER,
+  XTZ: ETHERLINK_NATIVE,
+  NXPC: MSU_NATIVE,
+  BOB,
+  RBTC: ROOTSTOCK,
+  tRBTC: ROOTSTOCK,
+  CHZ,
+  STABLE,
+  USDT0: STABLE_NATIVE,
+  MANTLE,
+  MNT: MANTLE_NATIVE,
+  USD: TEMPO_NATIVE,
+  PATHUSD: TEMPO_NATIVE,
+  USDC: ARC_NATIVE,
+  ROBINHOOD,
+  XDAI: GNOSIS_NATIVE,
+  '0G': ZERO_G_NATIVE,
+  SOMI: SOMNIA_NATIVE,
 };

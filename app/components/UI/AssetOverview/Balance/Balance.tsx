@@ -1,23 +1,262 @@
-import React from 'react';
+import React, { type ReactNode, useCallback, useMemo } from 'react';
 import { View } from 'react-native';
+import {
+  CaipAssetId,
+  CaipAssetType,
+  Hex,
+  isCaipChainId,
+} from '@metamask/utils';
 import { strings } from '../../../../../locales/i18n';
-import Text from '../../../Base/Text';
-import Title from '../../../Base/Title';
 import { useStyles } from '../../../../component-library/hooks';
 import styleSheet from './Balance.styles';
+import AssetElement from '../../AssetElement';
+import { TOKEN_AMOUNT_BALANCE_TEST_ID } from '../../AssetElement/index.constants';
+import { useSelector } from 'react-redux';
+import { selectNetworkConfigurationByChainId } from '../../../../selectors/networkController';
+import {
+  getTestNetImageByChainId,
+  getDefaultNetworkByChainId,
+  isTestNet,
+} from '../../../../util/networks';
+import BadgeWrapper, {
+  BadgePosition,
+} from '../../../../component-library/components/Badges/BadgeWrapper';
+import { BadgeVariant } from '../../../../component-library/components/Badges/Badge/Badge.types';
+import Badge from '../../../../component-library/components/Badges/Badge/Badge';
+import NetworkAssetLogo from '../../NetworkAssetLogo';
+import Text, {
+  TextColor,
+  TextVariant,
+} from '../../../../component-library/components/Texts/Text';
+import SensitiveText, {
+  SensitiveTextLength,
+} from '../../../../component-library/components/Texts/SensitiveText';
+import { TokenI } from '../../Tokens/types';
+import {
+  PopularList,
+  UnpopularNetworkList,
+  CustomNetworkImgMapping,
+  getNonEvmNetworkImageSourceByChainId,
+} from '../../../../util/networks/customNetworks';
+import { RootState } from '../../../../reducers';
+import { isNonEvmChainId } from '../../../../core/Multichain/utils';
+import { selectPricePercentChange1d } from '../../../../selectors/tokenRatesController';
+import { selectPrivacyMode } from '../../../../selectors/preferencesController';
+import { getNativeTokenAddress } from '@metamask/assets-controllers';
+import { selectMultichainAssetsRates } from '../../../../selectors/multichain';
+import { useRWAToken } from '../../Bridge/hooks/useRWAToken';
+import { BridgeToken } from '../../Bridge/types';
+import StockBadge from '../../shared/StockBadge';
+import AssetLogo from '../../Assets/components/AssetLogo/AssetLogo';
 
 interface BalanceProps {
-  balance: string;
-  fiatBalance: string | undefined;
+  asset: TokenI;
+  balanceCta?: ReactNode;
+  balanceDescription?: ReactNode;
+  mainBalance: string;
+  secondaryBalance?: string;
+  priceChangeOverride?: string;
+  priceChangeOverrideColor?: TextColor;
+  hideTitleHeading?: boolean;
+  hidePercentageChange?: boolean;
 }
 
-const Balance = ({ balance, fiatBalance }: BalanceProps) => {
+export const NetworkBadgeSource = (chainId: Hex) => {
+  if (isTestNet(chainId)) return getTestNetImageByChainId(chainId);
+  const defaultNetwork = getDefaultNetworkByChainId(chainId) as
+    | {
+        imageSource: string;
+      }
+    | undefined;
+
+  if (defaultNetwork) {
+    return defaultNetwork.imageSource;
+  }
+
+  const unpopularNetwork = UnpopularNetworkList.find(
+    (networkConfig) => networkConfig.chainId === chainId,
+  );
+
+  const customNetworkImg = CustomNetworkImgMapping[chainId];
+
+  const popularNetwork = PopularList.find(
+    (networkConfig) => networkConfig.chainId === chainId,
+  );
+
+  const network = unpopularNetwork || popularNetwork;
+  if (network) {
+    return network.rpcPrefs.imageSource;
+  }
+
+  if (isCaipChainId(chainId)) {
+    return getNonEvmNetworkImageSourceByChainId(chainId);
+  }
+
+  if (customNetworkImg) {
+    return customNetworkImg;
+  }
+};
+
+const Balance = ({
+  asset,
+  balanceCta,
+  balanceDescription,
+  mainBalance,
+  secondaryBalance,
+  priceChangeOverride,
+  priceChangeOverrideColor,
+  hideTitleHeading,
+  hidePercentageChange,
+}: BalanceProps) => {
   const { styles } = useStyles(styleSheet, {});
+  const { isStockToken } = useRWAToken();
+  const networkConfigurationByChainId = useSelector((state: RootState) =>
+    selectNetworkConfigurationByChainId(state, asset.chainId as Hex),
+  );
+
+  const isEvmNetworkSelected = !isNonEvmChainId(asset.chainId as string);
+  const privacyMode = useSelector(selectPrivacyMode);
+  const evmPricePercentChange1d = useSelector((state: RootState) =>
+    selectPricePercentChange1d(
+      state,
+      asset.chainId as Hex,
+      asset?.isNative
+        ? getNativeTokenAddress(asset.chainId as Hex)
+        : (asset?.address as Hex),
+    ),
+  );
+  const allMultichainAssetsRates = useSelector(selectMultichainAssetsRates);
+  const getPricePercentChange1d = () => {
+    // First check if asset has pricePercentChange1d from navigation params (e.g., from trending view)
+    if (
+      asset?.pricePercentChange1d !== undefined &&
+      asset?.pricePercentChange1d !== null
+    ) {
+      return asset.pricePercentChange1d;
+    }
+    if (isEvmNetworkSelected) {
+      return evmPricePercentChange1d;
+    }
+    return allMultichainAssetsRates[asset?.address as CaipAssetType]?.marketData
+      ?.pricePercentChange?.P1D;
+  };
+
+  // Calculate percentage change and color for secondary balance
+  const pricePercentChange1d = getPricePercentChange1d();
+  const hasPercentageChange =
+    !isTestNet(asset.chainId as Hex) &&
+    pricePercentChange1d !== null &&
+    pricePercentChange1d !== undefined &&
+    Number.isFinite(pricePercentChange1d);
+
+  // Determine the color for percentage change
+  let percentageColor = TextColor.Alternative;
+  if (hasPercentageChange) {
+    if (pricePercentChange1d === 0) {
+      percentageColor = TextColor.Alternative;
+    } else if (pricePercentChange1d > 0) {
+      percentageColor = TextColor.Success;
+    } else {
+      percentageColor = TextColor.Error;
+    }
+  }
+
+  // Create percentage text for secondary balance
+  const percentageText = hasPercentageChange
+    ? `${pricePercentChange1d >= 0 ? '+' : ''}${pricePercentChange1d.toFixed(
+        2,
+      )}%`
+    : undefined;
+
+  const tokenChainId = asset.chainId;
+
+  const renderNetworkAvatar = useCallback(() => {
+    if (asset.isNative) {
+      return (
+        <NetworkAssetLogo
+          chainId={asset.chainId as Hex}
+          style={styles.ethLogo}
+          ticker={asset.ticker ?? asset.symbol}
+          big={false}
+          biggest={false}
+          testID={asset.name}
+        />
+      );
+    }
+
+    return <AssetLogo asset={asset} />;
+  }, [asset, styles.ethLogo]);
+
+  const isDisabled = useMemo(
+    () => asset.isNative || isCaipChainId(asset.chainId as CaipAssetId),
+    [asset.chainId, asset.isNative],
+  );
+
   return (
     <View style={styles.wrapper}>
-      <Text style={styles.text}>{strings('asset_overview.your_balance')}</Text>
-      <Title style={styles.fiatBalance}>{fiatBalance || balance}</Title>
-      <Text style={styles.text}>{fiatBalance ? balance : ''}</Text>
+      {!hideTitleHeading && (
+        <Text variant={TextVariant.HeadingMD}>
+          {strings('asset_overview.your_balance')}
+        </Text>
+      )}
+      {balanceDescription}
+      <AssetElement
+        disabled={isDisabled}
+        asset={asset}
+        balance={mainBalance}
+        secondaryBalance={
+          hidePercentageChange
+            ? undefined
+            : (priceChangeOverride ?? percentageText)
+        }
+        secondaryBalanceColor={
+          hidePercentageChange
+            ? undefined
+            : (priceChangeOverrideColor ?? percentageColor)
+        }
+        privacyMode={privacyMode}
+        hideSecondaryBalanceInPrivacyMode={false}
+      >
+        <BadgeWrapper
+          style={styles.badgeWrapper}
+          badgePosition={BadgePosition.BottomRight}
+          badgeElement={
+            <Badge
+              variant={BadgeVariant.Network}
+              imageSource={NetworkBadgeSource(tokenChainId as Hex)}
+              name={networkConfigurationByChainId?.name}
+            />
+          }
+        >
+          {renderNetworkAvatar()}
+        </BadgeWrapper>
+
+        <View style={styles.percentageChange}>
+          <View style={styles.assetName}>
+            <Text variant={TextVariant.BodyMD}>
+              {asset.name || asset.symbol}
+            </Text>
+          </View>
+
+          <View style={styles.balanceRow}>
+            {secondaryBalance && (
+              <SensitiveText
+                variant={TextVariant.BodySMMedium}
+                style={styles.tokenAmount}
+                isHidden={privacyMode}
+                length={SensitiveTextLength.Short}
+                testID={TOKEN_AMOUNT_BALANCE_TEST_ID}
+              >
+                {secondaryBalance}
+              </SensitiveText>
+            )}
+            {isStockToken(asset as BridgeToken) && (
+              <StockBadge token={asset as BridgeToken} />
+            )}
+          </View>
+        </View>
+      </AssetElement>
+      {balanceCta}
     </View>
   );
 };

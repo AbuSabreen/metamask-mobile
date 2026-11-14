@@ -1,0 +1,81 @@
+import { TransactionMeta } from '@metamask/transaction-controller';
+import React, { useEffect } from 'react';
+import { View } from 'react-native';
+
+import { SimulationDetails } from '../../../../../UI/SimulationDetails/SimulationDetails';
+import useClearConfirmationOnBackSwipe from '../../../hooks/ui/useClearConfirmationOnBackSwipe';
+import { useConfirmationMetricEvents } from '../../../hooks/metrics/useConfirmationMetricEvents';
+import { useTransactionMetadataRequest } from '../../../hooks/transactions/useTransactionMetadataRequest';
+import { ConfirmationInfoComponentIDs } from '../../../constants/info-ids';
+import useNavbar from '../../../hooks/ui/useNavbar';
+import { useMaxValueRefresher } from '../../../hooks/useMaxValueRefresher';
+import { useTokenAmount } from '../../../hooks/useTokenAmount';
+import { useTransferAssetType } from '../../../hooks/useTransferAssetType';
+import { HeroRow, HeroRowSkeleton } from '../../rows/transactions/hero-row';
+import {
+  NetworkAndOriginRow,
+  NetworkAndOriginRowSkeleton,
+} from '../../rows/transactions/network-and-origin-row';
+import FromToRow, {
+  FromToRowSkeleton,
+} from '../../rows/transactions/from-to-row';
+import GasFeesDetailsRow, {
+  GasFeesDetailsRowSkeleton,
+} from '../../rows/transactions/gas-fee-details-row';
+import AdvancedDetailsRow, {
+  AdvancedDetailsRowSkeleton,
+} from '../../rows/transactions/advanced-details-row';
+
+const Transfer = () => {
+  // Set navbar without title
+  useNavbar('');
+  const transactionMetadata = useTransactionMetadataRequest();
+  const { usdValue } = useTokenAmount();
+  const { assetType } = useTransferAssetType();
+  const { trackPageViewedEvent, setConfirmationMetric } =
+    useConfirmationMetricEvents();
+  useClearConfirmationOnBackSwipe();
+  useMaxValueRefresher();
+  useEffect(trackPageViewedEvent, [trackPageViewedEvent]);
+
+  useEffect(() => {
+    setConfirmationMetric({
+      properties: {
+        transaction_transfer_usd_value: usdValue,
+        asset_type: assetType,
+      },
+    });
+  }, [assetType, usdValue, setConfirmationMetric]);
+
+  return (
+    <View testID={ConfirmationInfoComponentIDs.TRANSFER}>
+      <HeroRow layout="horizontal" />
+      <FromToRow />
+      <NetworkAndOriginRow />
+      <SimulationDetails
+        transaction={transactionMetadata as TransactionMeta}
+        enableMetrics
+        isTransactionsRedesign
+      />
+      <GasFeesDetailsRow />
+      <AdvancedDetailsRow />
+    </View>
+  );
+};
+
+export function TransferInfoSkeleton() {
+  // Set navbar without title for loading state
+  useNavbar('');
+
+  return (
+    <View testID="transfer-info-skeleton">
+      <HeroRowSkeleton layout="horizontal" />
+      <FromToRowSkeleton />
+      <NetworkAndOriginRowSkeleton />
+      <GasFeesDetailsRowSkeleton />
+      <AdvancedDetailsRowSkeleton />
+    </View>
+  );
+}
+
+export default Transfer;

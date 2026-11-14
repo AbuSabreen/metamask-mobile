@@ -1,0 +1,139 @@
+import type { Hex } from '@metamask/utils';
+import { isEqual } from 'lodash';
+import { useMemo, useRef } from 'react';
+import { useSelector } from 'react-redux';
+import { selectNetworkConfigurations } from '../../../../selectors/networkController';
+import { useTokensWithBalance } from '../../Bridge/hooks/useTokensWithBalance';
+import {
+  HYPERLIQUID_MAINNET_CHAIN_ID,
+  HYPERLIQUID_TESTNET_CHAIN_ID,
+  USDC_ARBITRUM_MAINNET_ADDRESS,
+  USDC_DECIMALS,
+  USDC_SYMBOL,
+  USDC_TOKEN_ICON_URL,
+  type PerpsToken,
+} from '@metamask/perps-controller';
+import { usePerpsNetwork } from './index';
+import { usePerpsLiveAccount } from './stream';
+
+/**
+ * Hook to get all payment tokens for Perps, including:
+ * - USDC on Hyperliquid (from Perps account) - always shown first
+ * - All tokens across networks (similar to Tokens tab in wallet view)
+ *
+ * Tokens are sorted by priority:
+ * 1. USDC on Hyperliquid (fastest, instant settlement)
+ * 2. Other USDC tokens (easier to bridge)
+ * 3. Other tokens sorted by balance (highest first)
+ *
+ * Shows all tokens owned by the user, regardless of balance amount
+ */
+export function usePerpsPaymentTokens(): PerpsToken[] {
+  const networkConfigurations = useSelector(selectNetworkConfigurations);
+
+  // Use ref to store previous token array
+  const previousTokensRef = useRef<PerpsToken[]>([]);
+
+  // Get Hyperliquid account balance from the reshaped balance contract.
+  // `spendableBalance` is the Unified-aware tradeable amount.
+  const { account } = usePerpsLiveAccount();
+  const currentNetwork = usePerpsNetwork();
+  const hyperliquidBalance = Number.parseFloat(
+    account?.spendableBalance?.toString() || '0',
+  );
+
+  // Get all chain IDs to search for tokens (exclude Hyperliquid chains)
+  const allChainIds = useMemo(() => {
+    if (!networkConfigurations) return [];
+    const hyperliquidChainId =
+      currentNetwork === 'testnet'
+        ? HYPERLIQUID_TESTNET_CHAIN_ID
+        : HYPERLIQUID_MAINNET_CHAIN_ID;
+    // Filter out Hyperliquid chain IDs to avoid token icon errors
+    return Object.keys(networkConfigurations).filter(
+      (chainId) => chainId !== hyperliquidChainId,
+    ) as Hex[];
+  }, [networkConfigurations, currentNetwork]);
+
+  // Get all tokens with balances across networks
+  const tokensWithBalance = useTokensWithBalance({ chainIds: allChainIds });
+
+  // Filter and enhance tokens
+  const paymentTokens = useMemo(() => {
+    const tokens: PerpsToken[] = [];
+
+    // Add Hyperliquid USDC as first token (special case)
+    const hyperliquidChainId =
+      currentNetwork === 'testnet'
+        ? HYPERLIQUID_TESTNET_CHAIN_ID
+        : HYPERLIQUID_MAINNET_CHAIN_ID;
+
+    const hyperliquidUsdc: PerpsToken = {
+      address: USDC_ARBITRUM_MAINNET_ADDRESS,
+      symbol: USDC_SYMBOL,
+      name: 'USDC • Hyperliquid',
+      decimals: USDC_DECIMALS,
+      chainId: hyperliquidChainId as Hex,
+      image: USDC_TOKEN_ICON_URL,
+      balance: (hyperliquidBalance * 1e6).toString(),
+      balanceFiat: `$${hyperliquidBalance.toFixed(2)}`,
+    };
+
+    // Always show Hyperliquid USDC first (even if balance is 0)
+    tokens.push(hyperliquidUsdc);
+
+    // Get all tokens (not filtered by minimum order requirement)
+    // User should see all their tokens, similar to the Tokens tab
+    const otherFundedTokens = tokensWithBalance
+      .filter((token) => {
+        // Skip Hyperliquid chain tokens (already added above)
+        if (token.chainId === hyperliquidChainId) return false;
+        // Show all tokens with any balance (including zero balance for visibility)
+        return true;
+      })
+      .map(
+        (token) =>
+          ({
+            ...token,
+            // Ensure we have all required fields
+            balance: token.balance || '0',
+            balanceFiat: token.balanceFiat || '$0.00',
+          }) as PerpsToken,
+      );
+
+    // Sort tokens by priority:
+    // 1. USDC tokens first (faster to bridge)
+    // 2. Then by balance (highest first)
+    const sortedTokens = [...otherFundedTokens].sort((a, b) => {
+      // Prioritize USDC
+      if (a.symbol === USDC_SYMBOL && b.symbol !== USDC_SYMBOL) return -1;
+      if (b.symbol === USDC_SYMBOL && a.symbol !== USDC_SYMBOL) return 1;
+
+      // Then sort by balance
+      const aBalance = Number.parseFloat(
+        a.balanceFiat?.replace(/[^0-9.-]+/g, '') || '0',
+      );
+      const bBalance = Number.parseFloat(
+        b.balanceFiat?.replace(/[^0-9.-]+/g, '') || '0',
+      );
+      return bBalance - aBalance;
+    });
+
+    tokens.push(...sortedTokens);
+
+    // Future: Add other supported tokens here
+
+    return tokens;
+  }, [tokensWithBalance, hyperliquidBalance, currentNetwork]);
+
+  // Check if tokens have actually changed using lodash deep equality
+  const tokensChanged = !isEqual(previousTokensRef.current, paymentTokens);
+
+  // Only update the reference if tokens have actually changed
+  if (tokensChanged) {
+    previousTokensRef.current = paymentTokens;
+  }
+
+  // Return the stable reference if tokens haven't changed
+  return tokensChanged ? paymentTokens : previousTokensRef.current;
+}

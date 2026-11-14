@@ -1,19 +1,18 @@
-import Engine from '../../../../core/Engine';
-import { useCallback } from 'react';
-import { providerErrors } from '@metamask/rpc-errors';
+import { useCallback, useMemo } from 'react';
 import { useSelector } from 'react-redux';
-import { selectPendingApprovals } from '../../../../selectors/approvalController';
-import { cloneDeep, isEqual } from 'lodash';
 import { ApprovalRequest } from '@metamask/approval-controller';
+import { providerErrors } from '@metamask/rpc-errors';
+import Engine from '../../../../core/Engine';
+import { selectFirstPendingApproval } from '../../../../selectors/approvalController';
+
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ApprovalRequestType = ApprovalRequest<any>;
 
 const useApprovalRequest = () => {
-  const pendingApprovals = useSelector(selectPendingApprovals, isEqual);
-
-  const approvalRequest = Object.values(pendingApprovals ?? {})[0] as
-    | ApprovalRequest<any>
+  const approvalRequest = useSelector(selectFirstPendingApproval) as
+    | ApprovalRequestType
     | undefined;
-
-  const pageMeta = approvalRequest?.requestData?.pageMeta ?? {};
 
   const onConfirm = useCallback(
     async (
@@ -21,7 +20,6 @@ const useApprovalRequest = () => {
       value?: Parameters<typeof Engine.acceptPendingApproval>[1],
     ) => {
       if (!approvalRequest) return;
-
       await Engine.acceptPendingApproval(
         approvalRequest.id,
         { ...approvalRequest.requestData, ...(value || {}) },
@@ -31,17 +29,29 @@ const useApprovalRequest = () => {
     [approvalRequest],
   );
 
-  const onReject = useCallback(() => {
-    if (!approvalRequest) return;
+  const onReject = useCallback(
+    (error?: Error) => {
+      if (!approvalRequest) return;
 
-    Engine.rejectPendingApproval(
-      approvalRequest.id,
-      providerErrors.userRejectedRequest(),
-    );
-  }, [approvalRequest]);
+      Engine.rejectPendingApproval(
+        approvalRequest.id,
+        error ?? providerErrors.userRejectedRequest(),
+        { ignoreMissing: true },
+      );
+    },
+    [approvalRequest],
+  );
+
+  const pageMeta = useMemo(
+    () =>
+      approvalRequest?.requestData?.pageMeta ??
+      approvalRequest?.requestData?.metadata?.pageMeta ??
+      {},
+    [approvalRequest],
+  );
 
   return {
-    approvalRequest: cloneDeep(approvalRequest),
+    approvalRequest,
     pageMeta,
     onConfirm,
     onReject,

@@ -1,0 +1,111 @@
+import React from 'react';
+import { NavigationProp, ParamListBase } from '@react-navigation/native';
+import { render } from '@testing-library/react-native';
+import { Provider } from 'react-redux';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import configureMockStore from 'redux-mock-store';
+import {
+  type INotification,
+  processNotification,
+  TRIGGER_TYPES,
+} from '@metamask/notification-services-controller/notification-services';
+import NotificationsDetails from './index';
+import { backgroundState } from '../../../../util/test/initial-root-state';
+import MOCK_NOTIFICATIONS, {
+  createMockNotificationERC20Received,
+  createMockNotificationERC20Sent,
+  createMockNotificationEthReceived,
+  createMockNotificationEthSent,
+} from '../../../../components/UI/Notification/__mocks__/mock_notifications';
+// eslint-disable-next-line import-x/no-namespace
+import * as UseNotificationsModule from '../../../../util/notifications/hooks/useNotifications';
+import { AvatarAccountType } from '../../../../component-library/components/Avatars/Avatar';
+
+jest.mock('../../../../util/notifications/constants/config', () => ({
+  ...jest.requireActual('../../../../util/notifications/constants/config'),
+  isNotificationsFeatureEnabled: () => true,
+}));
+
+const mockInitialState = {
+  settings: {
+    avatarAccountType: AvatarAccountType.Maskicon,
+  },
+  engine: {
+    backgroundState,
+  },
+};
+
+jest.mock('../../../../actions/alert', () => ({
+  showAlert: jest.fn(),
+}));
+
+jest.mock('@react-navigation/native');
+describe('NotificationsDetails', () => {
+  const mockStore = configureMockStore();
+  const store = mockStore(mockInitialState);
+  const queryClient = new QueryClient();
+
+  let navigation: NavigationProp<ParamListBase>;
+
+  beforeEach(() => {
+    navigation = {
+      navigate: jest.fn(),
+      setOptions: jest.fn(),
+    } as unknown as NavigationProp<ParamListBase>;
+
+    jest
+      .spyOn(UseNotificationsModule, 'useMarkNotificationAsRead')
+      .mockReturnValue({ markNotificationAsRead: jest.fn(), loading: false });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  const renderDetailsPage = (notification: INotification) =>
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={queryClient}>
+          <NotificationsDetails
+            navigation={navigation}
+            route={{ params: { notification } }}
+          />
+        </QueryClientProvider>
+      </Provider>,
+    );
+
+  it('shows the details page with valid notification', () => {
+    const { getByTestId } = renderDetailsPage(MOCK_NOTIFICATIONS[1]);
+
+    expect(getByTestId('notification-details')).toBeOnTheScreen();
+  });
+
+  const nullTests = [
+    { type: 'Invalid-Notification' } as unknown as INotification,
+    ...[
+      processNotification(createMockNotificationEthSent()),
+      processNotification(createMockNotificationEthReceived()),
+      processNotification(createMockNotificationERC20Sent()),
+      processNotification(createMockNotificationERC20Received()),
+    ].map((n) => {
+      if (
+        n.type === TRIGGER_TYPES.ETH_SENT ||
+        n.type === TRIGGER_TYPES.ETH_RECEIVED ||
+        n.type === TRIGGER_TYPES.ERC20_SENT ||
+        n.type === TRIGGER_TYPES.ERC20_RECEIVED
+      ) {
+        return { ...n, payload: undefined } as unknown as INotification; // delete payload
+      }
+      return n;
+    }),
+  ];
+
+  it.each(nullTests)(
+    'returns null on invalid notifications - $type',
+    (notification) => {
+      const result = renderDetailsPage(notification);
+
+      expect(result.toJSON()).toBe(null);
+    },
+  );
+});

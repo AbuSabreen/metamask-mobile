@@ -1,0 +1,173 @@
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+
+import { BigNumber } from 'bignumber.js';
+import React from 'react';
+import { ScrollView, View } from 'react-native';
+import { useSelector } from 'react-redux';
+import { PerpsTransactionSelectorsIDs } from '../../Perps.testIds';
+import { strings } from '../../../../../../locales/i18n';
+import {
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { useStyles } from '../../../../../component-library/hooks';
+import { selectSelectedInternalAccountByScope } from '../../../../../selectors/multichainAccounts/accounts';
+import ScreenView from '../../../../Base/ScreenView';
+import PerpsTransactionDetailAssetHero from '../../components/PerpsTransactionDetailAssetHero';
+import { usePerpsBlockExplorerUrl } from '../../hooks';
+import {
+  PerpsFundingTransactionRouteProp,
+  PerpsTransaction,
+} from '../../types/transactionHistory';
+import {
+  formatPerpsFiat,
+  formatTransactionDate,
+} from '../../utils/formatUtils';
+import { styleSheet } from './PerpsFundingTransactionView.styles';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { trackBlockExplorerLinkClicked } from '../../../../../util/analytics/externalLinkTracking';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectPerpsBrandRefreshEnabled } from '../../../../../selectors/featureFlagController/perpsBrandRefresh';
+
+const PerpsFundingTransactionView: React.FC = () => {
+  const isBrandRefresh = useSelector(selectPerpsBrandRefreshEnabled) === true;
+  const { styles } = useStyles(styleSheet, {});
+
+  const navigation = useNavigation<AppNavigationProp>();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const route = useRoute<PerpsFundingTransactionRouteProp>();
+
+  const selectedInternalAccount = useSelector(
+    selectSelectedInternalAccountByScope,
+  )('eip155:1');
+  const { getExplorerUrl } = usePerpsBlockExplorerUrl();
+
+  // Get transaction from route params
+  const transaction = route.params?.transaction as PerpsTransaction;
+
+  // Check if transaction exists before proceeding
+  if (!transaction) {
+    return (
+      <ScreenView>
+        <HeaderStandardGlass
+          isGlass={isBrandRefresh}
+          isFloating={false}
+          includesTopInset
+          onBack={() => navigation.goBack()}
+        />
+        <View style={styles.content}>
+          <Text>{strings('perps.transactions.not_found')}</Text>
+        </View>
+      </ScreenView>
+    );
+  }
+
+  const handleViewOnBlockExplorer = () => {
+    if (!selectedInternalAccount) {
+      return;
+    }
+    const explorerUrl = getExplorerUrl(selectedInternalAccount.address);
+    if (!explorerUrl) {
+      return;
+    }
+    trackBlockExplorerLinkClicked(trackEvent, createEventBuilder, {
+      location: 'perps_transaction_details',
+      text: strings('perps.transactions.view_on_explorer'),
+      url: explorerUrl,
+    });
+    navigation.navigate('Webview', {
+      screen: 'SimpleWebview',
+      params: {
+        url: explorerUrl,
+      },
+    });
+  };
+
+  const feeNumber = transaction.fundingAmount?.feeNumber || 0;
+
+  // Funding detail rows based on design
+  const detailRows = [
+    {
+      label: strings('perps.transactions.funding.date'),
+      value: formatTransactionDate(transaction.timestamp),
+    },
+    {
+      label: strings('perps.transactions.funding.fee'),
+      value:
+        BigNumber(feeNumber).isLessThan(0.01) &&
+        BigNumber(feeNumber).isGreaterThan(-0.01)
+          ? `${transaction.fundingAmount?.isPositive ? '+' : '-'}$${Math.abs(
+              feeNumber,
+            )}`
+          : `${
+              transaction.fundingAmount?.isPositive ? '+' : '-'
+            }${formatPerpsFiat(Math.abs(feeNumber))}`,
+    },
+    {
+      label: strings('perps.transactions.funding.rate'),
+      value: transaction.fundingAmount?.rate,
+    },
+  ];
+
+  return (
+    <ScreenView>
+      <HeaderStandardGlass
+        isGlass={isBrandRefresh}
+        isFloating={false}
+        includesTopInset
+        title={transaction.title}
+        onBack={() => navigation.goBack()}
+      />
+      <ScrollView
+        testID={PerpsTransactionSelectorsIDs.FUNDING_TRANSACTION_VIEW}
+        style={styles.container}
+      >
+        <View style={styles.content}>
+          <PerpsTransactionDetailAssetHero
+            transaction={transaction}
+            styles={styles}
+          />
+
+          {/* Transaction details - clean list design */}
+          <View style={styles.detailsContainer}>
+            {detailRows.map((detail, index) => (
+              <View key={index} style={styles.detailRow}>
+                <Text
+                  variant={TextVariant.BodySm}
+                  color={TextColor.TextAlternative}
+                >
+                  {detail.label}
+                </Text>
+                <Text
+                  variant={TextVariant.BodySm}
+                  color={TextColor.TextDefault}
+                >
+                  {detail.value}
+                </Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Block explorer button */}
+          <Button
+            testID={PerpsTransactionSelectorsIDs.BLOCK_EXPLORER_BUTTON}
+            variant={ButtonVariant.Secondary}
+            size={ButtonSize.Lg}
+            isFullWidth
+            onPress={handleViewOnBlockExplorer}
+            style={styles.blockExplorerButton}
+          >
+            {strings('perps.transactions.view_on_explorer')}
+          </Button>
+        </View>
+      </ScrollView>
+    </ScreenView>
+  );
+};
+
+export default PerpsFundingTransactionView;

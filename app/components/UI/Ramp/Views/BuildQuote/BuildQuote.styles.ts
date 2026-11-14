@@ -1,39 +1,54 @@
+import { Platform, StyleSheet } from 'react-native';
 import { Theme } from '../../../../../util/theme/models';
-import { StyleSheet } from 'react-native';
 
-const styleSheet = (params: { theme: Theme }) => {
-  const { theme } = params;
-  const { colors } = theme;
+const styleSheet = (params: {
+  theme: Theme;
+  vars: { amountFontSize: number };
+}) => {
+  const { theme, vars } = params;
+  const { amountFontSize } = vars;
 
   return StyleSheet.create({
-    viewContainer: {
+    content: {
       flex: 1,
     },
-    selectors: {
+    centerGroup: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 16,
+      flex: 1,
+    },
+    amountContainer: {
+      alignItems: 'center',
+      gap: 16,
+    },
+    amountRow: {
       flexDirection: 'row',
-      justifyContent: 'space-between',
       alignItems: 'center',
     },
-    spacer: {
-      minWidth: 8,
+    cursor: {
+      width: 1,
+      height: Math.round(amountFontSize * 0.95),
+      backgroundColor: theme.colors.text.muted,
+      // Android renders glyphs lower than iOS in a line box equal to fontSize.
+      transform: [
+        {
+          translateY: Math.round(
+            amountFontSize * (Platform.OS === 'android' ? 0.02 : -0.04),
+          ),
+        },
+      ],
     },
-    keypadContainer: {
-      position: 'absolute',
-      bottom: 0,
-      left: 0,
-      right: 0,
-      paddingBottom: 50,
-      backgroundColor: colors.background.alternative,
+    actionSection: {
+      paddingBottom: 16,
+      gap: 16,
     },
-    cta: {
-      paddingTop: 12,
+    poweredByText: {
+      textAlign: 'center',
+      color: theme.colors.text.alternative,
     },
-    flexRow: {
-      flexDirection: 'row',
-    },
-    flagText: {
-      marginVertical: 3,
-      marginHorizontal: 0,
+    centeredText: {
+      textAlign: 'center' as const,
     },
   });
 };

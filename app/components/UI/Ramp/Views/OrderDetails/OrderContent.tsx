@@ -1,0 +1,623 @@
+import React, { useCallback, useMemo } from 'react';
+import { StyleSheet, TouchableOpacity } from 'react-native';
+import InAppBrowser from 'react-native-inappbrowser-reborn';
+import Clipboard from '@react-native-clipboard/clipboard';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { navigateWithDetails } from '../../../../../util/navigation/navUtils';
+import { type RampsOrder, RampsOrderStatus } from '@metamask/ramps-controller';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import { createProcessingInfoModalNavigationDetails } from '../Modals/ProcessingInfoModal/ProcessingInfoModal';
+import {
+  AvatarToken,
+  AvatarTokenSize,
+  BadgeNetwork,
+  BadgeWrapper,
+  BadgeWrapperPosition,
+  Box,
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  FontFamily,
+  FontWeight,
+  Icon,
+  IconName,
+  IconSize,
+  KeyValueRow,
+  Text,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import I18n, { strings } from '../../../../../../locales/i18n';
+import { toDateFormat } from '../../../../../util/date';
+import { formatSubscriptNotation } from '../../../../../util/number/subscriptNotation';
+import { formatWithThreshold } from '../../../../../util/assets';
+import { getNetworkImageSource } from '../../../../../util/networks';
+import { toRampsOrderCaipChainId } from '../../../../../util/activity-adapters/adapters/ramps-order-helpers';
+import { getTokenImageSource } from '../../../ActivityListItemRow/tokenIcon';
+import Logger from '../../../../../util/Logger';
+import { hasDepositOrderField } from '../../utils/depositUtils';
+import BankDetailRow from '../../components/BankDetailRow/BankDetailRow';
+import Routes from '../../../../../constants/navigation/Routes';
+import { RampsOrderDetailsSelectorsIDs } from './OrderDetails.testIds';
+
+const AMOUNT_PLACEHOLDER = '...';
+
+const getShortOrderId = (
+  providerOrderId: RampsOrder['providerOrderId'],
+): string => {
+  if (!providerOrderId) {
+    return '...';
+  }
+  if (providerOrderId.length > 8) {
+    return `...${providerOrderId.slice(-6)}`;
+  }
+  return providerOrderId;
+};
+
+const TERMINAL_STATUSES = new Set([
+  RampsOrderStatus.Completed,
+  RampsOrderStatus.Failed,
+  RampsOrderStatus.Cancelled,
+  RampsOrderStatus.IdExpired,
+]);
+
+const localStyles = StyleSheet.create({
+  inlineIcon: {
+    transform: [{ translateY: 4 }],
+  },
+  providerLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+});
+
+interface OrderContentProps {
+  order: RampsOrder;
+  showCloseButton?: boolean;
+}
+
+const OrderContent: React.FC<OrderContentProps> = ({
+  order,
+  showCloseButton = false,
+}) => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+
+  const providerName = order.provider?.name ?? '';
+  const providerOrderLink = order.providerOrderLink;
+  // Prefer the asset-id CDN url (environment-independent, and the same source
+  // Activity details use) over the provider-supplied `iconUrl`, which points at
+  // a per-environment host that does not resolve outside production.
+  const cryptoImageSource =
+    getTokenImageSource({
+      assetId: order.cryptoCurrency?.assetId,
+      symbol: order.cryptoCurrency?.symbol,
+      direction: 'in',
+    }) ??
+    (order.cryptoCurrency?.iconUrl
+      ? { uri: order.cryptoCurrency.iconUrl }
+      : undefined);
+  const fiatDecimals = order.fiatCurrency?.decimals ?? 2;
+  const providerSupportUrl =
+    order.provider?.links?.find((link) =>
+      link.name.toLowerCase().includes('support'),
+    )?.url ?? providerOrderLink;
+
+  const paymentDetails = hasDepositOrderField(order, 'paymentDetails')
+    ? (
+        order as RampsOrder & {
+          paymentDetails: {
+            fiatCurrency: string;
+            paymentMethod: string;
+            fields: { name: string; id: string; value: string }[];
+          }[];
+        }
+      ).paymentDetails
+    : undefined;
+
+  const shortOrderId = getShortOrderId(order.providerOrderId);
+
+  const handleCopyOrderId = useCallback(() => {
+    if (order.providerOrderId) {
+      Clipboard.setString(order.providerOrderId);
+    }
+  }, [order.providerOrderId]);
+
+  const handleProviderLinkPress = useCallback(async () => {
+    if (!providerOrderLink) return;
+    let urlDomain: string | undefined;
+    try {
+      urlDomain = new URL(providerOrderLink).hostname;
+    } catch {
+      urlDomain = providerOrderLink;
+    }
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.RAMPS_EXTERNAL_LINK_CLICKED)
+        .addProperties({
+          location: 'Order Details',
+          external_link_description: 'View on Provider',
+          url_domain: urlDomain,
+          ramp_type: 'UNIFIED_BUY_2',
+        })
+        .build(),
+    );
+    try {
+      if (await InAppBrowser.isAvailable()) {
+        await InAppBrowser.open(providerOrderLink);
+      } else {
+        navigation.navigate('Webview', {
+          screen: 'SimpleWebview',
+          params: { url: providerOrderLink },
+        });
+      }
+    } catch (err) {
+      Logger.error(err as Error, {
+        message: 'RampsOrderContent: Failed to open provider link',
+        link: providerOrderLink,
+      });
+    }
+  }, [providerOrderLink, navigation, createEventBuilder, trackEvent]);
+
+  const getStatusText = () => {
+    switch (order.status) {
+      case RampsOrderStatus.Pending:
+      case RampsOrderStatus.Created:
+      case RampsOrderStatus.Precreated:
+      case RampsOrderStatus.Unknown:
+        return strings('ramps_order_details.processing');
+      case RampsOrderStatus.Completed:
+        return strings('ramps_order_details.complete');
+      case RampsOrderStatus.Failed:
+        return strings('ramps_order_details.failed');
+      case RampsOrderStatus.Cancelled:
+        return strings('ramps_order_details.cancelled');
+      case RampsOrderStatus.IdExpired:
+        return strings('ramps_order_details.failed');
+      default:
+        return '...';
+    }
+  };
+
+  const getStatusColor = () => {
+    switch (order.status) {
+      case RampsOrderStatus.Pending:
+      case RampsOrderStatus.Created:
+      case RampsOrderStatus.Precreated:
+      case RampsOrderStatus.Unknown:
+        return 'text-warning-default';
+      case RampsOrderStatus.Completed:
+        return 'text-success-default';
+      case RampsOrderStatus.Failed:
+      case RampsOrderStatus.Cancelled:
+      case RampsOrderStatus.IdExpired:
+        return 'text-error-default';
+      default:
+        return 'text-default';
+    }
+  };
+
+  const fiatCurrencyCode = order.fiatCurrency?.symbol ?? '';
+  const cryptoSymbol = order.cryptoCurrency?.symbol ?? '';
+
+  const hasAmounts = Boolean(
+    fiatCurrencyCode &&
+      ((order.fiatAmount != null && Number(order.fiatAmount) > 0) ||
+        (order.cryptoAmount != null && Number(order.cryptoAmount) > 0)),
+  );
+  const isTerminal = TERMINAL_STATUSES.has(order.status);
+  const isLoading = !hasAmounts && !isTerminal;
+
+  const handleClose = useCallback(() => {
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.RAMPS_CLOSE_BUTTON_CLICKED)
+        .addProperties({
+          location: 'Order Details',
+          ramp_type: 'UNIFIED_BUY_2',
+        })
+        .build(),
+    );
+    navigation.goBack();
+  }, [navigation, createEventBuilder, trackEvent]);
+
+  const handleInfoPress = useCallback(() => {
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.RAMPS_INFO_TOOLTIP_CLICKED)
+        .addProperties({
+          location: 'Order Details',
+          ramp_type: 'UNIFIED_BUY_2',
+        })
+        .build(),
+    );
+    navigateWithDetails(
+      navigation,
+      createProcessingInfoModalNavigationDetails({
+        providerName,
+        providerSupportUrl,
+        statusDescription: order.statusDescription,
+      }),
+    );
+  }, [
+    navigation,
+    providerName,
+    providerSupportUrl,
+    order.statusDescription,
+    createEventBuilder,
+    trackEvent,
+  ]);
+
+  // Providers disagree on the `network` shape: some send the declared
+  // `{ chainId, name }` object, others a bare decimal string ("1"). Reuse the
+  // Activity resolver, which walks network object -> network string ->
+  // cryptoCurrency.chainId -> assetId and always yields a CAIP chain id.
+  const networkChainId = toRampsOrderCaipChainId(order) ?? '';
+  const networkName = order.network?.name || networkChainId;
+  const networkImageSource = networkChainId
+    ? getNetworkImageSource({ chainId: networkChainId })
+    : null;
+
+  const capitalizeWords = useCallback(
+    (text: string): string =>
+      text
+        .split(' ')
+        .map((word) => {
+          if (word === '') {
+            return word;
+          }
+          return word.charAt(0).toUpperCase() + word.slice(1);
+        })
+        .join(' '),
+    [],
+  );
+
+  const getFieldValue = useCallback(
+    (fieldName: string): string | null => {
+      if (!paymentDetails || paymentDetails.length === 0) return null;
+
+      const field = paymentDetails[0].fields.find((f) => f.name === fieldName);
+      if (!field?.value) return null;
+
+      return capitalizeWords(field.value);
+    },
+    [paymentDetails, capitalizeWords],
+  );
+
+  const hasBankDetails = Boolean(paymentDetails);
+  const showManageBankTransfer =
+    hasBankDetails && order.status === RampsOrderStatus.Created;
+
+  const handleManageBankTransfer = useCallback(() => {
+    navigation.navigate(Routes.RAMP.BANK_DETAILS_STANDALONE, {
+      orderId: order.providerOrderId,
+      shouldUpdate: false,
+    });
+  }, [navigation, order.providerOrderId]);
+
+  const bankDetailFields = useMemo(() => {
+    if (!hasBankDetails) return null;
+
+    const amount = getFieldValue('Amount');
+    const firstName = getFieldValue('First Name (Beneficiary)');
+    const lastName = getFieldValue('Last Name (Beneficiary)');
+    const accountName =
+      firstName || lastName
+        ? `${firstName ?? ''} ${lastName ?? ''}`.trim()
+        : null;
+    const accountType = getFieldValue('Account Type');
+    const bankName = getFieldValue('Bank Name');
+    const routingNumber = getFieldValue('Routing Number');
+    const accountNumber = getFieldValue('Account Number');
+    const iban = getFieldValue('IBAN');
+    const bic = getFieldValue('BIC');
+
+    const hasAnyField =
+      amount ||
+      accountName ||
+      accountType ||
+      bankName ||
+      routingNumber ||
+      accountNumber ||
+      iban ||
+      bic;
+
+    if (!hasAnyField) return null;
+
+    return {
+      amount,
+      accountName,
+      accountType,
+      bankName,
+      routingNumber,
+      accountNumber,
+      iban,
+      bic,
+    };
+  }, [hasBankDetails, getFieldValue]);
+
+  const formatOrderFiat = (amount: number) =>
+    formatWithThreshold(amount, 0, I18n.locale, {
+      style: 'currency',
+      currency: fiatCurrencyCode,
+      minimumFractionDigits: fiatDecimals,
+      maximumFractionDigits: fiatDecimals,
+    });
+
+  const getDateAndTimeValue = () => {
+    if (isLoading) {
+      return <Box twClassName="h-[18px] w-40 rounded bg-muted" />;
+    }
+    if (order.createdAt) {
+      return toDateFormat(order.createdAt);
+    }
+    return AMOUNT_PLACEHOLDER;
+  };
+
+  const getFeesValue = () => {
+    if (isLoading) {
+      return <Box twClassName="h-[18px] w-20 rounded bg-muted" />;
+    }
+    if (hasAmounts) {
+      return formatOrderFiat(Number(order.totalFeesFiat ?? 0));
+    }
+    return AMOUNT_PLACEHOLDER;
+  };
+
+  const getTotalValue = () => {
+    if (isLoading) {
+      return <Box twClassName="h-[18px] w-24 rounded bg-muted" />;
+    }
+    if (hasAmounts) {
+      return formatOrderFiat(Number(order.fiatAmount ?? 0));
+    }
+    return AMOUNT_PLACEHOLDER;
+  };
+
+  const dateAndTimeValue = getDateAndTimeValue();
+  const feesValue = getFeesValue();
+  const totalValue = getTotalValue();
+
+  return (
+    <Box twClassName="w-full flex-1">
+      <Box twClassName="items-center pt-8 pb-6">
+        <BadgeWrapper
+          // AvatarToken Lg is h-10 w-10. BadgeWrapper places the badge with
+          // percentage insets, and Yoga resolves an inset against the stretched
+          // parent when this shrink-wrapped row has no definite size on that
+          // axis. In this column that sends BottomRight to the left.
+          twClassName="h-10 w-10 self-center"
+          position={BadgeWrapperPosition.BottomRight}
+          testID="ramp-order-token-avatar"
+          badgeContainerProps={{ testID: 'ramp-order-token-network-badge' }}
+          badge={
+            networkImageSource ? (
+              <BadgeNetwork name={networkName} src={networkImageSource} />
+            ) : null
+          }
+        >
+          <AvatarToken
+            name={cryptoSymbol}
+            src={cryptoImageSource}
+            size={AvatarTokenSize.Lg}
+            imageOrSvgProps={{
+              imageProps: { testID: 'token-avatar-image' },
+            }}
+          />
+        </BadgeWrapper>
+
+        <Text
+          testID={RampsOrderDetailsSelectorsIDs.TOKEN_AMOUNT}
+          variant={TextVariant.AmountDisplayLg}
+          fontFamily={FontFamily.Hero}
+          twClassName="mt-6 text-center"
+        >
+          {order.cryptoAmount != null && Number(order.cryptoAmount) > 0
+            ? (formatSubscriptNotation(
+                parseFloat(String(order.cryptoAmount)),
+              ) ??
+              formatWithThreshold(
+                parseFloat(String(order.cryptoAmount)),
+                0.00001,
+                I18n.locale,
+                {
+                  minimumFractionDigits: 0,
+                  maximumFractionDigits: 5,
+                },
+              ))
+            : AMOUNT_PLACEHOLDER}{' '}
+          {cryptoSymbol}
+        </Text>
+      </Box>
+
+      <KeyValueRow
+        twClassName="h-auto px-0 py-3"
+        keyLabel={strings('ramps_order_details.status')}
+        value={
+          isLoading ? (
+            <Box twClassName="h-[18px] w-24 rounded bg-muted" />
+          ) : (
+            <Box twClassName="items-end">
+              <Text
+                variant={TextVariant.BodyMd}
+                fontWeight={FontWeight.Medium}
+                twClassName={getStatusColor()}
+              >
+                {getStatusText()}
+              </Text>
+              {providerOrderLink ? (
+                <TouchableOpacity
+                  onPress={handleProviderLinkPress}
+                  style={localStyles.providerLink}
+                >
+                  <Text
+                    variant={TextVariant.BodySm}
+                    twClassName="mr-1 text-primary-default"
+                  >
+                    {strings('ramps_order_details.view_on_provider', {
+                      provider: providerName,
+                    })}
+                  </Text>
+                  <Icon
+                    name={IconName.ArrowSquareOut}
+                    size={IconSize.Sm}
+                    twClassName="text-primary-default"
+                  />
+                </TouchableOpacity>
+              ) : null}
+            </Box>
+          )
+        }
+      />
+
+      <KeyValueRow
+        twClassName="h-auto px-0 py-3"
+        keyLabel={strings('ramps_order_details.order_id')}
+        value={
+          isLoading ? (
+            <Box twClassName="h-[18px] w-32 rounded bg-muted" />
+          ) : (
+            shortOrderId
+          )
+        }
+        valueEndButtonIconProps={
+          isLoading
+            ? undefined
+            : {
+                iconName: IconName.Copy,
+                accessibilityLabel: strings('ramps_order_details.order_id'),
+                onPress: handleCopyOrderId,
+              }
+        }
+      />
+
+      <KeyValueRow
+        twClassName="h-auto px-0 py-3"
+        keyLabel={strings('ramps_order_details.date_and_time')}
+        value={dateAndTimeValue}
+      />
+
+      <KeyValueRow
+        twClassName="h-auto px-0 py-3"
+        keyLabel={strings('ramps_order_details.fees')}
+        value={feesValue}
+      />
+
+      <KeyValueRow
+        twClassName="h-auto px-0 py-3"
+        keyLabel={strings('ramps_order_details.total')}
+        value={totalValue}
+      />
+
+      {hasBankDetails && bankDetailFields && !isLoading && (
+        <Box twClassName="mt-4 pt-4 border-t border-alternative">
+          <Text
+            variant={TextVariant.HeadingSm}
+            fontWeight={FontWeight.Bold}
+            twClassName="mb-4"
+          >
+            {strings('deposit.bank_details.main_title')}
+          </Text>
+
+          {bankDetailFields.amount && (
+            <BankDetailRow
+              label={strings('deposit.bank_details.transfer_amount')}
+              value={bankDetailFields.amount}
+            />
+          )}
+          {bankDetailFields.accountName && (
+            <BankDetailRow
+              label={strings('deposit.bank_details.account_holder_name')}
+              value={bankDetailFields.accountName}
+            />
+          )}
+          {bankDetailFields.routingNumber && (
+            <BankDetailRow
+              label={strings('deposit.bank_details.routing_number')}
+              value={bankDetailFields.routingNumber}
+            />
+          )}
+          {bankDetailFields.accountNumber && (
+            <BankDetailRow
+              label={strings('deposit.bank_details.account_number')}
+              value={bankDetailFields.accountNumber}
+            />
+          )}
+          {bankDetailFields.iban && (
+            <BankDetailRow
+              label={strings('deposit.bank_details.iban')}
+              value={bankDetailFields.iban}
+            />
+          )}
+          {bankDetailFields.bic && (
+            <BankDetailRow
+              label={strings('deposit.bank_details.bic')}
+              value={bankDetailFields.bic}
+            />
+          )}
+          {bankDetailFields.accountType && (
+            <BankDetailRow
+              label={strings('deposit.bank_details.account_type')}
+              value={bankDetailFields.accountType}
+            />
+          )}
+          {bankDetailFields.bankName && (
+            <BankDetailRow
+              label={strings('deposit.bank_details.bank_name')}
+              value={bankDetailFields.bankName}
+            />
+          )}
+
+          {showManageBankTransfer && (
+            <Box twClassName="mt-4">
+              <Button
+                variant={ButtonVariant.Secondary}
+                size={ButtonSize.Lg}
+                onPress={handleManageBankTransfer}
+              >
+                {strings('deposit.bank_details.button')}
+              </Button>
+            </Box>
+          )}
+        </Box>
+      )}
+
+      <Box
+        twClassName={
+          showCloseButton ? 'w-full pb-4 mt-auto' : 'w-full pb-4 pt-4'
+        }
+      >
+        {order.statusDescription && isTerminal && (
+          <Box twClassName={showCloseButton ? 'mb-4' : ''}>
+            <TouchableOpacity onPress={handleInfoPress}>
+              <Text
+                variant={TextVariant.BodySm}
+                twClassName="text-alternative text-center"
+              >
+                {order.statusDescription}{' '}
+                <Icon
+                  name={IconName.Info}
+                  size={IconSize.Sm}
+                  twClassName="text-alternative"
+                  style={localStyles.inlineIcon}
+                />
+              </Text>
+            </TouchableOpacity>
+          </Box>
+        )}
+        {showCloseButton && (
+          <Button
+            testID={RampsOrderDetailsSelectorsIDs.CLOSE_BUTTON}
+            variant={ButtonVariant.Primary}
+            size={ButtonSize.Lg}
+            isFullWidth
+            onPress={handleClose}
+          >
+            {strings('ramps_order_details.close')}
+          </Button>
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+export default OrderContent;

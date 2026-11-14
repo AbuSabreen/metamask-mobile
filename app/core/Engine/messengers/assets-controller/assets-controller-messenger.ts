@@ -1,0 +1,130 @@
+import type { AssetsControllerMessenger } from '@metamask/assets-controller';
+import {
+  Messenger,
+  MessengerActions,
+  MessengerEvents,
+} from '@metamask/messenger';
+import { AuthenticationController } from '@metamask/profile-sync-controller';
+import type { PreferencesControllerGetStateAction } from '@metamask/preferences-controller';
+import type { AnalyticsControllerActions } from '@metamask/analytics-controller';
+import { RootMessenger } from '../../types';
+
+const ASSETS_CONTROLLER_DELEGATED_EVENTS = [
+  // core#9388: RPC balance refresh on account-group switch / tree updates
+  'AccountTreeController:selectedAccountGroupChange',
+  // core#9892: start asset tracking only after the account tree is fully built
+  'AccountTreeController:initialized',
+  // Stop asset tracking when the account tree is cleared
+  'AccountTreeController:uninitialized',
+  // core#9388: RPC balance refresh when enabling custom RPC networks (e.g. DXC)
+  // StakedBalanceDataSource also listens to this
+  'NetworkEnablementController:stateChange',
+  // UI + keyring lifecycle (RpcDataSource only runs when UI open + unlocked)
+  'ClientController:stateChange',
+  'KeyringController:lock',
+  'KeyringController:unlock',
+  // Network picker (EVM selected network switch)
+  'NetworkController:networkDidChange',
+  'NetworkController:networkAdded',
+  'NetworkController:networkRemoved',
+  // RpcDataSource + StakedBalanceDataSource
+  'NetworkController:stateChange',
+  // Snap + tx + preferences
+  'AccountsController:accountBalancesUpdated',
+  'PermissionController:stateChange',
+  'SnapController:snapInstalled',
+  'PreferencesController:stateChange',
+  'TransactionController:transactionConfirmed',
+  'TransactionController:unapprovedTransactionAdded',
+  // core#10585: Snap keyring confirmations refresh balances when AccountActivity is down
+  'MultichainTransactionsController:transactionConfirmed',
+  // Real-time post-tx balances (AccountActivityService WS path)
+  'AccountActivityService:balanceUpdated',
+  'AccountActivityService:statusChanged',
+  // AccountsApiDataSource: re-evaluate Accounts API vs RPC when remote flags change
+  'RemoteFeatureFlagController:stateChange',
+] as const;
+
+/**
+ * Get the messenger for the AssetsController. This is scoped to the
+ * actions and events that the AssetsController is allowed to handle.
+ *
+ * @param rootMessenger - The root messenger.
+ * @returns The AssetsControllerMessenger.
+ */
+export function getAssetsControllerMessenger(
+  rootMessenger: RootMessenger<
+    MessengerActions<AssetsControllerMessenger>,
+    MessengerEvents<AssetsControllerMessenger>
+  >,
+): AssetsControllerMessenger {
+  const messenger: AssetsControllerMessenger = new Messenger({
+    namespace: 'AssetsController',
+    parent: rootMessenger,
+  });
+
+  rootMessenger.delegate({
+    actions: [
+      // Account group + network context for RpcDataSource (core#9388)
+      'AccountTreeController:getAccountsFromSelectedAccountGroup',
+      'ConfigRegistryController:getNetworkConfigByCaip2ChainId',
+      'NetworkEnablementController:getState',
+      'NetworkController:getState',
+      'NetworkController:getNetworkClientById',
+      'AccountsController:getSelectedAccount',
+      'SnapController:handleRequest',
+      'SnapController:getRunnableSnaps',
+      'PermissionController:getPermissions',
+      'PhishingController:bulkScanTokens',
+      'RemoteFeatureFlagController:getState',
+      'AccountTreeController:isInitialized',
+      'ClientController:getState',
+      'KeyringController:isUnlocked',
+    ],
+    events: [...ASSETS_CONTROLLER_DELEGATED_EVENTS],
+    messenger,
+  });
+
+  return messenger;
+}
+
+type AssetsControllerInitMessengerActions =
+  | AuthenticationController.AuthenticationControllerGetBearerTokenAction
+  | PreferencesControllerGetStateAction
+  | AnalyticsControllerActions;
+
+export type AssetsControllerInitMessenger = Messenger<
+  'AssetsControllerInit',
+  AssetsControllerInitMessengerActions,
+  never
+>;
+
+/**
+ * Get the messenger for the AssetsController initialization. This is scoped to the
+ * actions and events that the AssetsController is allowed to handle during
+ * initialization.
+ *
+ * @param rootMessenger - The root messenger.
+ * @returns The AssetsControllerInitMessenger.
+ */
+export function getAssetsControllerInitMessenger(
+  rootMessenger: RootMessenger<
+    MessengerActions<AssetsControllerInitMessenger>,
+    MessengerEvents<AssetsControllerInitMessenger>
+  >,
+): AssetsControllerInitMessenger {
+  const messenger: AssetsControllerInitMessenger = new Messenger({
+    namespace: 'AssetsControllerInit',
+    parent: rootMessenger,
+  });
+  rootMessenger.delegate({
+    actions: [
+      'AuthenticationController:getBearerToken',
+      'PreferencesController:getState',
+      'AnalyticsController:trackEvent',
+    ],
+    events: [],
+    messenger,
+  });
+  return messenger;
+}

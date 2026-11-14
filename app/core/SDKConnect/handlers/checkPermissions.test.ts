@@ -1,18 +1,48 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
+
+// Platform.OS is read-only in RN 0.81; use Object.defineProperty to override it.
+
+// Mock wait util - change this part
+jest.mock('../utils/wait.util', () => {
+  const mockWait = jest.fn().mockResolvedValue(undefined);
+  return {
+    wait: mockWait,
+    waitForCondition: jest.fn(),
+    waitForKeychainUnlocked: jest.fn().mockResolvedValue(true),
+    waitForConnectionReadiness: jest.fn(),
+    waitForEmptyRPCQueue: jest.fn(),
+    waitForUserLoggedIn: jest.fn(),
+    waitForAndroidServiceBinding: jest.fn(),
+  };
+});
+
+// Import wait after mocking
+import { wait } from '../utils/wait.util';
+import { Platform } from 'react-native';
 import { ApprovalController } from '@metamask/approval-controller';
-import { PreferencesController } from '@metamask/preferences-controller';
 import Engine from '../../Engine';
 import { Connection } from '../Connection';
 import checkPermissions from './checkPermissions';
 import { PermissionController } from '@metamask/permission-controller';
-import { getPermittedAccounts } from '../../../core/Permissions';
+import {
+  getDefaultCaip25CaveatValue,
+  getPermittedAccounts,
+} from '../../../core/Permissions';
 import { KeyringController } from '@metamask/keyring-controller';
+import {
+  Caip25CaveatType,
+  Caip25EndowmentPermissionName,
+} from '@metamask/chain-agnostic-permission';
 
+// Rest of the mocks
 jest.mock('../Connection', () => ({
   RPC_METHODS: jest.requireActual('../Connection').RPC_METHODS,
 }));
 jest.mock('../../Engine');
-jest.mock('../../../core/Permissions');
+jest.mock('../../../core/Permissions', () => ({
+  ...jest.requireActual('../../../core/Permissions'),
+  getPermittedAccounts: jest.fn(),
+}));
 jest.mock('@metamask/preferences-controller');
 jest.mock('@metamask/approval-controller');
 jest.mock('../utils/DevLogger');
@@ -33,7 +63,6 @@ describe('checkPermissions', () => {
     },
   } as unknown as typeof Engine;
   const requestPermissions = jest.fn();
-  let preferencesController = {} as unknown as PreferencesController;
   let approvalController = {} as unknown as ApprovalController;
   let keyringController = {} as unknown as KeyringController;
   let permissionController = {
@@ -41,8 +70,9 @@ describe('checkPermissions', () => {
     executeRestrictedMethod: jest.fn().mockResolvedValue({}),
     hasPermissions: jest.fn(),
     requestPermissions,
+    // TODO: Replace "any" with type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as unknown as PermissionController<any, any>;
-  const HOUR_IN_MS = 3600000;
   const currentTime = Date.now();
 
   const mockGetPermittedAccounts = getPermittedAccounts as jest.MockedFunction<
@@ -54,8 +84,14 @@ describe('checkPermissions', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // Reset platform to iOS by default
+    Object.defineProperty(Platform, 'OS', {
+      value: 'ios',
+      writable: true,
+      configurable: true,
+    });
     jest.useFakeTimers().setSystemTime(currentTime);
-    mockGetPermittedAccounts.mockResolvedValue([]);
+    mockGetPermittedAccounts.mockReturnValue([]);
 
     connection = {
       channelId: 'channelId',
@@ -63,17 +99,14 @@ describe('checkPermissions', () => {
       revalidate: mockRevalidate,
       initialConnection: true,
       setLoading: jest.fn(),
+      validUntil: currentTime + 1000,
+      onTerminate: jest.fn(),
     } as unknown as Connection;
 
     engine = {
       context: {},
     } as unknown as typeof Engine;
 
-    preferencesController = {
-      state: {
-        selectedAddress: '',
-      },
-    } as unknown as PreferencesController;
     approvalController = {
       add: mockAdd,
     } as unknown as ApprovalController;
@@ -86,12 +119,14 @@ describe('checkPermissions', () => {
       hasPermissions: jest.fn(),
       getPermissions: jest.fn(),
       getPermission: jest.fn(),
+      getCaveat: jest.fn(),
       requestPermissions,
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as unknown as PermissionController<any, any>;
 
     engine = {
       context: {
-        PreferencesController: preferencesController,
         ApprovalController: approvalController,
         KeyringController: keyringController,
         PermissionController: permissionController,
@@ -100,59 +135,109 @@ describe('checkPermissions', () => {
   });
 
   afterAll(() => {
-    jest.useRealTimers();
+    jest.useFakeTimers({ legacyFakeTimers: true });
   });
 
-  it('should return true if the connection is already approved and a selected address exists', async () => {
-    mockIsApproved.mockReturnValue(true);
-    preferencesController.state.selectedAddress = '0x123';
-
+  it('should return true if permitted accounts exist', async () => {
+    mockGetPermittedAccounts.mockReturnValue(['0x123']);
     const result = await checkPermissions({ connection, engine });
     expect(result).toBe(true);
   });
 
-  it('should handle approval if the connection is not initially approved', async () => {
-    mockIsApproved.mockReturnValue(false);
+  it('terminates an expired session instead of using its permitted accounts', async () => {
+    mockGetPermittedAccounts.mockReturnValue(['0x123']);
+    connection.validUntil = currentTime - 1;
 
-    await checkPermissions({ connection, engine });
-    expect(requestPermissions).toHaveBeenCalled();
-  });
+    await expect(checkPermissions({ connection, engine })).rejects.toThrow(
+      'SDK session expired',
+    );
 
-  it('should return true if the connection is not initially approved and a deeplink origin exists', async () => {
-    mockIsApproved.mockReturnValue(false);
-    connection.initialConnection = false;
-
-    const result = await checkPermissions({ connection, engine });
-    expect(result).toBe(true);
-  });
-
-  it('should revalidate the connection if the channel was active recently', async () => {
-    const lastAuthorized = currentTime - HOUR_IN_MS / 2;
-    mockIsApproved.mockReturnValue(false);
-
-    const result = await checkPermissions({
-      connection,
-      engine,
-      lastAuthorized,
+    expect(connection.onTerminate).toHaveBeenCalledWith({
+      channelId: 'channelId',
     });
+    expect(mockGetPermittedAccounts).not.toHaveBeenCalled();
+    expect(requestPermissions).not.toHaveBeenCalled();
+  });
+
+  it('treats a session without an expiry as expired', async () => {
+    mockGetPermittedAccounts.mockReturnValue(['0x123']);
+    connection.validUntil = undefined;
+
+    await expect(checkPermissions({ connection, engine })).rejects.toThrow(
+      'SDK session expired',
+    );
+
+    expect(connection.onTerminate).toHaveBeenCalledWith({
+      channelId: 'channelId',
+    });
+  });
+
+  it('should return false if no permitted accounts exist and no approval promise', async () => {
+    mockGetPermittedAccounts.mockReturnValue([]);
+    permissionController.getPermission = jest.fn().mockReturnValue(null);
+    const result = await checkPermissions({ connection, engine });
+    expect(result).toBe(false);
+  });
+
+  it(`should request permissions if no ${Caip25EndowmentPermissionName} permission exists`, async () => {
+    mockGetPermittedAccounts.mockReturnValue([]);
+    permissionController.getPermission = jest.fn().mockReturnValue(null);
+    requestPermissions.mockResolvedValue({});
+    mockGetPermittedAccounts
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce(['0x123']);
+
+    const result = await checkPermissions({ connection, engine });
+    expect(requestPermissions).toHaveBeenCalledWith(
+      { origin: connection.channelId },
+      {
+        [Caip25EndowmentPermissionName]: {
+          caveats: [
+            {
+              type: Caip25CaveatType,
+              value: getDefaultCaip25CaveatValue(),
+            },
+          ],
+        },
+      },
+      { preserveExistingPermissions: false },
+    );
     expect(result).toBe(true);
   });
 
-  // TODO: re-enable once we properly mock the waiting event
-  // it('should handle when approvalPromise already exists', async () => {
-  //   mockIsApproved.mockReturnValue(false);
-  //   connection.approvalPromise = Promise.resolve();
+  describe('platform specific behavior', () => {
+    it('should add delay on iOS after permission approval', async () => {
+      Object.defineProperty(Platform, 'OS', {
+        value: 'ios',
+        writable: true,
+        configurable: true,
+      });
+      mockGetPermittedAccounts.mockReturnValue([]);
+      permissionController.getPermission = jest.fn().mockReturnValue(null);
+      requestPermissions.mockResolvedValue({});
+      mockGetPermittedAccounts
+        .mockReturnValueOnce([])
+        .mockReturnValueOnce(['0x123']);
 
-  //   const result = await checkPermissions({ connection, engine });
-  //   expect(result).toBe(true);
-  // });
+      await checkPermissions({ connection, engine });
+      expect(wait).toHaveBeenCalledWith(100);
+    });
 
-  it('should revalidate connection if not an initial connection and a deeplink origin exists', async () => {
-    connection.initialConnection = false;
+    it('should not add delay on Android after permission approval', async () => {
+      Object.defineProperty(Platform, 'OS', {
+        value: 'android',
+        writable: true,
+        configurable: true,
+      });
+      mockGetPermittedAccounts.mockReturnValue([]);
+      permissionController.getPermission = jest.fn().mockReturnValue(null);
+      requestPermissions.mockResolvedValue({});
+      mockGetPermittedAccounts
+        .mockReturnValueOnce([])
+        .mockReturnValueOnce(['0x123']);
 
-    await checkPermissions({ connection, engine });
-    expect(connection.revalidate).toHaveBeenCalledWith({
-      channelId: connection.channelId,
+      await checkPermissions({ connection, engine });
+      expect(wait).not.toHaveBeenCalledWith(100);
     });
   });
 });

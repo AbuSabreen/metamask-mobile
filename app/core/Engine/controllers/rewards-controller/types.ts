@@ -1,0 +1,3360 @@
+import {
+  ControllerGetStateAction,
+  ControllerStateChangeEvent,
+} from '@metamask/base-controller';
+import { CaipAccountId, CaipAssetType, type Json } from '@metamask/utils';
+import { InternalAccount } from '@metamask/keyring-internal-api';
+export type {
+  PerpsFeeResolverScope,
+  PerpsTradingFeeGrant,
+} from '@metamask/perps-controller';
+import type { RewardsControllerMethodActions } from './RewardsController-method-action-types';
+
+export interface LoginResponseDto {
+  sessionId: string;
+  subscription: SubscriptionDto;
+}
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipFeatureDto = {
+  enabled: boolean;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SubscriptionFeaturesDto = {
+  vip: VipFeatureDto;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SubscriptionDto = {
+  id: string;
+  referralCode: string;
+  accounts: {
+    address: string;
+    chainId: number;
+  }[];
+  features: SubscriptionFeaturesDto;
+};
+
+export type VipStringKey = keyof VipLocalizedTextDto;
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipProgramDto = {
+  id: string;
+  name: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipPeriodDto = {
+  start: string;
+  end: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipTierRefDto = {
+  id: string;
+  name: string;
+  tier: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipProgressDto = {
+  percent: number;
+  remainingPointsToNextTier: number;
+  status: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipFeesDto = {
+  swapsBps: number;
+  perpsBps: number;
+  revenueShareBps: number;
+  nextTierSwapsBps: number;
+  nextTierPerpsBps: number;
+  nextTierRevenueShareBps: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipVolumeDto = {
+  swapsUsd: number;
+  perpsUsd: number;
+  points: number;
+  pointsFromReferrals: number;
+  referrals: number;
+  referralsCap: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipEquityAllocation = {
+  earned: number;
+  threshold: number;
+  percent: number;
+  // LIFETIME total of points counting toward equity: the 30d window as it stood
+  // when the equity tier was first reached, plus every day since spent at that
+  // tier or above (a re-climb after dropping below it does not count). Unlike
+  // `earned` it is never clamped and never falls as the rolling window advances.
+  // Null when the backend pilot has no configured equity tier.
+  lifetimeQualifyingPoints: number | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipTierDto = {
+  id: string;
+  name: string;
+  tier: number;
+  pointsRequirement: number;
+  /**
+   * Lower 30d-points threshold to KEEP this tier once held (vs
+   * `pointsRequirement` to REACH it). `null` when no maintain threshold is
+   * configured for the tier — the reach requirement then also governs keeping
+   * it. Sourced from `/vip/me` (backend PR #737).
+   */
+  maintainPointsRequirement: number | null;
+  swapsBps: number;
+  perpsBps: number;
+  revenueShareBps: number;
+  referralCarryoverBps: number;
+  status: string;
+};
+
+// Exact spec from the rewards API (see consensys-vertical-apps/va-mmcx-rewards
+// PR #546). The backend guarantees every key is populated, so the UI can rely
+// on these strings without a local i18n fallback.
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipLocalizedTextDto = {
+  periodTitle: string;
+  memberIdTitle: string;
+  transactionsTitle: string;
+  swapsFeeTitle: string;
+  perpsFeeTitle: string;
+  revenueShareTitle: string;
+  referralPointsTitle: string;
+  statsTitle: string;
+  pointsTitle: string;
+  swapsVolumeTitle: string;
+  pointsFromReferralsTitle: string;
+  perpsVolumeTitle: string;
+  vipReferralsTitle: string;
+  totalPointsTitle: string;
+  equityLockedTitle: string;
+  equityLockedDescription: string;
+  equityUnlockedTitle: string;
+  equityUnlockedDescription: string;
+  /**
+   * Sub-row copy for the lifetime equity-qualifying points figure. Carries a
+   * `{points}` placeholder that the client interpolates with
+   * `formatCompactValue(pointsAllocation.lifetimeQualifyingPoints)`, matching
+   * the ring beside it — number formatting for this card is client-side.
+   */
+  equityLifetimePointsDescription: string;
+  /**
+   * Copy for when the equity multiplier request itself fails. Carried here
+   * rather than on that response, which returns no strings when it fails.
+   */
+  equityMultiplierFailedTitle: string;
+  equityMultiplierFailedDescription: string;
+  topTierDescription: string;
+  // The `nextTier…Delta` strings below carry the next tier's absolute value
+  // text (e.g. "↓ 12 bps next tier"), not a delta against the current tier.
+  // Naming is kept for wire-contract compatibility with the rewards API.
+  nextTierSwapsFeeDelta: string;
+  nextTierPerpsFeeDelta: string;
+  nextTierRevenueShareDelta: string;
+  nextTierReferralPointsDelta: string;
+};
+
+/**
+ * Display-only equity multiplier from POST /vip/equity-multiplier.
+ * Never persist as program truth; never feed settlement (RWDS-1485).
+ */
+/**
+ * Display state of the multiplier, driven only by holdings against the
+ * configured band. `below_floor` — multiplier is 1.0. `active` — more holdings
+ * earn more. `at_cap` — maxed, nothing left to gain.
+ */
+export type VipEquityMultiplierState = 'below_floor' | 'active' | 'at_cap';
+
+/**
+ * Copy already resolved server-side for the current state and fully
+ * interpolated. Render as-is; never branch on `state` to pick copy, or a
+ * future state will need a mobile release.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipEquityMultiplierLocalizedTextDto = {
+  title: string;
+  description: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipEquityMultiplierUnavailableDto = {
+  available: false;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipEquityMultiplierAvailableDto = {
+  available: true;
+  multiplier: string;
+  state: VipEquityMultiplierState;
+  progressPercent: number;
+  tierNumber: number;
+  tierName: string;
+  capUsd: string;
+  computedAt: string;
+  localizedText: VipEquityMultiplierLocalizedTextDto;
+};
+
+export type VipEquityMultiplierDto =
+  | VipEquityMultiplierUnavailableDto
+  | VipEquityMultiplierAvailableDto;
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipDashboardDto = {
+  program: VipProgramDto;
+  period: VipPeriodDto;
+  // ISO-8601 instant the subscription's tier snapshot was last computed
+  // (vip_subscription_tier.computed_at), or null if no snapshot exists yet.
+  computedAt: string | null;
+  currentTier: VipTierRefDto;
+  nextTier: VipTierRefDto;
+  progress: VipProgressDto;
+  fees: VipFeesDto;
+  volume: VipVolumeDto;
+  pointsAllocation: VipEquityAllocation;
+  tiers: VipTierDto[];
+  localizedText: VipLocalizedTextDto;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipDashboardState = VipDashboardDto & {
+  lastFetched: number;
+};
+
+// Minimal stats for the "VIP Pilot" referee page (GET /vip/referee/me).
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipRefereeMeDto = {
+  referredByCode: string | null;
+  points: number;
+  swapsVolume: number;
+  perpsVolume: number;
+  // ISO-8601 instant the referee stats were last computed, or null if
+  // unavailable. v1 backend placeholder — currently the current time.
+  computedAt: string | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipRefereeMeState = VipRefereeMeDto & {
+  lastFetched: number;
+};
+
+// Backend wire format for GET /vip/fees — mirrors va-mmcx-rewards
+// src/main/vip/dto/vip-fees.dto.ts (PR #546). Fee bips are returned as
+// strings; the controller parses them as needed.
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type HyperliquidVipFeesDto = {
+  builderCode: string;
+  builderFeeBips: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SwapsVipFeesDto = {
+  feeBips: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipFeesGroupDto = {
+  hyperliquid: HyperliquidVipFeesDto;
+  swaps: SwapsVipFeesDto;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipFeesResponseDto = {
+  vipTier: number;
+  fees: VipFeesGroupDto | null;
+  updatedAt: string | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type TradingFeeGrantDto = {
+  programId: string;
+  hyperliquid: {
+    builderCode: string;
+    builderFeeBips: string;
+  };
+  expiresAt: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type TradingFeeGrantResponseDto = {
+  grant: TradingFeeGrantDto | null;
+};
+
+export type VipTransactionType = 'PERPS' | 'SWAP';
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipPerpsTransactionDetailDto = {
+  coin: string;
+  feeCoin: string;
+  rawFee: string;
+  rawNotionalVolume: string;
+  tradeId: string;
+  orderId: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipSwapTransactionDetailDto = {
+  quoteId: string;
+  bridgeId?: string;
+  srcChainId: string;
+  srcAssetSymbol?: string;
+  destChainId: string;
+  destAssetSymbol?: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipTransactionDto = {
+  id: string;
+  type: VipTransactionType;
+  timestamp: string;
+  feeUsd: string;
+  volumeUsd: string;
+  perps?: VipPerpsTransactionDetailDto;
+  swap?: VipSwapTransactionDetailDto;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PaginatedVipTransactionsDto = {
+  results: VipTransactionDto[];
+  has_more: boolean;
+  cursor: string | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type GetVipTransactionsDto = {
+  subscriptionId: string;
+  type: VipTransactionType;
+  cursor: string | null;
+  forceFresh?: boolean;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipTransactionsLastUpdatedDto = {
+  lastUpdated: string | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipTransactionEntryState = {
+  id: string;
+  type: VipTransactionType;
+  timestamp: string;
+  feeUsd: string;
+  volumeUsd: string;
+  perps?: VipPerpsTransactionDetailDto;
+  swap?: VipSwapTransactionDetailDto;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipTransactionsState = {
+  results: VipTransactionEntryState[];
+  has_more: boolean;
+  cursor: string | null;
+  lastFetched: number;
+};
+
+// Per-subscription cache for VIP perps builder fee.
+// We store the raw bips string from the backend rather than a derived
+// discount so the cache stays valid if the perps base fee constant changes.
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type VipPerpsFeesState = {
+  hyperliquidBuilderFeeBips: string;
+  lastFetched: number;
+};
+
+export interface MobileLoginDto {
+  /**
+   * The account of the user
+   * @example '0x... or solana address.'
+   */
+  account: string;
+
+  /**
+   * The timestamp (epoch seconds) used in the signature.
+   * @example 1
+   */
+  timestamp: number;
+
+  /**
+   * The signature of the login (hex encoded)
+   * @example '0x...'
+   */
+  signature: `0x${string}`;
+}
+
+export interface MobileOptinDto {
+  /**
+   * The account of the user
+   * @example '0x... or solana address.'
+   */
+  account: string;
+
+  /**
+   * The timestamp (epoch seconds) used in the signature.
+   * @example 1
+   */
+  timestamp: number;
+
+  /**
+   * The signature of the login (hex encoded)
+   * @example '0x...'
+   */
+  signature: `0x${string}`;
+}
+
+export interface ApplyBonusCodeDto {
+  /**
+   * The bonus code to apply
+   * @example 'BNS123'
+   */
+  bonusCode: string;
+}
+
+/**
+ * Campaign type enum matching the backend CampaignType
+ */
+export enum CampaignType {
+  ONDO_HOLDING = 'ONDO_HOLDING',
+  PERPS_TRADING = 'PERPS_TRADING',
+  PREDICT_THE_PITCH = 'PREDICT_THE_PITCH',
+  MONEY_ACCOUNT_SWEEPSTAKES = 'MONEY_ACCOUNT_SWEEPSTAKES',
+  SEASON_1 = 'SEASON_1',
+}
+
+/**
+ * DTO for campaign data from the backend
+ */
+export interface CampaignDto {
+  /**
+   * The unique identifier of the campaign
+   * @example '123e4567-e89b-12d3-a456-426614174000'
+   */
+  id: string;
+
+  /**
+   * The type of campaign
+   * @example CampaignType.ONDO_HOLDING
+   */
+  type: CampaignType;
+
+  /**
+   * The name of the campaign
+   * @example 'ONDO Holding Campaign'
+   */
+  name: string;
+
+  /**
+   * The start date of the campaign
+   * @example '2024-01-01T00:00:00.000Z'
+   */
+  startDate: string;
+
+  /**
+   * The end date of the campaign
+   * @example '2024-12-31T23:59:59.999Z'
+   */
+  endDate: string;
+
+  /**
+   * Terms and conditions content from Contentful (may be null)
+   */
+  termsAndConditions: Json | null;
+
+  /**
+   * Regions excluded from this campaign
+   * @example ['US', 'GB']
+   */
+  excludedRegions: string[];
+
+  /**
+   * Theme-aware background image for the campaign tile
+   */
+  image?: ThemeImage;
+
+  /**
+   * The details of the campaign
+   * @example { howItWorks: { title: 'How it works', description: 'How it works', phases: [{ name: 'Phase 1', daysLabel: 'Days', sortOrder: 1, steps: [{ title: 'Step 1', description: 'Step 1', iconName: 'icon-name' }] }] } }
+   */
+  details: CampaignDetailsDto | null;
+
+  /**
+   * Whether this campaign is featured (shown prominently in the UI)
+   * @example true
+   */
+  featured: boolean;
+
+  /**
+   * Whether to display the upcoming start date on the campaign tile
+   * @example true
+   */
+  showUpcomingDate: boolean;
+}
+
+/**
+ * Serializable version of CampaignStep for state storage.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignStepState = {
+  title: string;
+  description: Json | null;
+  iconName: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignTourActionsState = {
+  next?: boolean;
+  skip?: boolean;
+};
+
+/**
+ * Serializable version of CampaignTourStepDto for state storage.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignTourStepDtoState = {
+  title: string;
+  description: string;
+  image: ThemeImageState | null;
+  actions: CampaignTourActionsState | null;
+};
+
+/**
+ * Serializable version of CampaignHowItWorks for state storage.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignHowItWorksState = {
+  title: string;
+  description: string;
+  steps: CampaignStepState[];
+  notes?: Json | null;
+  tour?: CampaignTourStepDtoState[];
+};
+
+/**
+ * Serializable version of ThemeImage for state storage.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type ThemeImageState = {
+  lightModeUrl: string;
+  darkModeUrl: string;
+};
+
+/**
+ * Serializable base campaign details for state storage.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignDetailsState = {
+  howItWorks: CampaignHowItWorksState;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OndoCampaignTierState = {
+  name: string;
+  minNetDeposit: number;
+};
+
+export type OndoHoldingDetailsState = CampaignDetailsState & {
+  tiers?: OndoCampaignTierState[];
+};
+
+export type PerpsTradingCampaignDetailsState = CampaignDetailsState;
+
+export type PredictThePitchCampaignDetailsState = CampaignDetailsState;
+
+export type MoneyAccountSweepstakesCampaignDetailsState =
+  CampaignDetailsState & {
+    localizedText: MoneyAccountSweepstakesLocalizedTextDto;
+  };
+
+export type CampaignDetailsDtoState =
+  | CampaignDetailsState
+  | OndoHoldingDetailsState
+  | PerpsTradingCampaignDetailsState
+  | PredictThePitchCampaignDetailsState
+  | MoneyAccountSweepstakesCampaignDetailsState;
+
+/**
+ * Serializable version of CampaignDto for state storage.
+ * Uses plain string for type instead of CampaignType enum to satisfy StateConstraint.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignDtoState = {
+  id: string;
+  type: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  termsAndConditions: Json | null;
+  excludedRegions: string[];
+  statusLabel: string;
+  image: ThemeImageState | null;
+  details: CampaignDetailsDtoState | null;
+  featured: boolean;
+  showUpcomingDate: boolean;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignState = {
+  campaigns: CampaignDtoState[];
+  lastFetched: number;
+};
+
+/**
+ * Response DTO for campaign participant status from the backend
+ */
+export interface CampaignParticipantStatusDto {
+  /** Whether the subscription has opted into the campaign */
+  optedIn: boolean;
+
+  /**
+   * The number of participants in the campaign
+   * @example 100
+   */
+  participantCount: number;
+}
+
+/**
+ * A single entry in the campaign leaderboard
+ */
+export interface CampaignLeaderboardEntry {
+  /**
+   * The rank of the participant within their tier
+   * @example 1
+   */
+  rank: number;
+
+  /**
+   * The participant's referral code (used as identifier)
+   * @example 'ABC123'
+   */
+  referralCode: string;
+
+  /**
+   * The rate of return as a decimal ratio (0.15 = 15%, -0.05 = -5%)
+   * @example 0.15
+   */
+  rateOfReturn: number;
+
+  /**
+   * Non-consecutive qualifying days at projected tier
+   * @example 8
+   */
+  qualifiedDays: number;
+
+  /**
+   * Whether hold requirement is met
+   * @example false
+   */
+  qualified: boolean;
+}
+
+/**
+ * Leaderboard data for a single tier
+ */
+export interface CampaignLeaderboardTier {
+  /**
+   * Top entries in the tier (up to 20)
+   */
+  entries: CampaignLeaderboardEntry[];
+
+  /**
+   * Total number of participants in this tier
+   * @example 150
+   */
+  totalParticipants: number;
+}
+
+/**
+ * Response DTO for GET /ondo-gm/:campaignId/leaderboard
+ * Public endpoint returning top 20 per tier
+ */
+export interface CampaignLeaderboardDto {
+  /**
+   * The campaign ID
+   * @example '123e4567-e89b-12d3-a456-426614174000'
+   */
+  campaignId: string;
+
+  /**
+   * When the leaderboard was last computed (ISO timestamp)
+   * @example '2024-03-20T12:00:00.000Z'
+   */
+  computedAt: string;
+
+  /**
+   * Leaderboard data by tier name (e.g. STARTER, MID, UPPER)
+   * Keys are dynamic based on campaign config
+   */
+  tiers: Record<string, CampaignLeaderboardTier>;
+}
+
+/**
+ * Response DTO for GET /ondo-gm/:campaignId/leaderboard/me
+ * Authenticated endpoint returning the current user's position
+ */
+export interface CampaignLeaderboardPositionDto {
+  /**
+   * The user's projected tier based on net deposit
+   * @example 'MID'
+   */
+  projectedTier: string;
+
+  /**
+   * The user's rank within their tier
+   * @example 5
+   */
+  rank: number;
+
+  /**
+   * Total number of participants in the user's tier
+   * @example 150
+   */
+  totalInTier: number;
+
+  /**
+   * The user's rate of return as a decimal ratio
+   * @example 0.15
+   */
+  rateOfReturn: number;
+
+  /**
+   * Current USD value of the user's positions
+   * @example 12500.50
+   */
+  currentUsdValue: number;
+
+  /**
+   * Total USD deposited by the user
+   * @example 10000.00
+   */
+  totalUsdDeposited: number;
+
+  /**
+   * Net deposit amount (deposits - withdrawals at cost basis)
+   * @example 8500.00
+   */
+  netDeposit: number;
+
+  /**
+   * Non-consecutive qualifying days at projected tier
+   * @example 8
+   */
+  qualifiedDays: number;
+
+  /**
+   * Whether hold requirement is met
+   * @example false
+   */
+  qualified: boolean;
+
+  /**
+   * Neighboring entries around the user's rank (up to 1 before/after)
+   */
+  neighbors: CampaignLeaderboardEntry[];
+
+  /**
+   * When the leaderboard was last computed (ISO timestamp)
+   * @example '2024-03-20T12:00:00.000Z'
+   */
+  computedAt: string;
+}
+
+/**
+ * Single position in GET /ondo-gm/:campaignId/portfolio/me
+ */
+export interface OndoGmPortfolioPositionDto {
+  /**
+   * @example 'AAPLon'
+   */
+  tokenSymbol: string;
+
+  /**
+   * @example 'Apple Inc.'
+   */
+  tokenName: string;
+
+  /**
+   * CAIP-19 asset type identifier for this position
+   * @example 'eip155:1/erc20:0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c'
+   */
+  tokenAsset: string;
+
+  /**
+   * @example '45.2'
+   */
+  units: string;
+
+  /**
+   * Weighted-average book price per whole token (USD)
+   * @example '200.000000'
+   */
+  bookPrice: string;
+
+  /**
+   * Derived book value: units * bookPrice (USD)
+   * @example '9040.000000'
+   */
+  bookValue: string;
+
+  /**
+   * @example '215.500000'
+   */
+  currentPrice: string;
+
+  /**
+   * @example '9740.600000'
+   */
+  currentValue: string;
+
+  /**
+   * @example '700.600000'
+   */
+  unrealizedPnl: string;
+
+  /**
+   * @example '0.0775'
+   */
+  unrealizedPnlPercent: string;
+}
+
+/**
+ * Portfolio summary in GET /ondo-gm/:campaignId/portfolio/me
+ */
+export interface OndoGmPortfolioSummaryDto {
+  /**
+   * @example '9740.600000'
+   */
+  totalCurrentValue: string;
+
+  /**
+   * Sum of all position book values (USD)
+   * @example '9040.000000'
+   */
+  totalBookValue: string;
+
+  /**
+   * @example '9040.000000'
+   */
+  totalUsdDeposited: string;
+
+  /**
+   * @example '9040.000000'
+   */
+  netDeposit: string;
+
+  /**
+   * Cumulative market value already cashed out from the portfolio
+   * @example '600.000000'
+   */
+  totalCashedOut: string;
+
+  /**
+   * @example '700.600000'
+   */
+  portfolioPnl: string;
+
+  /**
+   * @example '0.0775'
+   */
+  portfolioPnlPercent: string;
+}
+
+/**
+ * Response DTO for GET /ondo-gm/:campaignId/portfolio/me
+ */
+export interface OndoGmPortfolioDto {
+  positions: OndoGmPortfolioPositionDto[];
+  summary: OndoGmPortfolioSummaryDto;
+
+  /**
+   * @example '2026-03-20T12:00:00.000Z'
+   */
+  computedAt: string;
+}
+
+/**
+ * Single cached portfolio row (mirrors {@link OndoGmPortfolioPositionDto}; explicit plain-object shape for cache / Json).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OndoGmPortfolioPositionState = {
+  tokenSymbol: string;
+  tokenName: string;
+  tokenAsset: string;
+  units: string;
+  bookPrice: string;
+  bookValue: string;
+  currentPrice: string;
+  currentValue: string;
+  unrealizedPnl: string;
+  unrealizedPnlPercent: string;
+};
+
+/**
+ * Cached portfolio summary (mirrors {@link OndoGmPortfolioSummaryDto}; explicit plain-object shape for cache / Json).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OndoGmPortfolioSummaryState = {
+  totalCurrentValue: string;
+  totalBookValue: string;
+  totalUsdDeposited: string;
+  netDeposit: string;
+  totalCashedOut: string;
+  portfolioPnl: string;
+  portfolioPnlPercent: string;
+};
+
+/**
+ * Campaign-wide total deposits (public endpoint).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OndoGmCampaignDepositsDto = {
+  totalUsdDeposited: string;
+};
+
+export type CampaignParticipantOutcomeStatus = 'pending' | 'finalized';
+
+export interface BaseCampaignParticipantOutcomeDto {
+  subscriptionId: string;
+  outcomeStatus: CampaignParticipantOutcomeStatus;
+  winnerVerificationCode?: string | null;
+}
+
+/** @deprecated Use CampaignParticipantOutcomeStatus */
+export type OndoGmCampaignParticipantOutcomeStatus =
+  CampaignParticipantOutcomeStatus;
+
+export interface OndoGmCampaignParticipantOutcomeDto
+  extends BaseCampaignParticipantOutcomeDto {
+  tierRank?: number;
+  tier?: string;
+}
+
+/** @deprecated Use CampaignParticipantOutcomeStatus */
+export type PerpsTradingCampaignParticipantOutcomeStatus =
+  CampaignParticipantOutcomeStatus;
+
+export interface PerpsTradingCampaignParticipantOutcomeDto
+  extends BaseCampaignParticipantOutcomeDto {
+  rank?: number | null;
+}
+
+/**
+ * Cached portfolio payload (explicit shape for Json / StateConstraint compatibility).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OndoGmPortfolioState = {
+  positions: OndoGmPortfolioPositionState[];
+  summary: OndoGmPortfolioSummaryState;
+  computedAt: string;
+  lastFetched: number;
+};
+
+/**
+ * Activity entry type for Ondo GM campaign transactions.
+ */
+export type ActivityEntryType =
+  | 'DEPOSIT'
+  | 'REBALANCE'
+  | 'WITHDRAW'
+  | 'EXTERNAL_OUTFLOW';
+
+/**
+ * Token metadata within an activity entry.
+ */
+export interface ActivityTokenDto {
+  /**
+   * CAIP-19 asset type identifier
+   * @example 'eip155:59144/erc20:0xaca92e438df0b2401ff60da7e4337b687a2435da'
+   */
+  tokenAsset: string;
+
+  /** @example 'AAPLon' */
+  tokenSymbol: string;
+
+  /** @example 'Apple Inc.' */
+  tokenName: string;
+}
+
+/**
+ * DTO for a single activity entry from GET /ondo-gm/:campaignId/activity/me
+ */
+export interface OndoGmActivityEntryDto {
+  /** @example 'DEPOSIT' */
+  type: ActivityEntryType;
+
+  /** Source token */
+  srcToken: ActivityTokenDto;
+
+  /** Destination token, null for withdrawals */
+  destToken: ActivityTokenDto | null;
+
+  /**
+   * Recipient wallet address (only set for EXTERNAL_OUTFLOW events)
+   * @example '0x1234567890abcdef1234567890abcdef12345678'
+   */
+  destAddress: string | null;
+
+  /**
+   * Signed USD value (6 decimals). Positive for deposits, negative for withdrawals. Null for rebalances.
+   * @example '125.000000'
+   */
+  usdAmount: string | null;
+
+  /**
+   * Block timestamp (ISO 8601 UTC)
+   * @example '2026-03-28T14:30:00.000Z'
+   */
+  timestamp: string;
+}
+
+/**
+ * Paginated response for Ondo GM campaign activity
+ */
+export interface PaginatedOndoGmActivityDto {
+  has_more: boolean;
+  cursor: string | null;
+  results: OndoGmActivityEntryDto[];
+}
+
+/**
+ * Serializable state for token metadata within an activity entry.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type ActivityTokenState = {
+  tokenAsset: string;
+  tokenSymbol: string;
+  tokenName: string;
+};
+
+/**
+ * Serializable state for a single activity entry (mirrors {@link OndoGmActivityEntryDto}).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OndoGmActivityEntryState = {
+  type: string;
+  srcToken: ActivityTokenState;
+  destToken: ActivityTokenState | null;
+  destAddress: string | null;
+  usdAmount: string | null;
+  timestamp: string;
+};
+
+/**
+ * Cached activity page (explicit shape for Json / StateConstraint compatibility).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OndoGmActivityState = {
+  results: OndoGmActivityEntryState[];
+  has_more: boolean;
+  cursor: string | null;
+  lastFetched: number;
+};
+
+/**
+ * Cached campaign deposits (explicit shape for Json / StateConstraint compatibility).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OndoGmCampaignDepositsState = {
+  totalUsdDeposited: string;
+  lastFetched: number;
+};
+
+// ─── Perps Trading Campaign ────────────────────────────────────────────────
+
+/**
+ * A single entry in the Perps Trading Campaign leaderboard (no tiers).
+ */
+export interface PerpsTradingCampaignLeaderboardEntry {
+  rank: number;
+  referralCode: string;
+  /** Signed USD PnL for the campaign window */
+  pnl: number;
+  /** Cumulative volume traded during the competition window (USD) */
+  volume: number;
+}
+
+/**
+ * Response DTO for GET /perps-trading/:campaignId/leaderboard (public, no auth).
+ */
+export interface PerpsTradingCampaignLeaderboardDto {
+  campaignId: string;
+  /** ISO timestamp — display as "last updated" (refreshes ~every 15 min) */
+  computedAt: string;
+  entries: PerpsTradingCampaignLeaderboardEntry[];
+  /** Number of eligible participants in this campaign */
+  totalParticipants: number;
+  /** Minimum cumulative volume (USD) required to appear on the leaderboard */
+  minVolumeForEligibility: number;
+  /**
+   * Number of prize-winning ranks for this campaign. Optional because the
+   * backend only started sending it with per-campaign config; clients fall back
+   * to PERPS_TRADING_MAX_WINNERS while older backends are deployed.
+   */
+  numberOfWinners?: number;
+}
+
+/**
+ * Response DTO for GET /perps-trading/:campaignId/prize-pool (public, no auth).
+ */
+export interface PerpsTradingCampaignPrizePoolDto {
+  totalVolumeUsd: number;
+  unlockedPoolUsd: number;
+  /** Volume thresholds (USD) that unlock each prize tier, index-aligned with poolScheduleUsd */
+  thresholdsUsd: number[];
+  /** Prize pool size (USD) unlocked at the matching thresholdsUsd index */
+  poolScheduleUsd: number[];
+  computedAt: string | null;
+}
+
+/**
+ * Response DTO for GET /perps-trading/:campaignId/leaderboard/me (authenticated).
+ */
+export interface PerpsTradingCampaignLeaderboardPositionDto {
+  /** Null when the participant has not yet met the volume threshold. */
+  rank: number | null;
+  /** Number of eligible participants in this campaign */
+  totalParticipants: number;
+  /** Signed USD PnL */
+  pnl: number;
+  /** Cumulative volume traded during the competition window (USD) */
+  volume: number;
+  computedAt: string;
+  neighbors: PerpsTradingCampaignLeaderboardEntry[];
+  /** Whether this participant has met the minimum volume threshold */
+  eligible: boolean;
+  /** Minimum cumulative volume (USD) required to become eligible */
+  minVolumeForEligibility: number;
+}
+
+/**
+ * Response DTO for GET /perps-trading/:campaignId/stats/volume (public).
+ */
+export interface PerpsTradingCampaignVolumeDto {
+  /** Current aggregate notional volume across all participants (USD string) */
+  totalUsdVolume: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PerpsTradingCampaignLeaderboardState = {
+  campaignId: string;
+  computedAt: string;
+  entries: {
+    rank: number;
+    referralCode: string;
+    pnl: number;
+    volume: number;
+  }[];
+  totalParticipants: number;
+  minVolumeForEligibility: number;
+  numberOfWinners?: number;
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PerpsTradingCampaignLeaderboardPositionFoundState = {
+  rank: number | null;
+  totalParticipants: number;
+  pnl: number;
+  volume: number;
+  eligible: boolean;
+  minVolumeForEligibility: number;
+  neighbors: {
+    rank: number;
+    referralCode: string;
+    pnl: number;
+    volume: number;
+  }[];
+  computedAt: string;
+  lastFetched: number;
+};
+
+/** Sentinel stored when the API returns null (user not on leaderboard), so the TTL is respected. */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PerpsTradingCampaignLeaderboardPositionNotFoundState = {
+  notFound: true;
+  lastFetched: number;
+};
+
+export type PerpsTradingCampaignLeaderboardPositionState =
+  | PerpsTradingCampaignLeaderboardPositionFoundState
+  | PerpsTradingCampaignLeaderboardPositionNotFoundState;
+
+/**
+ * Cached campaign volume (explicit shape for Json / StateConstraint compatibility).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PerpsTradingCampaignVolumeState = {
+  totalUsdVolume: string;
+  lastFetched: number;
+};
+
+/**
+ * Cached campaign prize pool (explicit shape for Json / StateConstraint compatibility).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PerpsTradingCampaignPrizePoolState = {
+  totalVolumeUsd: number;
+  unlockedPoolUsd: number;
+  thresholdsUsd: number[];
+  poolScheduleUsd: number[];
+  computedAt: string | null;
+  lastFetched: number;
+};
+
+// ─── End Perps Trading Campaign ────────────────────────────────────────────
+
+/**
+ * State for cached leaderboard data in the controller
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignLeaderboardState = {
+  campaignId: string;
+  computedAt: string;
+  tiers: {
+    [tierName: string]: {
+      entries: {
+        rank: number;
+        referralCode: string;
+        rateOfReturn: number;
+        qualifiedDays: number;
+        qualified: boolean;
+      }[];
+      totalParticipants: number;
+    };
+  };
+  lastFetched: number;
+};
+
+/**
+ * State for cached leaderboard position in the controller
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignLeaderboardPositionFoundState = {
+  projectedTier: string;
+  rank: number;
+  totalInTier: number;
+  rateOfReturn: number;
+  currentUsdValue: number;
+  totalUsdDeposited: number;
+  netDeposit: number;
+  qualifiedDays: number;
+  qualified: boolean;
+  neighbors: {
+    rank: number;
+    referralCode: string;
+    rateOfReturn: number;
+    qualifiedDays: number;
+    qualified: boolean;
+  }[];
+  computedAt: string;
+  lastFetched: number;
+};
+
+/** Sentinel stored when the API returns null (user not on leaderboard), so the TTL is respected. */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignLeaderboardPositionNotFoundState = {
+  notFound: true;
+  lastFetched: number;
+};
+
+export type CampaignLeaderboardPositionState =
+  | CampaignLeaderboardPositionFoundState
+  | CampaignLeaderboardPositionNotFoundState;
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type CampaignParticipantStatusState = {
+  optedIn: boolean;
+  participantCount: number;
+  lastFetched: number;
+};
+
+export interface CampaignStep {
+  title: string;
+  description: Json | null;
+  iconName: string;
+}
+
+export interface CampaignTourActions {
+  next?: boolean;
+  skip?: boolean;
+}
+
+export interface CampaignTourStepDto {
+  title: string;
+  description: string;
+  image: ThemeImage | null;
+  actions: CampaignTourActions | null;
+}
+
+export interface CampaignHowItWorks {
+  title: string;
+  description: string;
+  steps: CampaignStep[];
+  notes?: Json | null;
+  tour?: CampaignTourStepDto[];
+}
+
+export interface OndoCampaignTier {
+  name: string;
+  minNetDeposit: number;
+}
+
+export interface CampaignDetails {
+  howItWorks: CampaignHowItWorks;
+}
+
+export interface OndoHoldingDetails extends CampaignDetails {
+  tiers?: OndoCampaignTier[];
+}
+
+export type PerpsTradingCampaignDetails = CampaignDetails;
+
+// ─── Predict The Pitch Campaign ───────────────────────────────────────────
+
+export type PredictThePitchCampaignDetails = CampaignDetails;
+
+// Backend resolveMoneyAccountSweepstakesLocalizedText guarantees every key is
+// populated, so the UI can rely on these strings without a local fallback.
+// Keep in lockstep with Contentful + backend DEFAULT_MONEY_ACCOUNT_SWEEPSTAKES_LOCALIZED_TEXT.
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesLocalizedTextDto = {
+  eligibleBalanceTitle: string;
+  eligibleBalanceDescription: string;
+  eligibleBalancePendingTitle: string;
+  eligibleBalancePendingDescription: string;
+  entriesTitle: string;
+  entriesDescription: string;
+  entriesCountValue: string;
+  drawScheduleTitle: string;
+  drawScheduleSummary: string;
+  drawScheduleCurrentDraw: string;
+  drawScheduleEntriesReset: string;
+  drawScheduleViewResults: string;
+  awardedLabel: string;
+  prizePoolLabel: string;
+  prizeTitle: string;
+  prizeDescription: string;
+  addFundsTitle: string;
+  addFundsNoBalanceTitle: string;
+  addFundsNoBalanceDescription: string;
+  weekTitle: string;
+  completeLabel: string;
+  activeLabel: string;
+  joinTheSweepstakesTitle: string;
+  drawPendingTitle: string;
+  drawCompleteTitle: string;
+  drawProofTitle: string;
+  merkleRootLabel: string;
+  formulaLabel: string;
+  drawFormulaLabel: string;
+  drawFormulaDescription: string;
+  seedBlockLabel: string;
+  seedBlockHashLabel: string;
+  drawProofEntriesLabel: string;
+  winnersLabel: string;
+  reservesLabel: string;
+  originalDrawTitle: string;
+  reserveSuffix: string;
+  refLabel: string;
+  weightLabel: string;
+  bindingConflictTitle: string;
+  bindingConflictDescription: string;
+  onTrackDescription: string;
+  lostTodayDescription: string;
+  shortfallDescription: string;
+  currentBalanceTitle: string;
+  balanceTitle: string;
+  qualifiedLabel: string;
+  thisWeekLabel: string;
+  nextDrawTitle: string;
+  dayRemainingValue: string;
+  daysRemainingValue: string;
+  learnHowItWorksTitle: string;
+  learnHowItWorksDescription: string;
+  learnMusdTitle: string;
+  learnMusdDescription: string;
+};
+
+export interface MoneyAccountSweepstakesCampaignDetails
+  extends CampaignDetails {
+  localizedText: MoneyAccountSweepstakesLocalizedTextDto;
+}
+
+export type CampaignDetailsDto =
+  | CampaignDetails
+  | OndoHoldingDetails
+  | PerpsTradingCampaignDetails
+  | PredictThePitchCampaignDetails
+  | MoneyAccountSweepstakesCampaignDetails;
+
+export interface PredictThePitchLeaderboardEntryDto {
+  rank: number;
+  referralCode: string;
+  roi: number;
+}
+
+export interface PredictThePitchLeaderboardDto {
+  campaignId: string;
+  computedAt: string;
+  entries: PredictThePitchLeaderboardEntryDto[];
+  totalParticipants: number;
+}
+
+export interface PredictThePitchLeaderboardPositionDto {
+  rank: number | null;
+  totalParticipants: number;
+  roi: number;
+  pnl: number;
+  volume: number;
+  eligible: boolean;
+  neighbors: PredictThePitchLeaderboardEntryDto[];
+  computedAt: string;
+  marketsTraded: number | null;
+  minimumMarketsTraded: number;
+}
+
+export type PredictThePitchPositionStatus = 'open' | 'sold' | 'resolved';
+
+export interface PredictThePitchPositionDto {
+  outcomeAssetId: string;
+  outcomeAsset: string | null;
+  conditionId: string;
+  conditionSlug: string | null;
+  conditionName: string;
+  eventId: string | null;
+  eventSlug: string | null;
+  iconUrl: string | null;
+  capitalDeployed: number;
+  pnl: number;
+  roi: number;
+  status: PredictThePitchPositionStatus;
+  fillShares: number;
+  fillSharesBought: number;
+  fillSharesSold: number;
+  fillPrice: number;
+  fillDate: string;
+}
+
+export interface PredictThePitchPositionsDto {
+  openPositions: PredictThePitchPositionDto[];
+  resolvedPositions: PredictThePitchPositionDto[];
+  computedAt: string | null;
+  numberOfPositionsToShow?: number | null;
+}
+
+export interface PredictThePitchCampaignParticipantOutcomeDto
+  extends BaseCampaignParticipantOutcomeDto {
+  rank?: number | null;
+}
+
+export interface PredictThePitchPrizeBreakdownEntryDto {
+  rank: number;
+  amountUsd: number;
+}
+
+export interface PredictThePitchPrizePoolDto {
+  totalVolumeUsd: number;
+  unlockedPoolUsd: number;
+  thresholdsUsd: number[];
+  poolScheduleUsd: number[];
+  breakdown: PredictThePitchPrizeBreakdownEntryDto[];
+  computedAt: string | null;
+}
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PredictThePitchLeaderboardEntryState = {
+  rank: number;
+  referralCode: string;
+  roi: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PredictThePitchLeaderboardState = {
+  campaignId: string;
+  computedAt: string;
+  entries: PredictThePitchLeaderboardEntryState[];
+  totalParticipants: number;
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PredictThePitchLeaderboardPositionFoundState = {
+  rank: number | null;
+  totalParticipants: number;
+  roi: number;
+  pnl: number;
+  volume: number;
+  eligible: boolean;
+  neighbors: PredictThePitchLeaderboardEntryState[];
+  computedAt: string;
+  marketsTraded: number | null;
+  minimumMarketsTraded: number;
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PredictThePitchLeaderboardPositionNotFoundState = {
+  notFound: true;
+  lastFetched: number;
+};
+
+export type PredictThePitchLeaderboardPositionState =
+  | PredictThePitchLeaderboardPositionFoundState
+  | PredictThePitchLeaderboardPositionNotFoundState;
+
+/**
+ * Single cached position (mirrors {@link PredictThePitchPositionDto}; explicit plain-object shape for cache / Json).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PredictThePitchPositionState = {
+  outcomeAssetId: string;
+  outcomeAsset: string | null;
+  conditionId: string;
+  conditionSlug: string | null;
+  conditionName: string;
+  eventId: string | null;
+  eventSlug: string | null;
+  iconUrl: string | null;
+  capitalDeployed: number;
+  pnl: number;
+  roi: number;
+  status: 'open' | 'sold' | 'resolved';
+  fillShares: number;
+  fillSharesBought: number;
+  fillSharesSold: number;
+  fillPrice: number;
+  fillDate: string;
+};
+
+/**
+ * Cached positions payload (explicit shape for Json / StateConstraint compatibility).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PredictThePitchPositionsState = {
+  openPositions: PredictThePitchPositionState[];
+  resolvedPositions: PredictThePitchPositionState[];
+  computedAt: string | null;
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PredictThePitchPrizeBreakdownEntryState = {
+  rank: number;
+  amountUsd: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PredictThePitchPrizePoolState = {
+  totalVolumeUsd: number;
+  unlockedPoolUsd: number;
+  thresholdsUsd: number[];
+  poolScheduleUsd: number[];
+  breakdown: PredictThePitchPrizeBreakdownEntryState[];
+  computedAt: string | null;
+  lastFetched: number;
+};
+
+// ─── End Predict The Pitch Campaign ───────────────────────────────────────
+
+// ─── Money Account Sweepstakes Campaign ───────────────────────────────────
+
+export type MoneyAccountSweepstakesTodayStatus =
+  | 'on_track'
+  | 'not_yet_qualified'
+  | 'lost_today'
+  // Today is outside the campaign's scored set, so day close writes no entry
+  // either way and no verdict exists. `qualifyingDepositsUsd` still reports
+  // real progress, so a shortfall must NOT be derived from it here — the
+  // participant may already be over the threshold.
+  | 'not_scored';
+
+export interface MoneyAccountSweepstakesStatsMeDto {
+  entryCount: number;
+  currentBalanceUsd: number;
+  yieldEarnedUsd: number;
+  qualifyingDepositsUsd: number;
+  qualifyingThresholdUsd: number;
+  todayStatus: MoneyAccountSweepstakesTodayStatus;
+  daysRemaining: number;
+  /**
+   * ISO timestamp of when the backend's on-chain ingest last ran — how fresh
+   * the deposit/balance figures above are, NOT when the response was built.
+   *
+   * Optional because older backend builds omit it entirely, and null when that
+   * environment's ingest has never run. Either way there is no freshness to
+   * report, so callers must hide the label rather than render a fallback date.
+   */
+  dataAsOf?: string | null;
+}
+
+export interface MoneyAccountSweepstakesPrizePoolDto {
+  totalVolumeUsd: number;
+  unlockedPoolUsd: number;
+  thresholdsUsd: number[];
+  poolScheduleUsd: number[];
+  numberOfWinners: number;
+  minPrizeUsd: number;
+  maxPrizeUsd: number;
+}
+
+/**
+ * Response DTO for GET /money-account-sweepstakes/:campaignId/stats/volume (public).
+ */
+export interface MoneyAccountSweepstakesVolumeStatsDto {
+  totalVolumeUsd: number;
+  eligibleParticipantCount: number;
+  yieldEarnedUsd: number;
+}
+
+export interface MoneyAccountSweepstakesDrawExplanationDto {
+  merkleRoot: string;
+  seedBlock: number;
+  seedBlockHash: string;
+  formula: string;
+  entryCount: number;
+  winnerCount: number;
+  reserveCount: number;
+}
+
+export interface MoneyAccountSweepstakesRankedEntryDto {
+  drawOrder: number;
+  addressPrefix: string;
+  refCode: string | null;
+  weight: number;
+  isReserve: boolean;
+}
+
+export interface MoneyAccountSweepstakesFinalWinnerDto {
+  originalRank: number;
+  addressPrefix: string;
+  refCode: string | null;
+  prizeAmountUsd: number | null;
+}
+
+export interface MoneyAccountSweepstakesAdjustmentDto {
+  kind: 'promoted' | 'removed';
+  drawOrder: number;
+  addressPrefix: string;
+  refCode: string | null;
+}
+
+export interface MoneyAccountSweepstakesMerkleProofStepDto {
+  sibling: string;
+  position: 'left' | 'right';
+}
+
+export interface MoneyAccountSweepstakesAddressProofDto {
+  included: boolean;
+  index?: number | null;
+  leaf?: string | null;
+  path?: MoneyAccountSweepstakesMerkleProofStepDto[];
+}
+
+export interface MoneyAccountSweepstakesDrawProofDto {
+  explanation: MoneyAccountSweepstakesDrawExplanationDto;
+  originalDraw: MoneyAccountSweepstakesRankedEntryDto[];
+  finalWinners: MoneyAccountSweepstakesFinalWinnerDto[];
+  adjustmentTrail: MoneyAccountSweepstakesAdjustmentDto[];
+  addressProof?: MoneyAccountSweepstakesAddressProofDto;
+}
+
+export interface MoneyAccountSweepstakesOutcomeDto
+  extends BaseCampaignParticipantOutcomeDto {
+  prizeAmountUsd?: number | null;
+  /** 1-based draw position; same as draw-proof originalRank / drawOrder. */
+  rank?: number | null;
+}
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesStatsMeState = {
+  entryCount: number;
+  currentBalanceUsd: number;
+  yieldEarnedUsd: number;
+  qualifyingDepositsUsd: number;
+  qualifyingThresholdUsd: number;
+  todayStatus: MoneyAccountSweepstakesTodayStatus;
+  daysRemaining: number;
+  dataAsOf?: string | null;
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesPrizePoolState = {
+  totalVolumeUsd: number;
+  unlockedPoolUsd: number;
+  thresholdsUsd: number[];
+  poolScheduleUsd: number[];
+  numberOfWinners: number;
+  minPrizeUsd: number;
+  maxPrizeUsd: number;
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesVolumeStatsState = {
+  totalVolumeUsd: number;
+  eligibleParticipantCount: number;
+  yieldEarnedUsd: number;
+  lastFetched: number;
+};
+
+/**
+ * Plain-object state shapes for draw proof cache (interfaces are not Json-safe).
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesDrawExplanationState = {
+  merkleRoot: string;
+  seedBlock: number;
+  seedBlockHash: string;
+  formula: string;
+  entryCount: number;
+  winnerCount: number;
+  reserveCount: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesRankedEntryState = {
+  drawOrder: number;
+  addressPrefix: string;
+  refCode: string | null;
+  weight: number;
+  isReserve: boolean;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesFinalWinnerState = {
+  originalRank: number;
+  addressPrefix: string;
+  refCode: string | null;
+  prizeAmountUsd: number | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesAdjustmentState = {
+  kind: 'promoted' | 'removed';
+  drawOrder: number;
+  addressPrefix: string;
+  refCode: string | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesMerkleProofStepState = {
+  sibling: string;
+  position: 'left' | 'right';
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesAddressProofState = {
+  included: boolean;
+  index?: number | null;
+  leaf?: string | null;
+  path?: MoneyAccountSweepstakesMerkleProofStepState[];
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type MoneyAccountSweepstakesDrawProofState = {
+  explanation: MoneyAccountSweepstakesDrawExplanationState;
+  originalDraw: MoneyAccountSweepstakesRankedEntryState[];
+  finalWinners: MoneyAccountSweepstakesFinalWinnerState[];
+  adjustmentTrail: MoneyAccountSweepstakesAdjustmentState[];
+  addressProof?: MoneyAccountSweepstakesAddressProofState;
+  lastFetched: number;
+};
+
+// ─── End Money Account Sweepstakes Campaign ───────────────────────────────
+
+/**
+ * Campaign status derived from dates
+ * - upcoming: now < startDate
+ * - active: startDate <= now < endDate
+ * - complete: now >= endDate
+ */
+export type CampaignStatus = 'upcoming' | 'active' | 'complete';
+
+export interface EstimateAssetDto {
+  /**
+   * Asset identifier in CAIP-19 format
+   * @example 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+   */
+  id: CaipAssetType;
+  /**
+   * Amount of the asset as a string
+   * @example '25739959426'
+   */
+  amount: string;
+  /**
+   * Asset price in USD PER TOKEN. Using ETH as an example, 1 ETH = 4493.23 USD at the time of writing. If provided, this will be used instead of doing a network call to get the current price.
+   * @example '4512.34'
+   */
+  usdPrice?: string;
+}
+
+export interface EstimateSwapContextDto {
+  /**
+   * Source asset information, in caip19 format
+   * @example {
+   *   id: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+   *   amount: '25739959426'
+   * }
+   */
+  srcAsset: EstimateAssetDto;
+
+  /**
+   * Destination asset information, in caip19 format.
+   * @example {
+   *   id: 'eip155:1/slip44:60',
+   *   amount: '9912500000000000000'
+   * }
+   */
+  destAsset: EstimateAssetDto;
+
+  /**
+   * Fee asset information, in caip19 format
+   * @example {
+   *   id: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+   *   amount: '100'
+   * }
+   */
+  feeAsset: EstimateAssetDto;
+}
+
+export interface EstimatePerpsContextDto {
+  /**
+   * Type of the PERPS action (open position, close position, stop/loss, take profit, ...)
+   * @example 'OPEN_POSITION'
+   */
+  type: 'OPEN_POSITION' | 'CLOSE_POSITION' | 'STOP_LOSS' | 'TAKE_PROFIT';
+
+  /**
+   * USD fee value
+   * @example '12.34'
+   */
+  usdFeeValue: string;
+
+  /**
+   * Asset symbol (e.g., "ETH", "BTC")
+   * @example 'ETH'
+   */
+  coin: string;
+}
+
+export interface EstimatePredictContextDto {
+  /**
+   * Fee asset information, in caip19 format
+   * @example {
+   *   id: 'eip155:137/erc20:0x2791bca1f2de4661ed88a30c99a7a9449aa84174',
+   *   amount: '1000000'
+   * }
+   */
+  feeAsset: EstimateAssetDto;
+}
+
+export interface EstimateShieldContextDto {
+  /**
+   * Fee asset information, in caip19 format
+   * @example {
+   *   id: 'eip155:1/slip44:60',
+   *   amount: '1000000000000000'
+   * }
+   */
+  feeAsset: EstimateAssetDto;
+}
+
+export interface EstimatePointsContextDto {
+  /**
+   * Swap context data, must be present for SWAP activity
+   */
+  swapContext?: EstimateSwapContextDto;
+
+  /**
+   * PERPS context data, must be present for PERPS activity.
+   * Can be a single position or an array of positions for batch estimation.
+   * When an array is provided, the backend returns aggregated points (sum) and average bonus.
+   * @example Single position: { type: 'CLOSE_POSITION', coin: 'USDC', usdFeeValue: '1.00' }
+   * @example Batch positions: [{ type: 'CLOSE_POSITION', coin: 'USDC', usdFeeValue: '1.00' }, ...]
+   */
+  perpsContext?: EstimatePerpsContextDto | EstimatePerpsContextDto[];
+
+  /**
+   * Predict context data, must be present for PREDICT activity
+   */
+  predictContext?: EstimatePredictContextDto;
+
+  /**
+   * Shield context data, must be present for SHIELD activity
+   */
+  shieldContext?: EstimateShieldContextDto;
+}
+
+/**
+ * Type of point earning activity. Swap is for swaps and bridges. PERPS is for perps activities.
+ * @example 'SWAP'
+ */
+export type PointsEventEarnType =
+  | 'SWAP'
+  | 'PERPS'
+  | 'PREDICT'
+  | 'REFERRAL'
+  | 'SIGN_UP_BONUS'
+  | 'LOYALTY_BONUS'
+  | 'ONE_TIME_BONUS'
+  | 'CARD'
+  | 'MUSD_DEPOSIT'
+  | 'SHIELD';
+
+export interface GetPointsEventsDto {
+  seasonId: string;
+  subscriptionId: string;
+  cursor: string | null;
+  forceFresh?: boolean;
+  type?: PointsEventEarnType;
+}
+
+export interface GetPointsEventsLastUpdatedDto {
+  seasonId: string;
+  subscriptionId: string;
+  type?: PointsEventEarnType;
+}
+
+/**
+ * Paginated list of points events
+ */
+export interface PaginatedPointsEventsDto {
+  has_more: boolean;
+  cursor: string | null;
+  results: PointsEventDto[];
+}
+
+/**
+ * Asset information for events
+ */
+export interface EventAssetDto {
+  /**
+   * Amount of the token as a string
+   * @example '1000000000000000000'
+   */
+  amount: string;
+
+  /**
+   * CAIP-19 asset type
+   * @example 'eip155:1/slip44:60'
+   */
+  type: string;
+
+  /**
+   * Decimals of the token
+   * @example 18
+   */
+  decimals: number;
+
+  /**
+   * Name of the token
+   * @example 'Ethereum'
+   */
+  name?: string;
+
+  /**
+   * Symbol of the token
+   * @example 'ETH'
+   */
+  symbol?: string;
+}
+
+/**
+ * Swap event payload
+ */
+export interface SwapEventPayload {
+  /**
+   * Source asset details
+   */
+  srcAsset: EventAssetDto;
+
+  /**
+   * Destination asset details
+   */
+  destAsset?: EventAssetDto;
+
+  /**
+   * Transaction hash
+   * @example '0x.......'
+   */
+  txHash?: string;
+}
+
+/**
+ * PERPS event payload
+ */
+export interface PerpsEventPayload {
+  /**
+   * Type of the PERPS event
+   * @example 'OPEN_POSITION'
+   */
+  type: 'OPEN_POSITION' | 'CLOSE_POSITION' | 'TAKE_PROFIT' | 'STOP_LOSS';
+
+  /**
+   * Direction of the position
+   * @example 'LONG'
+   */
+  direction?: 'LONG' | 'SHORT';
+
+  /**
+   * Asset information
+   */
+  asset: EventAssetDto;
+
+  /**
+   * PNL of the position
+   * @example 10.0464
+   */
+  pnl?: string;
+}
+
+/**
+ * Card event payload
+ */
+export interface CardEventPayload {
+  /**
+   * Asset information (contains amount, symbol, decimals, etc.)
+   */
+  asset: EventAssetDto;
+
+  /**
+   * Transaction hash
+   * @example '0x.......'
+   */
+  txHash?: string;
+}
+
+/**
+ * mUSD deposit event payload
+ */
+export interface MusdDepositEventPayload {
+  /**
+   * Date of the deposit
+   * @example '2025-11-11'
+   */
+  date: string;
+}
+
+/**
+ * Bonus code event payload
+ */
+export interface BonusCodeEventPayload {
+  /**
+   * Bonus code
+   * @example 'BNS123'
+   */
+  code: string;
+}
+
+/**
+ * Base points event interface
+ */
+interface BasePointsEventDto {
+  /**
+   * ID of the point earning activity
+   * @example '01974010-377f-7553-a365-0c33c8130980'
+   */
+  id: string;
+
+  /**
+   * Timestamp of the point earning activity
+   * @example '2021-01-01T00:00:00.000Z'
+   */
+  timestamp: Date;
+
+  /**
+   * Value of the point earning activity
+   * @example 100
+   */
+  value: number;
+
+  /**
+   * Bonus of the point earning activity
+   * @example {}
+   */
+  bonus: {
+    bips?: number | null;
+    bonusPoints?: number | null;
+    bonuses?: string[] | null;
+  } | null;
+
+  /**
+   * Account address of the point earning activity
+   * @example '0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6'
+   */
+  accountAddress: string | null;
+
+  /**
+   * Timestamp of the point earning activity
+   * @example '2021-01-01T00:00:00.000Z'
+   */
+  updatedAt: Date;
+}
+
+/**
+ * Points event with discriminated union for payloads
+ */
+export type PointsEventDto = BasePointsEventDto &
+  (
+    | {
+        type: 'SWAP';
+        payload: SwapEventPayload | null;
+      }
+    | {
+        type: 'PERPS';
+        payload: PerpsEventPayload | null;
+      }
+    | {
+        type: 'CARD';
+        payload: CardEventPayload | null;
+      }
+    | {
+        type: 'PREDICT';
+        payload: null;
+      }
+    | {
+        type: 'MUSD_DEPOSIT';
+        payload: MusdDepositEventPayload | null;
+      }
+    | {
+        type: 'REFERRAL' | 'SIGN_UP_BONUS' | 'LOYALTY_BONUS' | 'ONE_TIME_BONUS';
+        payload: null;
+      }
+    | { type: 'BONUS_CODE'; payload: BonusCodeEventPayload | null }
+    | { type: string; payload: Record<string, string> | null }
+  );
+
+export interface EstimatePointsDto {
+  /**
+   * Type of point earning activity
+   * @example 'SWAP'
+   */
+  activityType: PointsEventEarnType;
+
+  /**
+   * Account address performing the activity in CAIP-10 format
+   * @example 'eip155:1:0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6'
+   */
+  account: CaipAccountId;
+
+  /**
+   * Context data specific to the activity type
+   */
+  activityContext: EstimatePointsContextDto;
+}
+
+export interface EstimatedPointsDto {
+  /**
+   * Earnable for the activity
+   * @example 100
+   */
+  pointsEstimate: number;
+
+  /**
+   * Bonus applied to the points estimate, in basis points. 100 = 1%
+   * @example 200
+   */
+  bonusBips: number;
+}
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonTierDto = {
+  id: string;
+  name: string;
+  pointsNeeded: number;
+  image: ThemeImage;
+  levelNumber: string;
+  rewards: SeasonRewardDto[];
+};
+
+export interface SeasonRewardDto {
+  id: string;
+  name: string;
+  shortDescription: string;
+  longDescription: string;
+  shortUnlockedDescription: string;
+  longUnlockedDescription: string;
+  claimUrl?: string;
+  iconName: string;
+  rewardType: SeasonRewardType;
+  isEndOfSeasonReward?: boolean;
+  endOfSeasonName?: string;
+  endOfSeasonShortDescription?: string;
+  claimEndDate?: string;
+}
+
+/**
+ * DTO for Linea token reward from Season 1
+ */
+export interface LineaTokenRewardDto {
+  /**
+   * The subscription ID
+   * @example 'example-uuid'
+   */
+  subscriptionId: string;
+
+  /**
+   * The amount of Linea tokens as a string
+   * @example '1000'
+   */
+  amount: string;
+}
+
+export enum SeasonRewardType {
+  GENERIC = 'GENERIC',
+  PERPS_DISCOUNT = 'PERPS_DISCOUNT',
+  POINTS_BOOST = 'POINTS_BOOST',
+  ALPHA_FOX_INVITE = 'ALPHA_FOX_INVITE',
+  METAL_CARD = 'METAL_CARD',
+  LINEA_TOKENS = 'LINEA_TOKENS',
+  NANSEN = 'NANSEN',
+  OTHERSIDE = 'OTHERSIDE',
+}
+
+export interface SeasonDto {
+  id: string;
+  name: string;
+  startDate: Date;
+  endDate: Date;
+  tiers: SeasonTierDto[];
+  activityTypes: SeasonActivityTypeDto[];
+  waysToEarn: SeasonWayToEarnDto[];
+}
+
+export interface SeasonStatusBalanceDto {
+  total: number;
+  updatedAt?: Date;
+}
+
+export interface SeasonStatusDto {
+  season: SeasonDto;
+  balance: SeasonStatusBalanceDto;
+  currentTierId: string;
+}
+
+export interface SubscriptionReferralDetailsDto {
+  referralCode: string;
+  totalReferees: number;
+  referredByCode: string;
+  /** True when this subscription signed up with a VIP's referral code. */
+  isVipReferee?: boolean;
+  /** The VIP referrer's primary referral code, when isVipReferee is true. */
+  vipReferrer?: { referralCode: string };
+}
+
+export interface PointsBoostEnvelopeDto {
+  boosts: PointsBoostDto[];
+}
+
+export interface PointsBoostDto {
+  id: string;
+  name: string;
+  icon: ThemeImage;
+  boostBips: number;
+  seasonLong: boolean;
+  startDate?: string;
+  endDate?: string;
+  backgroundColor: string;
+  deeplink?: string;
+}
+
+export interface RewardDto {
+  id: string;
+  seasonRewardId: string;
+  claimStatus: RewardClaimStatus;
+  claim?: RewardClaim;
+  createdAt?: string;
+}
+
+export type RewardClaimData =
+  | PointsBoostRewardData
+  | AlphaFoxInviteRewardData
+  | EndOfSeasonUrlData
+  | null;
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PointsBoostRewardData = {
+  seasonPointsBonusId: string;
+  activeUntil: string; // reward expiration date
+  activeFrom: string; // claim date
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type AlphaFoxInviteRewardData = {
+  telegramHandle: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type EndOfSeasonUrlData = {
+  url: string;
+};
+
+export interface RewardClaim {
+  id: string;
+  rewardId: string;
+  accountId: string;
+  data: RewardClaimData;
+}
+
+export enum RewardClaimStatus {
+  UNCLAIMED = 'UNCLAIMED',
+  CLAIMED = 'CLAIMED',
+}
+
+export interface ThemeImage {
+  lightModeUrl: string;
+  darkModeUrl: string;
+}
+
+export interface ClaimRewardDto {
+  data?: Record<string, string>;
+}
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SubscriptionReferralDetailState = {
+  referralCode: string;
+  totalReferees: number;
+  referredByCode: string;
+  /** True when this subscription signed up with a VIP's referral code. */
+  isVipReferee: boolean;
+  /** The VIP referrer's primary referral code, when isVipReferee is true. */
+  referredByVipCode?: string | null;
+  lastFetched?: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SubscriptionBenefitDto = {
+  id: number;
+  longTitle: string;
+  shortDescription: string;
+  longDescription: string;
+  thumbnail: string;
+  validFrom: string;
+  validTo: string | null;
+  url: string;
+  actionDate: string | null;
+  chain: string;
+  type: { id: number; name: string };
+  companyName?: string | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SubscriptionBenefitsState = {
+  benefits: SubscriptionBenefitDto[];
+  limit: number;
+  lastFetched: number;
+};
+
+// Serializable versions for state storage (Date objects converted to timestamps)
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonRewardDtoState = {
+  id: string;
+  name: string;
+  shortDescription: string;
+  longDescription: string;
+  shortUnlockedDescription: string;
+  longUnlockedDescription: string;
+  claimUrl?: string;
+  iconName: string;
+  rewardType: SeasonRewardType;
+  isEndOfSeasonReward?: boolean;
+  endOfSeasonName?: string;
+  endOfSeasonShortDescription?: string;
+  claimEndDate?: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonTierDtoState = {
+  id: string;
+  name: string;
+  pointsNeeded: number;
+  image: {
+    lightModeUrl: string;
+    darkModeUrl: string;
+  };
+  levelNumber: string;
+  rewards: SeasonRewardDtoState[];
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonDtoState = {
+  id: string;
+  name: string;
+  startDate: number; // timestamp
+  endDate: number; // timestamp
+  tiers: SeasonTierDtoState[];
+  activityTypes: SeasonActivityTypeDto[];
+  waysToEarn: SeasonWayToEarnDto[];
+  lastFetched?: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonStatusBalanceDtoState = {
+  total: number;
+  updatedAt?: number; // timestamp
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonTierState = {
+  currentTier: SeasonTierDtoState | null;
+  nextTier: SeasonTierDtoState | null;
+  nextTierPointsNeeded: number | null;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonStatusState = {
+  season: SeasonDtoState;
+  balance: SeasonStatusBalanceDtoState;
+  tier: SeasonTierState;
+  lastFetched?: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type ActiveBoostsState = {
+  boosts: {
+    id: string;
+    name: string;
+    icon: {
+      lightModeUrl: string;
+      darkModeUrl: string;
+    };
+    boostBips: number;
+    seasonLong: boolean;
+    startDate?: string;
+    endDate?: string;
+    backgroundColor: string;
+  }[];
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type UnlockedRewardsState = {
+  rewards: {
+    id: string;
+    seasonRewardId: string;
+    claimStatus: RewardClaimStatus;
+    claim?: {
+      id: string;
+      rewardId: string;
+      accountId: string; // Changed from bigint to string for JSON serialization
+      data: RewardClaimData;
+    };
+  }[];
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OffDeviceSubscriptionAccountsState = {
+  accounts: string[];
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PointsEventsDtoState = {
+  results: {
+    id: string;
+    timestamp: number;
+    value: number;
+    bonus: { bips?: number | null; bonuses?: string[] | null } | null;
+    accountAddress: string | null;
+    type: string;
+    updatedAt: number;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    payload: any;
+  }[];
+  has_more: boolean;
+  cursor: string | null;
+  lastFetched: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type RewardsAccountState = {
+  account: CaipAccountId;
+  hasOptedIn?: boolean;
+  subscriptionId: string | null;
+  perpsFeeDiscount: number | null;
+  lastPerpsDiscountRateFetched: number | null;
+  lastFreshOptInStatusCheck?: number | null;
+};
+
+/**
+ * A single entry in the points estimate history.
+ * Used by Customer Support to verify points estimates shown to users.
+ * Structure is intentionally flat to simplify debugging and log analysis.
+ */
+export interface PointsEstimateHistoryEntry {
+  /**
+   * Timestamp when the estimate was made (milliseconds since epoch)
+   */
+  timestamp: number;
+
+  /**
+   * Type of point earning activity (from request)
+   * @example 'SWAP'
+   */
+  requestActivityType: PointsEventEarnType;
+
+  /**
+   * Account address performing the activity in CAIP-10 format (from request)
+   * @example 'eip155:1:0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6'
+   */
+  requestAccount: CaipAccountId;
+
+  /**
+   * Source asset ID for swap activity in CAIP-19 format (if applicable)
+   * @example 'eip155:1/slip44:60'
+   */
+  requestSwapSrcAssetId?: CaipAssetType;
+
+  /**
+   * Source asset amount for swap activity (if applicable)
+   * @example '1000000000000000000'
+   */
+  requestSwapSrcAssetAmount?: string;
+
+  /**
+   * Source asset USD price for swap activity (if applicable)
+   * @example '4512.34'
+   */
+  requestSwapSrcAssetUsdPrice?: string;
+
+  /**
+   * Destination asset ID for swap activity in CAIP-19 format (if applicable)
+   * @example 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+   */
+  requestSwapDestAssetId?: CaipAssetType;
+
+  /**
+   * Destination asset amount for swap activity (if applicable)
+   * @example '4500000000'
+   */
+  requestSwapDestAssetAmount?: string;
+
+  /**
+   * Destination asset USD price for swap activity (if applicable)
+   * @example '1.00'
+   */
+  requestSwapDestAssetUsdPrice?: string;
+
+  /**
+   * Fee asset ID for swap activity in CAIP-19 format (if applicable)
+   * @example 'eip155:1/slip44:60'
+   */
+  requestSwapFeeAssetId?: CaipAssetType;
+
+  /**
+   * Fee asset amount for swap activity (if applicable)
+   * @example '5000000000000000'
+   */
+  requestSwapFeeAssetAmount?: string;
+
+  /**
+   * Fee asset USD price for swap activity (if applicable)
+   * @example '4512.34'
+   */
+  requestSwapFeeAssetUsdPrice?: string;
+
+  /**
+   * Type of PERPS action (if applicable)
+   * @example 'OPEN_POSITION'
+   */
+  requestPerpsType?: EstimatePerpsContextDto['type'];
+
+  /**
+   * USD fee value for PERPS activity (if applicable)
+   * @example '12.34'
+   */
+  requestPerpsUsdFeeValue?: string;
+
+  /**
+   * Asset symbol for PERPS activity (if applicable)
+   * @example 'ETH'
+   */
+  requestPerpsCoin?: string;
+
+  /**
+   * Predict fee asset ID in CAIP-19 format (if applicable)
+   * @example 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+   */
+  requestPredictFeeAssetId?: CaipAssetType;
+
+  /**
+   * Predict fee asset amount (if applicable)
+   * @example '1000000000000000000'
+   */
+  requestPredictFeeAssetAmount?: string;
+
+  /**
+   * Predict fee asset USD price (if applicable)
+   * @example '4512.34'
+   */
+  requestPredictFeeAssetUsdPrice?: string;
+
+  /**
+   * Shield fee asset ID in CAIP-19 format (if applicable)
+   * @example 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+   */
+  requestShieldFeeAssetId?: CaipAssetType;
+
+  /**
+   * Shield fee asset amount (if applicable)
+   * @example '1000000000000000000'
+   */
+  requestShieldFeeAssetAmount?: string;
+
+  /**
+   * Shield fee asset USD price (if applicable)
+   * @example '4512.34'
+   */
+  requestShieldFeeAssetUsdPrice?: string;
+
+  /**
+   * Estimated points earnable for the activity (from response)
+   * @example 100
+   */
+  responsePointsEstimate: number;
+
+  /**
+   * Bonus applied to the points estimate, in basis points (from response)
+   * 100 = 1%
+   * @example 200
+   */
+  responseBonusBips: number;
+}
+
+/**
+ * Serialized version of PointsEstimateHistoryEntry for state storage.
+ * Uses plain strings instead of branded CAIP types to satisfy StateConstraint (Json-serializable).
+ * This is the type stored in RewardsControllerState.pointsEstimateHistory.
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PointsEstimateHistoryEntryState = {
+  /**
+   * Timestamp when the estimate was made (milliseconds since epoch)
+   */
+  timestamp: number;
+
+  /**
+   * Type of point earning activity (from request)
+   * @example 'SWAP'
+   */
+  requestActivityType: string;
+
+  /**
+   * Account address performing the activity in CAIP-10 format (stored as plain string)
+   * @example 'eip155:1:0x742d35Cc6634C0532925a3b8D4C9db96C4b4d8b6'
+   */
+  requestAccount: string;
+
+  /**
+   * Source asset ID for swap activity in CAIP-19 format (stored as plain string)
+   * @example 'eip155:1/slip44:60'
+   */
+  requestSwapSrcAssetId?: string;
+
+  /**
+   * Source asset amount for swap activity (if applicable)
+   * @example '1000000000000000000'
+   */
+  requestSwapSrcAssetAmount?: string;
+
+  /**
+   * Source asset USD price for swap activity (if applicable)
+   * @example '4512.34'
+   */
+  requestSwapSrcAssetUsdPrice?: string;
+
+  /**
+   * Destination asset ID for swap activity in CAIP-19 format (stored as plain string)
+   * @example 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+   */
+  requestSwapDestAssetId?: string;
+
+  /**
+   * Destination asset amount for swap activity (if applicable)
+   * @example '4500000000'
+   */
+  requestSwapDestAssetAmount?: string;
+
+  /**
+   * Destination asset USD price for swap activity (if applicable)
+   * @example '1.00'
+   */
+  requestSwapDestAssetUsdPrice?: string;
+
+  /**
+   * Fee asset ID for swap activity in CAIP-19 format (stored as plain string)
+   * @example 'eip155:1/slip44:60'
+   */
+  requestSwapFeeAssetId?: string;
+
+  /**
+   * Fee asset amount for swap activity (if applicable)
+   * @example '5000000000000000'
+   */
+  requestSwapFeeAssetAmount?: string;
+
+  /**
+   * Fee asset USD price for swap activity (if applicable)
+   * @example '4512.34'
+   */
+  requestSwapFeeAssetUsdPrice?: string;
+
+  /**
+   * Type of PERPS action (stored as plain string)
+   * @example 'OPEN_POSITION'
+   */
+  requestPerpsType?: string;
+
+  /**
+   * USD fee value for PERPS activity (if applicable)
+   * @example '12.34'
+   */
+  requestPerpsUsdFeeValue?: string;
+
+  /**
+   * Asset symbol for PERPS activity (if applicable)
+   * @example 'ETH'
+   */
+  requestPerpsCoin?: string;
+
+  /**
+   * Predict fee asset ID in CAIP-19 format (stored as plain string)
+   * @example 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+   */
+  requestPredictFeeAssetId?: string;
+
+  /**
+   * Predict fee asset amount (if applicable)
+   * @example '1000000000000000000'
+   */
+  requestPredictFeeAssetAmount?: string;
+
+  /**
+   * Predict fee asset USD price (if applicable)
+   * @example '4512.34'
+   */
+  requestPredictFeeAssetUsdPrice?: string;
+
+  /**
+   * Shield fee asset ID in CAIP-19 format (stored as plain string)
+   * @example 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+   */
+  requestShieldFeeAssetId?: string;
+
+  /**
+   * Shield fee asset amount (if applicable)
+   * @example '1000000000000000000'
+   */
+  requestShieldFeeAssetAmount?: string;
+
+  /**
+   * Shield fee asset USD price (if applicable)
+   * @example '4512.34'
+   */
+  requestShieldFeeAssetUsdPrice?: string;
+
+  /**
+   * Estimated points earnable for the activity (from response)
+   * @example 100
+   */
+  responsePointsEstimate: number;
+
+  /**
+   * Bonus applied to the points estimate, in basis points (from response)
+   * 100 = 1%
+   * @example 200
+   */
+  responseBonusBips: number;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type RewardsControllerState = {
+  activeAccount: RewardsAccountState | null;
+  accounts: { [account: CaipAccountId]: RewardsAccountState };
+  subscriptions: { [subscriptionId: string]: SubscriptionDto };
+  seasons: { [seasonId: string]: SeasonDtoState };
+  subscriptionReferralDetails: {
+    [subscriptionId: string]: SubscriptionReferralDetailState;
+  };
+  subscriptionBenefits: {
+    [subscriptionId: string]: SubscriptionBenefitsState;
+  };
+  vipDashboard: {
+    [subscriptionId: string]: VipDashboardState;
+  };
+  vipRefereeDashboard: {
+    [subscriptionId: string]: VipRefereeMeState;
+  };
+  vipPerpsFees: {
+    [subscriptionId: string]: VipPerpsFeesState;
+  };
+  /** First-page VIP transactions keyed by subscriptionId:type. */
+  vipTransactions: {
+    [compositeId: string]: VipTransactionsState;
+  };
+  seasonStatuses: { [compositeId: string]: SeasonStatusState };
+  activeBoosts: { [compositeId: string]: ActiveBoostsState };
+  unlockedRewards: { [compositeId: string]: UnlockedRewardsState };
+  pointsEvents: { [compositeId: string]: PointsEventsDtoState };
+  offDeviceSubscriptionAccounts: {
+    [subscriptionId: string]: OffDeviceSubscriptionAccountsState;
+  };
+  /** Campaign data keyed by 'REWARDS_CAMPAIGNS' */
+  campaigns: { [key: string]: CampaignState };
+  campaignParticipantStatus: {
+    [compositeId: string]: CampaignParticipantStatusState;
+  };
+  /** Ondo campaign leaderboard data keyed by campaignId */
+  ondoCampaignLeaderboard: { [campaignId: string]: CampaignLeaderboardState };
+  /** Ondo campaign leaderboard position keyed by compositeId (subscriptionId:campaignId) */
+  ondoCampaignLeaderboardPositions: {
+    [compositeId: string]: CampaignLeaderboardPositionState;
+  };
+  /**
+   * Ondo campaign portfolio keyed by compositeId (subscriptionId:campaignId).
+   * Each value is a cached successful GET /portfolio/me response plus {@link OndoGmPortfolioState.lastFetched}.
+   * Null API responses are not cached (unlike leaderboard position, which uses a not-found sentinel).
+   */
+  ondoCampaignPortfolio: {
+    [compositeId: string]: OndoGmPortfolioState;
+  };
+  /**
+   * Ondo campaign activity keyed by compositeId (subscriptionId:campaignId).
+   * First-page results are cached for 1 minute; pagination pages are not cached.
+   */
+  ondoCampaignActivity: {
+    [compositeId: string]: OndoGmActivityState;
+  };
+  /** Ondo campaign deposits keyed by campaignId (public endpoint). */
+  ondoCampaignDeposits: { [campaignId: string]: OndoGmCampaignDepositsState };
+  /** Perps Trading Campaign leaderboard keyed by campaignId (public endpoint). */
+  perpsTradingCampaignLeaderboard: {
+    [campaignId: string]: PerpsTradingCampaignLeaderboardState;
+  };
+  /** Perps Trading Campaign leaderboard position keyed by compositeId (subscriptionId:campaignId). */
+  perpsTradingCampaignLeaderboardPositions: {
+    [compositeId: string]: PerpsTradingCampaignLeaderboardPositionState;
+  };
+  /** Perps Trading Campaign volume keyed by campaignId (public endpoint). */
+  perpsTradingCampaignVolume: {
+    [campaignId: string]: PerpsTradingCampaignVolumeState;
+  };
+  /** Perps Trading Campaign prize pool keyed by campaignId (public endpoint). */
+  perpsTradingCampaignPrizePool: {
+    [campaignId: string]: PerpsTradingCampaignPrizePoolState;
+  };
+  /** Predict The Pitch leaderboard keyed by campaignId (public endpoint). */
+  predictThePitchLeaderboard: {
+    [campaignId: string]: PredictThePitchLeaderboardState;
+  };
+  /** Predict The Pitch leaderboard position keyed by compositeId (subscriptionId:campaignId). */
+  predictThePitchLeaderboardPositions: {
+    [compositeId: string]: PredictThePitchLeaderboardPositionState;
+  };
+  /** Predict The Pitch positions keyed by compositeId (subscriptionId:campaignId). */
+  predictThePitchPositions: {
+    [compositeId: string]: PredictThePitchPositionsState;
+  };
+  /** Predict The Pitch prize pool keyed by campaignId (public endpoint). */
+  predictThePitchPrizePool: {
+    [campaignId: string]: PredictThePitchPrizePoolState;
+  };
+  /** Money Account Sweepstakes stats keyed by compositeId (subscriptionId:campaignId). */
+  moneyAccountSweepstakesStats: {
+    [compositeId: string]: MoneyAccountSweepstakesStatsMeState;
+  };
+  /** Money Account Sweepstakes prize pool keyed by campaignId (public endpoint). */
+  moneyAccountSweepstakesPrizePool: {
+    [campaignId: string]: MoneyAccountSweepstakesPrizePoolState;
+  };
+  /** Money Account Sweepstakes volume stats keyed by campaignId (public endpoint). */
+  moneyAccountSweepstakesVolumeStats: {
+    [campaignId: string]: MoneyAccountSweepstakesVolumeStatsState;
+  };
+  /** Money Account Sweepstakes draw proof keyed by campaignId (public endpoint). */
+  moneyAccountSweepstakesDrawProof: {
+    [campaignId: string]: MoneyAccountSweepstakesDrawProofState;
+  };
+  /** Cached client version requirements for the public version guard endpoint. */
+  clientVersionRequirements: ClientVersionRequirementState | null;
+  /**
+   * History of points estimates for Customer Support diagnostics.
+   * Stores the last N successful estimates to verify user-reported discrepancies.
+   * Array is ordered by timestamp (most recent first)
+   * Uses PointsEstimateHistoryEntryState (plain strings) to satisfy StateConstraint.
+   */
+  pointsEstimateHistory: PointsEstimateHistoryEntryState[];
+  /** Manually selected rewards API URL override; null means use the build default */
+  rewardsEnvUrl: string | null;
+};
+
+/**
+ * Event emitted when an account is linked to a subscription
+ */
+export interface RewardsControllerAccountLinkedEvent {
+  type: 'RewardsController:accountLinked';
+  payload: [
+    {
+      subscriptionId: string;
+      account: CaipAccountId;
+    },
+  ];
+}
+
+/**
+ * Event emitted when a reward is claimed
+ */
+export interface RewardsControllerRewardClaimedEvent {
+  type: 'RewardsController:rewardClaimed';
+  payload: [
+    {
+      rewardId: string;
+      subscriptionId: string;
+    },
+  ];
+}
+
+/**
+ * Event emitted when balance data should be invalidated
+ */
+export interface RewardsControllerBalanceUpdatedEvent {
+  type: 'RewardsController:balanceUpdated';
+  payload: [
+    {
+      seasonId: string;
+      subscriptionId: string;
+    },
+  ];
+}
+
+/**
+ * Event emitted when points events should be invalidated
+ */
+export interface RewardsControllerPointsEventsUpdatedEvent {
+  type: 'RewardsController:pointsEventsUpdated';
+  payload: [
+    {
+      seasonId: string;
+      subscriptionId: string;
+    },
+  ];
+}
+
+/**
+ * Event emitted when a user opts into a campaign, invalidating any cached
+ * participant status so hooks can refetch fresh data.
+ */
+export interface RewardsControllerCampaignOptedInEvent {
+  type: 'RewardsController:campaignOptedIn';
+  payload: [
+    {
+      campaignId: string;
+      subscriptionId: string;
+    },
+  ];
+}
+
+/**
+ * Event emitted when a user opts into a campaign, invalidating the cached
+ * leaderboard position so hooks can refetch fresh data.
+ */
+export interface RewardsControllerLeaderboardPositionInvalidatedEvent {
+  type: 'RewardsController:leaderboardPositionInvalidated';
+  payload: [
+    {
+      campaignId: string;
+      subscriptionId: string;
+    },
+  ];
+}
+
+/**
+ * Event emitted when a user opts into a campaign, invalidating the cached
+ * portfolio so hooks can refetch fresh data.
+ */
+export interface RewardsControllerPortfolioPositionInvalidatedEvent {
+  type: 'RewardsController:portfolioPositionInvalidated';
+  payload: [
+    {
+      campaignId: string;
+      subscriptionId: string;
+    },
+  ];
+}
+
+/**
+ * Events that can be emitted by the RewardsController
+ */
+export type RewardsControllerEvents =
+  | ControllerStateChangeEvent<'RewardsController', RewardsControllerState>
+  | RewardsControllerAccountLinkedEvent
+  | RewardsControllerRewardClaimedEvent
+  | RewardsControllerBalanceUpdatedEvent
+  | RewardsControllerPointsEventsUpdatedEvent
+  | RewardsControllerCampaignOptedInEvent
+  | RewardsControllerLeaderboardPositionInvalidatedEvent
+  | RewardsControllerPortfolioPositionInvalidatedEvent;
+
+/**
+ * Patch type for state changes
+ */
+export interface Patch {
+  op: 'replace' | 'add' | 'remove';
+  path: string[];
+  value?: unknown;
+}
+
+/**
+ * Geo rewards metadata containing location and support info
+ */
+export interface GeoRewardsMetadata {
+  /**
+   * The geographic location string (e.g., 'US', 'CA-ON', 'FR')
+   */
+  geoLocation: string;
+  /**
+   * Whether the location is allowed for opt-in
+   */
+  optinAllowedForGeo: boolean;
+}
+
+/**
+ * Response DTO for the client version requirements endpoint.
+ */
+export interface ClientVersionRequirementDto {
+  minimumMobileVersion?: string;
+  minimumExtensionVersion?: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type ClientVersionRequirementState = {
+  minimumMobileVersion?: string;
+  minimumExtensionVersion?: string;
+  lastFetched: number;
+};
+
+/**
+ * The action which can be used to retrieve the state of the RewardsController.
+ */
+export type RewardsControllerGetStateAction = ControllerGetStateAction<
+  'RewardsController',
+  RewardsControllerState
+>;
+
+/**
+ * Actions that can be performed by the RewardsController
+ */
+export type RewardsControllerActions =
+  | RewardsControllerGetStateAction
+  | RewardsControllerMethodActions;
+
+/**
+ * Input DTO for getting opt-in status of multiple addresses
+ */
+export interface OptInStatusInputDto {
+  /**
+   * The addresses to check opt-in status for
+   * @example [
+   *   '0xDE37C32E8dbD1CD325B8023a00550a5beA97eF13',
+   *   '0xDE37C32E8dbD1CD325B8023a00550a5beA97eF14',
+   *   '0xDE37C32E8dbD1CD325B8023a00550a5beA97eF15'
+   * ]
+   */
+  addresses: string[];
+}
+
+/**
+ * Response DTO for opt-in status of multiple addresses
+ */
+export interface OptInStatusDto {
+  /**
+   * The opt-in status of the addresses in the same order as the input
+   * @example [true, true, false]
+   */
+  ois: boolean[];
+
+  /**
+   * The subscription IDs of the addresses in the same order as the input
+   * @example ['sub_123', 'sub_456', null]
+   */
+  sids: (string | null)[];
+}
+
+/**
+ * Response DTO for opt-out operation
+ */
+export interface OptOutDto {
+  /**
+   * Whether the opt-out operation was successful
+   * @example true
+   */
+  success: boolean;
+}
+
+/**
+ * Season info for discover seasons endpoint
+ */
+export interface SeasonInfoDto {
+  /**
+   * The ID of the season
+   * @example '7444682d-9050-43b8-9038-28a6a62d6264'
+   */
+  id: string;
+
+  /**
+   * The start date of the season
+   * @example '2025-09-01T04:00:00.000Z'
+   */
+  startDate: Date;
+
+  /**
+   * The end date of the season
+   * @example '2025-11-30T04:00:00.000Z'
+   */
+  endDate: Date;
+}
+
+/**
+ * Response DTO for discover seasons endpoint
+ */
+export interface DiscoverSeasonsDto {
+  /**
+   * Previous season information
+   */
+  previous: SeasonInfoDto | null;
+
+  /**
+   * Current season information
+   */
+  current: SeasonInfoDto | null;
+
+  /**
+   * Next season information
+   */
+  next: SeasonInfoDto | null;
+}
+
+/**
+ * Response DTO for season metadata endpoint
+ */
+export interface SeasonMetadataDto {
+  /**
+   * The ID of the season
+   * @example '7444682d-9050-43b8-9038-28a6a62d6264'
+   */
+  id: string;
+
+  /**
+   * The name of the season
+   * @example 'Season 1'
+   */
+  name: string;
+
+  /**
+   * The start date of the season
+   * @example '2025-09-01T04:00:00.000Z'
+   */
+  startDate: Date;
+
+  /**
+   * The end date of the season
+   * @example '2025-11-30T04:00:00.000Z'
+   */
+  endDate: Date;
+
+  /**
+   * The tiers for the season
+   */
+  tiers: SeasonTierDto[];
+
+  /**
+   * Activity types for the season
+   */
+  activityTypes: SeasonActivityTypeDto[];
+
+  /**
+   * Ways to earn for the season
+   */
+  waysToEarn: SeasonWayToEarnDto[];
+}
+
+/**
+ * Response DTO for season state endpoint (new getSeasonStatus)
+ */
+export interface SeasonStateDto {
+  /**
+   * The balance for the season
+   * @example 0
+   */
+  balance: number;
+
+  /**
+   * The current tier ID
+   * @example '555260e8-d88b-4196-adb1-0844807bddc3'
+   */
+  currentTierId: string;
+
+  /**
+   * When the season state was last updated
+   * @example '2025-10-21T16:45:50.732Z'
+   */
+  updatedAt: Date;
+}
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonWayToEarnButtonActionDto = {
+  /**
+   * Route for in-app navigation
+   * @example { root: 'RewardsView', screen: 'RewardsSettingsView' }
+   */
+  route?: {
+    root: string;
+    screen: string;
+  };
+
+  /**
+   * Deep link URL
+   * @example 'metamask://swap'
+   */
+  deeplink?: string;
+
+  /**
+   * External URL
+   * @example 'https://metamask.io'
+   */
+  url?: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonWayToEarnSpecificSwapDto = {
+  /**
+   * Title for the supported networks section
+   * @example 'Supported Networks'
+   */
+  supportedNetworksTitle: string;
+
+  /**
+   * List of supported networks
+   * @example [{ chainId: '1', name: 'Ethereum', boost: '2x' }]
+   */
+  supportedNetworks: { chainId: string; name: string; boost?: string }[];
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonWayToEarnSpecificReferralDto = {
+  /**
+   * Title for the referral points section
+   * @example 'Referral Points'
+   */
+  referralPointsTitle: string;
+
+  /**
+   * Title for the total referrals section
+   * @example 'Total Referrals'
+   */
+  totalReferralsTitle: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonWayToEarnDto = {
+  /**
+   * The unique identifier of the way to earn
+   * @example '123e4567-e89b-12d3-a456-426614174000'
+   */
+  id: string;
+
+  /**
+   * The activity type
+   * @example 'SWAP'
+   */
+  type: string;
+
+  /**
+   * The name of the activity type
+   * @example 'Swap'
+   */
+  title: string;
+
+  /**
+   * The icon for the activity type
+   * @example 'Rocket'
+   */
+  icon: string;
+
+  /**
+   * Short description of the way to earn
+   * @example 'Earn points by swapping tokens'
+   */
+  shortDescription: string;
+
+  /**
+   * Title for the bottom sheet
+   * @example 'How to earn points'
+   */
+  bottomSheetTitle: string;
+
+  /**
+   * Rule for earning points
+   * @example '1 point per $1 swapped'
+   */
+  pointsEarningRule: string;
+
+  /**
+   * Detailed description
+   * @example 'Swap tokens on any supported network to earn points'
+   */
+  description: string;
+
+  /**
+   * Label for the action button
+   * @example 'Start Swapping'
+   */
+  buttonLabel: string;
+
+  /**
+   * Button action configuration
+   */
+  buttonAction?: SeasonWayToEarnButtonActionDto;
+
+  /**
+   * Specific content for swap or referral ways to earn
+   */
+  specificContent?:
+    | SeasonWayToEarnSpecificSwapDto
+    | SeasonWayToEarnSpecificReferralDto;
+};
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type SeasonActivityTypeDto = {
+  /**
+   * The unique identifier of the activity type
+   * @example '123e4567-e89b-12d3-a456-426614174000'
+   */
+  id: string;
+
+  /**
+   * The activity type
+   * @example 'SWAP'
+   */
+  type: string;
+
+  /**
+   * The name of the activity type
+   * @example 'Swap'
+   */
+  title: string;
+
+  /**
+   * The icon for the activity type
+   * @example 'Rocket'
+   */
+  icon: string;
+};

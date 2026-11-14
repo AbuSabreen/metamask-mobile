@@ -1,0 +1,497 @@
+import React from 'react';
+import { render, fireEvent } from '@testing-library/react-native';
+import PriceChart, { findNearestIndex } from './PriceChart';
+import { TokenPrice } from '../../../hooks/useTokenHistoricalPrices';
+import { PriceChartProvider } from './PriceChart.context';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { createMockUseAnalyticsHook } from '../../../../util/test/analyticsMock';
+
+jest.mock('../../../hooks/useAnalytics/useAnalytics');
+
+// Mock the strings function
+jest.mock('../../../../../locales/i18n', () => ({
+  strings: (key: string) => {
+    const translations: Record<string, string> = {
+      'asset_overview.no_chart_data.title': 'No chart data',
+      'asset_overview.no_chart_data.description':
+        'We could not fetch any data for this token',
+      'asset_overview.no_chart_data.insufficient_data':
+        'Data is not available for this time period',
+    };
+    return translations[key] || key;
+  },
+}));
+
+/** Minimum points for a non-empty legacy chart (see CHART_DATA_THRESHOLD). */
+const fiveTokenPrices = (): TokenPrice[] =>
+  Array.from({ length: 5 }, (_, i) => [
+    String(1736761237983 + i * 1000),
+    100 + i,
+  ]) as TokenPrice[];
+
+describe('PriceChart', () => {
+  const mockOnChartIndexChange = jest.fn();
+
+  const defaultProps = {
+    prices: [] as TokenPrice[],
+    priceDiff: 0,
+    isLoading: false,
+    onChartIndexChange: mockOnChartIndexChange,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.mocked(useAnalytics).mockReturnValue(createMockUseAnalyticsHook());
+  });
+
+  describe('NoDataOverlay', () => {
+    it('tracks CHART_EMPTY_DISPLAYED when the empty overlay is shown', () => {
+      const trackEvent = jest.fn();
+      jest
+        .mocked(useAnalytics)
+        .mockReturnValue(createMockUseAnalyticsHook({ trackEvent }));
+      render(<PriceChart {...defaultProps} prices={[]} />);
+
+      expect(trackEvent).toHaveBeenCalled();
+    });
+
+    it('shows full overlay with icon and description when there are no data points', () => {
+      const { getByText, getByTestId } = render(
+        <PriceChart {...defaultProps} prices={[]} />,
+      );
+
+      // Should show title
+      expect(getByText('No chart data')).toBeOnTheScreen();
+
+      // Should show description
+      expect(
+        getByText('We could not fetch any data for this token'),
+      ).toBeOnTheScreen();
+
+      // Should render no data overlay (without icon in new design)
+      expect(getByTestId('price-chart-no-data')).toBeOnTheScreen();
+    });
+
+    it('shows same overlay when there is only 1 data point', () => {
+      const singleDataPoint: TokenPrice[] = [['1736761237983', 100]];
+
+      const { getByText, getByTestId } = render(
+        <PriceChart {...defaultProps} prices={singleDataPoint} />,
+      );
+
+      // Should show insufficient data overlay with same design as empty data
+      expect(getByTestId('price-chart-insufficient-data')).toBeOnTheScreen();
+
+      // Should show same title and description as empty state
+      expect(getByText('No chart data')).toBeOnTheScreen();
+      expect(
+        getByText('We could not fetch any data for this token'),
+      ).toBeOnTheScreen();
+    });
+
+    it('shows the empty overlay when a time period has no prices', () => {
+      const { getByTestId, queryByTestId } = render(
+        <PriceChart {...defaultProps} prices={[]} timePeriodMs={86_400_000} />,
+      );
+
+      expect(getByTestId('price-chart-no-data')).toBeOnTheScreen();
+      expect(queryByTestId('price-chart-area')).not.toBeOnTheScreen();
+    });
+
+    it('shows overlay when there are fewer than 3 data points', () => {
+      const twoPoints: TokenPrice[] = [
+        ['1736761237983', 100],
+        ['1736761237986', 105],
+      ];
+
+      const { getByTestId } = render(
+        <PriceChart {...defaultProps} prices={twoPoints} />,
+      );
+
+      expect(getByTestId('price-chart-insufficient-data')).toBeOnTheScreen();
+    });
+
+    it('does not show overlay when there are at least 3 data points', () => {
+      const { queryByText } = render(
+        <PriceChart {...defaultProps} prices={fiveTokenPrices()} />,
+      );
+
+      // Should NOT show any overlay messages
+      expect(queryByText('No chart data')).not.toBeOnTheScreen();
+      expect(
+        queryByText('We could not fetch any data for this token'),
+      ).not.toBeOnTheScreen();
+      expect(
+        queryByText('Data is not available for this time period'),
+      ).not.toBeOnTheScreen();
+    });
+
+    it('shows overlay when hasInsufficientCoverage is true despite having enough points', () => {
+      const { getByTestId } = render(
+        <PriceChart
+          {...defaultProps}
+          prices={fiveTokenPrices()}
+          hasInsufficientCoverage
+        />,
+      );
+
+      expect(getByTestId('price-chart-insufficient-data')).toBeOnTheScreen();
+    });
+
+    it('does not show overlay when hasInsufficientCoverage is false', () => {
+      const { queryByTestId } = render(
+        <PriceChart
+          {...defaultProps}
+          prices={fiveTokenPrices()}
+          hasInsufficientCoverage={false}
+        />,
+      );
+
+      expect(
+        queryByTestId('price-chart-insufficient-data'),
+      ).not.toBeOnTheScreen();
+      expect(queryByTestId('price-chart-no-data')).not.toBeOnTheScreen();
+    });
+  });
+
+  describe('Loading state', () => {
+    it('shows loading overlay when isLoading is true', () => {
+      const { getByTestId } = render(
+        <PriceChart {...defaultProps} isLoading />,
+      );
+
+      expect(getByTestId('price-chart-loading')).toBeOnTheScreen();
+      expect(getByTestId('chart-line-skeleton-line')).toBeOnTheScreen();
+    });
+
+    it('does not show no data overlay when loading', () => {
+      const { queryByText } = render(
+        <PriceChart {...defaultProps} prices={[]} isLoading />,
+      );
+
+      // Should NOT show no data messages when loading
+      expect(queryByText('No chart data')).not.toBeOnTheScreen();
+      expect(
+        queryByText('We could not fetch any data for this token'),
+      ).not.toBeOnTheScreen();
+    });
+  });
+
+  describe('Chart rendering', () => {
+    it('renders chart with positive price difference', () => {
+      const prices = fiveTokenPrices();
+
+      const { getByTestId } = render(
+        <PriceChart {...defaultProps} prices={prices} priceDiff={5} />,
+      );
+
+      // Should render AreaChart
+      expect(getByTestId('price-chart-area')).toBeOnTheScreen();
+    });
+
+    it('renders chart with negative price difference', () => {
+      const prices: TokenPrice[] = Array.from({ length: 5 }, (_, i) => [
+        String(1736761237983 + i * 1000),
+        105 - i,
+      ]) as TokenPrice[];
+
+      const { getByTestId } = render(
+        <PriceChart {...defaultProps} prices={prices} priceDiff={-5} />,
+      );
+
+      // Should render AreaChart
+      expect(getByTestId('price-chart-area')).toBeOnTheScreen();
+    });
+
+    it('renders chart with zero price difference using alternative color', () => {
+      const prices: TokenPrice[] = Array.from({ length: 5 }, (_, i) => [
+        String(1736761237983 + i * 1000),
+        100,
+      ]) as TokenPrice[];
+
+      const { getByTestId } = render(
+        <PriceChart {...defaultProps} prices={prices} priceDiff={0} />,
+      );
+
+      expect(getByTestId('price-chart-area')).toBeOnTheScreen();
+    });
+  });
+
+  describe('Stablecoin range prices', () => {
+    it('renders chart with stablecoin-range prices including flat values', () => {
+      const stablecoinPrices: TokenPrice[] = Array.from(
+        { length: 5 },
+        (_, i) => [String(1736761237983 + i * 1000), 1.0],
+      ) as TokenPrice[];
+
+      const { getByTestId } = render(
+        <PriceChart
+          {...defaultProps}
+          prices={stablecoinPrices}
+          priceDiff={0}
+        />,
+      );
+
+      expect(getByTestId('price-chart-area')).toBeOnTheScreen();
+    });
+  });
+
+  describe('EndDot', () => {
+    it('renders end dot at the last data point', () => {
+      const prices = fiveTokenPrices();
+
+      const result = render(
+        <PriceChart {...defaultProps} prices={prices} priceDiff={5} />,
+      );
+
+      // AreaChart only renders SVG children after its inner View receives
+      // a layout event (setting width/height > 0). Simulate that here.
+      const chartArea = result.getByTestId('price-chart-area');
+      const areaChartLayoutView = chartArea.findAll(
+        (node) => typeof node.props?.onLayout === 'function',
+      );
+      areaChartLayoutView.forEach((v) =>
+        fireEvent(v, 'layout', {
+          nativeEvent: { layout: { x: 0, y: 0, width: 300, height: 200 } },
+        }),
+      );
+
+      expect(result.getByTestId('price-chart-end-dot')).toBeOnTheScreen();
+    });
+  });
+
+  describe('Touch interactions', () => {
+    /**
+     * Synthetic responder event with the touchHistory shape
+     * that PanResponder's internal state machine expects.
+     */
+    const FIXED_TIMESTAMP = 1_736_761_237_983;
+
+    const createResponderEvent = (locationX: number, locationY: number) => {
+      const timestamp = FIXED_TIMESTAMP;
+      return {
+        nativeEvent: {
+          locationX,
+          locationY,
+          pageX: locationX,
+          pageY: locationY,
+          identifier: 1,
+          target: 0,
+          timestamp,
+        },
+        touchHistory: {
+          indexOfSingleActiveTouch: 0,
+          mostRecentTimeStamp: timestamp,
+          numberActiveTouches: 1,
+          touchBank: [
+            {
+              touchActive: true,
+              startPageX: locationX,
+              startPageY: locationY,
+              startTimeStamp: timestamp,
+              currentPageX: locationX,
+              currentPageY: locationY,
+              currentTimeStamp: timestamp,
+              previousPageX: locationX,
+              previousPageY: locationY,
+              previousTimeStamp: timestamp,
+            },
+          ],
+        },
+      };
+    };
+
+    it('calls onChartIndexChange for each gesture in a grant, move, release cycle', () => {
+      const prices = fiveTokenPrices();
+
+      const { getByTestId } = render(
+        <PriceChartProvider>
+          <PriceChart {...defaultProps} prices={prices} priceDiff={8} />
+        </PriceChartProvider>,
+      );
+
+      const chartArea = getByTestId('price-chart-area');
+
+      // Initial touch
+      fireEvent(chartArea, 'responderGrant', createResponderEvent(50, 50));
+      expect(mockOnChartIndexChange).toHaveBeenCalledTimes(1);
+
+      // Move/Drag
+      fireEvent(chartArea, 'responderMove', createResponderEvent(200, 55));
+      expect(mockOnChartIndexChange).toHaveBeenCalledTimes(2);
+
+      // Release
+      fireEvent(chartArea, 'responderRelease', createResponderEvent(200, 55));
+      expect(mockOnChartIndexChange).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps the pan responder and calls the latest index callback after rerender', () => {
+      const prices = fiveTokenPrices();
+      const firstOnChartIndexChange = jest.fn();
+      const secondOnChartIndexChange = jest.fn();
+
+      const { getByTestId, rerender } = render(
+        <PriceChartProvider>
+          <PriceChart
+            {...defaultProps}
+            prices={prices}
+            priceDiff={8}
+            onChartIndexChange={firstOnChartIndexChange}
+          />
+        </PriceChartProvider>,
+      );
+
+      const chartArea = getByTestId('price-chart-area');
+      const onResponderGrant = chartArea.props.onResponderGrant;
+
+      fireEvent(chartArea, 'responderGrant', createResponderEvent(50, 50));
+      expect(firstOnChartIndexChange).toHaveBeenCalledTimes(1);
+
+      rerender(
+        <PriceChartProvider>
+          <PriceChart
+            {...defaultProps}
+            prices={prices}
+            priceDiff={8}
+            onChartIndexChange={secondOnChartIndexChange}
+          />
+        </PriceChartProvider>,
+      );
+
+      const chartAreaAfterRerender = getByTestId('price-chart-area');
+      expect(chartAreaAfterRerender.props.onResponderGrant).toBe(
+        onResponderGrant,
+      );
+
+      fireEvent(
+        chartAreaAfterRerender,
+        'responderMove',
+        createResponderEvent(200, 55),
+      );
+      expect(secondOnChartIndexChange).toHaveBeenCalledTimes(1);
+      expect(firstOnChartIndexChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses time-based updatePosition when timePeriodMs is provided', () => {
+      const now = Date.now();
+      const prices: TokenPrice[] = Array.from({ length: 5 }, (_, i) => [
+        String(now - 86_400_000 + i * 20_000_000),
+        100 + i,
+      ]) as TokenPrice[];
+
+      const { getByTestId } = render(
+        <PriceChartProvider>
+          <PriceChart
+            {...defaultProps}
+            prices={prices}
+            priceDiff={5}
+            timePeriodMs={86_400_000}
+          />
+        </PriceChartProvider>,
+      );
+
+      const chartArea = getByTestId('price-chart-area');
+      fireEvent(chartArea, 'responderGrant', createResponderEvent(50, 50));
+      expect(mockOnChartIndexChange).toHaveBeenCalled();
+      const idx = mockOnChartIndexChange.mock.calls[0][0];
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(idx).toBeLessThan(prices.length);
+    });
+  });
+
+  describe('findNearestIndex', () => {
+    it('returns -1 for an empty array', () => {
+      expect(findNearestIndex([], 100)).toBe(-1);
+    });
+
+    it('returns 0 for a single-element array', () => {
+      const prices: TokenPrice[] = [['1000', 42]];
+      expect(findNearestIndex(prices, 999)).toBe(0);
+      expect(findNearestIndex(prices, 1000)).toBe(0);
+      expect(findNearestIndex(prices, 1001)).toBe(0);
+    });
+
+    it('returns exact match index', () => {
+      const prices: TokenPrice[] = [
+        ['100', 1],
+        ['200', 2],
+        ['300', 3],
+      ];
+      expect(findNearestIndex(prices, 200)).toBe(1);
+    });
+
+    it('returns the closer element when target is between two points', () => {
+      const prices: TokenPrice[] = [
+        ['100', 1],
+        ['200', 2],
+        ['300', 3],
+      ];
+      expect(findNearestIndex(prices, 190)).toBe(1);
+      expect(findNearestIndex(prices, 110)).toBe(0);
+    });
+
+    it('returns 0 when target is before all data', () => {
+      const prices: TokenPrice[] = [
+        ['100', 1],
+        ['200', 2],
+      ];
+      expect(findNearestIndex(prices, 50)).toBe(0);
+    });
+
+    it('returns last index when target is after all data', () => {
+      const prices: TokenPrice[] = [
+        ['100', 1],
+        ['200', 2],
+        ['300', 3],
+      ];
+      expect(findNearestIndex(prices, 999)).toBe(2);
+    });
+  });
+
+  describe('Time-based rendering', () => {
+    it('renders the chart with time-based xAccessor when timePeriodMs is provided', () => {
+      const prices = fiveTokenPrices();
+      const { getByTestId } = render(
+        <PriceChart
+          {...defaultProps}
+          prices={prices}
+          priceDiff={5}
+          timePeriodMs={86_400_000}
+        />,
+      );
+      expect(getByTestId('price-chart-area')).toBeOnTheScreen();
+    });
+
+    it('renders the chart with index-based xAccessor when timePeriodMs is undefined', () => {
+      const prices = fiveTokenPrices();
+      const { getByTestId } = render(
+        <PriceChart {...defaultProps} prices={prices} priceDiff={5} />,
+      );
+      expect(getByTestId('price-chart-area')).toBeOnTheScreen();
+    });
+
+    it('renders EndDot using time-based x position when timePeriodMs is set', () => {
+      const prices = fiveTokenPrices();
+      const result = render(
+        <PriceChart
+          {...defaultProps}
+          prices={prices}
+          priceDiff={5}
+          timePeriodMs={86_400_000}
+        />,
+      );
+
+      const chartArea = result.getByTestId('price-chart-area');
+      const layoutViews = chartArea.findAll(
+        (node) => typeof node.props?.onLayout === 'function',
+      );
+      layoutViews.forEach((v) =>
+        fireEvent(v, 'layout', {
+          nativeEvent: { layout: { x: 0, y: 0, width: 300, height: 200 } },
+        }),
+      );
+
+      expect(result.getByTestId('price-chart-end-dot')).toBeOnTheScreen();
+    });
+  });
+});

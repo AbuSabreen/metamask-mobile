@@ -1,15 +1,31 @@
-require_relative '../node_modules/react-native/scripts/react_native_pods'
-require_relative '../node_modules/@react-native-community/cli-platform-ios/native_modules'
+source 'https://github.com/CocoaPods/Specs.git'
+source 'https://github.com/SumSubstance/Specs.git'
 
-platform :ios, '12.4' #min_ios_version_supported
+require File.join(File.dirname(`node --print "require.resolve('expo/package.json')"`), "scripts/autolinking")
+require File.join(File.dirname(`node --print "require.resolve('react-native/package.json')"`), "scripts/react_native_pods")
+require File.join(File.dirname(`node --print "require.resolve('react-native-permissions/package.json')"`), "scripts/setup")
+
+require 'json'
+podfile_properties = JSON.parse(File.read(File.join(__dir__, 'Podfile.properties.json'))) rescue {}
+
+ENV['EX_DEV_CLIENT_NETWORK_INSPECTOR'] = podfile_properties['EX_DEV_CLIENT_NETWORK_INSPECTOR']
+
+platform :ios, '16.4'
 prepare_react_native_project!
+
+# react-native-permissions v4+: select permission handlers compiled into RNPermissions
+setup_permissions(['Bluetooth'])
 # Ensures that versions from Gemfile is respected
 ensure_bundler!
+
+install! 'cocoapods',
+  :deterministic_uuids => false
 
 linkage = ENV['USE_FRAMEWORKS']
 if linkage != nil
   Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
   use_frameworks! :linkage => linkage.to_sym
+  $RNFirebaseAsStaticFramework = true
 end
 
 # react_native_post_install:
@@ -47,66 +63,54 @@ end
 # end
 
 def common_target_logic
-	config = use_native_modules!
+  podfile_properties = JSON.parse(File.read(File.join(__dir__, 'Podfile.properties.json'))) rescue {}
 
-  # Flags change depending on the env values.
-  flags = get_default_flags()
+  use_expo_modules!
+	# config = use_native_modules!
 
-  # If you are using a `react-native-flipper` your iOS build will fail when `NO_FLIPPER=1` is set.
-  # because `react-native-flipper` depends on (FlipperKit,...) that will be excluded
-  #
-  # To fix this you can also exclude `react-native-flipper` using a `react-native.config.js`
-  # ```js
-  # module.exports = {
-  #   dependencies: {
-  #     ...(process.env.NO_FLIPPER ? { 'react-native-flipper': { platforms: { ios: null } } } : {}),
-  # ```
-  flipper_config = ENV['NO_FLIPPER'] == "1" ? FlipperConfiguration.disabled : FlipperConfiguration.enabled
-  use_react_native!(
-    :path => config[:reactNativePath],
-    # to enable hermes on iOS, change `false` to `true` and then install pods
-    # Hermes is now enabled by default. Disable by setting this flag to false.
-    # Upcoming versions of React Native may rely on get_default_flags(), but
-    # we make it explicit here to aid in the React Native upgrade process.
-    #:hermes_enabled => flags[:hermes_enabled],
-    :hermes_enabled => false,
-    :fabric_enabled => flags[:fabric_enabled],
-    # Enables Flipper.
-    #
-    # Note that if you have use_frameworks! enabled, Flipper will not work and
-    # you should disable the next line.
-    :flipper_configuration => flipper_config,
-    # An absolute path to your application root.
-    :app_path => "#{Pod::Config.instance.installation_root}/..",
-  )
+  if ENV['EXPO_USE_COMMUNITY_AUTOLINKING'] == '1'
+    config_command = ['node', '-e', "process.argv=['', '', 'config'];require('@react-native-community/cli').run()"];
+  else
+    config_command = [
+      'node',
+      '--no-warnings',
+      '--eval',
+      'require(require.resolve(\'expo-modules-autolinking\', { paths: [require.resolve(\'expo/package.json\')] }))(process.argv.slice(1))',
+      'react-native-config',
+      '--json',
+      '--platform',
+      'ios'
+    ]
+  end
+
+  config = use_native_modules!(config_command)
+
+  use_frameworks! :linkage => ENV['USE_FRAMEWORKS'].to_sym if ENV['USE_FRAMEWORKS']
 
   # Pods for MetaMask
-  pod 'React-RCTPushNotification', :path => '../node_modules/react-native/Libraries/PushNotificationIOS'
   pod 'ReactNativePayments', :path => '../node_modules/@metamask/react-native-payments/lib/ios/'
 
-    # Pods for Push Notifications
-  pod 'Firebase', :modular_headers => true
-  pod 'FirebaseCoreInternal', :modular_headers => true
-  pod 'GoogleUtilities', :modular_headers => true
+  # Pods for Push Notifications
   pod 'FirebaseCore', :modular_headers => true
-
+  pod 'GoogleUtilities/NSData+zlib', :modular_headers => true
 
    # Comment the next line if you don't want to use dynamic frameworks
   # use_frameworks!
-	pod 'Permission-BluetoothPeripheral', :path => '../node_modules/react-native-permissions/ios/BluetoothPeripheral'
   pod 'GzipSwift'
 
-  # Adding OpenSSL-Universal to fix build issues in react-native-quick-crypto
-  # Ref: https://github.com/margelo/react-native-quick-crypto/issues/121
-  # Ref: https://stackoverflow.com/questions/29082174/ios-xcode-build-failing-due-to-openssl/76455587#76455587
-  pod 'OpenSSL-Universal', :modular_headers => true, :configurations => ['Release']
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/..",
+    :privacy_file_aggregation_enabled => podfile_properties['apple.privacyManifestAggregationEnabled'] != 'false',
+    :hermes_enabled => true
+  )
+
+  # NitroFetch (Swift) requires React-RCTNetwork to export module maps
+  pod 'React-RCTNetwork', :path => "#{config[:reactNativePath]}/Libraries/Network", :modular_headers => true
 end
 
 target 'MetaMask' do
-  common_target_logic
-end
-
-target 'MetaMask-QA' do
   common_target_logic
 end
 
@@ -114,12 +118,92 @@ target 'MetaMask-Flask' do
 	common_target_logic
 end
 
+if ENV['EXPO_USE_COMMUNITY_AUTOLINKING'] == '1'
+  config_command = ['node', '-e', "process.argv=['', '', 'config'];require('@react-native-community/cli').run()"];
+else
+  config_command = [
+    'node',
+    '--no-warnings',
+    '--eval',
+    'require(require.resolve(\'expo-modules-autolinking\', { paths: [require.resolve(\'expo/package.json\')] }))(process.argv.slice(1))',
+    'react-native-config',
+    '--json',
+    '--platform',
+    'ios'
+  ]
+end
+
+config = use_native_modules!(config_command)
+
 post_install do |installer|
   react_native_post_install(
     installer,
-    # Set `mac_catalyst_enabled` to `true` in order to apply patches
-    # necessary for Mac Catalyst builds
-    :mac_catalyst_enabled => false
+    config[:reactNativePath],
+    :mac_catalyst_enabled => false,
+    :ccache_enabled => podfile_properties['apple.ccacheEnabled'] == 'true',
   )
-  __apply_Xcode_12_5_M1_post_install_workaround(installer)
+
+  # Modify RCT-Folly Portability.h to disable coroutines
+  Dir.glob(installer.sandbox.root + "RCT-Folly/folly/Portability.h") do |file|
+    begin
+      # First try to make the file writable
+      system "chmod +w #{file}"
+
+      contents = File.read(file)
+      modified_contents = contents.gsub(/#define FOLLY_HAS_COROUTINES 1/, '#define FOLLY_HAS_COROUTINES 0')
+
+      # Try writing with elevated privileges if needed
+      if !File.writable?(file)
+        system "sudo chmod +w #{file}"
+      end
+
+      File.write(file, modified_contents)
+
+      # Optionally restore original permissions
+      system "chmod -w #{file}"
+    rescue => e
+      Pod::UI.warn "Failed to modify Portability.h: #{e.message}"
+    end
+  end
+
+  # Fix fmt compilation error with Xcode 26 / Clang 21 consteval strictness
+  # Directly disable FMT_USE_CONSTEVAL rather than patching the detection logic.
+  # Uses regex to handle indented preprocessor directives (e.g. "#  define").
+  Dir.glob(installer.sandbox.root + "fmt/include/fmt/base.h") do |file|
+    begin
+      system "chmod +w #{file}"
+      contents = File.read(file)
+      modified = contents.gsub(/#\s*define FMT_USE_CONSTEVAL 1/, '#define FMT_USE_CONSTEVAL 0')
+      if !File.writable?(file)
+        system "sudo chmod +w #{file}"
+      end
+      File.write(file, modified)
+      system "chmod -w #{file}"
+    rescue => e
+      Pod::UI.warn "Failed to modify fmt base.h: #{e.message}"
+    end
+  end
+
+  # Braze 18 ships BrazeKit as a prebuilt XCFramework and BrazeUI as Swift
+  # source. Xcode 26 turns on explicit modules by default, so compiling BrazeUI
+  # (and the RN wrapper's Swift) fails with:
+  #   import BrazeKit → missing required module 'SystemConfiguration'
+  installer.pods_project.targets.each do |target|
+    next unless target.name == 'BrazeUI' || target.name == 'braze-react-native-sdk'
+
+    target.build_configurations.each do |config|
+      config.build_settings['SWIFT_ENABLE_EXPLICIT_MODULES'] = 'NO'
+    end
+  end
+
+  # This is necessary for Xcode 14, because it signs resource bundles by default
+  # when building for devices.
+  installer.target_installation_results.pod_target_installation_results
+    .each do |pod_name, target_installation_result|
+    target_installation_result.resource_bundle_targets.each do |resource_bundle_target|
+      resource_bundle_target.build_configurations.each do |config|
+        config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+      end
+    end
+  end
 end

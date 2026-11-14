@@ -1,0 +1,160 @@
+import { noop } from 'lodash';
+import React, {
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+
+export interface ConfirmationContextParams {
+  mmPayRequestInProgressNavHandler: React.MutableRefObject<
+    (() => void) | false
+  >;
+  headlessBuyError: string | undefined;
+  isFooterVisible?: boolean;
+  isConfirmationSubmitting: boolean;
+  isConfirmationSubmittingRef: React.RefObject<boolean>;
+  isGasFeeModalVisible: boolean;
+  isHeadlessBuyInProgress: boolean;
+  isTransactionValueUpdating: boolean;
+  isTransactionDataUpdating: boolean;
+  /**
+   * The fiat amount currently being typed on the amount keypad, before the
+   * user commits it. Amount alerts are evaluated against this so a cap that
+   * blocks the keypad still enters the confirmation alert context — and so
+   * reaches alert metrics — rather than only existing as local keypad state.
+   */
+  pendingFiatAmount: string | undefined;
+  setPendingFiatAmount: (pendingFiatAmount: string | undefined) => void;
+  setHeadlessBuyError: (error: string | undefined) => void;
+  setIsConfirmationSubmitting: (isConfirmationSubmitting: boolean) => void;
+  setIsFooterVisible: (isFooterVisible: boolean) => void;
+  setIsGasFeeModalVisible: (isGasFeeModalVisible: boolean) => void;
+  setIsHeadlessBuyInProgress: (isHeadlessBuyInProgress: boolean) => void;
+  setIsTransactionValueUpdating: (isTransactionValueUpdating: boolean) => void;
+  setIsTransactionDataUpdating: (isTransactionDataUpdating: boolean) => void;
+}
+
+// This context is used to share the valuable information between the components
+// that are used to render the confirmation
+const ConfirmationContext = React.createContext<ConfirmationContextParams>({
+  mmPayRequestInProgressNavHandler: { current: false },
+  headlessBuyError: undefined,
+  isFooterVisible: true,
+  isConfirmationSubmitting: false,
+  isConfirmationSubmittingRef: { current: false },
+  isGasFeeModalVisible: false,
+  isHeadlessBuyInProgress: false,
+  isTransactionDataUpdating: false,
+  isTransactionValueUpdating: false,
+  pendingFiatAmount: undefined,
+  setPendingFiatAmount: noop,
+  setHeadlessBuyError: noop,
+  setIsConfirmationSubmitting: noop,
+  setIsFooterVisible: noop,
+  setIsGasFeeModalVisible: noop,
+  setIsHeadlessBuyInProgress: noop,
+  setIsTransactionDataUpdating: noop,
+  setIsTransactionValueUpdating: noop,
+});
+
+interface ConfirmationContextProviderProps {
+  children: React.ReactNode;
+}
+
+export const ConfirmationContextProvider: React.FC<
+  ConfirmationContextProviderProps
+> = ({ children }) => {
+  const mmPayRequestInProgressNavHandler = useRef<(() => void) | false>(false);
+
+  const [isTransactionValueUpdating, setIsTransactionValueUpdating] =
+    useState(false);
+
+  const [isFooterVisible, setIsFooterVisible] = useState<boolean>();
+
+  const [isGasFeeModalVisible, setIsGasFeeModalVisible] = useState(false);
+
+  const [headlessBuyError, setHeadlessBuyError] = useState<
+    string | undefined
+  >();
+
+  const [isHeadlessBuyInProgress, setIsHeadlessBuyInProgress] = useState(false);
+
+  const [isTransactionDataUpdating, setIsTransactionDataUpdating] =
+    useState<boolean>(false);
+
+  const [pendingFiatAmount, setPendingFiatAmount] = useState<
+    string | undefined
+  >();
+
+  const isConfirmationSubmittingRef = useRef(false);
+  const [isConfirmationSubmitting, setIsConfirmationSubmittingState] =
+    useState<boolean>(false);
+  const setIsConfirmationSubmitting = useCallback(
+    (nextIsConfirmationSubmitting: boolean) => {
+      isConfirmationSubmittingRef.current = nextIsConfirmationSubmitting;
+      setIsConfirmationSubmittingState(nextIsConfirmationSubmitting);
+    },
+    [],
+  );
+
+  const contextValue = useMemo(
+    () => ({
+      mmPayRequestInProgressNavHandler,
+      headlessBuyError,
+      isFooterVisible,
+      isGasFeeModalVisible,
+      isHeadlessBuyInProgress,
+      isTransactionDataUpdating,
+      isTransactionValueUpdating,
+      isConfirmationSubmitting,
+      isConfirmationSubmittingRef,
+      pendingFiatAmount,
+      setPendingFiatAmount,
+      setHeadlessBuyError,
+      setIsFooterVisible,
+      setIsGasFeeModalVisible,
+      setIsHeadlessBuyInProgress,
+      setIsTransactionDataUpdating,
+      setIsTransactionValueUpdating,
+      setIsConfirmationSubmitting,
+    }),
+    [
+      mmPayRequestInProgressNavHandler,
+      headlessBuyError,
+      isFooterVisible,
+      isGasFeeModalVisible,
+      isHeadlessBuyInProgress,
+      isTransactionDataUpdating,
+      isTransactionValueUpdating,
+      isConfirmationSubmitting,
+      isConfirmationSubmittingRef,
+      pendingFiatAmount,
+      setPendingFiatAmount,
+      setHeadlessBuyError,
+      setIsFooterVisible,
+      setIsGasFeeModalVisible,
+      setIsHeadlessBuyInProgress,
+      setIsTransactionDataUpdating,
+      setIsTransactionValueUpdating,
+      setIsConfirmationSubmitting,
+    ],
+  );
+
+  return (
+    <ConfirmationContext.Provider value={contextValue}>
+      {children}
+    </ConfirmationContext.Provider>
+  );
+};
+
+export const useConfirmationContext = () => {
+  const context = useContext(ConfirmationContext);
+  if (!context) {
+    throw new Error(
+      'useConfirmationContext must be used within a ConfirmationContextProvider',
+    );
+  }
+  return context;
+};

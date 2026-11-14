@@ -1,63 +1,112 @@
 import { renderHook } from '@testing-library/react-hooks';
-import I18n from '../../../../../locales/i18n';
+import { BigNumber } from 'bignumber.js';
 import { selectCurrentCurrency } from '../../../../selectors/currencyRateController';
 import useFiatFormatter from './useFiatFormatter';
+import formatFiat from '../../../../util/formatFiat';
 
 jest.mock('react-redux', () => ({
   useSelector: jest.fn((selector) => selector()),
-}));
-
-jest.mock('../../../../../locales/i18n', () => ({
-  __esModule: true,
-  default: jest.fn(),
 }));
 
 jest.mock('../../../../selectors/currencyRateController', () => ({
   selectCurrentCurrency: jest.fn(),
 }));
 
-const mockI18n = I18n as unknown as jest.Mock;
+jest.mock('../../../../util/formatFiat', () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
 const mockSelectCurrentCurrency = selectCurrentCurrency as unknown as jest.Mock;
+const mockFormatFiat = formatFiat as unknown as jest.Mock;
 
 describe('useFiatFormatter', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('should return a function that formats fiat amount correctly', () => {
-    mockI18n.mockReturnValue({
-      locale: 'en-US',
-    });
+  it('returns a function that calls formatFiat with the current currency from Redux', () => {
     mockSelectCurrentCurrency.mockReturnValue('USD');
+    mockFormatFiat.mockReturnValue('$1,000');
 
     const { result } = renderHook(() => useFiatFormatter());
-    const formatFiat = result.current;
+    const formatter = result.current;
 
-    expect(formatFiat(1000)).toBe('$1,000.00');
-    expect(formatFiat(500.5)).toBe('$500.50');
-    expect(formatFiat(0)).toBe('$0.00');
-  });
-
-  it('should use the current locale and currency from the mocked functions', () => {
-    mockI18n.mockReturnValue({
-      locale: 'fr-FR',
-    });
-    mockSelectCurrentCurrency.mockReturnValue('EUR');
-
-    renderHook(() => useFiatFormatter());
+    const amount = new BigNumber(1000);
+    const formattedResult = formatter(amount);
 
     expect(selectCurrentCurrency).toHaveBeenCalledTimes(1);
+    expect(formatFiat).toHaveBeenCalledWith(amount, 'USD', undefined);
+    expect(formattedResult).toBe('$1,000');
   });
 
-  it('should gracefully handle unknown currencies by returning amount followed by currency code', () => {
-    mockSelectCurrentCurrency.mockReturnValue('storj');
+  it('uses the currency from Redux when no override is provided', () => {
+    mockSelectCurrentCurrency.mockReturnValue('EUR');
+    mockFormatFiat.mockReturnValue('€500');
 
     const { result } = renderHook(() => useFiatFormatter());
-    const formatFiat = result.current;
+    const formatter = result.current;
 
-    // Testing the fallback formatting for an unknown currency
-    expect(formatFiat(1000)).toBe('1000 storj');
-    expect(formatFiat(500.5)).toBe('500.5 storj');
-    expect(formatFiat(0)).toBe('0 storj');
+    const amount = new BigNumber(500);
+    formatter(amount);
+
+    expect(selectCurrentCurrency).toHaveBeenCalledTimes(1);
+    expect(formatFiat).toHaveBeenCalledWith(amount, 'EUR', undefined);
+  });
+
+  it('overrides the currency from Redux when currency parameter is provided', () => {
+    mockSelectCurrentCurrency.mockReturnValue('USD');
+    mockFormatFiat.mockReturnValue('£1,000');
+
+    const { result } = renderHook(() => useFiatFormatter({ currency: 'GBP' }));
+    const formatter = result.current;
+
+    const amount = new BigNumber(1000);
+    formatter(amount);
+
+    expect(selectCurrentCurrency).toHaveBeenCalledTimes(1);
+    expect(formatFiat).toHaveBeenCalledWith(amount, 'GBP', undefined);
+  });
+
+  it('forwards fractionDigits to formatFiat when provided', () => {
+    mockSelectCurrentCurrency.mockReturnValue('USD');
+    mockFormatFiat.mockReturnValue('$1,000.00');
+
+    const { result } = renderHook(() =>
+      useFiatFormatter({ fractionDigits: 2 }),
+    );
+    const formatter = result.current;
+
+    const amount = new BigNumber(1000);
+    formatter(amount);
+
+    expect(formatFiat).toHaveBeenCalledWith(amount, 'USD', 2);
+  });
+
+  it('passes the correct currency to formatFiat for each call', () => {
+    mockSelectCurrentCurrency.mockReturnValue('JPY');
+    mockFormatFiat.mockImplementation(
+      (amount, currency) => `${amount.toString()} ${currency}`,
+    );
+
+    const { result } = renderHook(() => useFiatFormatter());
+    const formatter = result.current;
+
+    formatter(new BigNumber(100));
+    formatter(new BigNumber(200));
+
+    expect(formatFiat).toHaveBeenCalledTimes(2);
+    expect(formatFiat).toHaveBeenNthCalledWith(
+      1,
+      new BigNumber(100),
+      'JPY',
+      undefined,
+    );
+    expect(formatFiat).toHaveBeenNthCalledWith(
+      2,
+      new BigNumber(200),
+      'JPY',
+      undefined,
+    );
   });
 });

@@ -1,0 +1,108 @@
+import React from 'react';
+import { TokenI } from '../../../../../Tokens/types';
+import { useStyles } from '../../../../../../hooks/useStyles';
+import styleSheet from './Erc20TokenHero.styles';
+import { View } from 'react-native';
+import NetworkAssetLogo from '../../../../../NetworkAssetLogo';
+import {
+  AvatarTokenSize,
+  BadgeNetwork,
+  BadgeWrapper,
+  BadgeWrapperPosition,
+  Text,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import AssetLogo from '../../../../../Assets/components/AssetLogo/AssetLogo';
+import { renderFromTokenMinimalUnit } from '../../../../../../../util/number';
+import { getNetworkImageSource } from '../../../../../../../util/networks';
+import useFiatFormatter from '../../../../../SimulationDetails/FiatDisplay/useFiatFormatter';
+import BigNumber from 'bignumber.js';
+
+const NATIVE_TOKEN_BADGE_CLASSNAME = 'h-3 w-3 rounded-[3px] bg-default';
+
+const ERC20_TOKEN_BADGE_CLASSNAME = 'h-6 w-6 rounded-md bg-default';
+
+const TokenAvatar = ({ token }: { token: TokenI }) => {
+  const { styles } = useStyles(styleSheet, {});
+
+  const testId = `earn-token-selector-${token.symbol}-${token.chainId}`;
+
+  if (token.isNative) {
+    return (
+      <NetworkAssetLogo
+        chainId={token.chainId ?? ''}
+        ticker={token.ticker ?? ''}
+        big={false}
+        biggest={false}
+        testID={testId}
+        style={styles.networkAvatar}
+      />
+    );
+  }
+
+  return <AssetLogo asset={token} size={AvatarTokenSize.Xl} testID={testId} />;
+};
+
+const NetworkAndTokenImage = ({ token }: { token: TokenI }) => {
+  const { styles } = useStyles(styleSheet, {});
+
+  return (
+    <View style={styles.networkAndTokenContainer}>
+      <BadgeWrapper
+        position={BadgeWrapperPosition.BottomRight}
+        badge={
+          <BadgeNetwork
+            twClassName={
+              token.isNative
+                ? NATIVE_TOKEN_BADGE_CLASSNAME
+                : ERC20_TOKEN_BADGE_CLASSNAME
+            }
+            // @ts-expect-error The utils/network file is still JS and this function expects a networkType that should be optional
+            src={getNetworkImageSource({ chainId: token?.chainId })}
+          />
+        }
+      >
+        <TokenAvatar token={token} />
+      </BadgeWrapper>
+    </View>
+  );
+};
+
+export interface Erc20TokenHeroProps {
+  token: TokenI;
+  amountTokenMinimalUnit: string;
+  fiatValue: string;
+}
+
+const Erc20TokenHero = ({
+  token,
+  amountTokenMinimalUnit,
+  fiatValue,
+}: Erc20TokenHeroProps) => {
+  const { styles } = useStyles(styleSheet, {});
+  const fiatFormatter = useFiatFormatter();
+
+  const displayTokenAmount = renderFromTokenMinimalUnit(
+    amountTokenMinimalUnit,
+    token.decimals,
+  );
+
+  return (
+    <View style={styles.container}>
+      <NetworkAndTokenImage token={token} />
+      <View style={styles.assetAmountContainer}>
+        <Text style={styles.assetAmountText} variant={TextVariant.HeadingLg}>
+          {displayTokenAmount} {token.symbol}
+        </Text>
+        <Text
+          style={styles.assetFiatConversionText}
+          variant={TextVariant.BodyMd}
+        >
+          {fiatFormatter(new BigNumber(fiatValue))}
+        </Text>
+      </View>
+    </View>
+  );
+};
+
+export default Erc20TokenHero;

@@ -1,0 +1,111 @@
+import React, { useCallback, useMemo, useRef } from 'react';
+import {
+  BottomSheet,
+  BottomSheetFooter,
+  BottomSheetRef,
+  Box,
+  ButtonsAlignment,
+  ButtonSize,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { MoneyDeeplinkModalTestIds } from './MoneyDeeplinkModal.testIds';
+import { strings } from '../../../../../../locales/i18n';
+import { useMoneyAnalytics } from '../../hooks/useMoneyAnalytics';
+import { BOTTOM_SHEET_NAMES } from '../../constants/moneyEvents';
+import useMountEffect from '../../hooks/useMountEffect';
+import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
+import Routes from '../../../../../constants/navigation/Routes';
+import { AppStackNavigationProp } from '../../../../../core/NavigationService/types';
+import BottomSheetHeaderGlass from '../../../../../component-library/components-temp/BottomSheetHeaderGlass';
+import { useSelector } from 'react-redux';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+export interface MoneyDeeplinkModalParams {
+  title?: string;
+  description?: string;
+}
+
+interface MoneyDeeplinkModalProps {
+  content?: MoneyDeeplinkModalParams;
+  onDismiss?: () => void;
+}
+
+const MoneyDeeplinkModal = ({
+  content,
+  onDismiss,
+}: MoneyDeeplinkModalProps = {}) => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppStackNavigationProp>();
+
+  const route =
+    useRoute<RouteProp<{ params: MoneyDeeplinkModalParams }, 'params'>>();
+
+  const { title, description } = content ?? route.params ?? {};
+
+  const bottomSheetRef = useRef<BottomSheetRef>(null);
+
+  const { trackBottomSheetViewed } = useMoneyAnalytics({
+    bottom_sheet_name: BOTTOM_SHEET_NAMES.MONEY_DEEPLINK_MODAL,
+  });
+
+  useMountEffect(trackBottomSheetViewed);
+
+  const handleClose = useCallback(() => {
+    bottomSheetRef.current?.onCloseBottomSheet(() => {
+      if (onDismiss) {
+        onDismiss();
+        return;
+      }
+
+      navigation.navigate(Routes.WALLET.HOME);
+    });
+  }, [navigation, onDismiss]);
+
+  const primaryButtonProps = useMemo(
+    () => ({
+      children: strings('money.deeplink_modal.button'),
+      onPress: handleClose,
+      testID: MoneyDeeplinkModalTestIds.PRIMARY_BUTTON,
+      size: ButtonSize.Lg,
+    }),
+    [handleClose],
+  );
+
+  return (
+    <BottomSheet
+      ref={bottomSheetRef}
+      testID={MoneyDeeplinkModalTestIds.SHEET}
+      onClose={handleClose}
+    >
+      <BottomSheetHeaderGlass
+        isGlass={isGlassHeader}
+        onClose={handleClose}
+        testID={MoneyDeeplinkModalTestIds.TITLE}
+        closeButtonProps={{
+          testID: MoneyDeeplinkModalTestIds.CLOSE_BUTTON,
+        }}
+      >
+        {title}
+      </BottomSheetHeaderGlass>
+      <Box paddingHorizontal={4}>
+        <Text
+          variant={TextVariant.BodyMd}
+          color={TextColor.TextAlternative}
+          testID={MoneyDeeplinkModalTestIds.DESCRIPTION}
+          twClassName="text-center"
+        >
+          {description}
+        </Text>
+      </Box>
+      <BottomSheetFooter
+        buttonsAlignment={ButtonsAlignment.Horizontal}
+        primaryButtonProps={primaryButtonProps}
+        twClassName="pt-6"
+      />
+    </BottomSheet>
+  );
+};
+
+export default MoneyDeeplinkModal;

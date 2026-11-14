@@ -1,4 +1,4 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
-const SNAP_SETTINGS_REMOVE_BUTTON = 'snap-settings-remove-button';
-export default SNAP_SETTINGS_REMOVE_BUTTON;
-///: END:ONLY_INCLUDE_IF
+export const SNAP_SETTINGS_HEADER = 'snap-settings-header';
+export const SNAP_SETTINGS_BACK_BUTTON = 'snap-settings-back-button';
+export const SNAP_SETTINGS_REMOVE_BUTTON = 'snap-settings-remove-button';
+export const SNAP_SETTINGS_SCROLLVIEW = 'snap-settings-scrollview';

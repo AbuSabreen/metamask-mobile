@@ -1,0 +1,295 @@
+import {
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+  BoxJustifyContent,
+  FontWeight,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import React from 'react';
+import I18n from '../../../../../../locales/i18n';
+import { getIntlDateTimeFormatter } from '../../../../../util/intl';
+import { getLeagueConfig } from '../../constants/sportLeagueConfigs';
+import { PredictMarketGame, PredictSportTeam } from '../../types';
+import { getLeagueTeamOrder } from '../../utils/gameParser';
+import { getSportLiveStatusText, isGameEnded } from '../../utils/scoreboard';
+import PredictSportTeamLogo from '../PredictSportTeamLogo/PredictSportTeamLogo';
+import PulsingLiveDot from '../PulsingLiveDot/PulsingLiveDot';
+import { PREDICT_SPORT_SCOREBOARD_TEST_IDS } from './PredictSportScoreboard.testIds';
+
+const TEAM_LOGO_SIZE = 32;
+const COMPACT_TEAM_LOGO_SIZE = 28;
+
+export interface PredictSportScoreboardProps {
+  game: PredictMarketGame;
+  /** Renders a denser layout for use inside carousel cards. */
+  compact?: boolean;
+  testID?: string;
+}
+
+/**
+ * Formats startTime to { date: "Mon, June 8", time: "5:30 PM" }.
+ */
+const formatGameDateTime = (
+  startTime: string,
+): { date: string; time: string } => {
+  const dateObj = new Date(startTime);
+  const dateFormatter = getIntlDateTimeFormatter(I18n.locale, {
+    weekday: 'short',
+    month: 'long',
+    day: 'numeric',
+  });
+  const timeFormatter = getIntlDateTimeFormatter(I18n.locale, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+
+  return {
+    date: dateFormatter.format(dateObj),
+    time: timeFormatter.format(dateObj),
+  };
+};
+
+/**
+ * Shared sports scoreboard used by market sport cards and the game details
+ * screen. Subscribes to live game updates and renders team logos, scores, a
+ * live/scheduled/final status, and team names.
+ *
+ * Center states:
+ * - scheduled: match date and time
+ * - ongoing: pulsing "Live" label with the period/elapsed status text
+ * - ended: "Final"
+ */
+const PredictSportScoreboard: React.FC<PredictSportScoreboardProps> = ({
+  game,
+  compact = false,
+  testID,
+}) => {
+  const config = getLeagueConfig(game.league);
+
+  const gameData = {
+    homeScore: game.score?.home ?? 0,
+    awayScore: game.score?.away ?? 0,
+    elapsed: game.elapsed,
+    period: game.period,
+    status: game.status,
+  };
+
+  const isEnded = isGameEnded({
+    status: gameData.status,
+    period: gameData.period,
+    endTime: game.endTime,
+  });
+  const isScheduled = !isEnded && gameData.status === 'scheduled';
+  const isLive = !isEnded && !isScheduled;
+
+  const scheduledTime = formatGameDateTime(game.startTime);
+
+  const statusText = getSportLiveStatusText({
+    league: game.league,
+    status: gameData.status,
+    period: gameData.period,
+    elapsed: gameData.elapsed,
+    endTime: game.endTime,
+  });
+
+  const teamLogoSize = compact ? COMPACT_TEAM_LOGO_SIZE : TEAM_LOGO_SIZE;
+  const showScores = isLive || isEnded;
+
+  // Keep visual order aligned with the parser's score/team normalization.
+  // testIDs stay tied to the team identity (home/away), not the slot.
+  const isHomeFirst = getLeagueTeamOrder(game.league) === 'home-away';
+  const leftTeam = isHomeFirst ? game.homeTeam : game.awayTeam;
+  const rightTeam = isHomeFirst ? game.awayTeam : game.homeTeam;
+  const leftScore = isHomeFirst ? gameData.homeScore : gameData.awayScore;
+  const rightScore = isHomeFirst ? gameData.awayScore : gameData.homeScore;
+  const getTestID = (suffix: string) =>
+    testID ? `${testID}${suffix}` : undefined;
+  const homeLogoTestID = getTestID(
+    PREDICT_SPORT_SCOREBOARD_TEST_IDS.HOME_TEAM_LOGO,
+  );
+  const awayLogoTestID = getTestID(
+    PREDICT_SPORT_SCOREBOARD_TEST_IDS.AWAY_TEAM_LOGO,
+  );
+  const homeScoreTestID = getTestID(
+    PREDICT_SPORT_SCOREBOARD_TEST_IDS.HOME_SCORE,
+  );
+  const awayScoreTestID = getTestID(
+    PREDICT_SPORT_SCOREBOARD_TEST_IDS.AWAY_SCORE,
+  );
+  const leftLogoTestID = isHomeFirst ? homeLogoTestID : awayLogoTestID;
+  const rightLogoTestID = isHomeFirst ? awayLogoTestID : homeLogoTestID;
+  const leftScoreTestID = isHomeFirst ? homeScoreTestID : awayScoreTestID;
+  const rightScoreTestID = isHomeFirst ? awayScoreTestID : homeScoreTestID;
+  const statusTestID = getTestID(PREDICT_SPORT_SCOREBOARD_TEST_IDS.STATUS);
+
+  const renderTeamLogo = (
+    team: PredictSportTeam,
+    logoTestID?: string,
+    flipped?: boolean,
+  ) =>
+    config?.TeamIcon ? (
+      <config.TeamIcon
+        color={team.color}
+        size={teamLogoSize}
+        flipped={flipped}
+        testID={logoTestID}
+      />
+    ) : (
+      <PredictSportTeamLogo
+        uri={team.logo}
+        size={teamLogoSize}
+        testID={logoTestID}
+      />
+    );
+
+  return (
+    <Box twClassName={compact ? 'gap-1' : 'gap-2'} testID={testID}>
+      <Box
+        flexDirection={BoxFlexDirection.Row}
+        alignItems={BoxAlignItems.Center}
+        twClassName="w-full"
+      >
+        {renderTeamLogo(leftTeam, leftLogoTestID)}
+
+        {showScores && (
+          <Text
+            variant={TextVariant.DisplayMd}
+            color={TextColor.TextDefault}
+            fontWeight={FontWeight.Bold}
+            twClassName={`${compact ? 'pl-2' : 'pl-3'}`}
+            numberOfLines={1}
+            testID={leftScoreTestID}
+          >
+            {leftScore}
+          </Text>
+        )}
+
+        <Box
+          alignItems={BoxAlignItems.Center}
+          justifyContent={BoxJustifyContent.Center}
+          twClassName="flex-1"
+        >
+          {isScheduled ? (
+            <>
+              <Text
+                variant={TextVariant.BodySm}
+                fontWeight={FontWeight.Medium}
+                color={TextColor.TextDefault}
+                twClassName="text-center"
+                testID={getTestID(
+                  PREDICT_SPORT_SCOREBOARD_TEST_IDS.SCHEDULED_DATE,
+                )}
+              >
+                {scheduledTime.date}
+              </Text>
+              <Text
+                variant={TextVariant.BodySm}
+                fontWeight={FontWeight.Medium}
+                color={TextColor.TextAlternative}
+                twClassName="text-center"
+                testID={getTestID(
+                  PREDICT_SPORT_SCOREBOARD_TEST_IDS.SCHEDULED_TIME,
+                )}
+              >
+                {scheduledTime.time}
+              </Text>
+            </>
+          ) : isLive ? (
+            <>
+              {/* The pulsing dot sits to the left of "Live" while an invisible
+                  spacer of equal width balances the right side, so the "Live"
+                  label and the status text stay centered on the same axis. */}
+              <Box
+                flexDirection={BoxFlexDirection.Row}
+                alignItems={BoxAlignItems.Center}
+                justifyContent={BoxJustifyContent.Center}
+                twClassName="gap-1"
+              >
+                <PulsingLiveDot
+                  testID={getTestID(PREDICT_SPORT_SCOREBOARD_TEST_IDS.LIVE_DOT)}
+                />
+                <Text
+                  variant={TextVariant.BodySm}
+                  fontWeight={FontWeight.Medium}
+                  color={TextColor.SuccessDefault}
+                  testID={getTestID(
+                    PREDICT_SPORT_SCOREBOARD_TEST_IDS.LIVE_LABEL,
+                  )}
+                >
+                  LIVE
+                </Text>
+                <Box twClassName="w-3" />
+              </Box>
+              <Text
+                variant={TextVariant.BodySm}
+                fontWeight={FontWeight.Medium}
+                color={TextColor.TextAlternative}
+                twClassName="text-center"
+                testID={statusTestID}
+              >
+                {statusText}
+              </Text>
+            </>
+          ) : (
+            <Text
+              variant={TextVariant.BodySm}
+              fontWeight={FontWeight.Medium}
+              color={TextColor.TextAlternative}
+              twClassName="text-center"
+              testID={statusTestID}
+            >
+              {statusText}
+            </Text>
+          )}
+        </Box>
+
+        {showScores && (
+          <Text
+            variant={TextVariant.DisplayMd}
+            color={TextColor.TextDefault}
+            fontWeight={FontWeight.Bold}
+            twClassName={`${compact ? 'pr-2' : 'pr-3'} text-right`}
+            numberOfLines={1}
+            testID={rightScoreTestID}
+          >
+            {rightScore}
+          </Text>
+        )}
+
+        {/* The right-side team icon is mirrored so directional icons (e.g. NFL
+            helmets) face the left-side team. */}
+        {renderTeamLogo(rightTeam, rightLogoTestID, true)}
+      </Box>
+
+      <Box
+        flexDirection={BoxFlexDirection.Row}
+        justifyContent={BoxJustifyContent.Between}
+        twClassName="w-full"
+      >
+        <Text
+          variant={TextVariant.BodySm}
+          fontWeight={FontWeight.Medium}
+          color={TextColor.TextAlternative}
+          numberOfLines={1}
+          twClassName="flex-1"
+        >
+          {leftTeam.name}
+        </Text>
+        <Text
+          variant={TextVariant.BodySm}
+          fontWeight={FontWeight.Medium}
+          color={TextColor.TextAlternative}
+          numberOfLines={1}
+          twClassName="flex-1 text-right"
+        >
+          {rightTeam.name}
+        </Text>
+      </Box>
+    </Box>
+  );
+};
+
+export default PredictSportScoreboard;

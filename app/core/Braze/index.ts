@@ -1,0 +1,237 @@
+import Braze, { Banner } from '@braze/react-native-sdk';
+import I18n, { I18nEvents } from '../../../locales/i18n';
+import Logger from '../../util/Logger';
+import { hasTestOverrides } from '../../util/test/utils';
+import { BrazePlugin } from '../Engine/controllers/analytics-controller/BrazePlugin';
+import { ALL_BRAZE_BANNER_PLACEMENT_IDS } from './constants';
+import {
+  BANNER_EVENT_DISMISSED,
+  BANNER_EVENT_DISPLAY,
+  BANNER_EVENT_SELECT,
+} from '../../constants/engagement';
+import { hasPendingBrazePushUnregistrationSync } from './pushRegistrationState';
+import { getBrazeBlockedEventNames } from '../../selectors/featureFlagController/brazeEventBlocklist';
+
+let brazePlugin: BrazePlugin | undefined;
+
+/**
+ * Get or create the singleton BrazePlugin instance.
+ * This should be called during analytics controller initialization to pass
+ * the plugin to the platform adapter.
+ *
+ * On first creation, sets the current language and subscribes to locale
+ * changes so the Braze language stays in sync.
+ */
+export function getBrazePlugin(): BrazePlugin {
+  if (!brazePlugin) {
+    brazePlugin = new BrazePlugin();
+    brazePlugin.setLanguage(I18n.locale);
+    I18nEvents.addListener('localeChanged', (locale: string) => {
+      brazePlugin?.setLanguage(locale);
+    });
+  }
+  return brazePlugin;
+}
+
+/**
+ * Apply the LaunchDarkly Braze event blocklist to the Segment plugin.
+ *
+ * A missing, disabled, or malformed flag clears the blocklist so events are
+ * sent. Called on analytics init and whenever remote flags change.
+ *
+ * @param flagValue - Raw `brazeEventBlocklist` variation.
+ */
+export function syncBrazeEventBlocklist(flagValue: unknown): void {
+  try {
+    getBrazePlugin().setBlockedEvents(getBrazeBlockedEventNames(flagValue));
+  } catch (error) {
+    Logger.error(
+      error as Error,
+      '[Braze] Failed to sync event blocklist from remote config',
+    );
+    try {
+      getBrazePlugin().setBlockedEvents([]);
+    } catch (resetError) {
+      Logger.error(
+        resetError as Error,
+        '[Braze] Failed to clear event blocklist after a sync error',
+      );
+    }
+  }
+}
+
+/**
+ * Forward a canonical profile ID to the Braze Segment plugin so all subsequent
+ * identify / track / flush calls are attributed to this identity.
+ *
+ * A new profile (first sign-in, account switch, or wallet reset) re-enables
+ * the SDK if it was disabled, calls `changeUser`, and refreshes banners so
+ * campaigns match that identity. Repeating the same profile skips
+ * `changeUser` and does not spend another banner refresh.
+ *
+ * Skipped during E2E so CI does not create Braze profiles from mocked
+ * identity sessions.
+ */
+export function setBrazeUser(canonicalProfileId: string): void {
+  if (hasTestOverrides) {
+    return;
+  }
+
+  try {
+    Braze.enableSDK();
+    const didChangeUser =
+      getBrazePlugin().setBrazeProfileId(canonicalProfileId);
+    if (didChangeUser) {
+      refreshBrazeBanners();
+    }
+  } catch (error) {
+    Logger.error(error as Error, '[Braze] Failed to set Braze user');
+  }
+}
+
+/**
+ * Clear the Braze profile identity so the plugin becomes a no-op.
+ * Call on sign-out / wallet reset to stop attributing events to the previous
+ * user. Disables the native SDK until the next `setBrazeUser` so the previous
+ * profile is not messaged during the unsigned gap. Does not `wipeData` —
+ * that tears down banner subscriptions and is reserved for a future user-
+ * deletion flow.
+ *
+ * @returns Whether the SDK was disabled. Cleanup is deferred while a push
+ * unregistration remains pending so its device and user context survive.
+ */
+export async function clearBrazeUser(): Promise<boolean> {
+  if (hasTestOverrides) {
+    return true;
+  }
+
+  getBrazePlugin().setBrazeProfileId(undefined);
+  if (hasPendingBrazePushUnregistrationSync()) {
+    return false;
+  }
+
+  try {
+    Braze.requestImmediateDataFlush();
+    Braze.disableSDK();
+    Logger.log('[Braze] Disabled Braze SDK after clearing user identity');
+    return true;
+  } catch (error) {
+    Logger.error(error as Error, '[Braze] Failed to disable Braze SDK');
+    return false;
+  }
+}
+
+/**
+ * Retrieve the cached banner for a placement without throwing.
+ * Returns `null` when no banner is cached or if the SDK call fails.
+ */
+export async function getBannerForPlacement(
+  placementId: string,
+): Promise<Banner | null> {
+  try {
+    return await Braze.getBanner(placementId);
+  } catch (error) {
+    Logger.error(error as Error, '[Braze] Failed to get banner for placement');
+    return null;
+  }
+}
+
+/**
+ * Request a fresh banner from the SDK for the given placements.
+ * Defaults to the standard banner placement when no IDs are supplied.
+ * Call this after identifying a new Braze user so placement-targeted
+ * campaigns match the current identity. Each call spends a Braze banner
+ * refresh token.
+ */
+export function refreshBrazeBanners(
+  placementIds: string[] = ALL_BRAZE_BANNER_PLACEMENT_IDS,
+): void {
+  try {
+    Braze.requestBannersRefresh(placementIds);
+    Logger.log('[Braze] Requested banner refresh');
+  } catch (error) {
+    Logger.error(error as Error, '[Braze] Failed to refresh banners');
+  }
+}
+
+/**
+ * Dismiss the cached banner for a placement via the Braze SDK and log the
+ * `Banner Dismissed` custom event used for campaign targeting.
+ *
+ * Braze records the SDK dismissal and applies campaign re-eligibility on the
+ * backend. The custom event is skipped when `properties` is null (no
+ * `campaign_name`). Safe to call more than once for the same banner.
+ */
+export function dismissBrazeBanner(
+  placementId: string,
+  properties: { [key: string]: unknown } | null,
+): void {
+  try {
+    Logger.log('[Braze] Dismissing banner', { placementId, properties });
+    Braze.dismissBanner(placementId);
+
+    if (properties) {
+      Braze.logCustomEvent(BANNER_EVENT_DISMISSED, properties);
+      Braze.requestImmediateDataFlush();
+    }
+  } catch (error) {
+    Logger.error(error as Error, '[Braze] Failed to dismiss banner');
+  }
+}
+
+/**
+ * Log a Braze banner impression and a corresponding display
+ * custom event with the supplied properties.
+ *
+ * Pass `null` when there are no extra properties to attach (e.g. the banner
+ * has no `banner_id`). The SDK `logBannerImpression` call always fires;
+ * `logCustomEvent` is skipped when `properties` is null.
+ */
+export function logBrazeBannerImpression(
+  placementId: string,
+  properties: { [key: string]: unknown } | null,
+): void {
+  try {
+    Braze.logBannerImpression(placementId);
+
+    if (properties) {
+      Braze.logCustomEvent(BANNER_EVENT_DISPLAY, properties);
+    }
+  } catch (error) {
+    Logger.error(error as Error, '[Braze] Failed to log banner display event');
+  }
+}
+
+/**
+ * Log a Braze banner click and, when `properties` is supplied, a `Banner
+ * Select` custom event used for campaign targeting and in-app message
+ * triggers.
+ *
+ * The SDK `logBannerClick` call always fires; `logCustomEvent` is skipped when
+ * `properties` is null (no `campaign_name`). The `Banner Select` event rides
+ * Braze's next scheduled data batch; it is not flushed immediately.
+ */
+export function logBrazeBannerClick(
+  placementId: string,
+  properties: { [key: string]: unknown } | null,
+): void {
+  try {
+    Braze.logBannerClick(placementId, null);
+
+    if (properties) {
+      Braze.logCustomEvent(BANNER_EVENT_SELECT, properties);
+    }
+  } catch (error) {
+    Logger.error(error as Error, '[Braze] Failed to log banner click');
+  }
+}
+
+/**
+ * Reset the BrazePlugin singleton for testing.
+ * This ensures each test gets a fresh plugin instance.
+ *
+ * @internal Test helper only — do not use in production code.
+ */
+export function resetBrazePluginForTesting(): void {
+  brazePlugin = undefined;
+}

@@ -1,0 +1,72 @@
+import { NetworkEnablementControllerState } from '@metamask/network-enablement-controller';
+import { CaipChainId, Hex, KnownCaipNamespace } from '@metamask/utils';
+import { RootState } from '../../reducers';
+import { createDeepEqualSelector } from '../util';
+
+export const selectNetworkEnablementControllerState = (state: RootState) =>
+  state.engine?.backgroundState?.NetworkEnablementController;
+
+export const selectEnabledNetworksByNamespace = createDeepEqualSelector(
+  selectNetworkEnablementControllerState,
+  (networkEnablementControllerState: NetworkEnablementControllerState) =>
+    networkEnablementControllerState?.enabledNetworkMap ?? {},
+);
+
+export const selectEVMEnabledNetworks = createDeepEqualSelector(
+  selectEnabledNetworksByNamespace,
+  (
+    enabledNetworksByNamespace: NetworkEnablementControllerState['enabledNetworkMap'],
+  ) =>
+    Object.keys(enabledNetworksByNamespace?.eip155 ?? {}).filter(
+      (chainId) => enabledNetworksByNamespace?.eip155?.[chainId as Hex],
+    ) as Hex[],
+);
+
+export const selectEvmEnabledCaipNetworks = createDeepEqualSelector(
+  selectEVMEnabledNetworks,
+  (chainIds) =>
+    (chainIds ?? []).map(
+      (chainId) =>
+        `${KnownCaipNamespace.Eip155}:${Number.parseInt(chainId, 16)}`,
+    ),
+);
+
+export const selectNonEVMEnabledNetworks = createDeepEqualSelector(
+  selectEnabledNetworksByNamespace,
+  (
+    enabledNetworksByNamespace: NetworkEnablementControllerState['enabledNetworkMap'],
+  ) => {
+    const namespaces = Object.keys(enabledNetworksByNamespace ?? {});
+    const nonEvmNamespaces = namespaces.filter(
+      (namespace) => namespace !== KnownCaipNamespace.Eip155,
+    );
+    const enabledNonEvmChainIds = nonEvmNamespaces
+      .map((namespace) =>
+        Object.entries(enabledNetworksByNamespace?.[namespace] ?? {})
+          .filter(([, enabled]) => Boolean(enabled))
+          .map(([id]) => id),
+      )
+      .flat();
+    return enabledNonEvmChainIds as string[];
+  },
+);
+
+/**
+ * All currently enabled networks as CAIP-2 chain IDs (EVM and non-EVM).
+ */
+export const selectEnabledNetworks = createDeepEqualSelector(
+  selectEnabledNetworksByNamespace,
+  (
+    enabledNetworksByNamespace: NetworkEnablementControllerState['enabledNetworkMap'],
+  ): CaipChainId[] =>
+    Object.entries(enabledNetworksByNamespace).flatMap(
+      ([namespace, namespaceNetworks]) =>
+        Object.entries(namespaceNetworks)
+          .filter(([, enabled]) => Boolean(enabled))
+          .map(([chainId]) =>
+            namespace === KnownCaipNamespace.Eip155
+              ? (`${KnownCaipNamespace.Eip155}:${Number.parseInt(chainId, 16)}` as CaipChainId)
+              : (chainId as CaipChainId),
+          ),
+    ),
+);

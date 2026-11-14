@@ -1,0 +1,163 @@
+import { StyleSheet } from 'react-native';
+import { Theme } from '../../../util/theme/models';
+import { fontStyles } from '../../../styles/common';
+
+const styleSheet = (params: { theme: Theme }) => {
+  const { theme } = params;
+  const { colors } = theme;
+  return StyleSheet.create({
+    infoContainer: {
+      padding: 16,
+    },
+    nameWrapper: {
+      flexDirection: 'row',
+      alignItems: 'baseline',
+    },
+    collectibleMediaWrapper: {
+      paddingTop: 4,
+      paddingBottom: 16,
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    collectibleMediaStyle: {
+      alignItems: 'center',
+      flexGrow: 0,
+      flexShrink: 0,
+      flexBasis: 97,
+      width: 180,
+      height: 180,
+    },
+    iconVerified: {
+      color: colors.primary.default,
+      paddingTop: 18,
+      marginLeft: 4,
+    },
+    generalInfoFrame: {
+      display: 'flex',
+      gap: 16,
+      flexWrap: 'wrap',
+      flexDirection: 'row',
+      justifyContent: 'center',
+      paddingTop: 10,
+      paddingBottom: 6,
+    },
+    heading: {
+      color: colors.text.default,
+      ...fontStyles.bold,
+      fontSize: 20,
+      lineHeight: 24,
+      paddingTop: 16,
+    },
+    // Section rhythm mirrors the token details page (TokenDetails.styles):
+    // 24px between sections, 8px around a section title, and 8px between the
+    // title and its rows (4px wrapper + 4px row padding).
+    sectionsContainer: {
+      marginTop: 16,
+      gap: 24,
+    },
+    sectionHeading: {
+      paddingVertical: 8,
+    },
+    sectionList: {
+      paddingVertical: 4,
+    },
+    attributesFrame: {
+      gap: 16,
+      flexWrap: 'wrap',
+      flexDirection: 'row',
+      justifyContent: 'center',
+      paddingTop: 8,
+    },
+    generalInfoValueStyle: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    disclaimerText: {
+      color: colors.text.alternative,
+    },
+    disclaimer: {
+      paddingTop: 24,
+    },
+    description: {
+      ...fontStyles.normal,
+      color: colors.text.alternative,
+      fontSize: 12,
+      fontWeight: '400',
+      lineHeight: 20,
+    },
+    wrapper: {
+      flex: 1,
+      backgroundColor: colors.background.default,
+    },
+    buttonSendWrapper: {
+      flexDirection: 'row',
+      paddingTop: 16,
+      paddingRight: 16,
+      paddingLeft: 16,
+    },
+    generalInfoTitleStyle: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    generalInfoTitleTextStyle: {
+      color: colors.text.alternative,
+      ...fontStyles.normal,
+      fontWeight: '500',
+      lineHeight: 16,
+      fontSize: 10,
+    },
+    informationRowTitleStyle: {
+      color: colors.text.alternative,
+      ...fontStyles.normal,
+      fontWeight: '500',
+      lineHeight: 22,
+      fontSize: 14,
+    },
+    informationRowValueStyle: {
+      color: colors.text.default,
+      ...fontStyles.normal,
+      fontWeight: '400',
+      lineHeight: 22,
+      fontSize: 14,
+    },
+    iconExport: {
+      color: colors.text.alternative,
+      paddingLeft: 16,
+    },
+    generalInfoValueTextStyle: {
+      color: colors.text.default,
+      ...fontStyles.normal,
+      fontWeight: '700',
+      lineHeight: 24,
+      fontSize: 16,
+    },
+    generalInfoValueTextAddressStyle: {
+      color: colors.primary.default,
+      ...fontStyles.normal,
+      fontWeight: '500',
+      lineHeight: 20,
+      fontSize: 12,
+    },
+    fullImageScreen: {
+      flex: 1,
+      backgroundColor: colors.background.default,
+    },
+    fullImageContainer: {
+      position: 'relative',
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    fullImageItem: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      padding: 16,
+    },
+  });
+};
+export default styleSheet;

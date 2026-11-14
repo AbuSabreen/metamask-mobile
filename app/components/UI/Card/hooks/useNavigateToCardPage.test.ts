@@ -1,0 +1,415 @@
+import { renderHook, act } from '@testing-library/react-hooks';
+import { useSelector } from 'react-redux';
+import { NavigationProp, ParamListBase } from '@react-navigation/native';
+import {
+  useNavigateToCardPage,
+  useNavigateToInternalBrowserPage,
+  CardInternalBrowserPage,
+} from './useNavigateToCardPage';
+import { isCardTravelUrl } from '../../../../util/url';
+import Routes from '../../../../constants/navigation/Routes';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { BrowserTab } from '../../Tokens/types';
+import { CardActions } from '../util/metrics';
+import { selectCardActiveProviderId } from '../../../../selectors/cardController';
+import { Linking } from 'react-native';
+
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(),
+}));
+
+jest.mock('../../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(),
+}));
+
+jest.mock('../../../../util/url', () => ({
+  isCardTravelUrl: jest.fn(),
+}));
+
+jest.mock('../../../../core/AppConstants', () => ({
+  CARD: {
+    URL: 'https://card.metamask.io',
+    TRAVEL_URL: 'https://travel.metamask.io/access',
+    CARD_TOS_URL: 'https://secure.baanx.co.uk/MM-Card-RoW-Terms-2025-Sept.pdf',
+  },
+}));
+
+const FALLBACK_TOS_URL =
+  'https://secure.baanx.co.uk/MM-Card-RoW-Terms-2025-Sept.pdf';
+const DYNAMIC_TOS_URL = 'https://docs.baanx.us/metamask/terms-of-service.pdf';
+
+jest.mock('react-native', () => ({
+  Linking: {
+    openURL: jest.fn(() => Promise.resolve()),
+  },
+}));
+
+// Browser navigation test config (excludes TOS which uses Linking)
+const BROWSER_PAGE_CONFIG = [
+  {
+    page: CardInternalBrowserPage.TRAVEL,
+    url: 'https://travel.metamask.io/access',
+    urlCheckFn: isCardTravelUrl,
+    action: CardActions.NAVIGATE_TO_TRAVEL_PAGE,
+    tabId: 'travel-tab-id',
+  },
+] as const;
+
+const createMockNavigation = (): NavigationProp<ParamListBase> =>
+  ({
+    navigate: jest.fn(),
+    dispatch: jest.fn(),
+    reset: jest.fn(),
+    goBack: jest.fn(),
+    isFocused: jest.fn(() => true),
+    canGoBack: jest.fn(() => false),
+    getId: jest.fn(() => 'test-nav'),
+    getParent: jest.fn(),
+    getState: jest.fn(() => ({
+      key: 'test',
+      index: 0,
+      routeNames: [],
+      routes: [],
+      type: 'stack',
+      stale: false,
+    })),
+  }) as unknown as NavigationProp<ParamListBase>;
+
+const createMockBrowserTab = (
+  overrides: Partial<BrowserTab> = {},
+): BrowserTab => ({
+  id: 'tab-id',
+  url: 'https://example.com',
+  ...overrides,
+});
+
+const createMockEventBuilder = () => ({
+  addProperties: jest.fn().mockReturnThis(),
+  build: jest.fn().mockReturnValue({
+    event: MetaMetricsEvents.CARD_BUTTON_CLICKED,
+  }),
+});
+
+const mockTrackEvent = jest.fn();
+const mockCreateEventBuilder = jest.fn();
+
+const STABLE_EMPTY_TABS: BrowserTab[] = [];
+
+const setupMocks = (
+  mockEventBuilder: ReturnType<typeof createMockEventBuilder>,
+  browserTabs: BrowserTab[] | null | undefined = STABLE_EMPTY_TABS,
+) => {
+  (useSelector as jest.Mock).mockImplementation((selector) => {
+    if (selector === selectCardActiveProviderId) {
+      return 'baanx';
+    }
+    return browserTabs;
+  });
+  (useAnalytics as jest.Mock).mockReturnValue({
+    trackEvent: mockTrackEvent,
+    createEventBuilder: mockCreateEventBuilder,
+  });
+  (isCardTravelUrl as jest.Mock).mockReturnValue(false);
+  (Linking.openURL as jest.Mock).mockResolvedValue(undefined);
+  mockCreateEventBuilder.mockReturnValue(mockEventBuilder);
+};
+
+describe('useNavigateToInternalBrowserPage', () => {
+  let mockNavigation: NavigationProp<ParamListBase>;
+  let mockEventBuilder: ReturnType<typeof createMockEventBuilder>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockNavigation = createMockNavigation();
+    mockEventBuilder = createMockEventBuilder();
+    setupMocks(mockEventBuilder);
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it('returns navigateToInternalBrowserPage function', () => {
+    const { result } = renderHook(() =>
+      useNavigateToInternalBrowserPage(mockNavigation),
+    );
+
+    expect(typeof result.current.navigateToInternalBrowserPage).toBe(
+      'function',
+    );
+  });
+
+  describe.each(BROWSER_PAGE_CONFIG)(
+    'CardInternalBrowserPage.$page',
+    ({ page, url, urlCheckFn, action, tabId }) => {
+      beforeEach(() => {
+        jest.clearAllMocks();
+        mockNavigation = createMockNavigation();
+        mockEventBuilder = createMockEventBuilder();
+        setupMocks(mockEventBuilder);
+      });
+
+      it('creates new tab when no existing tab found', () => {
+        const { result } = renderHook(() =>
+          useNavigateToInternalBrowserPage(mockNavigation),
+        );
+
+        act(() => {
+          result.current.navigateToInternalBrowserPage(page);
+        });
+
+        expect(mockNavigation.navigate).toHaveBeenCalledWith(
+          Routes.BROWSER.HOME,
+          expect.objectContaining({
+            screen: Routes.BROWSER.VIEW,
+            params: expect.objectContaining({
+              newTabUrl: url,
+              fromCard: true,
+            }),
+          }),
+        );
+      });
+
+      it('navigates to existing tab when one exists', () => {
+        const tab = createMockBrowserTab({ id: tabId, url });
+        (useSelector as jest.Mock).mockImplementation((selector) => {
+          if (selector === selectCardActiveProviderId) {
+            return 'baanx';
+          }
+          return [tab];
+        });
+        (urlCheckFn as jest.Mock).mockReturnValue(true);
+
+        const { result } = renderHook(() =>
+          useNavigateToInternalBrowserPage(mockNavigation),
+        );
+
+        act(() => {
+          result.current.navigateToInternalBrowserPage(page);
+        });
+
+        expect(mockNavigation.navigate).toHaveBeenCalledWith(
+          Routes.BROWSER.HOME,
+          expect.objectContaining({
+            screen: Routes.BROWSER.VIEW,
+            params: expect.objectContaining({
+              existingTabId: tabId,
+              newTabUrl: undefined,
+              fromCard: true,
+            }),
+          }),
+        );
+      });
+
+      it(`tracks CARD_BUTTON_CLICKED with ${action} action`, () => {
+        const { result } = renderHook(() =>
+          useNavigateToInternalBrowserPage(mockNavigation),
+        );
+
+        act(() => {
+          result.current.navigateToInternalBrowserPage(page);
+        });
+
+        expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+          MetaMetricsEvents.CARD_BUTTON_CLICKED,
+        );
+        expect(mockEventBuilder.addProperties).toHaveBeenCalledWith({
+          provider: 'baanx',
+          action,
+        });
+        expect(mockTrackEvent).toHaveBeenCalled();
+      });
+    },
+  );
+
+  describe('edge cases', () => {
+    it.each([undefined, null, []])(
+      'handles browser tabs as %p without throwing',
+      (tabsValue) => {
+        (useSelector as jest.Mock).mockImplementation((selector) => {
+          if (selector === selectCardActiveProviderId) {
+            return 'baanx';
+          }
+          return tabsValue;
+        });
+
+        const { result } = renderHook(() =>
+          useNavigateToInternalBrowserPage(mockNavigation),
+        );
+
+        expect(() => {
+          act(() => {
+            result.current.navigateToInternalBrowserPage(
+              CardInternalBrowserPage.TRAVEL,
+            );
+          });
+        }).not.toThrow();
+      },
+    );
+
+    it('uses first matching tab when multiple exist', () => {
+      const tabs = [
+        createMockBrowserTab({
+          id: 'first-tab',
+          url: 'https://travel.metamask.io/access/page1',
+        }),
+        createMockBrowserTab({
+          id: 'second-tab',
+          url: 'https://travel.metamask.io/access/page2',
+        }),
+      ];
+      (useSelector as jest.Mock).mockReturnValue(tabs);
+      (isCardTravelUrl as jest.Mock).mockReturnValue(true);
+
+      const { result } = renderHook(() =>
+        useNavigateToInternalBrowserPage(mockNavigation),
+      );
+
+      act(() => {
+        result.current.navigateToInternalBrowserPage(
+          CardInternalBrowserPage.TRAVEL,
+        );
+      });
+
+      expect(mockNavigation.navigate).toHaveBeenCalledWith(
+        Routes.BROWSER.HOME,
+        expect.objectContaining({
+          params: expect.objectContaining({
+            existingTabId: 'first-tab',
+            fromCard: true,
+          }),
+        }),
+      );
+    });
+  });
+});
+
+describe('useNavigateToCardPage', () => {
+  let mockNavigation: NavigationProp<ParamListBase>;
+  let mockEventBuilder: ReturnType<typeof createMockEventBuilder>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockNavigation = createMockNavigation();
+    mockEventBuilder = createMockEventBuilder();
+    setupMocks(mockEventBuilder);
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it('returns travel and TOS navigation functions', () => {
+    const { result } = renderHook(() => useNavigateToCardPage(mockNavigation));
+
+    expect(typeof result.current.navigateToTravelPage).toBe('function');
+    expect(typeof result.current.navigateToCardTosPage).toBe('function');
+  });
+
+  describe('navigateToTravelPage', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockNavigation = createMockNavigation();
+      mockEventBuilder = createMockEventBuilder();
+      setupMocks(mockEventBuilder);
+    });
+
+    it('navigates to travel URL in browser', () => {
+      const { result } = renderHook(() =>
+        useNavigateToCardPage(mockNavigation),
+      );
+
+      act(() => {
+        result.current.navigateToTravelPage();
+      });
+
+      expect(mockNavigation.navigate).toHaveBeenCalledWith(
+        Routes.BROWSER.HOME,
+        expect.objectContaining({
+          screen: Routes.BROWSER.VIEW,
+          params: expect.objectContaining({
+            newTabUrl: 'https://travel.metamask.io/access',
+            fromCard: true,
+          }),
+        }),
+      );
+    });
+
+    it('tracks CARD_BUTTON_CLICKED with NAVIGATE_TO_TRAVEL_PAGE action', () => {
+      const { result } = renderHook(() =>
+        useNavigateToCardPage(mockNavigation),
+      );
+
+      act(() => {
+        result.current.navigateToTravelPage();
+      });
+
+      expect(mockEventBuilder.addProperties).toHaveBeenCalledWith({
+        provider: 'baanx',
+        action: CardActions.NAVIGATE_TO_TRAVEL_PAGE,
+      });
+    });
+  });
+
+  describe('navigateToCardTosPage', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockNavigation = createMockNavigation();
+      mockEventBuilder = createMockEventBuilder();
+      setupMocks(mockEventBuilder);
+    });
+
+    it('opens TOS URL with Linking.openURL', () => {
+      const { result } = renderHook(() =>
+        useNavigateToCardPage(mockNavigation),
+      );
+
+      act(() => {
+        result.current.navigateToCardTosPage();
+      });
+
+      expect(Linking.openURL).toHaveBeenCalledWith(FALLBACK_TOS_URL);
+    });
+
+    it('opens dynamic TOS URL when provided', () => {
+      const { result } = renderHook(() =>
+        useNavigateToCardPage(mockNavigation, DYNAMIC_TOS_URL),
+      );
+
+      act(() => {
+        result.current.navigateToCardTosPage();
+      });
+
+      expect(Linking.openURL).toHaveBeenCalledWith(DYNAMIC_TOS_URL);
+    });
+
+    it('does not navigate to browser', () => {
+      const { result } = renderHook(() =>
+        useNavigateToCardPage(mockNavigation),
+      );
+
+      act(() => {
+        result.current.navigateToCardTosPage();
+      });
+
+      expect(mockNavigation.navigate).not.toHaveBeenCalled();
+    });
+  });
+
+  it('returns stable function references across rerenders', () => {
+    const { result, rerender } = renderHook(() =>
+      useNavigateToCardPage(mockNavigation),
+    );
+
+    const initialFunctions = { ...result.current };
+    rerender();
+
+    expect(result.current.navigateToTravelPage).toBe(
+      initialFunctions.navigateToTravelPage,
+    );
+    expect(result.current.navigateToCardTosPage).toBe(
+      initialFunctions.navigateToCardTosPage,
+    );
+  });
+});

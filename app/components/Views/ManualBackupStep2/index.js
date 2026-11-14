@@ -1,300 +1,471 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, {
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+} from 'react';
+import { Pressable } from 'react-native';
 import {
-  InteractionManager,
-  Alert,
-  Text,
-  TouchableOpacity,
-  View,
   SafeAreaView,
-} from 'react-native';
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
 import PropTypes from 'prop-types';
-import OnboardingProgress from '../../UI/OnboardingProgress';
-import ActionView from '../../UI/ActionView';
-import { ScreenshotDeterrent } from '../../UI/ScreenshotDeterrent';
-import { strings } from '../../../../locales/i18n';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  Box,
+  BoxFlexDirection,
+  BoxJustifyContent,
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  Text,
+  TextColor,
+  TextField,
+  TextVariant,
+  TitleStandard,
+} from '@metamask/design-system-react-native';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { useHeaderGlassInset } from '../../../component-library/components-temp/HeaderGlass';
 import { connect } from 'react-redux';
+import { ScreenshotDeterrent } from '../../UI/ScreenshotDeterrent';
+import SecureContentView from '../../UI/SecureContentView';
+import { strings } from '../../../../locales/i18n';
 import { seedphraseBackedUp } from '../../../actions/user';
-import MaterialIcon from 'react-native-vector-icons/MaterialCommunityIcons';
-import { getOnboardingNavbarOptions } from '../../UI/Navbar';
-import { shuffle, compareMnemonics } from '../../../util/mnemonic';
+import { saveOnboardingEvent as saveEvent } from '../../../actions/onboarding';
+import {
+  compareMnemonics,
+  pickUniqueMissingWordSlots,
+} from '../../../util/mnemonic';
 import { MetaMetricsEvents } from '../../../core/Analytics';
-import { useTheme } from '../../../util/theme';
-import createStyles from './styles';
-import { ManualBackUpStepsSelectorsIDs } from '../../../../e2e/selectors/Onboarding/ManualBackUpSteps.selectors';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { ManualBackUpStepsSelectorsIDs } from '../ManualBackupStep1/ManualBackUpSteps.testIds';
 import trackOnboarding from '../../../util/metrics/TrackOnboarding/trackOnboarding';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
+import Routes from '../../../constants/navigation/Routes';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { CommonActions } from '@react-navigation/native';
+import {
+  AccountType,
+  ONBOARDING_SUCCESS_FLOW,
+} from '../../../constants/onboarding';
+import { TraceName, endTrace } from '../../../util/trace';
+import { OnboardingScreenIds } from '../../../hooks/performance/onboardingPerformanceIds';
+import { useScreenPerformance } from '../../../hooks/performance/useScreenPerformance';
+import ManualBackupConfirmErrorSheet from './ManualBackupConfirmErrorSheet';
 
-const ManualBackupStep2 = ({ navigation, seedphraseBackedUp, route }) => {
-  const { colors } = useTheme();
-  const styles = createStyles(colors);
+const HIDDEN_WORD_MASK_CHARACTER = '•';
+const HIDDEN_WORD_MASK_LENGTH_SINGLE_DIGIT = 6;
+const HIDDEN_WORD_MASK_LENGTH_DOUBLE_DIGIT = 5;
 
-  const [confirmedWords, setConfirmedWords] = useState([]);
-  const [wordsDict, setWordsDict] = useState({});
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [seedPhraseReady, setSeedPhraseReady] = useState(false);
+const ManualBackupStep2 = ({
+  navigation,
+  seedphraseBackedUp,
+  route,
+  saveOnboardingEvent,
+}) => {
+  const words = route?.params?.words;
+  const backupFlow = route?.params?.backupFlow;
+  const settingsBackup = route?.params?.settingsBackup;
 
-  const currentStep = 2;
-  const words =
-    process.env.JEST_WORKER_ID === undefined
-      ? shuffle(route.params?.words)
-      : route.params?.words;
-
-  const createWordsDictionary = () => {
-    const dict = {};
-    words.forEach((word, i) => {
-      dict[`${word},${i}`] = { currentPosition: undefined };
-    });
-    setWordsDict(dict);
-  };
-
-  const track = (event, properties) => {
-    trackOnboarding(event, properties);
-  };
-
-  const updateNavBar = useCallback(() => {
-    navigation.setOptions(getOnboardingNavbarOptions(route, {}, colors));
-  }, [colors, navigation, route]);
-
-  useEffect(() => {
-    const wordsFromRoute = route.params?.words ?? [];
-    setConfirmedWords(
-      new Array(wordsFromRoute.length).fill({
-        word: undefined,
-        originalPosition: undefined,
-      }),
-    );
-    createWordsDictionary();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    updateNavBar();
-  }, [updateNavBar]);
-
-  const findNextAvailableIndex = useCallback(
-    () => confirmedWords.findIndex(({ word }) => !word),
-    [confirmedWords],
+  const tw = useTailwind();
+  const { top: safeAreaTop } = useSafeAreaInsets();
+  const { inset: headerInset, onLayout: onHeaderLayout } = useHeaderGlassInset(
+    true,
+    safeAreaTop,
   );
 
-  const selectWord = useCallback(
-    (word, i) => {
-      let tempCurrentIndex = currentIndex;
-      const tempWordsDict = wordsDict;
-      const tempConfirmedWords = confirmedWords;
-      if (wordsDict[`${word},${i}`].currentPosition !== undefined) {
-        tempCurrentIndex = wordsDict[`${word},${i}`].currentPosition;
-        tempWordsDict[`${word},${i}`].currentPosition = undefined;
-        tempConfirmedWords[currentIndex] = {
-          word: undefined,
-          originalPosition: undefined,
-        };
-      } else {
-        tempWordsDict[`${word},${i}`].currentPosition = currentIndex;
-        tempConfirmedWords[currentIndex] = { word, originalPosition: i };
-        tempCurrentIndex = findNextAvailableIndex();
-      }
+  const [gridWords, setGridWords] = useState([]);
+  const [emptySlots, setEmptySlots] = useState([]);
+  const [missingWords, setMissingWords] = useState([]);
+  const [selectedSlot, setSelectedSlot] = useState(null);
+  const [usedWordIndices, setUsedWordIndices] = useState(new Set());
+  const [wordPositionMap, setWordPositionMap] = useState({});
+  const [isErrorSheetVisible, setIsErrorSheetVisible] = useState(false);
+  const hasTriggeredValidationRef = useRef(false);
 
-      setCurrentIndex(tempCurrentIndex);
-      setWordsDict(tempWordsDict);
-      setConfirmedWords(tempConfirmedWords);
-      setSeedPhraseReady(findNextAvailableIndex() === -1);
-    },
-    [confirmedWords, currentIndex, findNextAvailableIndex, wordsDict],
-  );
-
-  const clearConfirmedWordAt = (i) => {
-    const { word, originalPosition } = confirmedWords[i];
-    const currentIndex = i;
-    if (word && (originalPosition || originalPosition === 0)) {
-      wordsDict[[word, originalPosition]].currentPosition = undefined;
-      confirmedWords[i] = { word: undefined, originalPosition: undefined };
-    }
-
-    setCurrentIndex(currentIndex);
-    setWordsDict(wordsDict);
-    setConfirmedWords(confirmedWords);
-    setSeedPhraseReady(findNextAvailableIndex() === -1);
-  };
+  useScreenPerformance({
+    screenId: OnboardingScreenIds.MANUAL_BACKUP_STEP2,
+    contentReady: true,
+    isEmpty: false,
+    fullyDisplayed: gridWords.length > 0,
+  });
 
   const validateWords = useCallback(() => {
     const validWords = route.params?.words ?? [];
-    const proposedWords = confirmedWords.map(
-      (confirmedWord) => confirmedWord.word,
+    return compareMnemonics(validWords, gridWords);
+  }, [route.params?.words, gridWords]);
+
+  const areAllWordsPlaced = useMemo(() => {
+    const validWords = route.params?.words ?? [];
+    return (
+      validWords.length > 0 &&
+      gridWords.filter((word) => word !== '').length === validWords.length
     );
+  }, [route.params?.words, gridWords]);
 
-    return compareMnemonics(validWords, proposedWords);
-  }, [confirmedWords, route.params?.words]);
+  const { isEnabled: isMetricsEnabled } = useAnalytics();
 
-  const goNext = () => {
+  const goNext = useCallback(() => {
     if (validateWords()) {
       seedphraseBackedUp();
-      InteractionManager.runAfterInteractions(async () => {
-        const words = route.params?.words;
-        navigation.navigate('ManualBackupStep3', {
-          steps: route.params?.steps,
-          words,
+      if (backupFlow || settingsBackup) {
+        const resetAction = CommonActions.reset({
+          index: 0,
+          routes: [
+            {
+              name: Routes.ONBOARDING.SUCCESS_FLOW,
+              params: {
+                screen: Routes.ONBOARDING.SUCCESS,
+                params: {
+                  successFlow: backupFlow
+                    ? ONBOARDING_SUCCESS_FLOW.REMINDER_BACKUP
+                    : ONBOARDING_SUCCESS_FLOW.SETTINGS_BACKUP,
+                },
+              },
+            },
+          ],
         });
-        track(MetaMetricsEvents.WALLET_SECURITY_PHRASE_CONFIRMED);
-      });
-    } else {
-      Alert.alert(
-        strings('account_backup_step_5.error_title'),
-        strings('account_backup_step_5.error_message'),
+        navigation.dispatch(resetAction);
+      } else {
+        const resetAction = CommonActions.reset({
+          index: 0,
+          routes: [
+            {
+              name: Routes.ONBOARDING.SUCCESS_FLOW,
+              params: {
+                screen: Routes.ONBOARDING.SUCCESS,
+                params: {
+                  successFlow: ONBOARDING_SUCCESS_FLOW.BACKED_UP_SRP,
+                },
+              },
+            },
+          ],
+        });
+        endTrace({ name: TraceName.OnboardingNewSrpCreateWallet });
+        endTrace({ name: TraceName.OnboardingJourneyOverall });
+
+        if (isMetricsEnabled()) {
+          navigation.dispatch(resetAction);
+        } else {
+          navigation.navigate('OptinMetrics', {
+            successFlow: ONBOARDING_SUCCESS_FLOW.BACKED_UP_SRP,
+            accountType: AccountType.Metamask,
+          });
+        }
+      }
+      trackOnboarding(
+        AnalyticsEventBuilder.createEventBuilder(
+          MetaMetricsEvents.WALLET_SECURITY_PHRASE_CONFIRMED,
+        ).build(),
+        saveOnboardingEvent,
       );
     }
-  };
+  }, [
+    backupFlow,
+    isMetricsEnabled,
+    navigation,
+    saveOnboardingEvent,
+    seedphraseBackedUp,
+    settingsBackup,
+    validateWords,
+  ]);
 
-  const renderSuccess = () => {
-    const styles = createStyles(colors);
+  const generateMissingWords = useCallback(() => {
+    const emptySlotsIndexes = pickUniqueMissingWordSlots(words);
+    const tempGrid = [...words];
+    const removed = emptySlotsIndexes.map((i) => {
+      const word = tempGrid[i];
+      tempGrid[i] = '';
+      return word;
+    });
 
-    return (
-      <View style={styles.successRow}>
-        <MaterialIcon
-          name="check-circle"
-          size={15}
-          color={colors.success.default}
-        />
-        <Text style={styles.successText}>
-          {strings('manual_backup_step_2.success')}
-        </Text>
-      </View>
-    );
-  };
+    hasTriggeredValidationRef.current = false;
+    setIsErrorSheetVisible(false);
+    setGridWords(tempGrid);
+    setMissingWords(removed);
+    setEmptySlots(emptySlotsIndexes);
+    const sortedIndexes = [...emptySlotsIndexes].sort((a, b) => a - b);
+    setSelectedSlot(sortedIndexes[0]);
+    setUsedWordIndices(new Set());
+    setWordPositionMap({});
+  }, [words]);
 
-  const renderWordBox = (word, i) => {
-    const styles = createStyles(colors);
+  useEffect(() => {
+    generateMissingWords();
+  }, [generateMissingWords]);
 
-    return (
-      <View key={`word_${i}`} style={styles.wordBoxWrapper}>
-        <Text style={styles.wordBoxIndex}>{i + 1}.</Text>
-        <TouchableOpacity
-          // eslint-disable-next-line react/jsx-no-bind
-          onPress={() => {
-            clearConfirmedWordAt(i);
-          }}
-          style={[
-            styles.wordWrapper,
-            i === currentIndex && styles.currentWord,
-            confirmedWords[i].word && styles.confirmedWord,
-          ]}
-        >
-          <Text style={styles.word}>{word}</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  };
+  const handleWordSelect = useCallback(
+    (word, wordIndex) => {
+      const updatedGrid = [...gridWords];
 
-  const renderWordSelectableBox = useCallback(
-    (key, i) => {
-      const [word] = key.split(',');
-      const selected = wordsDict[key].currentPosition !== undefined;
-      const styles = createStyles(colors);
+      if (usedWordIndices.has(wordIndex)) {
+        return;
+      }
+
+      if (!missingWords.includes(word)) return;
+
+      const emptySlotsUpdated = [...emptySlots]
+        .sort((a, b) => a - b)
+        .filter((idx) => updatedGrid[idx] === '');
+
+      let targetIndex = selectedSlot;
+
+      if (
+        targetIndex === null ||
+        updatedGrid[targetIndex] !== '' ||
+        !emptySlotsUpdated.includes(targetIndex)
+      ) {
+        targetIndex = emptySlotsUpdated[0];
+      }
+
+      if (targetIndex === undefined) return;
+
+      const newGrid = [...updatedGrid];
+      newGrid[targetIndex] = word;
+      setGridWords(newGrid);
+
+      const newUsedIndices = new Set(usedWordIndices);
+      newUsedIndices.add(wordIndex);
+      setUsedWordIndices(newUsedIndices);
+
+      const newPositionMap = { ...wordPositionMap };
+      newPositionMap[targetIndex] = wordIndex;
+      setWordPositionMap(newPositionMap);
+
+      const nextEmptySlot =
+        emptySlotsUpdated.find((slot) => slot > targetIndex) ||
+        emptySlotsUpdated[0];
+      setSelectedSlot(nextEmptySlot);
+    },
+    [
+      gridWords,
+      missingWords,
+      selectedSlot,
+      emptySlots,
+      usedWordIndices,
+      wordPositionMap,
+    ],
+  );
+
+  const handleSlotPress = useCallback(
+    (index) => {
+      if (!emptySlots.includes(index)) return;
+
+      const isFilled = gridWords[index] !== '';
+      const updated = [...gridWords];
+
+      if (isFilled) {
+        updated[index] = '';
+        setGridWords(updated);
+        hasTriggeredValidationRef.current = false;
+
+        const wordIndexToRemove = wordPositionMap[index];
+        if (wordIndexToRemove !== undefined) {
+          const newUsedIndices = new Set(usedWordIndices);
+          newUsedIndices.delete(wordIndexToRemove);
+          setUsedWordIndices(newUsedIndices);
+        }
+
+        const newPositionMap = { ...wordPositionMap };
+        delete newPositionMap[index];
+        setWordPositionMap(newPositionMap);
+
+        setSelectedSlot(index);
+      } else {
+        setSelectedSlot(index);
+      }
+    },
+    [emptySlots, gridWords, wordPositionMap, usedWordIndices],
+  );
+
+  const renderGridItem = useCallback(
+    (item, index) => {
+      const isEmpty = emptySlots.includes(index);
+      const isSelected = isEmpty && selectedSlot === index;
+      const maskLength =
+        index + 1 < 10
+          ? HIDDEN_WORD_MASK_LENGTH_SINGLE_DIGIT
+          : HIDDEN_WORD_MASK_LENGTH_DOUBLE_DIGIT;
+      const displayValue = isEmpty
+        ? item
+        : HIDDEN_WORD_MASK_CHARACTER.repeat(maskLength);
 
       return (
-        <TouchableOpacity
-          // eslint-disable-next-line react/jsx-no-bind
-          onPress={() => selectWord(word, i)}
-          style={[styles.selectableWord, selected && styles.selectedWord]}
-          key={`selectableWord_${i}`}
+        <Pressable
+          key={index}
+          disabled={!isEmpty}
+          testID={
+            isEmpty
+              ? `${ManualBackUpStepsSelectorsIDs.GRID_ITEM_EMPTY}-${index}`
+              : `${ManualBackUpStepsSelectorsIDs.GRID_ITEM}-${index}`
+          }
+          style={tw.style('w-[31%] mb-2')}
+          onPress={() => handleSlotPress(index)}
         >
-          <Text
-            style={[
-              styles.selectableWordText,
-              selected && styles.selectedWordText,
-            ]}
-          >
-            {word}
-          </Text>
-        </TouchableOpacity>
+          <TextField
+            isReadOnly
+            isDisabled={!isEmpty}
+            value={displayValue}
+            pointerEvents="none"
+            twClassName={isSelected ? 'border-icon-default' : undefined}
+            startAccessory={
+              <Text
+                variant={TextVariant.BodySm}
+                color={TextColor.TextAlternative}
+                maxFontSizeMultiplier={1}
+              >
+                {index + 1}.
+              </Text>
+            }
+            inputProps={{
+              caretHidden: true,
+              showSoftInputOnFocus: false,
+              maxFontSizeMultiplier: 1,
+              lineBreakModeIOS: 'clip',
+            }}
+          />
+        </Pressable>
       );
     },
-    [colors, selectWord, wordsDict],
+    [emptySlots, handleSlotPress, selectedSlot, tw],
   );
 
-  const renderWords = useCallback(
+  const renderGrid = useCallback(
     () => (
-      <View style={styles.words}>
-        {Object.keys(wordsDict).map((key, i) =>
-          renderWordSelectableBox(key, i),
-        )}
-      </View>
+      <SecureContentView>
+        <Box
+          flexDirection={BoxFlexDirection.Row}
+          twClassName="flex-wrap justify-between"
+        >
+          {gridWords.map((item, index) => renderGridItem(item, index))}
+        </Box>
+      </SecureContentView>
     ),
-    [renderWordSelectableBox, styles.words, wordsDict],
+    [gridWords, renderGridItem],
   );
+
+  const renderMissingWords = useCallback(
+    () => (
+      <SecureContentView>
+        <Box
+          flexDirection={BoxFlexDirection.Row}
+          justifyContent={BoxJustifyContent.Center}
+          twClassName="gap-2"
+        >
+          {missingWords.map((word, i) => {
+            const isUsed = usedWordIndices.has(i);
+            return (
+              <Button
+                key={`${word}-${i}`}
+                variant={ButtonVariant.Secondary}
+                size={ButtonSize.Lg}
+                isDisabled={isUsed}
+                testID={`${ManualBackUpStepsSelectorsIDs.MISSING_WORDS}-${i}`}
+                onPress={() => handleWordSelect(word, i)}
+                twClassName="flex-1 rounded-[12px]"
+                textProps={{
+                  testID: `${ManualBackUpStepsSelectorsIDs.WORD_ITEM_MISSING}-${i}`,
+                }}
+              >
+                {word}
+              </Button>
+            );
+          })}
+        </Box>
+      </SecureContentView>
+    ),
+    [missingWords, usedWordIndices, handleWordSelect],
+  );
+
+  const handleErrorSheetDismiss = useCallback(() => {
+    setIsErrorSheetVisible(false);
+    generateMissingWords();
+  }, [generateMissingWords]);
+
+  const validateSeedPhrase = useCallback(() => {
+    const isSuccess = validateWords();
+    if (isSuccess) {
+      trackOnboarding(
+        AnalyticsEventBuilder.createEventBuilder(
+          MetaMetricsEvents.WALLET_SECURITY_COMPLETED,
+        ).build(),
+        saveOnboardingEvent,
+      );
+      goNext();
+      return;
+    }
+
+    setIsErrorSheetVisible(true);
+  }, [goNext, saveOnboardingEvent, validateWords]);
+
+  useEffect(() => {
+    if (!areAllWordsPlaced || hasTriggeredValidationRef.current) {
+      return;
+    }
+    hasTriggeredValidationRef.current = true;
+    validateSeedPhrase();
+  }, [areAllWordsPlaced, validateSeedPhrase]);
 
   return (
-    <SafeAreaView style={styles.mainWrapper}>
-      <View style={styles.onBoardingWrapper}>
-        <OnboardingProgress
-          currentStep={currentStep}
-          steps={route.params?.steps}
-        />
-      </View>
-      <ActionView
-        confirmTestID={ManualBackUpStepsSelectorsIDs.CONTINUE_BUTTON}
-        confirmText={strings('manual_backup_step_2.complete')}
-        onConfirmPress={goNext}
-        confirmDisabled={!seedPhraseReady || !validateWords()}
-        showCancelButton={false}
-        confirmButtonMode={'confirm'}
+    <SafeAreaView
+      edges={{ bottom: 'additive' }}
+      style={tw.style('flex-1 bg-default')}
+    >
+      <HeaderStandardGlass
+        backdrop="static"
+        onLayout={onHeaderLayout}
+        includesTopInset
+        onBack={() => navigation.goBack()}
+        backButtonProps={{
+          testID: ManualBackUpStepsSelectorsIDs.BACK_BUTTON,
+        }}
+      />
+      <Box
+        twClassName="flex-1 px-4 gap-6"
+        style={{ marginTop: headerInset }}
+        testID={ManualBackUpStepsSelectorsIDs.PROTECT_CONTAINER}
       >
-        <View
-          style={styles.wrapper}
-          testID={ManualBackUpStepsSelectorsIDs.PROTECT_CONTAINER}
-        >
-          <Text style={styles.action}>
-            {strings('manual_backup_step_2.action')}
-          </Text>
-          <View style={styles.infoWrapper}>
-            <Text style={styles.info}>
-              {strings('manual_backup_step_2.info')}
-            </Text>
-          </View>
-          <View
-            style={[
-              styles.seedPhraseWrapper,
-              seedPhraseReady && styles.seedPhraseWrapperError,
-              validateWords() && styles.seedPhraseWrapperComplete,
-            ]}
-          >
-            <View style={styles.colLeft}>
-              {confirmedWords
-                .slice(0, confirmedWords.length / 2)
-                .map(({ word }, i) => renderWordBox(word, i))}
-            </View>
-            <View style={styles.colRight}>
-              {confirmedWords
-                .slice(-confirmedWords.length / 2)
-                .map(({ word }, i) =>
-                  renderWordBox(word, i + confirmedWords.length / 2),
-                )}
-            </View>
-          </View>
-          {validateWords() ? renderSuccess() : renderWords()}
-        </View>
-      </ActionView>
+        <TitleStandard
+          title={strings('manual_backup_step_2.action')}
+          bottomLabel={strings('manual_backup_step_2.info')}
+        />
+        <Box twClassName="flex-1 gap-4">
+          {renderGrid()}
+          {renderMissingWords()}
+        </Box>
+      </Box>
       <ScreenshotDeterrent enabled isSRP />
+      <ManualBackupConfirmErrorSheet
+        isVisible={isErrorSheetVisible}
+        onDismiss={handleErrorSheetDismiss}
+      />
     </SafeAreaView>
   );
 };
 
 ManualBackupStep2.propTypes = {
   /**
-  /* navigation object required to push and pop other views
-  */
+   * Navigation object used for moving between screens.
+   */
   navigation: PropTypes.object,
   /**
-   * The action to update the seedphrase backed up flag
-   * in the redux store
+   * Redux action that marks the SRP as backed up.
    */
   seedphraseBackedUp: PropTypes.func,
   /**
-   * Object that represents the current route info like params passed to it
+   * Current route object with params.
    */
   route: PropTypes.object,
+  /**
+   * Action to persist onboarding metrics events.
+   */
+  saveOnboardingEvent: PropTypes.func,
 };
 
 const mapDispatchToProps = (dispatch) => ({
   seedphraseBackedUp: () => dispatch(seedphraseBackedUp()),
+  saveOnboardingEvent: (...eventArgs) => dispatch(saveEvent(eventArgs)),
 });
 
 export default connect(null, mapDispatchToProps)(ManualBackupStep2);

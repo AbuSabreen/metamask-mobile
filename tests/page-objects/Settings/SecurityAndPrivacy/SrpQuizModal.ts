@@ -1,0 +1,171 @@
+import {
+  SrpQuizGetStartedSelectorsIDs,
+  SrpQuizGetStartedSelectorsText,
+  SrpSecurityQuestionOneSelectorsIDs,
+  SrpSecurityQuestionOneSelectorsText,
+  SrpSecurityQuestionTwoSelectorsIDs,
+  SrpSecurityQuestionTwoSelectorsText,
+} from '../../../../app/components/Views/Quiz/SRPQuiz/SrpQuizModal.testIds';
+import Matchers from '../../../framework/Matchers';
+import Gestures from '../../../framework/Gestures';
+import { type AppiumElement } from '../../../framework';
+import { PlatformDetector } from '../../../framework/PlatformLocator';
+import type { TapOptions } from '../../../framework/types';
+
+/** Appium iOS: skip displayed/enabled checks when XCTest falsely reports hidden. */
+const iosAppiumTapOptions = (elemDescription: string): TapOptions => {
+  const skipDisplayedChecks = PlatformDetector.isIOSAppium();
+  return {
+    elemDescription,
+    checkForDisplayed: !skipDisplayedChecks,
+    checkEnabled: !skipDisplayedChecks,
+  };
+};
+
+class SrpQuizModal {
+  get getStartedContainer(): Promise<AppiumElement> {
+    return Matchers.getElementByID(SrpQuizGetStartedSelectorsIDs.CONTAINER);
+  }
+
+  get getStartedScreenDismiss(): Promise<AppiumElement> {
+    return Matchers.getElementByID(SrpQuizGetStartedSelectorsIDs.DISMISS);
+  }
+
+  get modalIntroduction(): Promise<AppiumElement> {
+    return Matchers.getElementByText(
+      SrpQuizGetStartedSelectorsText.INTRODUCTION,
+    );
+  }
+
+  get getStartedButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(SrpQuizGetStartedSelectorsIDs.BUTTON);
+  }
+
+  getQuestionSelectors(questionNumber: number) {
+    switch (questionNumber) {
+      case 1:
+        return {
+          ids: SrpSecurityQuestionOneSelectorsIDs,
+          text: SrpSecurityQuestionOneSelectorsText,
+        };
+      case 2:
+        return {
+          ids: SrpSecurityQuestionTwoSelectorsIDs,
+          text: SrpSecurityQuestionTwoSelectorsText,
+        };
+      default:
+        throw new Error(`Invalid question number: ${questionNumber}`);
+    }
+  }
+
+  getQuestionContainer(questionNumber: number) {
+    const { ids } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByID(ids.CONTAINER);
+  }
+
+  getQuestionDismiss(questionNumber: number) {
+    const { ids } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByID(ids.DISMISS);
+  }
+
+  getQuizQuestion(questionNumber: number) {
+    const { text } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByText(text.QUESTION);
+  }
+
+  getQuestionWrongAnswer(questionNumber: number) {
+    const { ids } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByID(ids.WRONG_ANSWER);
+  }
+
+  getQuestionWrongAnswerResponseTitle(questionNumber: number) {
+    const { text } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByText(text.WRONG_ANSWER_RESPONSE_TITLE);
+  }
+
+  getQuestionWrongAnswerResponseDescription(questionNumber: number) {
+    const { text } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByText(text.WRONG_ANSWER_RESPONSE_DESCRIPTION);
+  }
+
+  getQuestionWrongAnswerTryAgainButton(questionNumber: number) {
+    const { ids } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByID(ids.WRONG_ANSWER_TRY_AGAIN_BUTTON);
+  }
+
+  getQuestionRightAnswerButton(questionNumber: number): Promise<AppiumElement> {
+    const { ids } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByID(ids.RIGHT_ANSWER);
+  }
+
+  getQuestionRightAnswerResponseTitle(questionNumber: number) {
+    const { text } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByText(text.RIGHT_ANSWER_RESPONSE_TITLE);
+  }
+
+  getQuestionRightAnswerResponseDescription(questionNumber: number) {
+    const { text } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByText(text.RIGHT_ANSWER_RESPONSE_DESCRIPTION);
+  }
+
+  getQuestionRightContinueButton(
+    questionNumber: number,
+  ): Promise<AppiumElement> {
+    const { ids } = this.getQuestionSelectors(questionNumber);
+    return Matchers.getElementByID(ids.RIGHT_CONTINUE);
+  }
+
+  async tapQuizGetStartedScreenDismiss(): Promise<void> {
+    await Gestures.waitAndTap(this.getStartedScreenDismiss, {
+      elemDescription: 'Srp Quiz - Get Started Screen Dismiss',
+    });
+  }
+
+  async tapGetStartedButton(): Promise<void> {
+    await Gestures.waitAndTap(
+      this.getStartedButton,
+      iosAppiumTapOptions('Srp Quiz - Get Started Button'),
+    );
+  }
+
+  async tapQuestionDismiss(questionNumber: number): Promise<void> {
+    await Gestures.waitAndTap(this.getQuestionDismiss(questionNumber), {
+      elemDescription: `Srp Quiz - Question ${questionNumber} Dismiss`,
+    });
+  }
+
+  async tapQuestionWrongAnswerButton(questionNumber: number): Promise<void> {
+    await Gestures.waitAndTap(this.getQuestionWrongAnswer(questionNumber), {
+      elemDescription: `Srp Quiz - Question ${questionNumber} Wrong Answer`,
+    });
+  }
+
+  async tapQuestionWrongAnswerTryAgainButton(
+    questionNumber: number,
+  ): Promise<void> {
+    await Gestures.waitAndTap(
+      this.getQuestionWrongAnswerTryAgainButton(questionNumber),
+      {
+        elemDescription: `Srp Quiz - Question ${questionNumber} Wrong Answer Try Again`,
+      },
+    );
+  }
+
+  async tapQuestionRightAnswerButton(questionNumber: number): Promise<void> {
+    await Gestures.waitAndTap(
+      this.getQuestionRightAnswerButton(questionNumber),
+      iosAppiumTapOptions(`Srp Quiz - Question ${questionNumber} Right Answer`),
+    );
+  }
+
+  async tapQuestionContinueButton(questionNumber: number): Promise<void> {
+    await Gestures.waitAndTap(
+      this.getQuestionRightContinueButton(questionNumber),
+      iosAppiumTapOptions(
+        `Srp Quiz - Question ${questionNumber} Right Continue`,
+      ),
+    );
+  }
+}
+
+export default new SrpQuizModal();

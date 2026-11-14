@@ -1,0 +1,211 @@
+import { Hex } from '@metamask/utils';
+import {
+  BatchTransaction,
+  GasFeeToken,
+  TransactionMeta,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import { BigNumber } from 'bignumber.js';
+import { Interface } from '@ethersproject/abi';
+import { abiERC20 } from '@metamask/metamask-eth-abis';
+import { NATIVE_TOKEN_ADDRESS } from '../../constants/tokens';
+import I18n from '../../../../../../locales/i18n';
+import { useTransactionMetadataRequest } from '../transactions/useTransactionMetadataRequest';
+import { formatAmount } from '../../../../UI/SimulationDetails/formatAmount';
+import { useFeeCalculations } from './useFeeCalculations';
+import { useEthFiatAmount } from '../useEthFiatAmount';
+import { useAccountNativeBalance } from '../useAccountNativeBalance';
+import { useCallback, useMemo } from 'react';
+import { useNativeCurrencySymbol } from '../useNativeCurrencySymbol';
+
+export const RATE_WEI_NATIVE = '0xDE0B6B3A7640000'; // 1x10^18
+
+export function useGasFeeToken({ tokenAddress }: { tokenAddress?: Hex }) {
+  const transactionMeta = useTransactionMetadataRequest();
+
+  const locale = I18n.locale;
+  const nativeFeeToken = useNativeGasFeeToken();
+  const { gasFeeTokens, chainId, excludeNativeTokenForFee } =
+    transactionMeta || {};
+
+  let gasFeeToken = gasFeeTokens?.find(
+    (token) => token.tokenAddress.toLowerCase() === tokenAddress?.toLowerCase(),
+  );
+
+  if (!gasFeeToken) {
+    // If `excludeNativeTokenForFee` is set to true, we select any available fee token
+    // if available instead of the native token.
+    gasFeeToken =
+      excludeNativeTokenForFee && gasFeeTokens && gasFeeTokens.length > 0
+        ? gasFeeTokens[0]
+        : nativeFeeToken;
+  }
+
+  const {
+    amount,
+    decimals,
+    fee: metaMaskFee,
+  } = gasFeeToken ?? {
+    amount: '0x0',
+    decimals: 0,
+  };
+
+  const amountFormatted = useMemo(
+    () => formatAmount(locale, new BigNumber(amount).shiftedBy(-decimals)),
+    [amount, decimals, locale],
+  );
+
+  const amountFiat = useFiatTokenValue(
+    gasFeeToken,
+    gasFeeToken?.amount,
+    chainId,
+  );
+  const balanceFiat = useFiatTokenValue(
+    gasFeeToken,
+    gasFeeToken?.balance,
+    chainId,
+  );
+  const metamaskFeeFiat = useFiatTokenValue(gasFeeToken, metaMaskFee, chainId);
+
+  const getTransferTransaction = useCallback(
+    () =>
+      tokenAddress === NATIVE_TOKEN_ADDRESS
+        ? getNativeTransferTransaction(gasFeeToken)
+        : getTokenTransferTransaction(gasFeeToken),
+    [gasFeeToken, tokenAddress],
+  );
+
+  return useMemo(
+    () => ({
+      ...gasFeeToken,
+      amountFormatted,
+      amountFiat,
+      balanceFiat,
+      getTransferTransaction,
+      metaMaskFee,
+      metamaskFeeFiat,
+    }),
+    [
+      gasFeeToken,
+      amountFormatted,
+      amountFiat,
+      balanceFiat,
+      getTransferTransaction,
+      metaMaskFee,
+      metamaskFeeFiat,
+    ],
+  );
+}
+
+export function useSelectedGasFeeToken() {
+  const transactionMeta = useTransactionMetadataRequest();
+
+  const { selectedGasFeeToken: tokenAddress } = transactionMeta ?? {};
+  const selectedToken = useGasFeeToken({ tokenAddress });
+
+  return tokenAddress ? selectedToken : undefined;
+}
+
+function useNativeGasFeeToken(): GasFeeToken {
+  const transactionMeta = useTransactionMetadataRequest();
+
+  const { txParams } = transactionMeta ?? {};
+
+  const { preciseNativeFeeInHex: estimatedFeeNativeHex } = useFeeCalculations(
+    transactionMeta?.txParams
+      ? transactionMeta
+      : ({ txParams: {} } as TransactionMeta),
+  );
+
+  const { nativeCurrencySymbol } = useNativeCurrencySymbol(
+    transactionMeta?.chainId,
+  );
+
+  const { balanceWeiInHex: balance } = useAccountNativeBalance(
+    transactionMeta?.chainId as Hex,
+    transactionMeta?.txParams?.from as string,
+  );
+
+  const { gas, maxFeePerGas, maxPriorityFeePerGas } = txParams ?? {};
+
+  return useMemo(
+    () => ({
+      amount: (estimatedFeeNativeHex as Hex) ?? '0x0',
+      balance,
+      decimals: 18,
+      gas: gas as Hex,
+      gasTransfer: '0x0',
+      maxFeePerGas: maxFeePerGas as Hex,
+      maxPriorityFeePerGas: maxPriorityFeePerGas as Hex,
+      rateWei: RATE_WEI_NATIVE,
+      recipient: NATIVE_TOKEN_ADDRESS,
+      symbol: nativeCurrencySymbol,
+      tokenAddress: NATIVE_TOKEN_ADDRESS,
+    }),
+    [
+      estimatedFeeNativeHex,
+      balance,
+      gas,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+      nativeCurrencySymbol,
+    ],
+  );
+}
+
+function useFiatTokenValue(
+  gasFeeToken: GasFeeToken | undefined,
+  tokenValue: Hex | undefined,
+  chainId?: string,
+) {
+  const { decimals, rateWei } = gasFeeToken ?? { decimals: 0, rateWei: '0x0' };
+
+  const nativeWei = new BigNumber(tokenValue ?? '0x0')
+    .shiftedBy(-decimals)
+    .multipliedBy(new BigNumber(rateWei));
+
+  const nativeEth = nativeWei.shiftedBy(-18);
+
+  const fiatValue = useEthFiatAmount(
+    nativeEth,
+    { showFiat: true },
+    true,
+    chainId,
+  );
+
+  return gasFeeToken ? fiatValue : '';
+}
+
+function getTokenTransferTransaction(
+  gasFeeToken: GasFeeToken,
+): BatchTransaction {
+  const data = new Interface(abiERC20).encodeFunctionData('transfer', [
+    gasFeeToken.recipient,
+    gasFeeToken.amount,
+  ]) as Hex;
+
+  return {
+    data,
+    gas: gasFeeToken.gasTransfer,
+    maxFeePerGas: gasFeeToken.maxFeePerGas,
+    maxPriorityFeePerGas: gasFeeToken.maxPriorityFeePerGas,
+    to: gasFeeToken.tokenAddress,
+    // Type the gas-payment child so the HW sendbundle tracker can distinguish
+    // it from the Send (tokenMethodTransfer/simpleSend) — even when the Send
+    // transfers the gas token itself (same `to`), where address comparison fails.
+    type: TransactionType.gasPayment,
+  };
+}
+
+function getNativeTransferTransaction(
+  gasFeeToken: GasFeeToken,
+): BatchTransaction {
+  return {
+    gas: gasFeeToken.gasTransfer,
+    maxFeePerGas: gasFeeToken.maxFeePerGas,
+    maxPriorityFeePerGas: gasFeeToken.maxPriorityFeePerGas,
+    to: gasFeeToken.recipient,
+    value: gasFeeToken.amount,
+    type: TransactionType.gasPayment,
+  };
+}

@@ -5,10 +5,14 @@ import { RPC_METHODS } from '../SDKConnectConstants';
 import DevLogger from '../utils/DevLogger';
 import { wait } from '../utils/wait.util';
 import overwriteRPCWith from './handleRpcOverwrite';
-import { NavigationContainerRef } from '@react-navigation/native';
+import {
+  NavigationContainerRef,
+  ParamListBase,
+} from '@react-navigation/native';
 import Routes from '../../../constants/navigation/Routes';
 import handleSendMessage from './handleSendMessage';
 import { Connection } from '../Connection';
+import { createBuyNavigationDetails } from '../../../components/UI/Ramp/Aggregator/routes/utils';
 
 export const handleCustomRpcCalls = async ({
   rpc,
@@ -21,10 +25,12 @@ export const handleCustomRpcCalls = async ({
   selectedAddress: string;
   selectedChainId: string;
   batchRPCManager: BatchRPCManager;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   rpc: { id: string; method: string; params: any[] };
   store?: typeof import('../../../store').store;
   connection?: Connection;
-  navigation?: NavigationContainerRef;
+  navigation?: NavigationContainerRef<ParamListBase>;
 }) => {
   const { id, method, params } = rpc;
   const lcMethod = method.toLowerCase();
@@ -46,6 +52,8 @@ export const handleCustomRpcCalls = async ({
 
     const targetRpc = params[0];
     const wrapedRpc = overwriteRPCWith({
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       rpc: targetRpc as any,
       accountAddress: selectedAddress,
       selectedChainId,
@@ -110,9 +118,9 @@ export const handleCustomRpcCalls = async ({
       DevLogger.log(
         `[handleCustomRpcCalls] targetToken=${targetToken} amount=${targetAmount}`,
       );
-      navigation?.navigate(Routes.SWAPS);
+      navigation?.navigate(Routes.BRIDGE.ROOT);
     } else {
-      navigation?.navigate(Routes.RAMP.BUY);
+      navigation?.navigate(...createBuyNavigationDetails());
     }
 
     if (connection) {

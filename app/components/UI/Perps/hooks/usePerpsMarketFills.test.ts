@@ -1,0 +1,1045 @@
+import { renderHook, act, waitFor } from '@testing-library/react-native';
+import { useSelector } from 'react-redux';
+import { usePerpsMarketFills } from './usePerpsMarketFills';
+import { usePerpsLiveFills } from './stream';
+import { usePerpsConnection } from './usePerpsConnection';
+import Engine from '../../../../core/Engine';
+import { PERPS_CONSTANTS, type OrderFill } from '@metamask/perps-controller';
+
+const mockSelectedAccountByScope = jest.fn(() => ({
+  address: '0xAccount1',
+}));
+
+// Mock dependencies
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(() => mockSelectedAccountByScope),
+}));
+
+jest.mock('./stream', () => ({
+  usePerpsLiveFills: jest.fn(),
+}));
+
+jest.mock('./usePerpsConnection', () => ({
+  usePerpsConnection: jest.fn(() => ({
+    isConnected: true,
+    isInitialized: true,
+    isConnecting: false,
+    error: null,
+    connect: jest.fn(),
+    disconnect: jest.fn(),
+    resetError: jest.fn(),
+  })),
+}));
+
+jest.mock('../../../../core/Engine', () => ({
+  context: {
+    PerpsController: {
+      getActiveProvider: jest.fn(),
+      getActiveProviderOrNull: jest.fn(),
+      getOrderFills: jest.fn(),
+    },
+  },
+}));
+
+const mockLoggerError = jest.fn();
+jest.mock('../../../../util/Logger', () => ({
+  error: (...args: unknown[]) => mockLoggerError(...args),
+}));
+
+const mockUsePerpsLiveFills = usePerpsLiveFills as jest.MockedFunction<
+  typeof usePerpsLiveFills
+>;
+
+const mockUseSelector = useSelector as jest.MockedFunction<typeof useSelector>;
+
+const mockUsePerpsConnection = usePerpsConnection as jest.MockedFunction<
+  typeof usePerpsConnection
+>;
+
+const mockGetActiveProviderOrNull = Engine.context.PerpsController
+  .getActiveProviderOrNull as jest.MockedFunction<
+  typeof Engine.context.PerpsController.getActiveProviderOrNull
+>;
+
+// Test data
+const createMockFill = (overrides: Partial<OrderFill> = {}): OrderFill => ({
+  orderId: 'order-1',
+  symbol: 'BTC',
+  side: 'buy',
+  size: '0.5',
+  price: '50000',
+  pnl: '100.5',
+  direction: 'Open Long',
+  fee: '25.50',
+  feeToken: 'USDC',
+  timestamp: 1640995200000,
+  startPosition: '0',
+  success: true,
+  ...overrides,
+});
+
+const mockBtcFill1 = createMockFill({
+  orderId: 'btc-1',
+  symbol: 'BTC',
+  timestamp: 1640995200000,
+});
+
+const mockBtcFill2 = createMockFill({
+  orderId: 'btc-2',
+  symbol: 'BTC',
+  timestamp: 1640995100000,
+});
+
+const mockEthFill = createMockFill({
+  orderId: 'eth-1',
+  symbol: 'ETH',
+  timestamp: 1640995150000,
+});
+
+const mockHypeFill = createMockFill({
+  orderId: 'hype-1',
+  symbol: 'HYPE',
+  timestamp: 1640995050000,
+});
+
+describe('usePerpsMarketFills', () => {
+  let mockProvider: {
+    getOrderFills: jest.MockedFunction<
+      (
+        params?: Parameters<
+          typeof Engine.context.PerpsController.getOrderFills
+        >[0],
+        options?: Parameters<
+          typeof Engine.context.PerpsController.getOrderFills
+        >[1],
+      ) => Promise<OrderFill[]>
+    >;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSelectedAccountByScope.mockReturnValue({ address: '0xAccount1' });
+    mockUseSelector.mockImplementation(() => mockSelectedAccountByScope);
+    mockUsePerpsConnection.mockReturnValue({
+      isConnected: true,
+      isInitialized: true,
+      isConnecting: false,
+      error: null,
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+      resetError: jest.fn(),
+    } as never);
+
+    // Set up mock provider
+    mockProvider = {
+      getOrderFills: jest.fn().mockResolvedValue([]),
+    };
+
+    mockGetActiveProviderOrNull.mockReturnValue(
+      mockProvider as unknown as ReturnType<
+        typeof Engine.context.PerpsController.getActiveProvider
+      >,
+    );
+
+    // Controller delegates to provider — matches the post-coalesce path
+    // (MarketDataService is mocked away here and covered in its own suite).
+    (
+      Engine.context.PerpsController.getOrderFills as jest.Mock
+    ).mockImplementation((params) => mockProvider.getOrderFills(params));
+
+    // Default WebSocket mock - not loading, empty fills
+    mockUsePerpsLiveFills.mockReturnValue({
+      retry: jest.fn(),
+      fills: [],
+      isInitialLoading: false,
+    });
+  });
+
+  describe('initial state', () => {
+    it('returns empty fills when WebSocket has no data', () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert
+      expect(result.current.fills).toEqual([]);
+      expect(result.current.isInitialLoading).toBe(false);
+      expect(result.current.restHistoryStatus).toBe('loading');
+      expect(result.current.isRefreshing).toBe(false);
+    });
+
+    it('returns loading true when WebSocket is loading', () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: true,
+      });
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert
+      expect(result.current.isInitialLoading).toBe(true);
+    });
+
+    it('clears historical loading after the REST backfill completes', async () => {
+      // Arrange
+      mockProvider.getOrderFills.mockResolvedValue([]);
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert
+      await waitFor(() => {
+        expect(result.current.restHistoryStatus).toBe('ready');
+      });
+    });
+  });
+
+  describe('symbol filtering', () => {
+    it('filters WebSocket fills to only include requested symbol', () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [mockBtcFill1, mockEthFill, mockBtcFill2],
+        isInitialLoading: false,
+      });
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert
+      expect(result.current.fills).toHaveLength(2);
+      expect(result.current.fills.every((f) => f.symbol === 'BTC')).toBe(true);
+    });
+
+    it('returns empty array when no fills match symbol', () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [mockBtcFill1, mockEthFill],
+        isInitialLoading: false,
+      });
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'SOL' }),
+      );
+
+      // Assert
+      expect(result.current.fills).toEqual([]);
+    });
+
+    it('filters REST fills to only include requested symbol', async () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([
+        mockBtcFill1,
+        mockEthFill,
+        mockHypeFill,
+      ]);
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'HYPE' }),
+      );
+
+      // Assert
+      await waitFor(() => {
+        expect(result.current.fills).toHaveLength(1);
+      });
+      expect(result.current.fills[0].symbol).toBe('HYPE');
+    });
+  });
+
+  describe('data merging', () => {
+    it('merges WebSocket and REST fills with deduplication', async () => {
+      // Arrange - same fill in both sources
+      const sharedFill = createMockFill({
+        orderId: 'shared-1',
+        symbol: 'BTC',
+        timestamp: 1640995200000,
+      });
+
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [sharedFill],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([sharedFill, mockBtcFill2]);
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert - should have 2 fills, not 3 (deduped)
+      await waitFor(() => {
+        expect(result.current.fills).toHaveLength(2);
+      });
+    });
+
+    it('prefers WebSocket data over REST data for exact duplicates', async () => {
+      // Arrange - identical fill in both sources (same orderId, timestamp, size, price)
+      const restFill = createMockFill({
+        orderId: 'order-1',
+        symbol: 'BTC',
+        timestamp: 1640995200000,
+        size: '0.5',
+        price: '50000',
+      });
+      const wsFill = createMockFill({
+        orderId: 'order-1',
+        symbol: 'BTC',
+        timestamp: 1640995200000,
+        size: '0.5',
+        price: '50000',
+      });
+
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [wsFill],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([restFill]);
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert - should deduplicate to single fill
+      await waitFor(() => {
+        expect(result.current.fills).toHaveLength(1);
+      });
+      expect(result.current.fills[0].price).toBe('50000');
+    });
+
+    it('preserves multi-fill trades with same orderId and timestamp but different size/price', async () => {
+      // Arrange - SL order split into 2 fills at same timestamp
+      const fill1 = createMockFill({
+        orderId: 'sl-order-1',
+        symbol: 'BTC',
+        timestamp: 1640995200000,
+        size: '0.3',
+        price: '49000',
+        pnl: '-15.00',
+        direction: 'Close Long',
+      });
+      const fill2 = createMockFill({
+        orderId: 'sl-order-1',
+        symbol: 'BTC',
+        timestamp: 1640995200000,
+        size: '0.2',
+        price: '49000',
+        pnl: '-10.00',
+        direction: 'Close Long',
+      });
+
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([fill1, fill2]);
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert - both fills should be preserved (not collapsed by dedup)
+      await waitFor(() => {
+        expect(result.current.fills).toHaveLength(2);
+      });
+      const sizes = result.current.fills.map((f) => f.size);
+      expect(sizes).toContain('0.3');
+      expect(sizes).toContain('0.2');
+    });
+
+    it('combines unique fills from both sources', async () => {
+      // Arrange
+      const wsFill = createMockFill({
+        orderId: 'ws-only',
+        symbol: 'BTC',
+        timestamp: 1640995300000,
+      });
+      const restFill = createMockFill({
+        orderId: 'rest-only',
+        symbol: 'BTC',
+        timestamp: 1640995100000,
+      });
+
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [wsFill],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([restFill]);
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert
+      await waitFor(() => {
+        expect(result.current.fills).toHaveLength(2);
+      });
+      expect(result.current.fills.map((f) => f.orderId)).toContain('ws-only');
+      expect(result.current.fills.map((f) => f.orderId)).toContain('rest-only');
+    });
+  });
+
+  describe('sorting', () => {
+    it('sorts fills by timestamp descending (newest first)', async () => {
+      // Arrange
+      const oldFill = createMockFill({
+        orderId: 'old',
+        symbol: 'BTC',
+        timestamp: 1640995000000,
+      });
+      const newFill = createMockFill({
+        orderId: 'new',
+        symbol: 'BTC',
+        timestamp: 1640995300000,
+      });
+      const middleFill = createMockFill({
+        orderId: 'middle',
+        symbol: 'BTC',
+        timestamp: 1640995150000,
+      });
+
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [oldFill, newFill, middleFill],
+        isInitialLoading: false,
+      });
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert
+      expect(result.current.fills[0].orderId).toBe('new');
+      expect(result.current.fills[1].orderId).toBe('middle');
+      expect(result.current.fills[2].orderId).toBe('old');
+    });
+  });
+
+  describe('REST API fetching', () => {
+    it('fetches REST fills on mount with 3-month lookback', async () => {
+      // Arrange
+      const mockNow = 1700000000000;
+      jest.spyOn(Date, 'now').mockReturnValue(mockNow);
+
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([mockBtcFill1]);
+
+      // Act
+      renderHook(() => usePerpsMarketFills({ symbol: 'BTC' }));
+
+      // Assert
+      await waitFor(() => {
+        expect(mockProvider.getOrderFills).toHaveBeenCalledWith({
+          aggregateByTime: false,
+          startTime: mockNow - PERPS_CONSTANTS.FillsLookbackMs,
+        });
+      });
+
+      jest.restoreAllMocks();
+    });
+
+    it('uses FILLS_LOOKBACK_MS constant for 3-month window', async () => {
+      // Arrange
+      const mockNow = 1700000000000;
+      jest.spyOn(Date, 'now').mockReturnValue(mockNow);
+
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([]);
+
+      // Act
+      renderHook(() => usePerpsMarketFills({ symbol: 'BTC' }));
+
+      // Assert - verify lookback is approximately 3 months (90 days)
+      const expectedStartTime = mockNow - PERPS_CONSTANTS.FillsLookbackMs;
+      await waitFor(() => {
+        expect(mockProvider.getOrderFills).toHaveBeenCalledWith(
+          expect.objectContaining({
+            startTime: expectedStartTime,
+          }),
+        );
+      });
+      // Verify the constant is approximately 90 days in milliseconds
+      expect(PERPS_CONSTANTS.FillsLookbackMs).toBe(90 * 24 * 60 * 60 * 1000);
+
+      jest.restoreAllMocks();
+    });
+
+    it('handles REST API errors gracefully', async () => {
+      // Arrange
+      mockLoggerError.mockClear();
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [mockBtcFill1],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockRejectedValue(new Error('API Error'));
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert - should still show WebSocket fills and log error to Sentry
+      await waitFor(() => {
+        expect(mockLoggerError).toHaveBeenCalledWith(
+          expect.any(Error),
+          expect.objectContaining({
+            extra: expect.objectContaining({
+              hook: 'usePerpsMarketFills',
+              method: 'fetchRestFills',
+            }),
+          }),
+        );
+      });
+      expect(result.current.fills).toHaveLength(1);
+      expect(result.current.restHistoryStatus).toBe('error');
+    });
+
+    it('handles missing provider gracefully', async () => {
+      // Arrange
+      mockGetActiveProviderOrNull.mockReturnValue(
+        null as unknown as ReturnType<
+          typeof Engine.context.PerpsController.getActiveProvider
+        >,
+      );
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [mockBtcFill1],
+        isInitialLoading: false,
+      });
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert - WebSocket fills still work and missing provider is not terminal
+      expect(result.current.fills).toHaveLength(1);
+      await waitFor(() => {
+        expect(result.current.restHistoryStatus).toBe('pending');
+      });
+    });
+
+    it('marks REST history complete after a successful backfill', async () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([mockBtcFill1]);
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert
+      await waitFor(() => {
+        expect(result.current.restHistoryStatus).toBe('ready');
+      });
+    });
+  });
+
+  describe('connection readiness', () => {
+    it('waits for connection without history error while reconnecting', () => {
+      // Arrange
+      mockUsePerpsConnection.mockReturnValue({
+        isConnected: true,
+        isInitialized: true,
+        isConnecting: true,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      } as never);
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [mockBtcFill1],
+        isInitialLoading: false,
+      });
+
+      // Act
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Assert
+      expect(mockProvider.getOrderFills).not.toHaveBeenCalled();
+      expect(result.current.restHistoryStatus).toBe('pending');
+      expect(result.current.fills).toHaveLength(1);
+    });
+
+    it('refetches REST fills when connection becomes ready', async () => {
+      // Arrange
+      mockUsePerpsConnection.mockReturnValue({
+        isConnected: false,
+        isInitialized: false,
+        isConnecting: false,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      } as never);
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([mockBtcFill1]);
+
+      const { result, rerender } = renderHook(
+        ({ symbol }: { symbol: string }) => usePerpsMarketFills({ symbol }),
+        { initialProps: { symbol: 'BTC' } },
+      );
+
+      expect(mockProvider.getOrderFills).not.toHaveBeenCalled();
+      expect(result.current.restHistoryStatus).toBe('pending');
+
+      mockUsePerpsConnection.mockReturnValue({
+        isConnected: true,
+        isInitialized: true,
+        isConnecting: false,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      } as never);
+
+      // Act
+      await act(async () => {
+        rerender({ symbol: 'BTC' });
+      });
+
+      // Assert
+      await waitFor(() => {
+        expect(mockProvider.getOrderFills).toHaveBeenCalledTimes(1);
+      });
+      await waitFor(() => {
+        expect(result.current.fills).toHaveLength(1);
+      });
+      expect(result.current.restHistoryStatus).toBe('ready');
+    });
+
+    it('discards an in-flight fetch when the connection becomes unavailable', async () => {
+      // Arrange
+      let resolveFetch: ((value: OrderFill[]) => void) | undefined;
+      mockProvider.getOrderFills.mockReturnValue(
+        new Promise<OrderFill[]>((resolve) => {
+          resolveFetch = resolve;
+        }),
+      );
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      const { result, rerender } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      mockUsePerpsConnection.mockReturnValue({
+        isConnected: false,
+        isInitialized: false,
+        isConnecting: false,
+        error: null,
+        connect: jest.fn(),
+        disconnect: jest.fn(),
+        resetError: jest.fn(),
+      } as never);
+
+      // Act
+      rerender({ symbol: 'BTC' });
+      await act(async () => {
+        resolveFetch?.([mockBtcFill1]);
+        await Promise.resolve();
+      });
+
+      // Assert
+      expect(result.current.restHistoryStatus).toBe('pending');
+      expect(result.current.fills).toEqual([]);
+    });
+  });
+
+  describe('refresh functionality', () => {
+    it('refetches REST data on refresh', async () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills.mockResolvedValue([]);
+
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      await waitFor(() => {
+        expect(mockProvider.getOrderFills).toHaveBeenCalledTimes(1);
+      });
+
+      // Update mock for refresh
+      mockProvider.getOrderFills.mockResolvedValue([mockBtcFill1]);
+
+      // Act
+      await act(async () => {
+        await result.current.refresh();
+      });
+
+      // Assert
+      expect(mockProvider.getOrderFills).toHaveBeenCalledTimes(2);
+      expect(result.current.fills).toHaveLength(1);
+    });
+
+    it('sets isRefreshing during refresh', async () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      let resolvePromise: ((value: OrderFill[]) => void) | undefined;
+      const slowPromise = new Promise<OrderFill[]>((resolve) => {
+        resolvePromise = resolve;
+      });
+      mockProvider.getOrderFills.mockReturnValue(slowPromise);
+
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      // Act - start refresh
+      let refreshPromise: Promise<void> | undefined;
+      act(() => {
+        refreshPromise = result.current.refresh();
+      });
+
+      // Assert - should be refreshing
+      expect(result.current.isRefreshing).toBe(true);
+
+      // Complete the refresh
+      await act(async () => {
+        if (resolvePromise) {
+          resolvePromise([]);
+        }
+        if (refreshPromise) {
+          await refreshPromise;
+        }
+      });
+
+      // Assert - should no longer be refreshing
+      expect(result.current.isRefreshing).toBe(false);
+    });
+
+    it('resets isRefreshing on refresh error', async () => {
+      // Arrange
+      const consoleError = jest
+        .spyOn(console, 'error')
+        .mockImplementation(jest.fn());
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+      mockProvider.getOrderFills
+        .mockResolvedValueOnce([]) // Initial fetch
+        .mockRejectedValueOnce(new Error('Refresh error')); // Refresh fails
+
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      await waitFor(() => {
+        expect(mockProvider.getOrderFills).toHaveBeenCalledTimes(1);
+      });
+
+      // Act
+      await act(async () => {
+        await result.current.refresh();
+      });
+
+      // Assert
+      expect(result.current.isRefreshing).toBe(false);
+      expect(result.current.restHistoryStatus).toBe('error');
+
+      consoleError.mockRestore();
+    });
+
+    it('marks history ready when refresh supersedes initial fetch', async () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      let resolveInitialFetch: ((value: OrderFill[]) => void) | undefined;
+      let resolveRefreshFetch: ((value: OrderFill[]) => void) | undefined;
+      const initialFetch = new Promise<OrderFill[]>((resolve) => {
+        resolveInitialFetch = resolve;
+      });
+      const refreshFetch = new Promise<OrderFill[]>((resolve) => {
+        resolveRefreshFetch = resolve;
+      });
+
+      mockProvider.getOrderFills
+        .mockReturnValueOnce(initialFetch)
+        .mockReturnValueOnce(refreshFetch);
+
+      const { result } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      expect(result.current.restHistoryStatus).toBe('loading');
+
+      let refreshPromise: Promise<void> | undefined;
+      await act(async () => {
+        refreshPromise = result.current.refresh();
+      });
+
+      await act(async () => {
+        resolveRefreshFetch?.([mockBtcFill1]);
+        await refreshPromise;
+      });
+
+      expect(result.current.restHistoryStatus).toBe('ready');
+      expect(result.current.fills).toHaveLength(1);
+
+      await act(async () => {
+        resolveInitialFetch?.([
+          createMockFill({ orderId: 'stale-initial-fill', symbol: 'BTC' }),
+        ]);
+        await Promise.resolve();
+      });
+
+      expect(result.current.restHistoryStatus).toBe('ready');
+      expect(result.current.fills).toHaveLength(1);
+      expect(result.current.fills[0].orderId).toBe('btc-1');
+    });
+  });
+
+  describe('throttleMs option', () => {
+    it('passes throttleMs to usePerpsLiveFills', () => {
+      // Arrange & Act
+      renderHook(() => usePerpsMarketFills({ symbol: 'BTC', throttleMs: 500 }));
+
+      // Assert
+      expect(mockUsePerpsLiveFills).toHaveBeenCalledWith({ throttleMs: 500 });
+    });
+
+    it('defaults throttleMs to 0 for instant updates', () => {
+      // Arrange & Act
+      renderHook(() => usePerpsMarketFills({ symbol: 'BTC' }));
+
+      // Assert
+      expect(mockUsePerpsLiveFills).toHaveBeenCalledWith({ throttleMs: 0 });
+    });
+  });
+
+  describe('symbol changes', () => {
+    it('updates fills when symbol prop changes', async () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [mockBtcFill1, mockEthFill],
+        isInitialLoading: false,
+      });
+
+      const { result, rerender } = renderHook(
+        ({ symbol }: { symbol: string }) => usePerpsMarketFills({ symbol }),
+        { initialProps: { symbol: 'BTC' } },
+      );
+
+      // Assert initial state
+      expect(result.current.fills).toHaveLength(1);
+      expect(result.current.fills[0].symbol).toBe('BTC');
+
+      // Act - change symbol
+      rerender({ symbol: 'ETH' });
+
+      // Assert
+      expect(result.current.fills).toHaveLength(1);
+      expect(result.current.fills[0].symbol).toBe('ETH');
+    });
+  });
+
+  describe('stale in-flight REST fetches', () => {
+    it('ignores stale fetch errors when a newer fetch succeeds', async () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      let rejectFirstFetch: ((error: Error) => void) | undefined;
+      const staleFetch = new Promise<OrderFill[]>((_resolve, reject) => {
+        rejectFirstFetch = reject;
+      });
+      const currentAccountFill = createMockFill({
+        orderId: 'current-account-fill',
+        symbol: 'BTC',
+      });
+
+      mockProvider.getOrderFills
+        .mockReturnValueOnce(staleFetch)
+        .mockResolvedValueOnce([currentAccountFill]);
+
+      const { result, rerender } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      mockSelectedAccountByScope.mockReturnValue({ address: '0xAccount2' });
+      rerender({ symbol: 'BTC' });
+
+      await waitFor(() => {
+        expect(result.current.fills).toHaveLength(1);
+      });
+      expect(result.current.restHistoryStatus).toBe('ready');
+
+      await act(async () => {
+        rejectFirstFetch?.(new Error('Stale error'));
+        await Promise.resolve();
+      });
+
+      expect(result.current.restHistoryStatus).toBe('ready');
+      expect(result.current.fills[0].orderId).toBe('current-account-fill');
+      expect(mockLoggerError).not.toHaveBeenCalled();
+    });
+
+    it('ignores stale fetch fills when the account changes', async () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      let resolveFirstFetch: ((value: OrderFill[]) => void) | undefined;
+      const staleFetch = new Promise<OrderFill[]>((resolve) => {
+        resolveFirstFetch = resolve;
+      });
+      const staleAccountFill = createMockFill({
+        orderId: 'stale-account-fill',
+        symbol: 'BTC',
+      });
+      const currentAccountFill = createMockFill({
+        orderId: 'current-account-fill',
+        symbol: 'BTC',
+      });
+
+      mockProvider.getOrderFills
+        .mockReturnValueOnce(staleFetch)
+        .mockResolvedValueOnce([currentAccountFill]);
+
+      const { result, rerender } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      mockSelectedAccountByScope.mockReturnValue({ address: '0xAccount2' });
+      rerender({ symbol: 'BTC' });
+
+      await waitFor(() => {
+        expect(result.current.fills).toHaveLength(1);
+      });
+      expect(result.current.fills[0].orderId).toBe('current-account-fill');
+
+      await act(async () => {
+        resolveFirstFetch?.([staleAccountFill]);
+        await Promise.resolve();
+      });
+
+      expect(result.current.fills).toHaveLength(1);
+      expect(result.current.fills[0].orderId).toBe('current-account-fill');
+    });
+
+    it('preserves loading while a superseding fetch is in flight', async () => {
+      // Arrange
+      mockUsePerpsLiveFills.mockReturnValue({
+        retry: jest.fn(),
+        fills: [],
+        isInitialLoading: false,
+      });
+
+      let resolveFirstFetch: ((value: OrderFill[]) => void) | undefined;
+      let resolveSecondFetch: ((value: OrderFill[]) => void) | undefined;
+      const firstFetch = new Promise<OrderFill[]>((resolve) => {
+        resolveFirstFetch = resolve;
+      });
+      const secondFetch = new Promise<OrderFill[]>((resolve) => {
+        resolveSecondFetch = resolve;
+      });
+
+      mockProvider.getOrderFills
+        .mockReturnValueOnce(firstFetch)
+        .mockReturnValueOnce(secondFetch);
+
+      const { result, rerender } = renderHook(() =>
+        usePerpsMarketFills({ symbol: 'BTC' }),
+      );
+
+      mockSelectedAccountByScope.mockReturnValue({ address: '0xAccount2' });
+      rerender({ symbol: 'BTC' });
+
+      expect(result.current.restHistoryStatus).toBe('loading');
+
+      await act(async () => {
+        resolveFirstFetch?.([]);
+        await Promise.resolve();
+      });
+
+      expect(result.current.restHistoryStatus).toBe('loading');
+
+      await act(async () => {
+        resolveSecondFetch?.([mockBtcFill1]);
+        await Promise.resolve();
+      });
+
+      expect(result.current.restHistoryStatus).toBe('ready');
+      expect(result.current.fills).toHaveLength(1);
+    });
+  });
+});

@@ -1,0 +1,98 @@
+import React, { useRef, useCallback } from 'react';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+
+import {
+  BottomSheet,
+  BottomSheetFooter,
+  Box,
+  ButtonSize,
+  Text,
+  TextVariant,
+  type BottomSheetRef,
+} from '@metamask/design-system-react-native';
+import { strings } from '../../../../../../locales/i18n';
+import { PerpsTooltipContentKey } from '../../components/PerpsBottomSheetTooltip/PerpsBottomSheetTooltip.types';
+import { tooltipContentRegistry } from '../../components/PerpsBottomSheetTooltip/content/contentRegistry';
+import { PerpsBottomSheetTooltipSelectorsIDs } from '../../Perps.testIds';
+import BottomSheetHeaderGlass from '../../../../../component-library/components-temp/BottomSheetHeaderGlass';
+import { useSelector } from 'react-redux';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+export interface PerpsTooltipViewRouteParams {
+  contentKey: PerpsTooltipContentKey;
+  data?: Record<string, unknown>;
+}
+
+const PerpsTooltipView: React.FC = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
+  const route =
+    useRoute<RouteProp<Record<string, PerpsTooltipViewRouteParams>, string>>();
+  const bottomSheetRef = useRef<BottomSheetRef>(null);
+
+  const { contentKey, data } = route.params || {};
+
+  const handleGotItPress = useCallback(() => {
+    bottomSheetRef.current?.onCloseBottomSheet();
+  }, []);
+
+  if (!contentKey) {
+    return null;
+  }
+
+  const title = strings(`perps.tooltips.${contentKey}.title`);
+
+  const renderContent = () => {
+    const CustomRenderer = tooltipContentRegistry[contentKey];
+
+    if (CustomRenderer) {
+      return (
+        <CustomRenderer
+          testID={PerpsBottomSheetTooltipSelectorsIDs.CONTENT}
+          data={data}
+        />
+      );
+    }
+
+    return (
+      <Text variant={TextVariant.BodyMd}>
+        {strings(`perps.tooltips.${contentKey}.content`)}
+      </Text>
+    );
+  };
+
+  // Content keys that render their own header (with icon)
+  const hasCustomHeader =
+    contentKey === 'market_hours' || contentKey === 'after_hours_trading';
+
+  return (
+    <BottomSheet
+      ref={bottomSheetRef}
+      goBack={navigation.goBack}
+      testID="perps-tooltip-bottom-sheet"
+    >
+      {!hasCustomHeader && (
+        <BottomSheetHeaderGlass
+          isGlass={isGlassHeader}
+          testID="perps-tooltip-bottom-sheet-header"
+        >
+          <Text variant={TextVariant.HeadingMd}>{title}</Text>
+        </BottomSheetHeaderGlass>
+      )}
+      <Box paddingHorizontal={4}>{renderContent()}</Box>
+      <BottomSheetFooter
+        testID="perps-tooltip-bottom-sheet-footer"
+        primaryButtonProps={{
+          children: strings('perps.tooltips.got_it_button'),
+          onPress: handleGotItPress,
+          size: ButtonSize.Lg,
+          testID: 'perps-tooltip-bottom-sheet-footer-got-it-button',
+        }}
+        twClassName="pt-6"
+      />
+    </BottomSheet>
+  );
+};
+
+export default PerpsTooltipView;

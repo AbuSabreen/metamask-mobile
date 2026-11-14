@@ -1,57 +1,44 @@
 import React, { PureComponent } from 'react';
 import PropTypes from 'prop-types';
 import {
+  Keyboard,
   ScrollView,
   StyleSheet,
   Text,
   View,
   TouchableOpacity,
 } from 'react-native';
-import { fontStyles, baseStyles } from '../../../styles/common';
-import Icon from 'react-native-vector-icons/MaterialIcons';
+import { baseStyles, fontStyles } from '../../../styles/common';
 import Modal from 'react-native-modal';
-import dismissKeyboard from 'react-native/Libraries/Utilities/dismissKeyboard';
 import IconCheck from 'react-native-vector-icons/MaterialCommunityIcons';
 import Device from '../../../util/device';
 import { ThemeContext, mockTheme } from '../../../util/theme';
+import PickerBase from '../../../component-library/components/Pickers/PickerBase';
+import {
+  HeaderStandard,
+  FontWeight,
+  Text as DesignSystemText,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
 
 const ROW_HEIGHT = 35;
-const createStyles = (colors) =>
-  StyleSheet.create({
-    dropdown: {
-      flexDirection: 'row',
+const createStyles = (theme) => {
+  const { colors } = theme;
+
+  return StyleSheet.create({
+    pickerTrigger: {
+      backgroundColor: colors.background.muted,
+      padding: 0,
+      paddingTop: 12,
+      paddingBottom: 12,
+      paddingLeft: 16,
+      paddingRight: 16,
+      borderRadius: 9999,
+      borderWidth: 0,
     },
-    iconDropdown: {
-      marginTop: 7,
-      height: 25,
-      justifyContent: 'flex-end',
-      textAlign: 'right',
-      marginRight: 10,
-    },
-    selectedOption: {
+    selectedLabel: {
       flex: 1,
-      alignSelf: 'flex-start',
-      color: colors.text.default,
-      fontSize: 14,
-      paddingHorizontal: 15,
-      paddingTop: 10,
-      paddingBottom: 10,
-      ...fontStyles.normal,
-    },
-    accesoryBar: {
-      width: '100%',
-      paddingTop: 5,
-      height: 50,
-      borderBottomColor: colors.border.muted,
-      borderBottomWidth: 1,
-    },
-    label: {
-      textAlign: 'center',
-      flex: 1,
-      paddingVertical: 10,
-      fontSize: 17,
-      ...fontStyles.bold,
-      color: colors.text.default,
     },
     modal: {
       margin: 0,
@@ -59,21 +46,24 @@ const createStyles = (colors) =>
       padding: 60,
     },
     modalView: {
-      backgroundColor: colors.background.default,
+      backgroundColor: theme.colors.background.elevated1,
       justifyContent: 'center',
       alignItems: 'center',
       borderRadius: 10,
+      maxHeight: Device.getDeviceHeight() - 120, // Subtract top and bottom padding
+      borderWidth: 1,
+      borderColor: colors.border.alternative,
     },
     list: {
       width: '100%',
     },
     optionButton: {
-      paddingHorizontal: 15,
-      paddingVertical: 5,
+      paddingHorizontal: 16,
+      paddingVertical: 4,
       flexDirection: 'row',
       justifyContent: 'center',
       alignItems: 'center',
-      height: Device.isIos() ? ROW_HEIGHT : undefined,
+      height: ROW_HEIGHT,
     },
     optionLabel: {
       flex: 1,
@@ -89,7 +79,13 @@ const createStyles = (colors) =>
       paddingBottom: 10,
     },
   });
+};
 
+/**
+ * @deprecated Please update your code to use `SelectButton` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/SelectButton/README.md}
+ */
 export default class SelectComponent extends PureComponent {
   static propTypes = {
     /**
@@ -112,13 +108,14 @@ export default class SelectComponent extends PureComponent {
      * Callback for value change
      */
     onValueChange: PropTypes.func,
+    testID: PropTypes.string,
   };
 
   state = {
     pickerVisible: false,
   };
 
-  scrollView = Device.isIos() ? React.createRef() : null;
+  scrollView = React.createRef();
 
   onValueChange = (val) => {
     this.props.onValueChange(val);
@@ -132,13 +129,12 @@ export default class SelectComponent extends PureComponent {
   };
 
   showPicker = () => {
-    dismissKeyboard();
+    Keyboard.dismiss();
     this.setState({ pickerVisible: true });
-    Device.isIos() &&
-      // If there are more options than 13 (number of items
-      // that should fit in a normal screen)
-      // then let's scroll to the selected item
-      this.props.options.length > 13 &&
+    // If there are more options than 13 (number of items
+    // that should fit in a normal screen)
+    // then let's scroll to the selected item
+    this.props.options.length > 13 &&
       this.props.options.forEach((item, i) => {
         if (item.value === this.props.selectedValue) {
           setTimeout(() => {
@@ -167,24 +163,27 @@ export default class SelectComponent extends PureComponent {
   };
 
   renderDropdownSelector = () => {
-    const colors = this.context.colors || mockTheme.colors;
-    const styles = createStyles(colors);
+    const theme = this.context || mockTheme;
+    const { colors } = theme;
+    const styles = createStyles(theme);
 
     return (
       <View style={baseStyles.flexGrow}>
-        <TouchableOpacity onPress={this.showPicker}>
-          <View style={styles.dropdown}>
-            <Text style={styles.selectedOption} numberOfLines={1}>
-              {this.getSelectedValue()}
-            </Text>
-            <Icon
-              name={'arrow-drop-down'}
-              size={24}
-              color={colors.icon.default}
-              style={styles.iconDropdown}
-            />
-          </View>
-        </TouchableOpacity>
+        <PickerBase
+          onPress={this.showPicker}
+          testID={this.props.testID}
+          style={styles.pickerTrigger}
+        >
+          <DesignSystemText
+            variant={TextVariant.BodyMd}
+            fontWeight={FontWeight.Medium}
+            color={TextColor.TextDefault}
+            style={styles.selectedLabel}
+            numberOfLines={1}
+          >
+            {this.getSelectedValue()}
+          </DesignSystemText>
+        </PickerBase>
         <Modal
           isVisible={this.state.pickerVisible}
           onBackdropPress={this.hidePicker}
@@ -195,9 +194,10 @@ export default class SelectComponent extends PureComponent {
           backdropOpacity={1}
         >
           <View style={styles.modalView}>
-            <View style={styles.accesoryBar}>
-              <Text style={styles.label}>{this.props.label}</Text>
-            </View>
+            <HeaderStandard
+              title={this.props.label}
+              onClose={this.hidePicker}
+            />
             <ScrollView style={styles.list} ref={this.scrollView}>
               <View style={styles.listWrapper}>
                 {this.props.options.map((option) => (

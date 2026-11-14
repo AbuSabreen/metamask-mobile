@@ -1,0 +1,623 @@
+import { HomepageBalanceBreakdownTestIds } from '../../../app/components/Views/Homepage/components/HomepageBalanceBreakdown/HomepageBalanceBreakdown.testIds';
+import {
+  WalletViewSelectorsIDs,
+  WalletViewSelectorsText,
+} from '../../../app/components/Views/Wallet/WalletView.testIds';
+import Gestures from '../../framework/Gestures';
+import Matchers from '../../framework/Matchers';
+import Assertions from '../../framework/Assertions';
+import Utilities from '../../framework/Utilities';
+import type { AppiumElement } from '../../framework/AppiumElement';
+import { PlatformDetector } from '../../framework/PlatformLocator';
+import { getAssetTestId } from '../../selectors/Wallet/WalletView.selectors';
+import { isPerformanceSuiteActive } from '../../framework/ai-locator/PerformanceLocatorRecovery.ts';
+import WalletHomeScroll from './WalletHomeScroll';
+import { WalletHomeSections as WalletHomeSectionsBase } from './WalletHomeSections';
+
+/**
+ * Treatment renders the breakdown hero and control renders the account balance,
+ * never both. One pattern finds whichever is on screen without a probe that
+ * would add time to the measured wait.
+ */
+const BALANCE_SURFACE_ID_PATTERN = new RegExp(
+  `(?:^|/)(?:${HomepageBalanceBreakdownTestIds.HERO}|${WalletViewSelectorsIDs.EYE_SLASH_ICON})$`,
+);
+
+function throwBalanceDidNotStabilize(
+  maxWaitTime: number,
+  lastObservedBalance: string,
+): never {
+  const observed =
+    lastObservedBalance.length > 0 ? `"${lastObservedBalance}"` : 'none';
+  throw new Error(
+    `Balance did not stabilize within ${maxWaitTime}ms (last observed balance: ${observed})`,
+  );
+}
+
+/** Prints when the observed text changes so the Playwright run shows it live. */
+function logObservedBalance(source: string, balance: string): void {
+  const shown = balance.length > 0 ? balance : '<empty>';
+  console.log(`[balance-stabilize] ${source}: ${shown}`);
+}
+
+/**
+ * The balance container's content description is the formatted total, then the
+ * 24h delta joined with `, `. A thousands separator has no trailing space
+ * (`$1,234.56`), so the first `, ` is the delta boundary.
+ */
+function balanceFromContainerLabel(label: string): string {
+  const trimmed = label.trim();
+  const deltaSeparator = trimmed.indexOf(', ');
+  if (deltaSeparator === -1) {
+    return trimmed;
+  }
+  return trimmed.slice(0, deltaSeparator);
+}
+
+/**
+ * The visible amount is a TextView without a test id. The parent that owns
+ * the id exposes that amount on its accessibility label.
+ */
+async function readBalanceFromContainer(
+  container: Promise<AppiumElement>,
+): Promise<string> {
+  const el = await container;
+  const described = PlatformDetector.isIOS()
+    ? ((await el.getAttribute('label')) ??
+      (await el.getAttribute('name')) ??
+      '')
+    : ((await el.getAttribute('content-desc')) ?? '');
+  return balanceFromContainerLabel(described);
+}
+
+class WalletView extends WalletHomeSectionsBase {
+  get container(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.WALLET_CONTAINER);
+  }
+
+  /**
+   * Wallet header root — high in the Android view hierarchy (above scroll /
+   * homepage sections). Partial ID match so package-qualified resource IDs
+   * resolve without deep tree walks into token lists.
+   */
+  get headerRoot(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      new RegExp(WalletViewSelectorsIDs.WALLET_HEADER_ROOT),
+    );
+  }
+
+  get walletScrollContainer(): string {
+    return WalletHomeScroll.walletScrollContainer;
+  }
+
+  get walletScrollView(): Promise<AppiumElement> {
+    return WalletHomeScroll.walletScrollView;
+  }
+
+  get activityButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.WALLET_ACTIVITY_BUTTON,
+    );
+  }
+
+  async tapActivityButton(): Promise<void> {
+    await Gestures.waitAndTap(this.activityButton, {
+      elemDescription: 'Wallet Activity button',
+    });
+  }
+
+  get earnButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.STAKE_BUTTON);
+  }
+
+  /**
+   * Wallet account icon / name button.
+   * Performance: match both A/B header variants (compact + control).
+   * Smoke / shared: keep the classic account-picker control only.
+   */
+  get accountIcon(): Promise<AppiumElement> {
+    const controlId = WalletViewSelectorsIDs.ACCOUNT_ICON;
+    if (!isPerformanceSuiteActive()) {
+      if (PlatformDetector.isIOS()) {
+        // iOS: catch-all across name/label/text (historical AccessibilityId flakiness)
+        return Matchers.getElementByNativeXPath(
+          `//*[contains(@name,'${controlId}') or contains(@label,'${controlId}') or contains(@text,'${controlId}')]`,
+        );
+      }
+      return Matchers.getElementByID(controlId);
+    }
+
+    const compactId = WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_BUTTON;
+    if (PlatformDetector.isIOS()) {
+      return Matchers.getElementByNativeXPath(
+        `//*[contains(@name,'${compactId}') or contains(@name,'${controlId}') or contains(@label,'${compactId}') or contains(@label,'${controlId}')]`,
+      );
+    }
+    return Matchers.getElementByNativeXPath(
+      `//*[@resource-id='${compactId}' or @resource-id='${controlId}']`,
+    );
+  }
+
+  get eyeSlashIcon(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.EYE_SLASH_ICON);
+  }
+
+  get hamburgerMenuButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.WALLET_HAMBURGER_MENU_BUTTON,
+    );
+  }
+
+  get navbarNetworkText(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.NAVBAR_NETWORK_TEXT);
+  }
+
+  get navbarNetworkPicker(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.NAVBAR_NETWORK_PICKER,
+    );
+  }
+
+  get navbarCardButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.CARD_BUTTON);
+  }
+
+  get importNFTButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.IMPORT_NFT_BUTTON);
+  }
+
+  get importTokensButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.IMPORT_TOKEN_BUTTON);
+  }
+
+  get totalBalance(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.TOTAL_BALANCE_TEXT);
+  }
+
+  /**
+   * Homepage hero (treatment) or account balance (control). Both labels carry
+   * the aggregate total. `total-balance-text` sits on the treatment's animated
+   * digit slots, which do not expose that total to Appium.
+   */
+  get balanceSurface(): Promise<AppiumElement> {
+    return Matchers.getElementByID(BALANCE_SURFACE_ID_PATTERN);
+  }
+
+  get accountNameLabelText(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.ACCOUNT_NAME_LABEL_TEXT,
+    );
+  }
+
+  get accountName(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.ACCOUNT_NAME_LABEL_TEXT,
+    );
+  }
+
+  /**
+   * Finds the active account name element regardless of which header variant is
+   * active. Two variants exist:
+   * - Non-compact (control A/B): PickerAccount renders `account-label`
+   * - Compact (searchFocused / tradeFocused A/B): WalletHeaderCompact renders
+   * `wallet-account-name-heading` (no `account-label` in the tree)
+   *
+   * Performance-only: smoke keeps `account-label` as the single source of truth.
+   */
+  private get activeAccountNameElement(): Promise<AppiumElement> {
+    if (!isPerformanceSuiteActive()) {
+      return this.accountNameLabelText;
+    }
+
+    const accountLabel = WalletViewSelectorsIDs.ACCOUNT_NAME_LABEL_TEXT;
+    const headingLabel = WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_HEADING;
+    if (PlatformDetector.isIOS()) {
+      return Matchers.getElementByNativeXPath(
+        `//*[@name='${accountLabel}' or @name='${headingLabel}']`,
+      );
+    }
+    return Matchers.getElementByNativeXPath(
+      `//*[@resource-id='${accountLabel}' or @resource-id='${headingLabel}']`,
+    );
+  }
+
+  /**
+   * Compact header avatar button. During the post-onboarding "Get started"
+   * home the account name text is not rendered, so the button's accessibility
+   * label (the full display name) is the only place the name is exposed.
+   */
+  get accountHubButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.WALLET_ACCOUNT_HUB_BUTTON,
+    );
+  }
+
+  async checkActiveAccount(
+    expectedName: string,
+    timeout = 10_000,
+  ): Promise<void> {
+    // The compact header's avatar button exposes the name only as its label.
+    // Pick the check from what is on screen instead of catching a failed
+    // label assertion, which would also hide a wrong account name.
+    const hasHubButton =
+      isPerformanceSuiteActive() &&
+      (await Utilities.isElementVisible(this.accountHubButton, 3_000));
+
+    if (hasHubButton) {
+      await Assertions.expectElementToHaveLabel(
+        this.accountHubButton,
+        expectedName,
+        { timeout },
+      );
+      return;
+    }
+
+    await Assertions.expectElementToHaveText(
+      this.activeAccountNameElement,
+      expectedName,
+      { timeout },
+    );
+  }
+
+  get hideTokensLabel(): Promise<AppiumElement> {
+    return Matchers.getElementByText(WalletViewSelectorsText.HIDE_TOKENS);
+  }
+
+  get currentMainWalletAccountActions(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.ACCOUNT_NAME_LABEL_TEXT,
+    );
+  }
+
+  get tokenNetworkFilter(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.TOKEN_NETWORK_FILTER);
+  }
+
+  get sortButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.SORT_BUTTON);
+  }
+
+  get carouselContainer(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.CAROUSEL_CONTAINER);
+  }
+
+  get carouselProgressDots(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.CAROUSEL_PROGRESS_DOTS,
+    );
+  }
+  get testCollectible(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.TEST_COLLECTIBLE, 1);
+  }
+  get testCollectibleFallback(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.COLLECTIBLE_FALLBACK,
+      1,
+    );
+  }
+  // Wallet-specific action buttons (from AssetDetailsActions in Wallet view)
+  get walletBuyButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.WALLET_BUY_BUTTON);
+  }
+
+  get walletSwapButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.WALLET_SWAP_BUTTON);
+  }
+
+  get walletSendButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(WalletViewSelectorsIDs.WALLET_SEND_BUTTON);
+  }
+
+  // Balance Empty State - displayed when account group has zero balance across all networks
+  get balanceEmptyStateContainer(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.BALANCE_EMPTY_STATE_CONTAINER,
+    );
+  }
+
+  get balanceEmptyStateActionButton(): Promise<AppiumElement> {
+    return Matchers.getElementByID(
+      WalletViewSelectorsIDs.BALANCE_EMPTY_STATE_ACTION_BUTTON,
+    );
+  }
+
+  async tapCurrentMainWalletAccountActions(): Promise<void> {
+    await Gestures.waitAndTap(this.currentMainWalletAccountActions, {
+      elemDescription: 'Current Main Wallet Account Actions',
+    });
+  }
+
+  tokenRow(token: string, index = 0): Promise<AppiumElement> {
+    return Matchers.getElementByID(getAssetTestId(token), index);
+  }
+
+  async tapOnToken(token: string, index = 0): Promise<void> {
+    const tokenLabel = token || WalletViewSelectorsText.DEFAULT_TOKEN;
+    await Gestures.waitAndTap(this.tokenRow(tokenLabel, index), {
+      elemDescription: 'Token',
+    });
+  }
+
+  async tapIdenticon(): Promise<void> {
+    await Gestures.waitAndTap(this.accountIcon, {
+      elemDescription: 'Top Account Icon',
+    });
+  }
+
+  async tapHamburgerMenu(): Promise<void> {
+    await Gestures.waitAndTap(this.hamburgerMenuButton, {
+      elemDescription: 'Hamburger Menu Button',
+    });
+  }
+
+  async tapNetworksButtonOnNavBar(): Promise<void> {
+    await Gestures.waitAndTap(
+      Matchers.getElementByID(WalletViewSelectorsIDs.NAVBAR_NETWORK_BUTTON),
+      {
+        elemDescription: 'Navbar Network Button',
+      },
+    );
+  }
+
+  async tapNavbarCardButton(): Promise<void> {
+    await Gestures.waitAndTap(this.navbarCardButton, {
+      elemDescription: 'Card Button on Navbar',
+    });
+  }
+
+  async scrollToToken(
+    tokenName: string,
+    direction: 'up' | 'down' = 'down',
+  ): Promise<void> {
+    await Gestures.scrollToElement(
+      this.tokenInWallet(tokenName),
+      Matchers.scrollContainer(WalletViewSelectorsIDs.TOKENS_CONTAINER_LIST),
+      {
+        direction,
+        scrollAmount: 50,
+      },
+    );
+  }
+
+  async tapImportNFTButton(): Promise<void> {
+    await Gestures.waitAndTap(this.importNFTButton, {
+      elemDescription: 'Import NFT Button',
+    });
+  }
+
+  async tapOnNftName(): Promise<void> {
+    try {
+      await Gestures.waitAndTap(this.testCollectible, {
+        elemDescription: 'NFT Name',
+      });
+    } catch {
+      await Gestures.waitAndTap(this.testCollectibleFallback, {
+        elemDescription: 'NFT Name Fallback',
+      });
+    }
+  }
+
+  async tapImportTokensButton(): Promise<void> {
+    await Gestures.waitAndTap(this.importTokensButton, {
+      elemDescription: 'Import Tokens Button',
+    });
+  }
+
+  async removeTokenFromWallet(token: string): Promise<void> {
+    const elem = Matchers.getElementByText(token);
+    await Gestures.longPress(elem, {
+      elemDescription: 'Long Pressing Token',
+    });
+    await Gestures.waitAndTap(this.hideTokensLabel, {
+      elemDescription: 'Hide Tokens Label',
+    });
+  }
+
+  async tokenInWallet(tokenName: string): Promise<AppiumElement> {
+    return Matchers.getElementByText(tokenName);
+  }
+
+  async nftInWallet(nftName: string): Promise<AppiumElement> {
+    return Matchers.getElementByText(nftName);
+  }
+
+  async tapTokenNetworkFilter(): Promise<void> {
+    await Gestures.waitAndTap(this.tokenNetworkFilter, {
+      elemDescription: 'Token Network Filter',
+    });
+  }
+
+  async tapSortBy(): Promise<void> {
+    await Gestures.waitAndTap(this.sortButton, {
+      elemDescription: 'Sort By',
+    });
+  }
+
+  async tapOnEarnButton(): Promise<void> {
+    await Gestures.waitAndTap(this.earnButton, {
+      elemDescription: 'Earn Button',
+    });
+  }
+
+  /**
+   * Swipes the carousel in the specified direction.
+   * @param {'left' | 'right'} direction - The direction to swipe ('left' or 'right').
+   */
+  async swipeCarousel(direction: 'left' | 'right'): Promise<void> {
+    await Gestures.swipe(this.carouselContainer, direction, {
+      speed: 'slow',
+      percentage: 0.7,
+      elemDescription: 'Swipe Carousel',
+    });
+  }
+
+  async waitForBalanceToStabilize(
+    options: {
+      maxWaitTime?: number;
+      pollInterval?: number;
+      sameResultTimeout?: number;
+    } = {},
+  ): Promise<string> {
+    const {
+      maxWaitTime = 60000,
+      pollInterval = 100,
+      sameResultTimeout = 8000,
+    } = options;
+
+    // The amount TextView has no test id. Read the labeled parent instead.
+    const readBalance = async () =>
+      readBalanceFromContainer(this.balanceSurface);
+
+    const startTime = Date.now();
+    const isIOS = PlatformDetector.isIOS();
+    let lastLoggedBalance: string | undefined;
+
+    const recordBalance = (balance: string): void => {
+      if (balance === lastLoggedBalance) {
+        return;
+      }
+      lastLoggedBalance = balance;
+      logObservedBalance('balance', balance);
+    };
+
+    if (isIOS) {
+      // iOS: Element lookups are extremely slow (15-30s each).
+      // Skip stability loop and just wait for a valid balance once.
+      let lastObservedBalance = '';
+      while (Date.now() - startTime < maxWaitTime) {
+        try {
+          const balance = await readBalance();
+          lastObservedBalance = balance;
+          recordBalance(balance);
+
+          if (balance && balance !== '' && balance !== '$0.00') {
+            return balance;
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          recordBalance(`<read failed: ${message}>`);
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      throwBalanceDidNotStabilize(maxWaitTime, lastObservedBalance);
+    }
+
+    // Android: Fast element lookups, use stability polling
+    let lastObservedBalance = '';
+    let previousBalance = '';
+    let sameResultStartTime: number | null = null;
+
+    while (true) {
+      if (Date.now() - startTime > maxWaitTime) {
+        throwBalanceDidNotStabilize(maxWaitTime, lastObservedBalance);
+      }
+
+      let currentBalance: string;
+      try {
+        currentBalance = await readBalance();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        recordBalance(`<read failed: ${message}>`);
+        await new Promise((r) => setTimeout(r, pollInterval));
+        continue;
+      }
+
+      lastObservedBalance = currentBalance;
+      recordBalance(currentBalance);
+
+      if (
+        !currentBalance ||
+        currentBalance === '' ||
+        currentBalance === '$0.00'
+      ) {
+        await new Promise((r) => setTimeout(r, pollInterval));
+        continue;
+      }
+
+      if (currentBalance === previousBalance && sameResultStartTime) {
+        const timeSinceSameResult = Date.now() - sameResultStartTime;
+        if (timeSinceSameResult >= sameResultTimeout) {
+          return currentBalance;
+        }
+      } else {
+        sameResultStartTime = Date.now();
+        previousBalance = currentBalance;
+      }
+
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+  }
+
+  async getBalanceText(): Promise<string> {
+    await Assertions.expectElementToBeVisible(this.totalBalance);
+    return Utilities.getElementText(this.totalBalance);
+  }
+
+  /**
+   * Toggles the balance visibility by tapping the eye slash icon.
+   * This method can be used to both hide and show the balance.
+   * @returns {Promise<void>} A promise that resolves when the balance visibility is toggled.
+   */
+  async toggleBalanceVisibility(): Promise<void> {
+    await Gestures.waitAndTap(this.eyeSlashIcon, {
+      elemDescription: 'Eye Slash Icon',
+    });
+  }
+
+  /**
+   * Checks if the balance is currently visible by examining the balance text.
+   * @returns {Promise<boolean>} A promise that resolves to true if balance is visible, false if hidden.
+   */
+  async isBalanceVisible(): Promise<boolean> {
+    const balanceText = await this.getBalanceText();
+    // If it shows currency symbols or numbers, it's visible
+    return !balanceText.includes('••••');
+  }
+
+  /**
+   * Hides the balance by tapping the eye slash icon only if it's currently visible.
+   * @returns {Promise<void>} A promise that resolves when the balance is hidden.
+   */
+  async hideBalance(): Promise<void> {
+    if (await this.isBalanceVisible()) {
+      await this.toggleBalanceVisibility();
+    }
+  }
+
+  /**
+   * Shows the balance by tapping the eye slash icon only if it's currently hidden.
+   * @returns {Promise<void>} A promise that resolves when the balance is shown.
+   */
+  async showBalance(): Promise<void> {
+    if (!(await this.isBalanceVisible())) {
+      await this.toggleBalanceVisibility();
+    }
+  }
+
+  async tapWalletBuyButton(): Promise<void> {
+    await Gestures.waitAndTap(this.walletBuyButton, {
+      elemDescription: 'Wallet Buy Button',
+    });
+  }
+
+  async tapWalletSwapButton(): Promise<void> {
+    await Gestures.waitAndTap(this.walletSwapButton, {
+      elemDescription: 'Wallet Swap Button',
+    });
+  }
+
+  async tapWalletSendButton(): Promise<void> {
+    await Gestures.waitAndTap(this.walletSendButton, {
+      elemDescription: 'Wallet Send Button',
+    });
+  }
+
+  async tapBalanceEmptyStateActionButton(): Promise<void> {
+    await Gestures.waitAndTap(this.balanceEmptyStateActionButton, {
+      elemDescription: 'Balance Empty State Action Button',
+    });
+  }
+}
+
+export default new WalletView();

@@ -1,0 +1,98 @@
+// Third party dependencies
+import React from 'react';
+import { fireEvent } from '@testing-library/react-native';
+
+// External dependencies
+import Engine from '../../../../core/Engine';
+import renderWithProvider from '../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../util/test/initial-root-state';
+import { strings } from '../../../../../locales/i18n';
+
+// Internal dependencies
+import AssetSettings from '.';
+import { TOKEN_DETECTION_TOGGLE } from './index.constants';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { createMockUseAnalyticsHook } from '../../../../util/test/analyticsMock';
+
+let mockSetUseTokenDetection: jest.Mock;
+
+beforeEach(() => {
+  mockSetUseTokenDetection.mockClear();
+});
+
+const mockEngine = Engine;
+
+jest.mock('../../../../core/Engine', () => {
+  mockSetUseTokenDetection = jest.fn();
+  return {
+    init: () => mockEngine.init(''),
+    context: {
+      PreferencesController: {
+        setUseTokenDetection: mockSetUseTokenDetection,
+      },
+    },
+  };
+});
+
+jest.mock('../../../hooks/useAnalytics/useAnalytics');
+
+const mockAddTraitsToUser = jest.fn();
+
+describe('AssetSettings', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest
+      .mocked(useAnalytics)
+      .mockReturnValue(
+        createMockUseAnalyticsHook({ identify: mockAddTraitsToUser }),
+      );
+  });
+
+  const initialState = {
+    engine: {
+      backgroundState: {
+        ...backgroundState,
+        PreferencesController: {
+          ...backgroundState.PreferencesController,
+          useTokenDetection: true,
+        },
+      },
+    },
+  };
+
+  it('render matches snapshot', () => {
+    const { getByText } = renderWithProvider(<AssetSettings />, {
+      state: initialState,
+    });
+    expect(
+      getByText(strings('app_settings.token_detection_title')),
+    ).toBeOnTheScreen();
+  });
+
+  describe('Token Detection', () => {
+    it('toggles token detection off', () => {
+      const { getByTestId } = renderWithProvider(<AssetSettings />, {
+        state: initialState,
+      });
+      const toggleSwitch = getByTestId(TOKEN_DETECTION_TOGGLE);
+      fireEvent(toggleSwitch, 'onValueChange', false);
+      expect(mockSetUseTokenDetection).toHaveBeenCalledWith(false);
+      expect(mockAddTraitsToUser).toHaveBeenCalledWith({
+        token_detection_enable: 'OFF',
+      });
+    });
+
+    it('toggles token detection on', () => {
+      initialState.engine.backgroundState.PreferencesController.useTokenDetection = false;
+      const { getByTestId } = renderWithProvider(<AssetSettings />, {
+        state: initialState,
+      });
+      const toggleSwitch = getByTestId(TOKEN_DETECTION_TOGGLE);
+      fireEvent(toggleSwitch, 'onValueChange', true);
+      expect(mockSetUseTokenDetection).toHaveBeenCalledWith(true);
+      expect(mockAddTraitsToUser).toHaveBeenCalledWith({
+        token_detection_enable: 'ON',
+      });
+    });
+  });
+});

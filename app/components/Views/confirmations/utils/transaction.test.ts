@@ -1,0 +1,514 @@
+import { Interface } from '@ethersproject/abi';
+import {
+  TransactionMeta,
+  TransactionStatus,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import {
+  addMMOriginatedTransaction,
+  get4ByteCode,
+  getErrorMessage,
+  getSeverity,
+  hasGasFeeTokenSelected,
+  getTransactionType,
+  isRevokeDelegationTransaction,
+  isTransactionMarkedAsGasFeeSponsored,
+  isTransactionPayWithdraw,
+  parseStandardTokenTransactionData,
+  resolveTransactionType,
+  shouldApplyGasFeeSponsorship,
+} from './transaction';
+import {
+  abiERC721,
+  abiERC20,
+  abiERC1155,
+  abiFiatTokenV2,
+} from '@metamask/metamask-eth-abis';
+
+import {
+  buildPermit2ApproveTransactionData,
+  upgradeAccountConfirmation,
+} from '../../../../util/test/confirm-data-helpers';
+import Engine from '../../../../core/Engine';
+import ppomUtil from '../../../../lib/ppom/ppom-util';
+
+jest.mock('../../../../core/Engine', () => ({
+  context: {
+    TransactionController: {
+      addTransaction: jest
+        .fn()
+        .mockResolvedValue({ transactionMeta: { id: '123' } }),
+    },
+  },
+}));
+
+describe('parseStandardTokenTransactionData', () => {
+  const erc20Interface = new Interface(abiERC20);
+  const erc721Interface = new Interface(abiERC721);
+  const erc1155Interface = new Interface(abiERC1155);
+  const usdcInterface = new Interface(abiFiatTokenV2);
+
+  it('returns undefined for undefined input', () => {
+    expect(parseStandardTokenTransactionData(undefined)).toBeUndefined();
+  });
+
+  it('returns undefined for empty string input', () => {
+    expect(parseStandardTokenTransactionData('')).toBeUndefined();
+  });
+
+  it('parses ERC20 transfer data correctly', () => {
+    // Create ERC20 transfer data
+    const recipient = '0x1234567890123456789012345678901234567890';
+    const amount = '1000000000000000000'; // 1 token with 18 decimals
+    const transferData = erc20Interface.encodeFunctionData('transfer', [
+      recipient,
+      amount,
+    ]);
+
+    const result = parseStandardTokenTransactionData(transferData);
+
+    expect(result).toBeDefined();
+    expect(result?.name).toBe('transfer');
+    expect(result?.args[0].toLowerCase()).toBe(recipient.toLowerCase());
+    expect(result?.args[1].toString()).toBe(amount);
+  });
+
+  it('parses ERC721 transferFrom data correctly', () => {
+    const from = '0x1234567890123456789012345678901234567890';
+    const to = '0x2234567890123456789012345678901234567890';
+    const tokenId = '123';
+    const transferData = erc721Interface.encodeFunctionData('transferFrom', [
+      from,
+      to,
+      tokenId,
+    ]);
+
+    const result = parseStandardTokenTransactionData(transferData);
+
+    expect(result).toBeDefined();
+    expect(result?.name).toBe('transferFrom');
+    expect(result?.args[0].toLowerCase()).toBe(from.toLowerCase());
+    expect(result?.args[1].toLowerCase()).toBe(to.toLowerCase());
+    expect(result?.args[2].toString()).toBe(tokenId);
+  });
+
+  it('parses ERC1155 safeTransferFrom data correctly', () => {
+    const from = '0x1234567890123456789012345678901234567890';
+    const to = '0x2234567890123456789012345678901234567890';
+    const tokenId = '123';
+    const amount = '1';
+    const data = '0x';
+    const transferData = erc1155Interface.encodeFunctionData(
+      'safeTransferFrom',
+      [from, to, tokenId, amount, data],
+    );
+
+    const result = parseStandardTokenTransactionData(transferData);
+
+    expect(result).toBeDefined();
+    expect(result?.name).toBe('safeTransferFrom');
+    expect(result?.args[0].toLowerCase()).toBe(from.toLowerCase());
+    expect(result?.args[1].toLowerCase()).toBe(to.toLowerCase());
+    expect(result?.args[2].toString()).toBe(tokenId);
+    expect(result?.args[3].toString()).toBe(amount);
+  });
+
+  it('parses USDC transfer data correctly', () => {
+    const recipient = '0x1234567890123456789012345678901234567890';
+    const amount = '1000000'; // 1 USDC (6 decimals)
+    const transferData = usdcInterface.encodeFunctionData('transfer', [
+      recipient,
+      amount,
+    ]);
+
+    const result = parseStandardTokenTransactionData(transferData);
+
+    expect(result).toBeDefined();
+    expect(result?.name).toBe('transfer');
+    expect(result?.args[0].toLowerCase()).toBe(recipient.toLowerCase());
+    expect(result?.args[1].toString()).toBe(amount);
+  });
+
+  it('parses permit 2 approval data correctly', () => {
+    const SPENDER_MOCK = '0x0c54FcCd2e384b4BB6f2E405Bf5Cbc15a017AaFb';
+    const TOKEN_ADDRESS_MOCK = '0x1234567890abcdef1234567890abcdef12345678';
+    const AMOUNT_MOCK = 123;
+    const EXPIRATION_MOCK = 456;
+    const permit2Data = buildPermit2ApproveTransactionData(
+      SPENDER_MOCK,
+      TOKEN_ADDRESS_MOCK,
+      AMOUNT_MOCK,
+      EXPIRATION_MOCK,
+    );
+    const result = parseStandardTokenTransactionData(permit2Data);
+
+    expect(result).toBeDefined();
+    expect(result?.name).toBe('approve');
+    expect(result?.signature).toBe('approve(address,address,uint160,uint48)');
+  });
+  it('returns undefined for invalid transaction data', () => {
+    const invalidData = '0xinvaliddata';
+    expect(parseStandardTokenTransactionData(invalidData)).toBeUndefined();
+  });
+
+  describe('addTransaction', () => {
+    it('call required methods to save and validate transaction', async () => {
+      const mockValidateRequest = jest
+        .spyOn(ppomUtil, 'validateRequest')
+        .mockImplementation(() => Promise.resolve());
+      const transactionResult = await addMMOriginatedTransaction(
+        upgradeAccountConfirmation.txParams,
+        {
+          networkClientId: 'sepolia',
+          requireApproval: false,
+          type: TransactionType.batch,
+        },
+      );
+      expect(transactionResult.transactionMeta.id).toBe('123');
+      expect(
+        Engine.context.TransactionController.addTransaction,
+      ).toHaveBeenCalledTimes(1);
+      expect(
+        Engine.context.TransactionController.addTransaction,
+      ).toHaveBeenCalledWith(
+        upgradeAccountConfirmation.txParams,
+        expect.objectContaining({ requireApproval: false }),
+      );
+      expect(mockValidateRequest).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe('get4ByteCode', () => {
+  it('returns the 4 byte code for a given transaction data', () => {
+    const transactionData = '0x1234567811111111111111111111111111111111';
+    const result = get4ByteCode(transactionData);
+    expect(result).toBe('0x12345678');
+  });
+});
+
+describe('getTransactionType', () => {
+  it('returns undefined for undefined input', () => {
+    expect(getTransactionType(undefined)).toBeUndefined();
+  });
+
+  it('returns direct type for regular transactions', () => {
+    const txMeta = {
+      type: TransactionType.perpsDeposit,
+    } as TransactionMeta;
+
+    expect(getTransactionType(txMeta)).toBe(TransactionType.perpsDeposit);
+  });
+
+  it('returns nested type when nested transactions exist', () => {
+    const txMeta = {
+      type: TransactionType.batch,
+      nestedTransactions: [{ type: TransactionType.predictDeposit }],
+    } as TransactionMeta;
+
+    expect(getTransactionType(txMeta)).toBe(TransactionType.predictDeposit);
+  });
+
+  it('returns direct type when nested transactions have no type', () => {
+    const txMeta = {
+      type: TransactionType.simpleSend,
+      nestedTransactions: [{}],
+    } as TransactionMeta;
+
+    expect(getTransactionType(txMeta)).toBe(TransactionType.simpleSend);
+  });
+
+  it('returns first nested type that has a type', () => {
+    const txMeta = {
+      type: TransactionType.batch,
+      nestedTransactions: [
+        {},
+        { type: TransactionType.perpsWithdraw },
+        { type: TransactionType.predictWithdraw },
+      ],
+    } as TransactionMeta;
+
+    expect(getTransactionType(txMeta)).toBe(TransactionType.perpsWithdraw);
+  });
+
+  it('returns direct type when nestedTransactions is empty', () => {
+    const txMeta = {
+      type: TransactionType.perpsDeposit,
+      nestedTransactions: [],
+    } as unknown as TransactionMeta;
+
+    expect(getTransactionType(txMeta)).toBe(TransactionType.perpsDeposit);
+  });
+});
+
+describe('resolveTransactionType', () => {
+  const enabledTypes = [
+    TransactionType.perpsDeposit,
+    TransactionType.predictDeposit,
+    TransactionType.moneyAccountDeposit,
+  ];
+
+  it('returns the transaction type for non-batch transactions', () => {
+    const txMeta = {
+      type: TransactionType.perpsDeposit,
+    } as TransactionMeta;
+
+    expect(resolveTransactionType(txMeta, enabledTypes)).toBe(
+      TransactionType.perpsDeposit,
+    );
+  });
+
+  it('returns the first nested type that appears in the enabled types list', () => {
+    const txMeta = {
+      type: TransactionType.batch,
+      nestedTransactions: [
+        { type: TransactionType.simpleSend },
+        { type: TransactionType.predictDeposit },
+        { type: TransactionType.perpsDeposit },
+      ],
+    } as TransactionMeta;
+
+    expect(resolveTransactionType(txMeta, enabledTypes)).toBe(
+      TransactionType.predictDeposit,
+    );
+  });
+
+  it('returns batch when no nested transaction type matches the enabled types list', () => {
+    const txMeta = {
+      type: TransactionType.batch,
+      nestedTransactions: [{ type: TransactionType.simpleSend }],
+    } as TransactionMeta;
+
+    expect(resolveTransactionType(txMeta, enabledTypes)).toBe(
+      TransactionType.batch,
+    );
+  });
+
+  it('returns batch when nested transactions are missing', () => {
+    const txMeta = {
+      type: TransactionType.batch,
+    } as TransactionMeta;
+
+    expect(resolveTransactionType(txMeta, enabledTypes)).toBe(
+      TransactionType.batch,
+    );
+  });
+
+  it('skips nested transactions without a type', () => {
+    const txMeta = {
+      type: TransactionType.batch,
+      nestedTransactions: [{}, { type: TransactionType.moneyAccountDeposit }],
+    } as TransactionMeta;
+
+    expect(resolveTransactionType(txMeta, enabledTypes)).toBe(
+      TransactionType.moneyAccountDeposit,
+    );
+  });
+});
+
+describe('hasGasFeeTokenSelected', () => {
+  it('returns false for undefined transaction', () => {
+    expect(hasGasFeeTokenSelected(undefined)).toBe(false);
+  });
+
+  it('returns false for transaction without selectedGasFeeToken', () => {
+    expect(hasGasFeeTokenSelected({} as unknown as TransactionMeta)).toBe(
+      false,
+    );
+  });
+
+  it('returns false when selectedGasFeeToken is undefined', () => {
+    expect(
+      hasGasFeeTokenSelected({
+        selectedGasFeeToken: undefined,
+      } as unknown as TransactionMeta),
+    ).toBe(false);
+  });
+
+  it('returns true when selectedGasFeeToken is set', () => {
+    expect(
+      hasGasFeeTokenSelected({
+        selectedGasFeeToken: '0xabc123',
+      } as unknown as TransactionMeta),
+    ).toBe(true);
+  });
+});
+
+describe('isRevokeDelegationTransaction', () => {
+  it('returns true for revoke delegation transaction', () => {
+    const txMeta = {
+      type: TransactionType.revokeDelegation,
+    } as TransactionMeta;
+
+    expect(isRevokeDelegationTransaction(txMeta)).toBe(true);
+  });
+
+  it('returns false for undefined transaction', () => {
+    expect(isRevokeDelegationTransaction(undefined)).toBe(false);
+  });
+});
+
+describe('shouldApplyGasFeeSponsorship', () => {
+  it('returns true when gas sponsorship is supported and transaction is sponsored', () => {
+    const txMeta = {
+      isGasFeeSponsored: true,
+      type: TransactionType.simpleSend,
+    } as TransactionMeta;
+
+    expect(
+      shouldApplyGasFeeSponsorship({
+        transactionMeta: txMeta,
+        isGaslessSupported: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('returns false when gasless is not supported', () => {
+    const txMeta = {
+      isGasFeeSponsored: true,
+      type: TransactionType.simpleSend,
+    } as TransactionMeta;
+
+    expect(
+      shouldApplyGasFeeSponsorship({
+        transactionMeta: txMeta,
+        isGaslessSupported: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false for sponsored revoke delegation transaction', () => {
+    const txMeta = {
+      isGasFeeSponsored: true,
+      type: TransactionType.revokeDelegation,
+    } as TransactionMeta;
+
+    expect(
+      shouldApplyGasFeeSponsorship({
+        transactionMeta: txMeta,
+        isGaslessSupported: true,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('isTransactionMarkedAsGasFeeSponsored', () => {
+  it('returns true when a transaction is marked as gas fee sponsored', () => {
+    const txMeta = {
+      isGasFeeSponsored: true,
+      type: TransactionType.simpleSend,
+    } as TransactionMeta;
+
+    expect(isTransactionMarkedAsGasFeeSponsored(txMeta)).toBe(true);
+  });
+
+  it('returns false for a revoke delegation transaction', () => {
+    const txMeta = {
+      isGasFeeSponsored: true,
+      type: TransactionType.revokeDelegation,
+    } as TransactionMeta;
+
+    expect(isTransactionMarkedAsGasFeeSponsored(txMeta)).toBe(false);
+  });
+});
+
+describe('isTransactionPayWithdraw', () => {
+  it.each([TransactionType.predictWithdraw, TransactionType.perpsWithdraw])(
+    'returns true for %s transaction type',
+    (transactionType) => {
+      const txMeta = {
+        type: transactionType,
+      } as TransactionMeta;
+
+      expect(isTransactionPayWithdraw(txMeta)).toBe(true);
+    },
+  );
+
+  it('returns false for non-withdrawal transaction types', () => {
+    const txMeta = {
+      type: TransactionType.simpleSend,
+    } as TransactionMeta;
+
+    expect(isTransactionPayWithdraw(txMeta)).toBe(false);
+  });
+
+  it('returns false for deposit transaction types', () => {
+    const txMeta = {
+      type: TransactionType.predictDeposit,
+    } as TransactionMeta;
+
+    expect(isTransactionPayWithdraw(txMeta)).toBe(false);
+  });
+
+  it.each([TransactionType.predictWithdraw, TransactionType.perpsWithdraw])(
+    'returns true when nested transaction is %s',
+    (transactionType) => {
+      const txMeta = {
+        type: TransactionType.batch,
+        nestedTransactions: [{ type: transactionType }],
+      } as TransactionMeta;
+
+      expect(isTransactionPayWithdraw(txMeta)).toBe(true);
+    },
+  );
+
+  it('returns false for undefined transaction', () => {
+    expect(isTransactionPayWithdraw(undefined)).toBe(false);
+  });
+});
+
+describe('getSeverity', () => {
+  it('returns success for confirmed status', () => {
+    expect(getSeverity(TransactionStatus.confirmed)).toBe('success');
+  });
+
+  it('returns error for failed status', () => {
+    expect(getSeverity(TransactionStatus.failed)).toBe('error');
+  });
+
+  it('returns error for dropped status', () => {
+    expect(getSeverity(TransactionStatus.dropped)).toBe('error');
+  });
+
+  it('returns warning for pending status', () => {
+    expect(getSeverity(TransactionStatus.submitted)).toBe('warning');
+  });
+});
+
+describe('getErrorMessage', () => {
+  it('returns undefined when no error', () => {
+    expect(
+      getErrorMessage({ error: undefined } as unknown as TransactionMeta),
+    ).toBeUndefined();
+  });
+
+  it('returns error message', () => {
+    expect(
+      getErrorMessage({
+        error: { message: 'tx failed' },
+      } as unknown as TransactionMeta),
+    ).toBe('tx failed');
+  });
+
+  it('returns parsed stack message when available', () => {
+    expect(
+      getErrorMessage({
+        error: {
+          message: 'generic',
+          stack: 'Error: {"data":{"message":"nonce too low"}}',
+        },
+      } as unknown as TransactionMeta),
+    ).toBe('nonce too low');
+  });
+
+  it('falls back to error message when stack parsing fails', () => {
+    expect(
+      getErrorMessage({
+        error: {
+          message: 'fallback',
+          stack: 'not valid json',
+        },
+      } as unknown as TransactionMeta),
+    ).toBe('fallback');
+  });
+});

@@ -1,0 +1,185 @@
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import {
+  securityAlertResponse,
+  typedSignV4ConfirmationState,
+  typedSignV4SignatureRequest,
+} from '../../../../../util/test/confirm-data-helpers';
+import { renderHookWithProvider } from '../../../../../util/test/renderWithProvider';
+import { useSignatureMetrics } from './useSignatureMetrics';
+import {
+  ResultType,
+  Reason,
+  SecurityAlertSource,
+} from '../../../../../components/Views/confirmations/components/blockaid-banner/BlockaidBanner.types';
+
+const mockTypedSignV4SignatureRequest = typedSignV4SignatureRequest;
+jest.mock('./useSignatureRequest', () => ({
+  useSignatureRequest: () => mockTypedSignV4SignatureRequest,
+}));
+
+jest.mock('../../../../../util/address', () => ({
+  getAddressAccountType: (str: string) => str,
+}));
+
+const mockTrackEvent = jest.fn();
+const mockAddProperties = jest
+  .fn()
+  .mockImplementation(() => ({ build: () => ({}) }));
+jest.mock('../../../../../components/hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => ({
+    trackEvent: mockTrackEvent,
+    createEventBuilder: () => ({
+      addProperties: mockAddProperties,
+      build: () => ({}),
+    }),
+  }),
+}));
+
+const SignatureMetrics = {
+  account_type: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+  chain_id: '1',
+  dapp_host_name: 'metamask.github.io',
+  eip712_primary_type: 'Permit',
+  request_source: 'In-App-Browser',
+  security_alert_reason: Reason.permitFarming,
+  security_alert_response: 'Malicious',
+  security_alert_source: 'api',
+  signature_type: 'eth_signTypedData',
+  ui_customizations: ['flagged_as_malicious'],
+  version: 'V4',
+};
+
+const securityAlertResponseLoading = {
+  result_type: ResultType.RequestInProgress,
+  reason: Reason.notApplicable,
+  source: SecurityAlertSource.API,
+  providerRequestsCount: {
+    eth_call: 5,
+    eth_getCode: 3,
+  },
+  features: [],
+};
+
+const SignatureMetricsLoading = {
+  account_type: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+  chain_id: '1',
+  dapp_host_name: 'metamask.github.io',
+  eip712_primary_type: 'Permit',
+  request_source: 'In-App-Browser',
+  security_alert_reason: Reason.notApplicable,
+  security_alert_response: 'loading',
+  security_alert_source: 'api',
+  signature_type: 'eth_signTypedData',
+  ui_customizations: ['security_alert_loading'],
+  version: 'V4',
+  ppom_eth_call_count: 5,
+  ppom_eth_getCode_count: 3,
+};
+
+const securityAlertResponseUndefined = undefined;
+
+const SignatureMetricsUndefined = {
+  account_type: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+  chain_id: '1',
+  dapp_host_name: 'metamask.github.io',
+  eip712_primary_type: 'Permit',
+  request_source: 'In-App-Browser',
+  signature_type: 'eth_signTypedData',
+  version: 'V4',
+};
+
+describe('useSignatureMetrics', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should capture metrics events correctly', async () => {
+    // The key must match messageParams.requestId from typedSignV4SignatureRequest
+    // since useSecurityAlertResponse looks up by requestId first
+    const requestId =
+      typedSignV4SignatureRequest.messageParams.requestId?.toString();
+    const { result } = renderHookWithProvider(() => useSignatureMetrics(), {
+      state: {
+        ...typedSignV4ConfirmationState,
+        securityAlerts: {
+          alerts: {
+            [requestId as string]: securityAlertResponse,
+          },
+        },
+      },
+    });
+    // first call for 'SIGNATURE_REQUESTED' event
+    expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+    expect(mockAddProperties).toHaveBeenCalledWith(SignatureMetrics);
+    result?.current?.captureSignatureMetrics(
+      MetaMetricsEvents.SIGNATURE_APPROVED,
+    );
+    expect(mockTrackEvent).toHaveBeenCalledTimes(2);
+    expect(mockAddProperties).toHaveBeenLastCalledWith(SignatureMetrics);
+    result?.current?.captureSignatureMetrics(
+      MetaMetricsEvents.SIGNATURE_REJECTED,
+    );
+    expect(mockTrackEvent).toHaveBeenCalledTimes(3);
+    expect(mockAddProperties).toHaveBeenLastCalledWith(SignatureMetrics);
+  });
+
+  it('captures metrics events correctly with loading security alert response', async () => {
+    const requestId =
+      typedSignV4SignatureRequest.messageParams.requestId?.toString();
+    const { result } = renderHookWithProvider(() => useSignatureMetrics(), {
+      state: {
+        ...typedSignV4ConfirmationState,
+        securityAlerts: {
+          alerts: {
+            [requestId as string]: securityAlertResponseLoading,
+          },
+        },
+      },
+    });
+
+    expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+    expect(mockAddProperties).toHaveBeenCalledWith(SignatureMetricsLoading);
+    result?.current?.captureSignatureMetrics(
+      MetaMetricsEvents.SIGNATURE_APPROVED,
+    );
+    expect(mockTrackEvent).toHaveBeenCalledTimes(2);
+    expect(mockAddProperties).toHaveBeenLastCalledWith(SignatureMetricsLoading);
+    result?.current?.captureSignatureMetrics(
+      MetaMetricsEvents.SIGNATURE_REJECTED,
+    );
+    expect(mockTrackEvent).toHaveBeenCalledTimes(3);
+    expect(mockAddProperties).toHaveBeenLastCalledWith(SignatureMetricsLoading);
+  });
+
+  it('captures metrics events correctly with undefined security alert response', async () => {
+    const requestId =
+      typedSignV4SignatureRequest.messageParams.requestId?.toString();
+    const { result } = renderHookWithProvider(() => useSignatureMetrics(), {
+      state: {
+        ...typedSignV4ConfirmationState,
+        securityAlerts: {
+          alerts: {
+            [requestId as string]: securityAlertResponseUndefined,
+          },
+        },
+      },
+    });
+
+    expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+    expect(mockAddProperties).toHaveBeenCalledWith(SignatureMetricsUndefined);
+    result?.current?.captureSignatureMetrics(
+      MetaMetricsEvents.SIGNATURE_APPROVED,
+    );
+    expect(mockTrackEvent).toHaveBeenCalledTimes(2);
+    expect(mockAddProperties).toHaveBeenLastCalledWith(
+      SignatureMetricsUndefined,
+    );
+    result?.current?.captureSignatureMetrics(
+      MetaMetricsEvents.SIGNATURE_REJECTED,
+    );
+    expect(mockTrackEvent).toHaveBeenCalledTimes(3);
+    expect(mockAddProperties).toHaveBeenLastCalledWith(
+      SignatureMetricsUndefined,
+    );
+  });
+});

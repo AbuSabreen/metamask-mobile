@@ -12,7 +12,6 @@ export const RPC_METHODS = {
   METAMASK_OPEN: 'metamask_open',
   METAMASK_BATCH: 'metamask_batch',
   PERSONAL_SIGN: 'personal_sign',
-  ETH_SIGN: 'eth_sign',
   ETH_REQUESTACCOUNTS: 'eth_requestAccounts',
   ETH_SENDTRANSACTION: 'eth_sendTransaction',
   ETH_SIGNTRANSACTION: 'eth_signTransaction',
@@ -24,6 +23,8 @@ export const RPC_METHODS = {
   WALLET_SWITCHETHEREUMCHAIN: 'wallet_switchEthereumChain',
   WALLET_REQUESTPERMISSIONS: 'wallet_requestPermissions',
   WALLET_GETPERMISSIONS: 'wallet_getPermissions',
+  WALLET_REVOKEPERMISSIONS: 'wallet_revokePermissions',
+  WALLET_SEND_CALLS: 'wallet_sendCalls',
   ETH_ACCOUNTS: 'eth_accounts',
   ETH_CHAINID: 'eth_chainId',
 };
@@ -33,7 +34,6 @@ export const METHODS_TO_REDIRECT: { [method: string]: boolean } = {
   [RPC_METHODS.ETH_REQUESTACCOUNTS]: true,
   [RPC_METHODS.ETH_SENDTRANSACTION]: true,
   [RPC_METHODS.ETH_SIGNTRANSACTION]: true,
-  [RPC_METHODS.ETH_SIGN]: true,
   [RPC_METHODS.PERSONAL_SIGN]: true,
   [RPC_METHODS.ETH_SIGNTRANSACTION]: true,
   [RPC_METHODS.ETH_SIGNTYPEDEATAV3]: true,
@@ -43,6 +43,7 @@ export const METHODS_TO_REDIRECT: { [method: string]: boolean } = {
   [RPC_METHODS.WALLET_SWITCHETHEREUMCHAIN]: true,
   [RPC_METHODS.WALLET_REQUESTPERMISSIONS]: true,
   [RPC_METHODS.WALLET_GETPERMISSIONS]: true,
+  [RPC_METHODS.WALLET_REVOKEPERMISSIONS]: true,
   [RPC_METHODS.METAMASK_CONNECTSIGN]: true,
   [RPC_METHODS.METAMASK_BATCH]: true,
 };
@@ -51,3 +52,22 @@ export const METHODS_TO_DELAY: { [method: string]: boolean } = {
   ...METHODS_TO_REDIRECT,
   [RPC_METHODS.ETH_REQUESTACCOUNTS]: false,
 };
+
+// RPC methods tracked for SDK wallet-side analytics (SDKv1 socket relay).
+// Comparison is intentionally case-sensitive: RPC method names are standardised
+// and the SDK is expected to send them in canonical casing.
+export const ANALYTICS_TRACKED_RPC_METHODS: string[] = [
+  RPC_METHODS.ETH_SENDTRANSACTION,
+  RPC_METHODS.ETH_SIGNTYPEDEATA,
+  RPC_METHODS.ETH_SIGNTRANSACTION,
+  RPC_METHODS.PERSONAL_SIGN,
+  RPC_METHODS.WALLET_REQUESTPERMISSIONS,
+  RPC_METHODS.WALLET_SWITCHETHEREUMCHAIN,
+  RPC_METHODS.ETH_SIGNTYPEDEATAV3,
+  RPC_METHODS.ETH_SIGNTYPEDEATAV4,
+  RPC_METHODS.METAMASK_CONNECTSIGN,
+  RPC_METHODS.METAMASK_CONNECTWITH,
+  RPC_METHODS.METAMASK_BATCH,
+  RPC_METHODS.WALLET_REVOKEPERMISSIONS,
+  RPC_METHODS.WALLET_WATCHASSET,
+];

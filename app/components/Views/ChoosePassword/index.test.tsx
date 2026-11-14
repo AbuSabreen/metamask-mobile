@@ -1,30 +1,2300 @@
 import React from 'react';
-import { shallow } from 'enzyme';
-import ChoosePassword from './';
+import {
+  render,
+  act,
+  fireEvent,
+  waitFor,
+  screen,
+} from '@testing-library/react-native';
 import configureMockStore from 'redux-mock-store';
-import { ONBOARDING, PROTECT } from '../../../constants/navigation';
+import {
+  ONBOARDING,
+  PREVIOUS_SCREEN,
+  PROTECT,
+} from '../../../constants/navigation';
+import Routes from '../../../constants/navigation/Routes';
 import { Provider } from 'react-redux';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { MOCK_ACCOUNTS_CONTROLLER_STATE } from '../../../util/test/accountsControllerTestUtils';
+import { strings } from '../../../../locales/i18n';
+import { ThemeContext, mockTheme } from '../../../util/theme';
+import { ChoosePasswordSelectorsIDs } from './ChoosePassword.testIds';
+import { PasswordResetWarningSheetSelectorsIDs } from '../shared/PasswordResetWarningSheet/PasswordResetWarningSheet.testIds';
+import Device from '../../../util/device';
+import StorageWrapper from '../../../store/storage-wrapper';
+import AUTHENTICATION_TYPE from '../../../constants/userProperties';
+import { BIOMETRY_TYPE } from 'react-native-keychain';
+import { Authentication } from '../../../core';
+import ReduxService from '../../../core/redux';
+import type { ReduxStore } from '../../../core/redux/types';
+import { InteractionManager, Platform, StyleSheet } from 'react-native';
+import { EVENT_NAME } from '../../../core/Analytics';
+import { passwordRequirementsMet } from '../../../util/password';
+import { UNKNOWN_LOCATION } from '@metamask/geolocation-controller';
 
+jest.mock('../../../util/password', () => ({
+  ...jest.requireActual('../../../util/password'),
+  passwordRequirementsMet: jest.fn(
+    jest.requireActual('../../../util/password').passwordRequirementsMet,
+  ),
+}));
+
+jest.mock('../../../util/metrics/TrackOnboarding/trackOnboarding');
+
+jest.mock(
+  '../../../util/onboarding/hooks/useOnboardingLoadingStallTracker',
+  () => ({
+    useOnboardingLoadingStallTracker: jest.fn(),
+  }),
+);
+
+jest.mock('../../../util/trace', () => ({
+  ...jest.requireActual('../../../util/trace'),
+  trace: jest.fn(),
+  endTrace: jest.fn(),
+  getTraceContext: jest.fn(),
+}));
+
+jest.mock('../../../util/mnemonic', () => ({
+  uint8ArrayToMnemonic: jest.fn(
+    (_uint8Array) =>
+      'test test test test test test test test test test test junk',
+  ),
+}));
+
+jest.mock('../../../util/Logger', () => ({
+  error: jest.fn(),
+  log: jest.fn(),
+  warn: jest.fn(),
+}));
+
+jest.mock('@metamask/key-tree', () => ({
+  mnemonicPhraseToBytes: jest.fn((_phrase) => new Uint8Array([1, 2, 3])),
+}));
+
+import ChoosePassword from './index.tsx';
+import PreventScreenshot, {
+  CAPTURE_KEYS,
+} from '../../../core/PreventScreenshot';
+import trackOnboarding from '../../../util/metrics/TrackOnboarding/trackOnboarding';
+import {
+  AccountType,
+  ONBOARDING_SUCCESS_FLOW,
+} from '../../../constants/onboarding';
+import {
+  TraceName,
+  TraceOperation,
+  trace,
+  endTrace,
+  getTraceContext,
+} from '../../../util/trace';
+import type { Span } from '@sentry/core';
+import OAuthLoginService from '../../../core/OAuthService/OAuthService';
+import { setDataCollectionForMarketing } from '../../../actions/security';
+import { captureException } from '@sentry/react-native';
+import Engine from '../../../core/Engine';
+import Logger from '../../../util/Logger';
+import { RouteMessengerContext } from '../../../contexts/route-messenger';
+import { createMockRouteMessenger } from '../../../util/test/mock-route-messenger';
+
+const mockTrackOnboarding = trackOnboarding as jest.MockedFunction<
+  typeof trackOnboarding
+>;
+
+const mockCaptureException = captureException as jest.MockedFunction<
+  typeof captureException
+>;
+
+OAuthLoginService.updateMarketingOptInStatus = jest
+  .fn()
+  .mockResolvedValue({ is_opt_in: true });
+
+const mockRefreshGeolocation = jest.fn().mockResolvedValue('GB');
+
+jest.mock('../../../core/Engine', () => ({
+  context: {
+    KeyringController: {
+      createNewVaultAndKeychain: jest.fn().mockResolvedValue(true),
+      createNewVaultAndRestore: jest.fn().mockResolvedValue({
+        getAccounts: jest.fn().mockResolvedValue(['0x123']),
+      }),
+      exportSeedPhrase: jest.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
+      getKeyringsByType: jest.fn().mockResolvedValue([
+        {
+          getAccounts: jest.fn().mockResolvedValue(['0x123']),
+        },
+      ]),
+      importAccountWithStrategy: jest.fn().mockResolvedValue('0x123'),
+      exportAccount: jest.fn().mockResolvedValue('0xprivatekey'),
+      addNewAccount: jest.fn().mockResolvedValue(undefined),
+      state: {
+        keyrings: [
+          {
+            type: 'HD Key Tree',
+            accounts: ['0xhd1'],
+          },
+        ],
+      },
+    },
+    PreferencesController: {
+      setSelectedAddress: jest.fn(),
+    },
+    SelectedNetworkController: {
+      setProviderType: jest.fn(),
+    },
+    AccountTrackerController: {
+      refresh: jest.fn().mockResolvedValue(undefined),
+    },
+  },
+}));
+
+jest.mock('../../UI/OnboardingFoxLoader/OnboardingFoxLoader');
+
+jest.mock('../../../store/storage-wrapper', () => ({
+  setItem: jest.fn(),
+  getItem: jest.fn(),
+  removeItem: jest.fn(),
+}));
+
+jest.mock('../../../core/Authentication', () => ({
+  getType: jest.fn().mockResolvedValue({
+    currentAuthType: 'device_passcode',
+    availableBiometryType: 'faceID',
+  }),
+  componentAuthenticationType: jest.fn().mockResolvedValue({
+    currentAuthType: 'device_passcode',
+    availableBiometryType: 'faceID',
+  }),
+  requestBiometricsAccessControlForIOS: jest.fn((authType) =>
+    Promise.resolve(authType),
+  ),
+  newWalletAndKeychain: jest
+    .fn()
+    .mockImplementation(
+      () => new Promise((resolve) => setTimeout(resolve, 100)),
+    ),
+  newWalletAndRestore: jest
+    .fn()
+    .mockImplementation(
+      () => new Promise((resolve) => setTimeout(resolve, 100)),
+    ),
+  resetPassword: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../../../core/OAuthService/OAuthService');
+
+jest.mock('../../../util/device', () => ({
+  isIos: jest.fn(),
+  isAndroid: jest.fn(),
+  isMediumDevice: jest.fn(),
+}));
+
+let mockEligibility = {
+  shouldShowQuestionnaire: true,
+  variantName: 'treatment',
+  isActive: true,
+};
+jest.mock(
+  '../../../hooks/useOnboardingInterestQuestionnaireEligibility',
+  () => ({
+    useOnboardingInterestQuestionnaireEligibility: () => mockEligibility,
+  }),
+);
+
+const mockAuthenticateAsync = jest.fn().mockResolvedValue({ success: true });
+jest.mock('expo-local-authentication', () => ({
+  authenticateAsync: (...args: unknown[]) => mockAuthenticateAsync(...args),
+}));
+
+jest.mock('react-native/Libraries/Alert/Alert', () => {
+  const alert = {
+    alert: jest.fn(),
+  };
+  return { __esModule: true, default: alert, ...alert };
+});
+
+const mockMetricsIsEnabled = jest.fn().mockReturnValue(true);
+const mockTrackEvent = jest.fn();
+const mockEnable = jest.fn().mockResolvedValue(undefined);
+const mockRunAfterInteractions = jest.fn().mockImplementation((cb) => {
+  cb();
+  return {
+    then: (onfulfilled: () => void) => Promise.resolve(onfulfilled()),
+    done: (onfulfilled: () => void, onrejected: () => void) =>
+      Promise.resolve().then(onfulfilled, onrejected),
+    cancel: jest.fn(),
+  };
+});
+InteractionManager.runAfterInteractions = mockRunAfterInteractions;
 const mockStore = configureMockStore();
-const initialState = {
+const createInitialState = (geolocationLocation = 'GB') => ({
   user: {
     passwordSet: true,
     seedphraseBackedUp: false,
   },
   engine: {
-    backgroundState: initialBackgroundState,
+    backgroundState: {
+      ...backgroundState,
+      AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE,
+      GeolocationController: {
+        location: geolocationLocation,
+        status: 'loaded',
+      },
+    },
+  },
+  security: {
+    allowLoginWithRememberMe: true,
+  },
+  onboarding: {
+    events: [],
+  },
+});
+let store = mockStore(createInitialState());
+ReduxService.store = store as unknown as ReduxStore;
+
+const mockNavigation = {
+  setOptions: jest.fn(),
+  goBack: jest.fn(),
+  navigate: jest.fn(),
+  push: jest.fn(),
+  replace: jest.fn(),
+  setParams: jest.fn(),
+  reset: jest.fn(),
+};
+
+const mockRoute: {
+  params: {
+    [key: string]: unknown;
+  };
+} = {
+  params: {
+    [PREVIOUS_SCREEN]: ONBOARDING,
   },
 };
-const store = mockStore(initialState);
+
+const mockMetrics = {
+  isEnabled: mockMetricsIsEnabled,
+  trackEvent: mockTrackEvent,
+  enable: mockEnable,
+  identify: jest.fn().mockResolvedValue(undefined),
+  createEventBuilder: jest.fn(() => ({
+    addProperties: jest.fn().mockReturnThis(),
+    build: jest.fn(() => ({ name: 'Analytics Preference Selected' })),
+  })),
+  getMetaMetricsId: jest.fn(),
+};
+
+jest.mock('@react-navigation/native', () => {
+  const actualNav = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualNav,
+    useNavigation: () => mockNavigation,
+    useRoute: () => mockRoute,
+  };
+});
+
+jest.mock('../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => mockMetrics,
+}));
+
+const VALID_PASSWORD = 'Test123456!';
+
+const renderWithProviders = (ui: React.ReactElement) =>
+  render(
+    <Provider store={store}>
+      <ThemeContext.Provider value={mockTheme}>
+        <RouteMessengerContext.Provider
+          value={createMockRouteMessenger({
+            'GeolocationController:refreshGeolocation': mockRefreshGeolocation,
+          })}
+        >
+          {ui}
+        </RouteMessengerContext.Provider>
+      </ThemeContext.Provider>
+    </Provider>,
+  );
+
+/** Waits for async work triggered by componentDidMount to settle. */
+const waitForInit = async () => {
+  await waitFor(() => {
+    expect(
+      screen.getByTestId(ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID),
+    ).toBeOnTheScreen();
+  });
+};
+
+/** Returns all primary form elements by testID in one call. */
+const getFormElements = (
+  component: ReturnType<typeof renderWithProviders>,
+) => ({
+  passwordInput: component.getByTestId(
+    ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID,
+  ),
+  confirmPasswordInput: component.getByTestId(
+    ChoosePasswordSelectorsIDs.CONFIRM_PASSWORD_INPUT_ID,
+  ),
+  checkbox: component.queryByTestId(
+    ChoosePasswordSelectorsIDs.I_UNDERSTAND_CHECKBOX_ID,
+  ),
+  submitButton: component.getByTestId(
+    ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID,
+  ),
+});
+
+/**
+ * Fills the password form.
+ * Pass `pressCheckbox = false` for OAuth flows where the marketing opt-in
+ * checkbox should stay untouched. SRP flows have no checkbox at all.
+ */
+const fillForm = async (
+  component: ReturnType<typeof renderWithProviders>,
+  password = VALID_PASSWORD,
+  confirmPassword = password,
+  pressCheckbox = true,
+) => {
+  const { passwordInput, confirmPasswordInput, checkbox } =
+    getFormElements(component);
+  await act(async () => {
+    if (pressCheckbox && checkbox) fireEvent.press(checkbox);
+    fireEvent.changeText(passwordInput, password);
+  });
+  await act(async () => {
+    fireEvent.changeText(confirmPasswordInput, confirmPassword);
+  });
+};
+
+/** Confirms the SRP password warning sheet when it is open. */
+const confirmWarningSheet = async (
+  component: ReturnType<typeof renderWithProviders>,
+) => {
+  const confirmButton = component.queryByTestId(
+    PasswordResetWarningSheetSelectorsIDs.CONFIRM_BUTTON,
+  );
+  if (!confirmButton) return;
+  await act(async () => {
+    fireEvent.press(confirmButton);
+  });
+};
+
+const fillAndSubmitForm = async (
+  component: ReturnType<typeof renderWithProviders>,
+  password = VALID_PASSWORD,
+  confirmPassword = password,
+  pressCheckbox = true,
+) => {
+  await fillForm(component, password, confirmPassword, pressCheckbox);
+  // Get submit button directly to avoid triggering the duplicate-testID issue:
+  // when the checkbox is checked, Checkbox spreads iconProps (including testID) onto
+  // its inner Icon, so getByTestId would find two elements with the same ID.
+  await act(async () => {
+    fireEvent.press(
+      component.getByTestId(ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID),
+    );
+  });
+  await confirmWarningSheet(component);
+};
 
 describe('ChoosePassword', () => {
-  it('should render correctly', () => {
-    const wrapper = shallow(
-      <Provider store={store}>
-        <ChoosePassword route={{ params: [ONBOARDING, PROTECT] }} />
-      </Provider>,
+  const defaultKeyringControllerState = {
+    keyrings: [
+      {
+        type: 'HD Key Tree',
+        accounts: ['0xhd1'],
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockTrackOnboarding.mockClear();
+    store = mockStore(createInitialState());
+    ReduxService.store = store as unknown as ReduxStore;
+    mockEligibility = {
+      shouldShowQuestionnaire: true,
+      variantName: 'treatment',
+      isActive: true,
+    };
+    mockRefreshGeolocation.mockResolvedValue('GB');
+    (Authentication.getType as jest.Mock).mockResolvedValue({
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- getType still returns PASSCODE
+      currentAuthType: AUTHENTICATION_TYPE.PASSCODE,
+      availableBiometryType: 'faceID',
+    });
+    (
+      Engine.context.KeyringController as unknown as {
+        state: typeof defaultKeyringControllerState;
+      }
+    ).state = {
+      keyrings: defaultKeyringControllerState.keyrings.map((keyring) => ({
+        ...keyring,
+        accounts: [...keyring.accounts],
+      })),
+    };
+    mockRoute.params = {
+      [ONBOARDING]: true,
+      [PROTECT]: true,
+    };
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('renders correctly', async () => {
+    const component = renderWithProviders(<ChoosePassword />);
+    await waitForInit();
+    const passwordInput = component.getByTestId(
+      ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID,
     );
-    expect(wrapper).toMatchSnapshot();
+    const confirmPasswordInput = component.getByTestId(
+      ChoosePasswordSelectorsIDs.CONFIRM_PASSWORD_INPUT_ID,
+    );
+
+    expect(passwordInput).toHaveProp(
+      'placeholder',
+      strings('choose_password.new_password_placeholder'),
+    );
+    expect(confirmPasswordInput).toHaveProp(
+      'placeholder',
+      strings('choose_password.confirm_password_placeholder'),
+    );
+  });
+
+  describe('UI State', () => {
+    it('shows the onboarding fox loader and hides form inputs during loading', async () => {
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component);
+
+      expect(
+        component.getByTestId('fox-rive-loader-animation'),
+      ).toBeOnTheScreen();
+      expect(() =>
+        component.getByTestId(ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID),
+      ).toThrow();
+      expect(
+        component.queryByTestId(ChoosePasswordSelectorsIDs.BACK_BUTTON_ID),
+      ).toBeNull();
+    });
+
+    it('shows back button when not loading and hides it while creating wallet', async () => {
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      let resolveWalletCreation: () => void;
+      const walletCreationPromise = new Promise<void>((resolve) => {
+        resolveWalletCreation = resolve;
+      });
+      mockNewWalletAndKeychain.mockReturnValue(walletCreationPromise);
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      expect(
+        component.getByTestId(ChoosePasswordSelectorsIDs.BACK_BUTTON_ID),
+      ).toBeOnTheScreen();
+
+      await fillAndSubmitForm(component);
+
+      expect(
+        component.queryByTestId(ChoosePasswordSelectorsIDs.BACK_BUTTON_ID),
+      ).toBeNull();
+
+      await act(async () => {
+        resolveWalletCreation();
+      });
+
+      await waitFor(() => {
+        expect(mockNavigation.replace).toHaveBeenCalled();
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('toggles between form and loading state when wallet creation is in progress', async () => {
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      let resolveWalletCreation: () => void;
+      const walletCreationPromise = new Promise<void>((resolve) => {
+        resolveWalletCreation = resolve;
+      });
+      mockNewWalletAndKeychain.mockReturnValue(walletCreationPromise);
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      // Initially the form is visible and the loader is absent
+      expect(
+        component.getByTestId(ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID),
+      ).toBeOnTheScreen();
+      expect(() =>
+        component.getByTestId('fox-rive-loader-animation'),
+      ).toThrow();
+
+      await fillAndSubmitForm(component);
+
+      // After submit the loader is shown and the form is hidden
+      expect(
+        component.getByTestId('fox-rive-loader-animation'),
+      ).toBeOnTheScreen();
+      expect(() =>
+        component.getByTestId(ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID),
+      ).toThrow();
+
+      await act(async () => {
+        resolveWalletCreation();
+      });
+
+      await waitFor(() => {
+        expect(mockNavigation.replace).toHaveBeenCalled();
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('keeps screen capture blocked while the wallet is created', async () => {
+      const forbidSpy = jest.spyOn(PreventScreenshot, 'forbid');
+      const allowSpy = jest.spyOn(PreventScreenshot, 'allow');
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      let resolveWalletCreation: () => void;
+      mockNewWalletAndKeychain.mockReturnValue(
+        new Promise<void>((resolve) => {
+          resolveWalletCreation = resolve;
+        }),
+      );
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      expect(forbidSpy).toHaveBeenCalledWith(CAPTURE_KEYS.credentialScreens);
+      allowSpy.mockClear();
+
+      await fillAndSubmitForm(component);
+
+      expect(
+        component.getByTestId('fox-rive-loader-animation'),
+      ).toBeOnTheScreen();
+
+      // Past ScreenshotDeterrent's 500ms delay before it releases capture.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      });
+
+      expect(allowSpy).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolveWalletCreation();
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('hides the length help text once the password reaches the minimum length', async () => {
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      const helperText = strings('choose_password.must_be_at_least', {
+        number: 8,
+      });
+
+      expect(
+        component.getByText(helperText).props.accessibilityElementsHidden,
+      ).toBe(false);
+
+      await act(async () => {
+        fireEvent.changeText(
+          component.getByTestId(
+            ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID,
+          ),
+          'ValidPassword123',
+        );
+      });
+
+      const hiddenHelp = component.getByText(helperText, {
+        includeHiddenElements: true,
+      });
+      expect(hiddenHelp.props.accessibilityElementsHidden).toBe(true);
+      expect(hiddenHelp).toHaveStyle({ opacity: 0 });
+    });
+
+    it('helper text remains visible after blurring the password field with a short password', async () => {
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      const { passwordInput } = getFormElements(component);
+
+      const helperText = strings('choose_password.must_be_at_least', {
+        number: 8,
+      });
+      const defaultColor = StyleSheet.flatten(
+        component.getByText(helperText).props.style,
+      )?.color;
+      const defaultFieldStyle = JSON.stringify(
+        StyleSheet.flatten(passwordInput.parent?.props.style),
+      );
+
+      await act(async () => {
+        fireEvent.changeText(passwordInput, 'short');
+      });
+      await act(async () => {
+        fireEvent(passwordInput, 'blur');
+      });
+
+      const dangerHelp = component.getByText(helperText);
+      expect(dangerHelp).toBeOnTheScreen();
+      expect(dangerHelp.props.accessibilityElementsHidden).toBe(false);
+      expect(StyleSheet.flatten(dangerHelp.props.style)?.color).not.toBe(
+        defaultColor,
+      );
+      expect(
+        JSON.stringify(StyleSheet.flatten(passwordInput.parent?.props.style)),
+      ).not.toBe(defaultFieldStyle);
+    });
+
+    it('helper text remains visible after refocusing the password field', async () => {
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      const { passwordInput } = getFormElements(component);
+
+      await act(async () => {
+        fireEvent.changeText(passwordInput, 'short');
+        fireEvent(passwordInput, 'blur');
+      });
+      await act(async () => {
+        fireEvent(passwordInput, 'focus');
+      });
+
+      expect(
+        component.getByText(
+          strings('choose_password.must_be_at_least', { number: 8 }),
+        ),
+      ).toBeOnTheScreen();
+    });
+
+    it('toggles password visibility when the show/hide icon is pressed', async () => {
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      const showPasswordButton = component.getByTestId(
+        ChoosePasswordSelectorsIDs.NEW_PASSWORD_SHOW_ICON_ID,
+      );
+
+      await act(async () => {
+        fireEvent.press(showPasswordButton);
+      });
+
+      expect(showPasswordButton).toBeOnTheScreen();
+    });
+  });
+
+  describe('Form Validation', () => {
+    it('shows a password mismatch error when passwords differ', async () => {
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      const { confirmPasswordInput, submitButton } = getFormElements(component);
+      await fillForm(component, 'Test123456!', 'DifferentPassword123!');
+      await act(async () => {
+        fireEvent(confirmPasswordInput, 'blur');
+      });
+
+      expect(
+        component.getByText(strings('choose_password.password_error')),
+      ).toBeOnTheScreen();
+      expect(submitButton).toBeDisabled();
+    });
+
+    it('keeps submit disabled when passwords do not match', async () => {
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillForm(component, 'StrongPassword123', 'DifferentPassword123');
+
+      const submitButton = component.getByTestId(
+        ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID,
+      );
+      expect(submitButton).toBeDisabled();
+      expect(
+        component.queryByText(strings('choose_password.password_error')),
+      ).toBeNull();
+
+      fireEvent.press(submitButton);
+
+      expect(Authentication.newWalletAndKeychain).not.toHaveBeenCalled();
+    });
+
+    it('confirm password field is cleared when the password field is fully cleared', async () => {
+      mockRoute.params = { [ONBOARDING]: true };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      const { passwordInput, confirmPasswordInput } =
+        getFormElements(component);
+
+      await act(async () => {
+        fireEvent.changeText(passwordInput, 'StrongPassword123!@#');
+      });
+      expect(
+        component.getByDisplayValue('StrongPassword123!@#'),
+      ).toBeOnTheScreen();
+
+      await act(async () => {
+        fireEvent.changeText(confirmPasswordInput, 'StrongPassword123!@#');
+      });
+      expect(
+        component.getAllByDisplayValue('StrongPassword123!@#'),
+      ).toHaveLength(2);
+
+      // Partial edit to the password field does NOT clear the confirm field
+      await act(async () => {
+        fireEvent.changeText(passwordInput, 'StrongPassword123!@');
+      });
+      expect(
+        component.getByDisplayValue('StrongPassword123!@#'),
+      ).toBeOnTheScreen();
+
+      // Fully clearing the password field also clears confirm password
+      await act(async () => {
+        fireEvent.changeText(passwordInput, '');
+      });
+      expect(component.queryByDisplayValue('StrongPassword123!@#')).toBeNull();
+    });
+
+    it('keeps submit disabled and does not create a wallet when the password is too short', async () => {
+      jest.mocked(passwordRequirementsMet).mockReturnValue(false);
+
+      try {
+        const component = renderWithProviders(<ChoosePassword />);
+        await waitForInit();
+        await fillForm(component, 'Test1234');
+
+        const submitButton = component.getByTestId(
+          ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID,
+        );
+        expect(submitButton).toBeDisabled();
+
+        fireEvent.press(submitButton);
+
+        expect(Authentication.newWalletAndKeychain).not.toHaveBeenCalled();
+        expect(mockTrackOnboarding).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: EVENT_NAME.WALLET_CREATION_ATTEMPTED,
+          }),
+          expect.any(Function),
+        );
+      } finally {
+        jest
+          .mocked(passwordRequirementsMet)
+          .mockImplementation(
+            jest.requireActual('../../../util/password')
+              .passwordRequirementsMet,
+          );
+      }
+    });
+  });
+
+  describe('Navigation', () => {
+    it('back button navigates to the previous screen', async () => {
+      const { getByTestId } = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      const backButton = getByTestId(ChoosePasswordSelectorsIDs.BACK_BUTTON_ID);
+      await act(async () => {
+        fireEvent.press(backButton);
+      });
+
+      expect(mockNavigation.goBack).toHaveBeenCalled();
+    });
+
+    it('navigates to ManualBackupStep1 with seed phrase after successful SRP wallet creation', async () => {
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockImplementation(
+        () => new Promise((resolve) => setTimeout(resolve, 50)),
+      );
+      mockRoute.params = { ...mockRoute.params, [PREVIOUS_SCREEN]: ONBOARDING };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      mockNavigation.setParams.mockClear();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!@#');
+
+      await waitFor(() => {
+        expect(mockNavigation.replace).toHaveBeenCalledWith(
+          'ManualBackupStep1',
+          {
+            seedPhrase: expect.any(Array),
+            backupFlow: false,
+            settingsBackup: false,
+          },
+        );
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('recreates vault and reimports simple-key accounts for non-onboarding previous screen', async () => {
+      const keyringController = Engine.context.KeyringController as unknown as {
+        state: {
+          keyrings: { type: string; accounts: string[] }[];
+        };
+        exportAccount: jest.Mock;
+        addNewAccount: jest.Mock;
+        importAccountWithStrategy: jest.Mock;
+        exportSeedPhrase: jest.Mock;
+      };
+
+      keyringController.state = {
+        keyrings: [
+          { type: 'HD Key Tree', accounts: ['0xhd1', '0xhd2'] },
+          { type: 'Simple Key Pair', accounts: ['0ximported'] },
+        ],
+      };
+      keyringController.exportAccount = jest
+        .fn()
+        .mockResolvedValue('0xprivatekey');
+      keyringController.addNewAccount = jest.fn().mockResolvedValue(undefined);
+      keyringController.importAccountWithStrategy = jest
+        .fn()
+        .mockResolvedValue('0ximported');
+
+      const mockNewWalletAndRestore = jest.spyOn(
+        Authentication,
+        'newWalletAndRestore',
+      );
+      mockNewWalletAndRestore.mockResolvedValue(undefined);
+
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: PROTECT,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!@#');
+
+      await waitFor(() => {
+        expect(mockNewWalletAndRestore).toHaveBeenCalled();
+      });
+
+      expect(keyringController.exportAccount).toHaveBeenCalledWith(
+        { password: '' },
+        '0ximported',
+      );
+      expect(keyringController.addNewAccount).toHaveBeenCalledTimes(1);
+      expect(keyringController.importAccountWithStrategy).toHaveBeenCalled();
+
+      mockNewWalletAndRestore.mockRestore();
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+      };
+    });
+
+    it('logs and continues when exporting simple-key accounts fails during vault recreate', async () => {
+      const keyringController = Engine.context.KeyringController as unknown as {
+        state: {
+          keyrings: { type: string; accounts: string[] }[];
+        };
+        exportAccount: jest.Mock;
+      };
+
+      keyringController.state = {
+        keyrings: [
+          { type: 'HD Key Tree', accounts: ['0xhd1'] },
+          { type: 'Simple Key Pair', accounts: ['0ximported'] },
+        ],
+      };
+      keyringController.exportAccount = jest
+        .fn()
+        .mockRejectedValue(new Error('export failed'));
+
+      const mockNewWalletAndRestore = jest.spyOn(
+        Authentication,
+        'newWalletAndRestore',
+      );
+      mockNewWalletAndRestore.mockResolvedValue(undefined);
+
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: PROTECT,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      await fillAndSubmitForm(component, 'StrongPassword123!@#');
+
+      await waitFor(() => {
+        expect(Logger.error).toHaveBeenCalledWith(
+          expect.any(Error),
+          'error while trying to get imported accounts on recreate vault',
+        );
+        expect(mockNewWalletAndRestore).toHaveBeenCalled();
+      });
+
+      mockNewWalletAndRestore.mockRestore();
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+      };
+    });
+
+    it('logs when reimporting private-key accounts fails during vault recreate', async () => {
+      const keyringController = Engine.context.KeyringController as unknown as {
+        state: {
+          keyrings: { type: string; accounts: string[] }[];
+        };
+        exportAccount: jest.Mock;
+        addNewAccount: jest.Mock;
+        importAccountWithStrategy: jest.Mock;
+      };
+
+      keyringController.state = {
+        keyrings: [
+          { type: 'HD Key Tree', accounts: ['0xhd1'] },
+          { type: 'Simple Key Pair', accounts: ['0ximported'] },
+        ],
+      };
+      keyringController.exportAccount = jest
+        .fn()
+        .mockResolvedValue('0xprivatekey');
+      keyringController.addNewAccount = jest.fn().mockResolvedValue(undefined);
+      keyringController.importAccountWithStrategy = jest
+        .fn()
+        .mockRejectedValue(new Error('import failed'));
+
+      const mockNewWalletAndRestore = jest.spyOn(
+        Authentication,
+        'newWalletAndRestore',
+      );
+      mockNewWalletAndRestore.mockResolvedValue(undefined);
+
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: PROTECT,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      await fillAndSubmitForm(component, 'StrongPassword123!@#');
+
+      await waitFor(() => {
+        expect(Logger.error).toHaveBeenCalledWith(
+          expect.any(Error),
+          'error while trying to import accounts on recreate vault',
+        );
+      });
+
+      mockNewWalletAndRestore.mockRestore();
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+      };
+    });
+
+    it('calls exportSeedPhrase after SRP wallet creation', async () => {
+      const mockExportSeedPhrase = Engine.context.KeyringController
+        .exportSeedPhrase as jest.Mock;
+      jest
+        .spyOn(Authentication, 'newWalletAndKeychain')
+        .mockResolvedValue(undefined);
+
+      mockRoute.params = { ...mockRoute.params, [PREVIOUS_SCREEN]: ONBOARDING };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      const password = 'StrongPassword123!@#';
+      await fillAndSubmitForm(component, password);
+
+      await waitFor(() => {
+        expect(mockExportSeedPhrase).toHaveBeenCalledWith({ password });
+      });
+    });
+
+    it('navigates to WalletCreationError screen when the device passcode is not set', async () => {
+      jest.spyOn(Device, 'isIos').mockReturnValue(false);
+      const passcodeError = new Error('Passcode not set.');
+      const mockComponentAuthenticationType = jest.spyOn(
+        Authentication,
+        'componentAuthenticationType',
+      );
+      mockComponentAuthenticationType.mockRejectedValueOnce(passcodeError);
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!');
+
+      await waitFor(() => {
+        expect(mockNavigation.reset).toHaveBeenCalledWith({
+          routes: [
+            {
+              name: Routes.ONBOARDING.WALLET_CREATION_ERROR,
+              params: expect.objectContaining({
+                metricsEnabled: true,
+                error: passcodeError,
+              }),
+            },
+          ],
+        });
+      });
+
+      jest.spyOn(Device, 'isIos').mockRestore();
+      mockComponentAuthenticationType.mockRestore();
+    });
+
+    it('navigates to interest questionnaire after OAuth wallet creation', async () => {
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'biometrics',
+        availableBiometryType: 'faceID',
+      });
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await fillAndSubmitForm(component);
+
+      await waitFor(() => {
+        expect(mockNavigation.navigate).toHaveBeenCalledWith(
+          Routes.ONBOARDING.INTEREST_QUESTIONNAIRE,
+          expect.objectContaining({
+            onComplete: expect.any(Function),
+          }),
+        );
+        expect(mockTrackEvent).toHaveBeenCalled();
+        expect(mockMetrics.identify).toHaveBeenCalled();
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('does not render the password-loss acknowledgement checkbox for SRP users', async () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: false,
+      };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      expect(
+        component.queryByTestId(
+          ChoosePasswordSelectorsIDs.I_UNDERSTAND_CHECKBOX_ID,
+        ),
+      ).toBeNull();
+    });
+  });
+
+  describe('Password Reset Warning Sheet', () => {
+    it('opens the warning sheet instead of creating the wallet when SRP users submit', async () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: false,
+      };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillForm(component);
+      await act(async () => {
+        fireEvent.press(
+          component.getByTestId(ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID),
+        );
+      });
+
+      expect(
+        component.getByTestId(PasswordResetWarningSheetSelectorsIDs.SHEET),
+      ).toBeOnTheScreen();
+      expect(Authentication.newWalletAndKeychain).not.toHaveBeenCalled();
+    });
+
+    it('does not open the warning sheet when the passwords do not match', async () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: false,
+      };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      const { confirmPasswordInput } = getFormElements(component);
+      await fillForm(component, VALID_PASSWORD, 'DifferentPassword123!');
+      await act(async () => {
+        fireEvent(confirmPasswordInput, 'blur');
+        fireEvent.press(
+          component.getByTestId(ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID),
+        );
+      });
+
+      expect(
+        component.queryByTestId(PasswordResetWarningSheetSelectorsIDs.SHEET),
+      ).toBeNull();
+      expect(
+        component.getByText(strings('choose_password.password_error')),
+      ).toBeOnTheScreen();
+    });
+
+    it('creates the wallet when the warning sheet is confirmed', async () => {
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: false,
+      };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillForm(component);
+      await act(async () => {
+        fireEvent.press(
+          component.getByTestId(ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID),
+        );
+      });
+      await act(async () => {
+        fireEvent.press(
+          component.getByTestId(
+            PasswordResetWarningSheetSelectorsIDs.CONFIRM_BUTTON,
+          ),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalled();
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('closes the warning sheet without creating the wallet when cancelled', async () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: false,
+      };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillForm(component);
+      await act(async () => {
+        fireEvent.press(
+          component.getByTestId(ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID),
+        );
+      });
+      await act(async () => {
+        fireEvent.press(
+          component.getByTestId(
+            PasswordResetWarningSheetSelectorsIDs.CANCEL_BUTTON,
+          ),
+        );
+      });
+
+      expect(
+        component.queryByTestId(PasswordResetWarningSheetSelectorsIDs.SHEET),
+      ).toBeNull();
+      expect(Authentication.newWalletAndKeychain).not.toHaveBeenCalled();
+    });
+
+    it('does not open the warning sheet for social login users', async () => {
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillForm(component, VALID_PASSWORD, VALID_PASSWORD, false);
+      await act(async () => {
+        fireEvent.press(
+          component.getByTestId(ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID),
+        );
+      });
+
+      expect(
+        component.queryByTestId(PasswordResetWarningSheetSelectorsIDs.SHEET),
+      ).toBeNull();
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalled();
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+  });
+
+  describe('Authentication Type Detection', () => {
+    it('sets passcode biometry type when auth type is PASSCODE', async () => {
+      const mockGetType = jest.spyOn(Authentication, 'getType');
+      mockGetType.mockResolvedValue({
+        // eslint-disable-next-line @typescript-eslint/no-deprecated -- getType still returns PASSCODE
+        currentAuthType: AUTHENTICATION_TYPE.PASSCODE,
+        availableBiometryType: undefined,
+      });
+      const mockStorageWrapper = jest.mocked(StorageWrapper);
+      mockStorageWrapper.getItem.mockImplementation((key) => {
+        if (key === '@MetaMask:passcodeDisabled')
+          return Promise.resolve('TRUE');
+        if (key === '@MetaMask:biometryChoiceDisabled')
+          return Promise.resolve(null);
+        if (key === '@MetaMask:UserTermsAcceptedv1.0')
+          return Promise.resolve('true');
+        return Promise.resolve(null);
+      });
+      jest
+        .spyOn(Authentication, 'newWalletAndKeychain')
+        .mockResolvedValue(undefined);
+      mockTrackOnboarding.mockClear();
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      expect(mockGetType).toHaveBeenCalled();
+      expect(mockStorageWrapper.getItem).toHaveBeenCalledWith(
+        '@MetaMask:biometryChoiceDisabled',
+      );
+      expect(mockStorageWrapper.getItem).toHaveBeenCalledWith(
+        '@MetaMask:passcodeDisabled',
+      );
+
+      await fillAndSubmitForm(component, 'StrongPassword123!@#');
+
+      await waitFor(() => {
+        expect(mockTrackOnboarding).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: EVENT_NAME.WALLET_CREATED,
+            properties: expect.objectContaining({
+              biometrics_enabled: true,
+            }),
+          }),
+          expect.any(Function),
+        );
+      });
+
+      mockGetType.mockRestore();
+    });
+
+    it('reads biometry storage flags when face ID is available', async () => {
+      const mockGetType = jest.spyOn(Authentication, 'getType');
+      mockGetType.mockResolvedValueOnce({
+        currentAuthType: AUTHENTICATION_TYPE.PASSWORD,
+        availableBiometryType: BIOMETRY_TYPE.FACE_ID,
+      });
+      const mockStorageWrapper = jest.mocked(StorageWrapper);
+      mockStorageWrapper.getItem.mockImplementation((key) => {
+        if (key === '@MetaMask:biometryChoiceDisabled')
+          return Promise.resolve('TRUE');
+        if (key === '@MetaMask:passcodeDisabled') return Promise.resolve(null);
+        if (key === '@MetaMask:UserTermsAcceptedv1.0')
+          return Promise.resolve('true');
+        return Promise.resolve(null);
+      });
+
+      renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      expect(mockGetType).toHaveBeenCalled();
+      expect(mockStorageWrapper.getItem).toHaveBeenCalledWith(
+        '@MetaMask:biometryChoiceDisabled',
+      );
+      expect(mockStorageWrapper.getItem).toHaveBeenCalledWith(
+        '@MetaMask:passcodeDisabled',
+      );
+      mockGetType.mockRestore();
+    });
+
+    it('uses PASSWORD auth type for wallet creation when biometrics are declined on iOS', async () => {
+      const originalOS = Platform.OS;
+      (Platform as { OS: string }).OS = 'ios';
+      (
+        Authentication.requestBiometricsAccessControlForIOS as jest.Mock
+      ).mockResolvedValueOnce(AUTHENTICATION_TYPE.PASSWORD);
+      mockRoute.params = { ...mockRoute.params, [PREVIOUS_SCREEN]: ONBOARDING };
+
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockImplementation(
+        (_: string, authType: { currentAuthType: string }) => {
+          expect(authType.currentAuthType).toBe(AUTHENTICATION_TYPE.PASSWORD);
+          return Promise.resolve();
+        },
+      );
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!@#');
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalled();
+      });
+
+      (Platform as { OS: string }).OS = originalOS;
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('uses BIOMETRIC auth type for wallet creation when biometrics succeed on iOS', async () => {
+      const originalOS = Platform.OS;
+      (Platform as { OS: string }).OS = 'ios';
+      (
+        Authentication.requestBiometricsAccessControlForIOS as jest.Mock
+      ).mockResolvedValueOnce(AUTHENTICATION_TYPE.BIOMETRIC);
+      mockRoute.params = { ...mockRoute.params, [PREVIOUS_SCREEN]: ONBOARDING };
+
+      const mockComponentAuthenticationType = jest.spyOn(
+        Authentication,
+        'componentAuthenticationType',
+      );
+      mockComponentAuthenticationType.mockResolvedValueOnce({
+        currentAuthType: AUTHENTICATION_TYPE.BIOMETRIC,
+        availableBiometryType: BIOMETRY_TYPE.FACE_ID,
+      });
+
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockImplementation(
+        (_: string, authType: { currentAuthType: string }) => {
+          expect(authType.currentAuthType).toBe(AUTHENTICATION_TYPE.BIOMETRIC);
+          return Promise.resolve();
+        },
+      );
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!@#');
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalled();
+      });
+
+      (Platform as { OS: string }).OS = originalOS;
+      mockNewWalletAndKeychain.mockRestore();
+      mockComponentAuthenticationType.mockRestore();
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'passcode',
+        availableBiometryType: 'faceID',
+      });
+    });
+  });
+
+  describe('Submit Button Behaviour', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    it('submit button is enabled for OAuth users without checking the checkbox', async () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+      };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillForm(component, 'Test1234', 'Test1234', false);
+
+      const { submitButton } = getFormElements(component);
+      expect(submitButton).toBeEnabled();
+    });
+
+    it('shows the password warning sheet on press for non-OAuth users', async () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: false,
+      };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillForm(component, 'Test1234', 'Test1234', false);
+
+      const { submitButton } = getFormElements(component);
+      fireEvent.press(submitButton);
+
+      expect(submitButton).toBeEnabled();
+      expect(
+        component.getByTestId(PasswordResetWarningSheetSelectorsIDs.SHEET),
+      ).toBeOnTheScreen();
+      expect(Authentication.newWalletAndKeychain).not.toHaveBeenCalled();
+    });
+
+    it('keeps submit enabled when oauthLoginSuccess is undefined', async () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+      };
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillForm(component, 'Test1234', 'Test1234', false);
+
+      const { submitButton } = getFormElements(component);
+      expect(submitButton).toBeEnabled();
+    });
+  });
+
+  describe('Title and description', () => {
+    it('shows the create-password title and device description', async () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: false,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      expect(
+        component.getByText(strings('choose_password.title')),
+      ).toBeOnTheScreen();
+      expect(
+        component.getByText(strings('choose_password.create_description')),
+      ).toBeOnTheScreen();
+    });
+
+    it('shows the iOS social-login description for OAuth users', async () => {
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      expect(
+        component.getByText(
+          strings('choose_password.description_social_login_update_ios'),
+        ),
+      ).toBeOnTheScreen();
+    });
+  });
+
+  describe('Marketing API', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockRefreshGeolocation.mockResolvedValue('GB');
+    });
+
+    it('defaults marketing opt-in to checked for USA OAuth users without toggling the checkbox', async () => {
+      store = mockStore(createInitialState('US'));
+      ReduxService.store = store as unknown as ReduxStore;
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'passcode',
+        availableBiometryType: 'faceID',
+      });
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      await fillAndSubmitForm(component, VALID_PASSWORD, VALID_PASSWORD, false);
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalledTimes(1);
+      });
+      expect(OAuthLoginService.updateMarketingOptInStatus).toHaveBeenCalledWith(
+        true,
+      );
+      expect(store.getActions()).toContainEqual(
+        setDataCollectionForMarketing(true),
+      );
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('disables submit with a loading state until geolocation refresh completes', async () => {
+      store = mockStore(createInitialState(UNKNOWN_LOCATION));
+      ReduxService.store = store as unknown as ReduxStore;
+      let resolveGeolocation: (location: string) => void = () => undefined;
+      mockRefreshGeolocation.mockReturnValue(
+        new Promise((resolve) => {
+          resolveGeolocation = resolve;
+        }),
+      );
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'passcode',
+        availableBiometryType: 'faceID',
+      });
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await fillForm(component, VALID_PASSWORD, VALID_PASSWORD, false);
+
+      const submitButton = component.getByTestId(
+        ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID,
+      );
+      expect(submitButton).toBeDisabled();
+      expect(submitButton).toBeBusy();
+
+      fireEvent.press(submitButton);
+      expect(mockNewWalletAndKeychain).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolveGeolocation('US');
+      });
+
+      expect(submitButton).toBeEnabled();
+
+      fireEvent.press(submitButton);
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalledTimes(1);
+      });
+      expect(OAuthLoginService.updateMarketingOptInStatus).toHaveBeenCalledWith(
+        true,
+      );
+      expect(store.getActions()).toContainEqual(
+        setDataCollectionForMarketing(true),
+      );
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('shows the same marketing opt-in value in the checkbox and on submit for USA OAuth users', async () => {
+      store = mockStore(createInitialState('US'));
+      ReduxService.store = store as unknown as ReduxStore;
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'passcode',
+        availableBiometryType: 'faceID',
+      });
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      const { checkbox } = getFormElements(component);
+      expect(checkbox).toBeChecked();
+
+      await fillAndSubmitForm(component, VALID_PASSWORD, VALID_PASSWORD, false);
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalledTimes(1);
+      });
+      expect(OAuthLoginService.updateMarketingOptInStatus).toHaveBeenCalledWith(
+        true,
+      );
+      expect(store.getActions()).toContainEqual(
+        setDataCollectionForMarketing(true),
+      );
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('defaults marketing opt-in to unchecked for non-USA OAuth users without toggling the checkbox', async () => {
+      store = mockStore(createInitialState('GB'));
+      ReduxService.store = store as unknown as ReduxStore;
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'passcode',
+        availableBiometryType: 'faceID',
+      });
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      await fillAndSubmitForm(component, VALID_PASSWORD, VALID_PASSWORD, false);
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalledTimes(1);
+      });
+      expect(OAuthLoginService.updateMarketingOptInStatus).toHaveBeenCalledWith(
+        false,
+      );
+      expect(store.getActions()).toContainEqual(
+        setDataCollectionForMarketing(false),
+      );
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('keeps submit enabled when the marketing opt-in checkbox is unchecked by default', async () => {
+      store = mockStore(createInitialState('US'));
+      ReduxService.store = store as unknown as ReduxStore;
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      await fillForm(component, VALID_PASSWORD, VALID_PASSWORD, false);
+
+      const submitButton = component.getByTestId(
+        ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID,
+      );
+      expect(submitButton).toBeEnabled();
+    });
+
+    it('sends marketing opt-in=true when OAuth user checks the checkbox before submitting', async () => {
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'passcode',
+        availableBiometryType: 'faceID',
+      });
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      // Press the marketing opt-in checkbox then submit
+      await fillAndSubmitForm(component);
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalledTimes(1);
+        expect(mockTrackEvent).toHaveBeenCalled();
+        expect(mockMetrics.identify).toHaveBeenCalled();
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('sends marketing opt-in=false when OAuth user does not check the checkbox', async () => {
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'passcode',
+        availableBiometryType: 'faceID',
+      });
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'apple',
+      };
+
+      // Do NOT press the checkbox so isSelected = false → opt-in = false
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      await fillAndSubmitForm(component, VALID_PASSWORD, VALID_PASSWORD, false);
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalledTimes(1);
+        expect(mockTrackEvent).toHaveBeenCalled();
+        expect(mockMetrics.identify).toHaveBeenCalled();
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('reports OAuth server error to Sentry without navigating to the error screen', async () => {
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'biometrics',
+        availableBiometryType: 'faceID',
+      });
+      mockMetricsIsEnabled.mockReturnValue(true);
+
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain
+        .mockRejectedValueOnce(
+          new Error('SeedlessOnboardingController - Auth server is down'),
+        )
+        .mockResolvedValueOnce(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!');
+
+      await waitFor(() => {
+        expect(mockNewWalletAndKeychain).toHaveBeenCalledTimes(1);
+        expect(mockCaptureException).toHaveBeenCalled();
+        expect(mockTrackEvent).not.toHaveBeenLastCalledWith(
+          expect.objectContaining({ name: 'Error Screen Viewed' }),
+        );
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+
+    it('reports social login error to Sentry and navigates to WalletCreationError', async () => {
+      mockMetricsIsEnabled.mockReturnValue(true);
+      const walletError = new Error('Social login wallet creation failed');
+      const mockComponentAuthenticationType = jest.spyOn(
+        Authentication,
+        'componentAuthenticationType',
+      );
+      mockComponentAuthenticationType.mockRejectedValueOnce(walletError);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!');
+
+      await waitFor(() => {
+        expect(mockCaptureException).toHaveBeenCalledWith(walletError, {
+          tags: {
+            view: 'ChoosePassword',
+            context: 'Wallet creation failed - auto reported',
+          },
+        });
+        expect(mockNavigation.reset).toHaveBeenCalledWith({
+          routes: [
+            {
+              name: Routes.ONBOARDING.WALLET_CREATION_ERROR,
+              params: expect.objectContaining({
+                metricsEnabled: true,
+                error: walletError,
+                accountType: AccountType.MetamaskGoogle,
+              }),
+            },
+          ],
+        });
+      });
+
+      mockComponentAuthenticationType.mockReset();
+      mockComponentAuthenticationType.mockResolvedValue({
+        currentAuthType: AUTHENTICATION_TYPE.DEVICE_AUTHENTICATION,
+        availableBiometryType: BIOMETRY_TYPE.FACE_ID,
+      });
+    });
+
+    it('reports SRP wallet creation error to Sentry and navigates to WalletCreationError', async () => {
+      mockMetricsIsEnabled.mockReturnValue(true);
+      const walletError = new Error('SRP wallet creation failed');
+      const mockComponentAuthenticationType = jest.spyOn(
+        Authentication,
+        'componentAuthenticationType',
+      );
+      mockComponentAuthenticationType.mockRejectedValueOnce(walletError);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: false,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!');
+
+      await waitFor(() => {
+        expect(mockCaptureException).toHaveBeenCalledWith(walletError, {
+          tags: {
+            view: 'ChoosePassword',
+            context: 'Wallet creation failed - auto reported',
+          },
+        });
+        expect(mockNavigation.reset).toHaveBeenCalledWith({
+          routes: [
+            {
+              name: Routes.ONBOARDING.WALLET_CREATION_ERROR,
+              params: expect.objectContaining({
+                metricsEnabled: true,
+                error: walletError,
+              }),
+            },
+          ],
+        });
+      });
+
+      mockComponentAuthenticationType.mockReset();
+      mockComponentAuthenticationType.mockResolvedValue({
+        currentAuthType: AUTHENTICATION_TYPE.DEVICE_AUTHENTICATION,
+        availableBiometryType: BIOMETRY_TYPE.FACE_ID,
+      });
+    });
+  });
+
+  describe('Tracing', () => {
+    const mockTrace = trace as jest.MockedFunction<typeof trace>;
+    const mockEndTrace = endTrace as jest.MockedFunction<typeof endTrace>;
+    const mockGetTraceContext = getTraceContext as jest.MockedFunction<
+      typeof getTraceContext
+    >;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockTrace.mockClear();
+      mockEndTrace.mockClear();
+      mockGetTraceContext.mockClear();
+    });
+
+    it('starts the attempt trace on mount and ends it on unmount', async () => {
+      const mockOnboardingTraceCtx = {
+        traceId: 'test-trace-id',
+      } as unknown as Span;
+      const mockTraceCtx = {
+        traceId: 'setup-attempt-trace-id',
+      } as unknown as Span;
+      mockTrace.mockReturnValue(mockTraceCtx);
+      mockGetTraceContext.mockReturnValue(mockOnboardingTraceCtx);
+
+      const { unmount } = renderWithProviders(<ChoosePassword />);
+      await act(async () => Promise.resolve());
+
+      expect(mockGetTraceContext).toHaveBeenCalledWith({
+        name: TraceName.OnboardingJourneyOverall,
+      });
+      expect(mockTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingPasswordSetupAttempt,
+        op: TraceOperation.OnboardingUserJourney,
+        parentContext: mockOnboardingTraceCtx,
+      });
+
+      unmount();
+
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingPasswordSetupAttempt,
+      });
+    });
+
+    it('skips journey tracing when getTraceContext returns undefined', async () => {
+      mockGetTraceContext.mockReturnValue(undefined);
+
+      const { unmount } = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      expect(mockTrace).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          op: TraceOperation.OnboardingUserJourney,
+        }),
+      );
+
+      unmount();
+
+      expect(mockEndTrace).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: TraceName.OnboardingPasswordSetupAttempt,
+        }),
+      );
+    });
+
+    it('emits an error trace when password creation fails', async () => {
+      const mockOnboardingTraceCtx = {
+        traceId: 'test-trace-id',
+      } as unknown as Span;
+      const testError = new Error('Password creation failed');
+      mockTrace.mockReturnValue(undefined);
+      mockGetTraceContext.mockReturnValue(mockOnboardingTraceCtx);
+
+      const mockComponentAuthenticationType = jest.spyOn(
+        Authentication,
+        'componentAuthenticationType',
+      );
+      mockComponentAuthenticationType.mockRejectedValueOnce(testError);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await act(async () => Promise.resolve());
+
+      await fillAndSubmitForm(component, 'StrongPassword123!');
+
+      await waitFor(() => {
+        expect(mockTrace).toHaveBeenCalledWith({
+          name: TraceName.OnboardingPasswordSetupError,
+          op: TraceOperation.OnboardingUserJourney,
+          parentContext: mockOnboardingTraceCtx,
+          tags: { errorMessage: testError.toString() },
+        });
+        expect(mockEndTrace).toHaveBeenCalledWith({
+          name: TraceName.OnboardingPasswordSetupError,
+        });
+      });
+    });
+
+    it('does not emit an error trace when getTraceContext returns undefined', async () => {
+      mockGetTraceContext.mockReturnValue(undefined);
+      const testError = new Error('Password creation failed');
+      const mockComponentAuthenticationType = jest.spyOn(
+        Authentication,
+        'componentAuthenticationType',
+      );
+      mockComponentAuthenticationType.mockRejectedValueOnce(testError);
+      mockRoute.params = { ...mockRoute.params, [PREVIOUS_SCREEN]: ONBOARDING };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!');
+
+      await waitFor(() => {
+        expect(mockTrace).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: TraceName.OnboardingPasswordSetupError,
+          }),
+        );
+        expect(mockEndTrace).not.toHaveBeenCalledWith({
+          name: TraceName.OnboardingPasswordSetupError,
+        });
+      });
+    });
+
+    it('does not emit an error trace when password creation succeeds', async () => {
+      const mockOnboardingTraceCtx = {
+        traceId: 'test-trace-id',
+      } as unknown as Span;
+      mockTrace.mockReturnValue(undefined);
+      mockGetTraceContext.mockReturnValue(mockOnboardingTraceCtx);
+
+      const mockComponentAuthenticationType = jest.spyOn(
+        Authentication,
+        'componentAuthenticationType',
+      );
+      mockComponentAuthenticationType.mockResolvedValueOnce({
+        currentAuthType: AUTHENTICATION_TYPE.PASSWORD,
+        availableBiometryType: undefined,
+      });
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValueOnce(undefined);
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, 'StrongPassword123!');
+
+      await waitFor(() => {
+        expect(mockTrace).toHaveBeenCalledWith({
+          name: TraceName.OnboardingPasswordSetupAttempt,
+          op: TraceOperation.OnboardingUserJourney,
+          parentContext: mockOnboardingTraceCtx,
+        });
+        expect(mockTrace).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: TraceName.OnboardingPasswordSetupError,
+          }),
+        );
+        expect(mockEndTrace).not.toHaveBeenCalledWith({
+          name: TraceName.OnboardingPasswordSetupError,
+        });
+      });
+    });
+  });
+
+  describe('account_type analytics', () => {
+    it('uses metamask account_type when no provider is set', async () => {
+      mockTrackOnboarding.mockClear();
+
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      const passwordInput = component.getByTestId(
+        ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID,
+      );
+      const confirmPasswordInput = component.getByTestId(
+        ChoosePasswordSelectorsIDs.CONFIRM_PASSWORD_INPUT_ID,
+      );
+
+      await act(async () => {
+        fireEvent.changeText(passwordInput, 'StrongPass123!');
+      });
+      await act(async () => {
+        fireEvent.changeText(confirmPasswordInput, 'StrongPass123!');
+      });
+
+      const submitButton = component.getByTestId(
+        ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID,
+      );
+      await act(async () => {
+        fireEvent.press(submitButton);
+      });
+      await confirmWarningSheet(component);
+
+      await waitFor(() => {
+        expect(mockTrackOnboarding).toHaveBeenCalledWith(
+          expect.objectContaining({
+            properties: expect.objectContaining({
+              account_type: 'metamask',
+            }),
+          }),
+          expect.any(Function),
+        );
+      });
+    });
+
+    it('uses metamask_google account_type when provider is google', async () => {
+      mockTrackOnboarding.mockClear();
+
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        provider: 'google',
+        oauthLoginSuccess: true,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      const passwordInput = component.getByTestId(
+        ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID,
+      );
+      const confirmPasswordInput = component.getByTestId(
+        ChoosePasswordSelectorsIDs.CONFIRM_PASSWORD_INPUT_ID,
+      );
+
+      await act(async () => {
+        fireEvent.changeText(passwordInput, 'StrongPass123!');
+      });
+      await act(async () => {
+        fireEvent.changeText(confirmPasswordInput, 'StrongPass123!');
+      });
+
+      const submitButton = component.getByTestId(
+        ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID,
+      );
+      await act(async () => {
+        fireEvent.press(submitButton);
+      });
+
+      await waitFor(() => {
+        expect(mockTrackOnboarding).toHaveBeenCalledWith(
+          expect.objectContaining({
+            properties: expect.objectContaining({
+              account_type: 'metamask_google',
+            }),
+          }),
+          expect.any(Function),
+        );
+      });
+    });
+  });
+
+  describe('Interest Questionnaire navigation', () => {
+    it('always navigates to the interest questionnaire for OAuth users', async () => {
+      (
+        Authentication.componentAuthenticationType as jest.Mock
+      ).mockResolvedValue({
+        currentAuthType: 'biometrics',
+        availableBiometryType: 'faceID',
+      });
+      const mockNewWalletAndKeychain = jest.spyOn(
+        Authentication,
+        'newWalletAndKeychain',
+      );
+      mockNewWalletAndKeychain.mockResolvedValue(undefined);
+
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+      await fillAndSubmitForm(component, VALID_PASSWORD, VALID_PASSWORD, false);
+
+      await waitFor(() => {
+        expect(mockNavigation.navigate).toHaveBeenCalledWith(
+          Routes.ONBOARDING.INTEREST_QUESTIONNAIRE,
+          expect.objectContaining({
+            onComplete: expect.any(Function),
+          }),
+        );
+      });
+
+      mockNewWalletAndKeychain.mockRestore();
+    });
+  });
+
+  describe('Form Validation - WALLET_CREATION_ATTEMPTED tracking', () => {
+    it('tracks WALLET_CREATION_ATTEMPTED event when a valid form is submitted', async () => {
+      mockTrackOnboarding.mockClear();
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await fillAndSubmitForm(component, VALID_PASSWORD);
+
+      await waitFor(() => {
+        expect(mockTrackOnboarding).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: EVENT_NAME.WALLET_CREATION_ATTEMPTED,
+          }),
+          expect.any(Function),
+        );
+      });
+    });
+  });
+
+  describe('Confirm password visibility toggle', () => {
+    it('toggles the confirm password visibility when the show/hide icon is pressed', async () => {
+      const component = renderWithProviders(<ChoosePassword />);
+      await waitForInit();
+
+      await act(async () => {
+        fireEvent.changeText(
+          component.getByTestId(
+            ChoosePasswordSelectorsIDs.NEW_PASSWORD_INPUT_ID,
+          ),
+          VALID_PASSWORD,
+        );
+      });
+
+      const confirmShowButton = component.getByTestId(
+        ChoosePasswordSelectorsIDs.CONFIRM_PASSWORD_SHOW_ICON_ID,
+      );
+
+      await act(async () => {
+        fireEvent.press(confirmShowButton);
+      });
+
+      expect(confirmShowButton).toBeOnTheScreen();
+    });
+  });
+
+  describe('Geolocation refresh error', () => {
+    it('resolves geolocation and allows OAuth users to fill and submit after a refresh error', async () => {
+      mockRefreshGeolocation.mockRejectedValue(new Error('Network error'));
+      store = mockStore(createInitialState(UNKNOWN_LOCATION));
+      ReduxService.store = store as unknown as ReduxStore;
+
+      mockRoute.params = {
+        ...mockRoute.params,
+        [PREVIOUS_SCREEN]: ONBOARDING,
+        oauthLoginSuccess: true,
+        provider: 'google',
+      };
+
+      const component = renderWithProviders(<ChoosePassword />);
+
+      // Wait for geolocation refresh to settle (reject → isGeolocationResolved = true)
+      await waitForInit();
+
+      await fillForm(component, VALID_PASSWORD, VALID_PASSWORD, false);
+
+      await waitFor(
+        () => {
+          const submitButton = component.getByTestId(
+            ChoosePasswordSelectorsIDs.SUBMIT_BUTTON_ID,
+          );
+          expect(submitButton).toBeEnabled();
+        },
+        { timeout: 2000 },
+      );
+    });
   });
 });

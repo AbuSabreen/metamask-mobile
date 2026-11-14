@@ -1,14 +1,11 @@
 import React, { useRef } from 'react';
 import { Linking, View } from 'react-native';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
 
 import { strings } from '../../../../locales/i18n';
 import BottomSheet, {
   BottomSheetRef,
 } from '../../../component-library/components/BottomSheets/BottomSheet';
-import Text, {
-  TextVariant,
-} from '../../../component-library/components/Texts/Text';
 import createStyles from './styles';
 import BottomSheetFooter, {
   ButtonsAlignment,
@@ -19,18 +16,33 @@ import Button, {
 } from '../../../component-library/components/Buttons/Button';
 import { ButtonProps } from '../../../component-library/components/Buttons/Button/Button.types';
 import { setDataCollectionForMarketing } from '../../../actions/security';
-import {
-  MetaMetricsEvents,
-  useMetrics,
-} from '../../../components/hooks/useMetrics';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
 import { HOW_TO_MANAGE_METRAMETRICS_SETTINGS } from '../../../constants/urls';
-import { ExperienceEnhancerModalSelectorsIDs } from '../../../../e2e/selectors/Modals/ExperienceEnhancerModal.selectors.js';
+import { ExperienceEnhancerBottomSheetSelectorsIDs } from './ExperienceEnhancerModal.testIds';
+import { UserProfileProperty } from '../../../util/metrics/UserSettingsAnalyticsMetaData/UserProfileAnalyticsMetaData.types';
+import { Text, TextVariant } from '@metamask/design-system-react-native';
+import OAuthService from '../../../core/OAuthService/OAuthService';
+import Logger from '../../../util/Logger';
+import { selectSeedlessOnboardingLoginFlow } from '../../../selectors/seedlessOnboardingController';
 
 const ExperienceEnhancerModal = () => {
   const dispatch = useDispatch();
+  const isSocialLogin = useSelector(selectSeedlessOnboardingLoginFlow);
   const styles = createStyles();
-  const { trackEvent, addTraitsToUser } = useMetrics();
+  const { trackEvent, identify, createEventBuilder } = useAnalytics();
   const bottomSheetRef = useRef<BottomSheetRef>(null);
+
+  // Social-login wallets also store the choice server-side so the auth
+  // service can create the HubSpot contact for email marketing. A failed
+  // sync keeps the local decision.
+  const syncMarketingConsentToServer = (value: boolean) => {
+    if (isSocialLogin) {
+      OAuthService.updateMarketingOptInStatus(value).catch((error) => {
+        Logger.error(error as Error);
+      });
+    }
+  };
 
   const cancelButtonProps: ButtonProps = {
     variant: ButtonVariants.Secondary,
@@ -38,18 +50,23 @@ const ExperienceEnhancerModal = () => {
     size: ButtonSize.Lg,
     onPress: () => {
       dispatch(setDataCollectionForMarketing(false));
+      syncMarketingConsentToServer(false);
       bottomSheetRef.current?.onCloseBottomSheet();
 
-      const traits = {
-        has_marketing_consent: false,
-      };
-      addTraitsToUser(traits);
-      trackEvent(MetaMetricsEvents.ANALYTICS_PREFERENCE_SELECTED, {
-        ...traits,
-        location: 'marketing_consent_modal',
+      identify({
+        [UserProfileProperty.HAS_MARKETING_CONSENT]: false,
       });
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.ANALYTICS_PREFERENCE_SELECTED)
+          .addProperties({
+            [UserProfileProperty.HAS_MARKETING_CONSENT]: false,
+            updated_after_onboarding: true,
+            location: 'marketing_consent_modal',
+          })
+          .build(),
+      );
     },
-    testID: ExperienceEnhancerModalSelectorsIDs.CANCEL_BUTTON,
+    testID: ExperienceEnhancerBottomSheetSelectorsIDs.CANCEL_BUTTON,
   };
 
   const acceptButtonProps: ButtonProps = {
@@ -58,77 +75,84 @@ const ExperienceEnhancerModal = () => {
     size: ButtonSize.Lg,
     onPress: () => {
       dispatch(setDataCollectionForMarketing(true));
+      syncMarketingConsentToServer(true);
       bottomSheetRef.current?.onCloseBottomSheet();
 
-      const traits = { has_marketing_consent: true };
-      addTraitsToUser(traits);
-      trackEvent(MetaMetricsEvents.ANALYTICS_PREFERENCE_SELECTED, {
-        ...traits,
-        location: 'marketing_consent_modal',
+      identify({
+        [UserProfileProperty.HAS_MARKETING_CONSENT]: true,
       });
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.ANALYTICS_PREFERENCE_SELECTED)
+          .addProperties({
+            [UserProfileProperty.HAS_MARKETING_CONSENT]: true,
+            updated_after_onboarding: true,
+            location: 'marketing_consent_modal',
+          })
+          .build(),
+      );
     },
-    testID: ExperienceEnhancerModalSelectorsIDs.ACCEPT_BUTTON,
+    testID: ExperienceEnhancerBottomSheetSelectorsIDs.ACCEPT_BUTTON,
   };
 
   return (
     <BottomSheet
       ref={bottomSheetRef}
-      testID={ExperienceEnhancerModalSelectorsIDs.BOTTOM_SHEET}
+      testID={ExperienceEnhancerBottomSheetSelectorsIDs.BOTTOM_SHEET}
     >
       <Text
-        variant={TextVariant.HeadingMD}
+        variant={TextVariant.HeadingMd}
         style={styles.title}
-        testID={ExperienceEnhancerModalSelectorsIDs.TITLE}
+        testID={ExperienceEnhancerBottomSheetSelectorsIDs.TITLE}
       >
         {strings('experience_enhancer_modal.title')}
       </Text>
       <View
         style={styles.content}
-        testID={ExperienceEnhancerModalSelectorsIDs.CONTENT}
+        testID={ExperienceEnhancerBottomSheetSelectorsIDs.CONTENT}
       >
-        <Text variant={TextVariant.BodyMD}>
+        <Text variant={TextVariant.BodyMd}>
           {strings('experience_enhancer_modal.paragraph1a')}
           <Button
             variant={ButtonVariants.Link}
             label={strings('experience_enhancer_modal.link')}
             onPress={() => Linking.openURL(HOW_TO_MANAGE_METRAMETRICS_SETTINGS)}
-            testID={ExperienceEnhancerModalSelectorsIDs.LINK_BUTTON}
+            testID={ExperienceEnhancerBottomSheetSelectorsIDs.LINK_BUTTON}
           />
           {strings('experience_enhancer_modal.paragraph1b')}
         </Text>
 
         <Text
-          variant={TextVariant.BodyMD}
-          testID={ExperienceEnhancerModalSelectorsIDs.PARAGRAPH_2}
+          variant={TextVariant.BodyMd}
+          testID={ExperienceEnhancerBottomSheetSelectorsIDs.PARAGRAPH_2}
         >
           {strings('experience_enhancer_modal.paragraph2')}
         </Text>
         <View style={styles.list}>
           <Text
             style={styles.line}
-            testID={ExperienceEnhancerModalSelectorsIDs.BULLET_1}
+            testID={ExperienceEnhancerBottomSheetSelectorsIDs.BULLET_1}
           >
             <Text style={styles.dot}>•</Text>{' '}
             {strings('experience_enhancer_modal.bullet1')}
           </Text>
           <Text
             style={styles.line}
-            testID={ExperienceEnhancerModalSelectorsIDs.BULLET_2}
+            testID={ExperienceEnhancerBottomSheetSelectorsIDs.BULLET_2}
           >
             <Text style={styles.dot}>•</Text>{' '}
             {strings('experience_enhancer_modal.bullet2')}
           </Text>
           <Text
             style={styles.line}
-            testID={ExperienceEnhancerModalSelectorsIDs.BULLET_3}
+            testID={ExperienceEnhancerBottomSheetSelectorsIDs.BULLET_3}
           >
             <Text style={styles.dot}>•</Text>{' '}
             {strings('experience_enhancer_modal.bullet3')}
           </Text>
         </View>
         <Text
-          variant={TextVariant.BodyMD}
-          testID={ExperienceEnhancerModalSelectorsIDs.FOOTER}
+          variant={TextVariant.BodyMd}
+          testID={ExperienceEnhancerBottomSheetSelectorsIDs.FOOTER}
         >
           {strings('experience_enhancer_modal.footer')}
         </Text>

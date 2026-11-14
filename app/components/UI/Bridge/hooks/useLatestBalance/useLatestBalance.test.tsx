@@ -1,0 +1,1295 @@
+import { AccountWalletType } from '@metamask/account-api';
+import {
+  evmAccountAddress,
+  initialState,
+  solanaAccountAddress,
+  solanaNativeTokenAddress,
+  solanaToken2Address,
+  solanaAccountId,
+} from '../../_mocks_/initialState';
+import { renderHookWithProvider } from '../../../../../util/test/renderWithProvider';
+import { FeatureId } from '@metamask/bridge-controller';
+import {
+  fetchAtomicTokenBalance,
+  fetchEvmAtomicBalance,
+  useLatestBalance,
+} from '.';
+import { getProviderByChainId } from '../../../../../util/notifications/methods/common';
+import { BigNumber, constants } from 'ethers';
+import { act, waitFor } from '@testing-library/react-native';
+import { Hex, type CaipAssetId, type CaipChainId } from '@metamask/utils';
+import { SolScope } from '@metamask/keyring-api';
+import { cloneDeep } from 'lodash';
+import {
+  endTrace,
+  trace,
+  TraceName,
+  TraceOperation,
+  type TraceContext,
+  type TraceRequest,
+} from '../../../../../util/trace';
+
+// Mock dependencies
+jest.mock('../../../../../util/notifications/methods/common', () => ({
+  getProviderByChainId: jest.fn(),
+}));
+
+// Mock ethers contract
+jest.mock('ethers', () => {
+  const actual = jest.requireActual('ethers');
+  return {
+    ...actual,
+    Contract: jest.fn().mockImplementation(() => ({
+      balanceOf: jest.fn().mockResolvedValue(actual.BigNumber.from('1000000')),
+    })),
+  };
+});
+
+jest.mock('../../../../../util/trace', () => ({
+  ...jest.requireActual('../../../../../util/trace'),
+  trace: jest.fn(),
+  endTrace: jest.fn(),
+}));
+
+const mockTrace = trace as jest.MockedFunction<
+  (request: TraceRequest) => TraceContext
+>;
+const mockEndTrace = endTrace as jest.MockedFunction<typeof endTrace>;
+
+describe('useLatestBalance', () => {
+  const mockProvider = {
+    getBalance: jest
+      .fn()
+      .mockResolvedValue(BigNumber.from('1000000000000000000')),
+    getNetwork: jest.fn().mockResolvedValue({ chainId: 1 }),
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (getProviderByChainId as jest.Mock).mockReturnValue(mockProvider);
+  });
+
+  it('should fetch native token balance when token address is zero address', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+        }),
+      { state: initialState },
+    );
+
+    await waitFor(() => {
+      expect(mockProvider.getBalance).toHaveBeenCalledWith(
+        '0x1234567890123456789012345678901234567890',
+      );
+      expect(result.current).toEqual({
+        displayBalance: '1.0',
+        atomicBalance: BigNumber.from('1000000000000000000'),
+      });
+    });
+
+    const traceId = mockTrace.mock.calls[0][0].id;
+    expect(mockTrace).toHaveBeenCalledWith({
+      name: TraceName.BridgeBalancesUpdated,
+      op: TraceOperation.BridgeDataFetch,
+      id: expect.any(String),
+      data: {
+        srcChainId: '0x1',
+        isNative: true,
+      },
+      startTime: expect.any(Number),
+      tags: {
+        feature: 'swap',
+      },
+    });
+    expect(mockEndTrace).toHaveBeenCalledWith({
+      name: TraceName.BridgeBalancesUpdated,
+      id: traceId,
+      timestamp: expect.any(Number),
+      data: { result: 'success' },
+    });
+  });
+
+  it('refetches EVM balance when featureId changes', async () => {
+    let featureId = FeatureId.UNIFIED_SWAP_BRIDGE;
+
+    const { rerender } = renderHookWithProvider(
+      () =>
+        useLatestBalance(
+          {
+            address: constants.AddressZero,
+            decimals: 18,
+            chainId: '0x1' as Hex,
+          },
+          featureId,
+        ),
+      { state: initialState },
+    );
+
+    await waitFor(() => {
+      expect(mockProvider.getBalance).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      featureId = FeatureId.LIMIT_ORDER;
+      rerender({ state: initialState });
+    });
+
+    await waitFor(() => {
+      expect(mockProvider.getBalance).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('records an error trace when EVM balance fetch rejects', async () => {
+    const consoleError = jest.spyOn(console, 'error').mockImplementation();
+    mockProvider.getBalance.mockRejectedValueOnce(new Error('rpc down'));
+
+    renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+        }),
+      { state: initialState },
+    );
+
+    await waitFor(() => {
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.BridgeBalancesUpdated,
+        id: expect.any(String),
+        timestamp: expect.any(Number),
+        data: { result: 'error' },
+      });
+    });
+    expect(consoleError).toHaveBeenCalled();
+
+    consoleError.mockRestore();
+  });
+
+  it('keeps the cached balance when EVM fetch returns no atomic balance', async () => {
+    mockProvider.getBalance.mockResolvedValueOnce(undefined);
+
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+          balance: '4.0',
+        }),
+      { state: initialState },
+    );
+
+    await waitFor(() => {
+      expect(mockProvider.getBalance).toHaveBeenCalled();
+    });
+
+    expect(result.current).toEqual({
+      displayBalance: '4.0',
+      atomicBalance: BigNumber.from('4000000000000000000'),
+    });
+  });
+
+  it('keeps the same balance object when a refetch returns the same amount', async () => {
+    let refreshKey = 0;
+
+    const { result, rerender } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+          refreshKey,
+        }),
+      { state: initialState },
+    );
+
+    await waitFor(() => {
+      expect(result.current?.displayBalance).toBe('1.0');
+    });
+
+    const firstBalance = result.current;
+
+    await act(async () => {
+      refreshKey = 1;
+      rerender({ state: initialState });
+    });
+
+    await waitFor(() => {
+      expect(mockProvider.getBalance).toHaveBeenCalledTimes(2);
+    });
+
+    expect(result.current).toBe(firstBalance);
+  });
+
+  it('refetches EVM balance when refreshKey changes', async () => {
+    let refreshKey = 0;
+    mockProvider.getBalance
+      .mockResolvedValueOnce(BigNumber.from('1000000000000000000'))
+      .mockResolvedValueOnce(BigNumber.from('2000000000000000000'));
+
+    const { result, rerender } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+          refreshKey,
+        }),
+      { state: initialState },
+    );
+
+    await waitFor(() => {
+      expect(result.current?.displayBalance).toBe('1.0');
+    });
+
+    await act(async () => {
+      refreshKey = 1;
+      rerender({ state: initialState });
+    });
+
+    await waitFor(() => {
+      expect(result.current?.displayBalance).toBe('2.0');
+    });
+
+    expect(mockProvider.getBalance).toHaveBeenCalledTimes(2);
+  });
+
+  it('should fetch ERC20 token balance', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: '0x1234567890123456789012345678901234567890',
+          decimals: 6,
+          chainId: '0x1' as Hex,
+        }),
+      { state: initialState },
+    );
+
+    await waitFor(() => {
+      expect(result.current).toEqual({
+        displayBalance: '1.0',
+        atomicBalance: BigNumber.from('1000000'),
+      });
+    });
+  });
+
+  it('should fetch Solana native token balance', async () => {
+    const state = cloneDeep(initialState);
+    state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+      solanaAccountId;
+
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          chainId: SolScope.Mainnet,
+          address: solanaNativeTokenAddress,
+          decimals: 9,
+        }),
+      { state },
+    );
+
+    await waitFor(() => {
+      expect(result.current).toEqual({
+        displayBalance: '100.123',
+        atomicBalance: BigNumber.from('100123000000'),
+      });
+    });
+  });
+
+  it('should fetch Solana SPL token balance', async () => {
+    const state = cloneDeep(initialState);
+    state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+      solanaAccountId;
+
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          chainId: SolScope.Mainnet,
+          address: solanaToken2Address,
+          decimals: 6,
+        }),
+      { state },
+    );
+
+    await waitFor(() => {
+      expect(result.current).toEqual({
+        displayBalance: '20000.456',
+        atomicBalance: BigNumber.from('20000456000'),
+      });
+    });
+  });
+
+  it('does not write a Solana balance when the token address is missing', async () => {
+    const state = cloneDeep(initialState);
+    state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+      solanaAccountId;
+
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          decimals: 9,
+          chainId: SolScope.Mainnet,
+        }),
+      { state },
+    );
+
+    expect(result.current).toBeUndefined();
+  });
+
+  it('should not fetch balance when token address is missing', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          decimals: 18,
+          chainId: '0x1' as Hex,
+        }),
+      { state: initialState },
+    );
+
+    expect(mockProvider.getBalance).not.toHaveBeenCalled();
+    expect(result.current).toBeUndefined();
+  });
+
+  it('ignores formatted display string like "< 0.00001" and fetches real balance', async () => {
+    // Arrange & Act
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+          balance: '< 0.00001',
+        }),
+      { state: initialState },
+    );
+
+    // Assert - Cached balance atomicBalance is undefined due to parse error
+    expect(result.current?.displayBalance).toBe('< 0.00001');
+    expect(result.current?.atomicBalance).toBeUndefined();
+
+    // Assert - Real balance is fetched from blockchain
+    await waitFor(() => {
+      expect(mockProvider.getBalance).toHaveBeenCalled();
+      expect(result.current).toEqual({
+        displayBalance: '1.0',
+        atomicBalance: BigNumber.from('1000000000000000000'),
+      });
+    });
+  });
+
+  it('ignores balance with thousands separators and fetches real balance', async () => {
+    // Arrange & Act
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+          balance: '1,234.56',
+        }),
+      { state: initialState },
+    );
+
+    // Assert - Cached balance atomicBalance is undefined due to parse error
+    expect(result.current?.displayBalance).toBe('1,234.56');
+    expect(result.current?.atomicBalance).toBeUndefined();
+
+    // Assert - Real balance is fetched from blockchain
+    await waitFor(() => {
+      expect(mockProvider.getBalance).toHaveBeenCalled();
+      expect(result.current).toEqual({
+        displayBalance: '1.0',
+        atomicBalance: BigNumber.from('1000000000000000000'),
+      });
+    });
+  });
+
+  it('should parse cache balance', async () => {
+    // Arrange & Act
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+          balance: '1234.56',
+        }),
+      { state: initialState },
+    );
+
+    // Assert - Cached balance atomicBalance is undefined due to parse error
+    expect(result.current?.displayBalance).toBe('1234.56');
+    expect(result.current?.atomicBalance).not.toBeUndefined();
+  });
+
+  it('returns cached balance with undefined atomicBalance when parseUnits fails', async () => {
+    // Arrange & Act
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: '0x1234567890123456789012345678901234567890',
+          decimals: 6,
+          chainId: '0x1' as Hex,
+          balance: 'invalid balance string',
+        }),
+      { state: initialState },
+    );
+
+    // Assert - Cached balance has undefined atomicBalance due to parse error
+    expect(result.current?.displayBalance).toBe('invalid balance string');
+    expect(result.current?.atomicBalance).toBeUndefined();
+
+    // Assert - Real balance is fetched from blockchain
+    await waitFor(() => {
+      expect(result.current).toEqual({
+        displayBalance: '1.0',
+        atomicBalance: BigNumber.from('1000000'),
+      });
+    });
+  });
+
+  it('returns undefined atomicBalance when token balance is not provided', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+          balance: undefined,
+        }),
+      { state: initialState },
+    );
+
+    await waitFor(() => {
+      expect(mockProvider.getBalance).toHaveBeenCalled();
+      expect(result.current).toEqual({
+        displayBalance: '1.0',
+        atomicBalance: BigNumber.from('1000000000000000000'),
+      });
+    });
+  });
+
+  it('handles empty string balance gracefully', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: constants.AddressZero,
+          decimals: 18,
+          chainId: '0x1' as Hex,
+          balance: '',
+        }),
+      { state: initialState },
+    );
+
+    await waitFor(() => {
+      expect(mockProvider.getBalance).toHaveBeenCalled();
+      expect(result.current).toEqual({
+        displayBalance: '1.0',
+        atomicBalance: BigNumber.from('1000000000000000000'),
+      });
+    });
+  });
+
+  it('should return cached balance when latest balance is not yet fetched', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: '0x1234567890123456789012345678901234567890',
+          decimals: 6,
+          chainId: '0x1' as Hex,
+          balance: '5.5',
+        }),
+      { state: initialState },
+    );
+
+    // Initially it should return the cached balance while fetching
+    expect(result.current).toEqual({
+      displayBalance: '5.5',
+      atomicBalance: BigNumber.from('5500000'),
+    });
+
+    // After fetching it should update to the fetched balance
+    await waitFor(() => {
+      expect(result.current).toEqual({
+        displayBalance: '1.0',
+        atomicBalance: BigNumber.from('1000000'),
+      });
+    });
+  });
+
+  it('does not call EVM balance fetch when chainId is undefined', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: '0x1234567890123456789012345678901234567890',
+          decimals: 18,
+          chainId: undefined,
+          balance: '10.0',
+        }),
+      { state: initialState },
+    );
+
+    expect(getProviderByChainId).not.toHaveBeenCalled();
+    expect(mockProvider.getBalance).not.toHaveBeenCalled();
+    expect(result.current).toEqual({
+      displayBalance: '10.0',
+      atomicBalance: BigNumber.from('10000000000000000000'),
+    });
+  });
+
+  it('does not call EVM balance fetch when Solana address is selected with undefined chainId', async () => {
+    const state = cloneDeep(initialState);
+    state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+      solanaAccountId;
+
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: solanaNativeTokenAddress,
+          decimals: 9,
+          chainId: undefined,
+          balance: '100.0',
+        }),
+      { state },
+    );
+
+    expect(getProviderByChainId).not.toHaveBeenCalled();
+    expect(mockProvider.getBalance).not.toHaveBeenCalled();
+    expect(result.current).toEqual({
+      displayBalance: '100.0',
+      atomicBalance: BigNumber.from('100000000000'),
+    });
+  });
+
+  it('returns cached balance when EVM address is used with Solana CAIP chainId', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useLatestBalance({
+          address: '0x1234567890123456789012345678901234567890',
+          decimals: 18,
+          chainId: SolScope.Mainnet,
+          balance: '50.0',
+        }),
+      { state: initialState },
+    );
+
+    // When EVM address is used with non-EVM chainId, it tries to find it in nonEvmTokens
+    // Since it's not found, it sets balance to 0
+    await waitFor(() => {
+      expect(result.current).toEqual({
+        displayBalance: '0',
+        atomicBalance: BigNumber.from('0'),
+      });
+    });
+  });
+
+  describe('account resolution by token chain', () => {
+    it('fetches the token balance of the EVM account of the selected group when a Solana account is selected', async () => {
+      const state = cloneDeep(initialState);
+      state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+        solanaAccountId;
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: 6,
+            chainId: '0x1' as Hex,
+            balance: '100.0',
+          }),
+        { state },
+      );
+
+      await waitFor(() => {
+        expect(getProviderByChainId).toHaveBeenCalledWith('0x1');
+        expect(result.current).toEqual({
+          displayBalance: '1.0',
+          atomicBalance: BigNumber.from('1000000'),
+        });
+      });
+    });
+
+    it('fetches the native balance of the EVM account of the selected group when a Solana account is selected', async () => {
+      const state = cloneDeep(initialState);
+      state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+        solanaAccountId;
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: constants.AddressZero,
+            decimals: 18,
+            chainId: '0x1' as Hex,
+            balance: '50.0',
+          }),
+        { state },
+      );
+
+      await waitFor(() => {
+        expect(mockProvider.getBalance).toHaveBeenCalledWith(evmAccountAddress);
+        expect(result.current).toEqual({
+          displayBalance: '1.0',
+          atomicBalance: BigNumber.from('1000000000000000000'),
+        });
+      });
+      expect(mockProvider.getBalance).not.toHaveBeenCalledWith(
+        solanaAccountAddress,
+      );
+    });
+
+    it('fetches EVM balance when EVM address is selected with EVM chainId', async () => {
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: 6,
+            chainId: '0x1' as Hex,
+          }),
+        { state: initialState },
+      );
+
+      // EVM address with EVM chainId should fetch balance normally
+      await waitFor(() => {
+        expect(getProviderByChainId).toHaveBeenCalledWith('0x1');
+        expect(result.current).toEqual({
+          displayBalance: '1.0',
+          atomicBalance: BigNumber.from('1000000'),
+        });
+      });
+    });
+
+    it('returns cached balance when the selected group has no EVM account', async () => {
+      const state = cloneDeep(initialState);
+      state.engine.backgroundState.AccountTreeController.accountTree.wallets[
+        `${AccountWalletType.Entropy}:wallet1`
+      ].groups[`${AccountWalletType.Entropy}:wallet1/0`].accounts = [
+        solanaAccountId,
+      ];
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: 18,
+            chainId: '0x1' as Hex,
+            balance: '25.0',
+          }),
+        { state },
+      );
+
+      expect(getProviderByChainId).not.toHaveBeenCalled();
+      expect(mockProvider.getBalance).not.toHaveBeenCalled();
+      expect(result.current).toEqual({
+        displayBalance: '25.0',
+        atomicBalance: BigNumber.from('25000000000000000000'),
+      });
+    });
+
+    it('keeps fetching the EVM balance after switching the selected account from EVM to Solana', async () => {
+      const stateWithEvmAccount = cloneDeep(initialState);
+
+      renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: 18,
+            chainId: '0x1' as Hex,
+            balance: '10.0',
+          }),
+        { state: stateWithEvmAccount },
+      );
+
+      // Initially with EVM account, balance should be fetched
+      await waitFor(() => {
+        expect(getProviderByChainId).toHaveBeenCalledWith('0x1');
+      });
+
+      jest.clearAllMocks();
+
+      // Simulate switching to Solana account by rendering with updated state
+      const stateWithSolanaAccount = cloneDeep(initialState);
+      stateWithSolanaAccount.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+        solanaAccountId;
+
+      const { result: resultAfterSwitch } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: 18,
+            chainId: '0x1' as Hex,
+            balance: '10.0',
+          }),
+        { state: stateWithSolanaAccount },
+      );
+
+      await waitFor(() => {
+        expect(getProviderByChainId).toHaveBeenCalledWith('0x1');
+        expect(resultAfterSwitch.current?.atomicBalance).toEqual(
+          BigNumber.from('1000000'),
+        );
+      });
+    });
+  });
+
+  describe('cachedBalance memoization', () => {
+    it('returns undefined when decimals is missing during balance parsing', () => {
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: undefined,
+            chainId: '0x1' as Hex,
+            balance: '10.0',
+          }),
+        { state: initialState },
+      );
+
+      expect(result.current).toBeUndefined();
+    });
+
+    it('memoizes cached balance when dependencies do not change', () => {
+      const { result, rerender } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: 18,
+            chainId: '0x1' as Hex,
+            balance: '5.5',
+          }),
+        { state: initialState },
+      );
+
+      const firstResult = result.current;
+      rerender({ state: initialState });
+
+      expect(result.current).toBe(firstResult);
+    });
+
+    it('returns cached balance when token address changes', () => {
+      const firstToken = {
+        address: '0x1234567890123456789012345678901234567890',
+        decimals: 18,
+        chainId: '0x1' as Hex,
+        balance: '5.5',
+      };
+
+      const { result: firstResult } = renderHookWithProvider(
+        () => useLatestBalance(firstToken),
+        { state: initialState },
+      );
+
+      expect(firstResult.current?.displayBalance).toBe('5.5');
+
+      const secondToken = {
+        address: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+        decimals: 18,
+        chainId: '0x1' as Hex,
+        balance: '10.0',
+      };
+
+      const { result: secondResult } = renderHookWithProvider(
+        () => useLatestBalance(secondToken),
+        { state: initialState },
+      );
+
+      expect(secondResult.current?.displayBalance).toBe('10.0');
+      expect(secondResult.current).not.toBe(firstResult.current);
+    });
+
+    it('returns undefined when balance is provided but decimals is missing', () => {
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: undefined,
+            chainId: '0x1' as Hex,
+            balance: '100.0',
+          }),
+        { state: initialState },
+      );
+
+      expect(result.current).toBeUndefined();
+    });
+
+    it('handles zero balance correctly', () => {
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: 18,
+            chainId: '0x1' as Hex,
+            balance: '0',
+          }),
+        { state: initialState },
+      );
+
+      expect(result.current).toEqual({
+        displayBalance: '0',
+        atomicBalance: BigNumber.from('0'),
+      });
+    });
+
+    it('handles very large balance values', () => {
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: 18,
+            chainId: '0x1' as Hex,
+            balance: '999999999999999999999999.123456789012345678',
+          }),
+        { state: initialState },
+      );
+
+      expect(result.current?.displayBalance).toBe(
+        '999999999999999999999999.123456789012345678',
+      );
+      expect(result.current?.atomicBalance).toBeDefined();
+    });
+
+    it('handles very small decimal balance values', () => {
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: '0x1234567890123456789012345678901234567890',
+            decimals: 18,
+            chainId: '0x1' as Hex,
+            balance: '0.000000000000000001',
+          }),
+        { state: initialState },
+      );
+
+      expect(result.current).toEqual({
+        displayBalance: '0.000000000000000001',
+        atomicBalance: BigNumber.from('1'),
+      });
+    });
+  });
+
+  describe('balance reset when token address changes', () => {
+    it('does not treat equivalent EVM address casing as token identity change', async () => {
+      let tokenAddress = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd';
+      let tokenBalance = '10.0';
+
+      const { result, rerender } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: tokenAddress,
+            decimals: 6,
+            chainId: '0x1' as Hex,
+            balance: tokenBalance,
+          }),
+        { state: initialState },
+      );
+
+      await waitFor(() => {
+        expect(result.current?.displayBalance).toBe('1.0');
+      });
+
+      tokenAddress = '0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD';
+      tokenBalance = '999.0';
+      rerender({ state: initialState });
+
+      expect(result.current?.displayBalance).toBe('1.0');
+    });
+
+    it('does not treat equivalent EVM chain formats as token identity change', async () => {
+      let chainId: Hex | CaipChainId = '0x1' as Hex;
+      let tokenBalance = '10.0';
+
+      const { result, rerender } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: constants.AddressZero,
+            decimals: 18,
+            chainId,
+            balance: tokenBalance,
+          }),
+        { state: initialState },
+      );
+
+      await waitFor(() => {
+        expect(result.current?.displayBalance).toBe('1.0');
+      });
+
+      chainId = 'eip155:1' as CaipChainId;
+      tokenBalance = '999.0';
+      rerender({ state: initialState });
+
+      expect(result.current?.displayBalance).toBe('1.0');
+      expect(getProviderByChainId).toHaveBeenCalledTimes(1);
+    });
+
+    it('fetches new balance when chainId changes for the same native token address', async () => {
+      let chainId = '0x1' as Hex;
+      const mainnetProvider = {
+        getBalance: jest
+          .fn()
+          .mockResolvedValue(BigNumber.from('1000000000000000000')),
+      };
+      const lineaProvider = {
+        getBalance: jest
+          .fn()
+          .mockResolvedValue(BigNumber.from('2000000000000000000')),
+      };
+
+      (getProviderByChainId as jest.Mock).mockImplementation(
+        (requestedChainId: Hex) =>
+          requestedChainId === ('0xe708' as Hex)
+            ? lineaProvider
+            : mainnetProvider,
+      );
+
+      const { result, rerender } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: constants.AddressZero,
+            decimals: 18,
+            chainId,
+          }),
+        { state: initialState },
+      );
+
+      await waitFor(() => {
+        expect(result.current?.displayBalance).toBe('1.0');
+      });
+
+      chainId = '0xe708' as Hex;
+      rerender({ state: initialState });
+
+      await waitFor(() => {
+        expect(result.current?.displayBalance).toBe('2.0');
+      });
+
+      expect(getProviderByChainId).toHaveBeenCalledWith('0xe708');
+      expect(mainnetProvider.getBalance).toHaveBeenCalledTimes(1);
+      expect(lineaProvider.getBalance).toHaveBeenCalledTimes(1);
+    });
+
+    it('resets balance to undefined when token address changes', async () => {
+      let tokenAddress = '0x1234567890123456789012345678901234567890';
+
+      const { result, rerender } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: tokenAddress,
+            decimals: 6,
+            chainId: '0x1' as Hex,
+            balance: '10.0',
+          }),
+        { state: initialState },
+      );
+
+      await waitFor(() => {
+        expect(result.current?.displayBalance).toBe('1.0');
+      });
+
+      tokenAddress = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd';
+      rerender({ state: initialState });
+
+      expect(result.current?.displayBalance).toBe('10.0');
+    });
+
+    it('returns cached balance immediately after token address changes', async () => {
+      let tokenAddress = '0x1111111111111111111111111111111111111111';
+      let tokenBalance = '100.5';
+
+      const { result, rerender } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: tokenAddress,
+            decimals: 6,
+            chainId: '0x1' as Hex,
+            balance: tokenBalance,
+          }),
+        { state: initialState },
+      );
+
+      expect(result.current?.displayBalance).toBe('100.5');
+
+      tokenAddress = '0x2222222222222222222222222222222222222222';
+      tokenBalance = '250.75';
+      rerender({ state: initialState });
+
+      expect(result.current?.displayBalance).toBe('250.75');
+      expect(result.current?.atomicBalance).toEqual(
+        BigNumber.from('250750000'),
+      );
+    });
+
+    it('fetches new balance after token address changes', async () => {
+      let tokenAddress = constants.AddressZero;
+
+      const { result, rerender } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: tokenAddress,
+            decimals: 18,
+            chainId: '0x1' as Hex,
+          }),
+        { state: initialState },
+      );
+
+      await waitFor(() => {
+        expect(result.current?.displayBalance).toBe('1.0');
+      });
+
+      jest.clearAllMocks();
+
+      tokenAddress = '0x9999999999999999999999999999999999999999';
+      rerender({ state: initialState });
+
+      await waitFor(() => {
+        expect(getProviderByChainId).toHaveBeenCalled();
+      });
+    });
+
+    it('resets balance state before fetching new balance for different token', async () => {
+      let tokenAddress = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      let tokenBalance = '50.0';
+
+      const { result, rerender } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            address: tokenAddress,
+            decimals: 6,
+            chainId: '0x1' as Hex,
+            balance: tokenBalance,
+          }),
+        { state: initialState },
+      );
+
+      await waitFor(() => {
+        expect(result.current?.displayBalance).toBe('1.0');
+      });
+
+      const previousBalance = result.current;
+
+      tokenAddress = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+      tokenBalance = '75.0';
+      rerender({ state: initialState });
+
+      expect(result.current?.displayBalance).toBe('75.0');
+      expect(result.current).not.toBe(previousBalance);
+    });
+  });
+
+  describe('non-EVM token not found in balance controller', () => {
+    it('sets balance to 0 when Solana token is not found in nonEvmTokens', async () => {
+      const state = cloneDeep(initialState);
+      state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+        solanaAccountId;
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            chainId: SolScope.Mainnet,
+            address: 'TokenNotInBalanceController123',
+            decimals: 9,
+          }),
+        { state },
+      );
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          displayBalance: '0',
+          atomicBalance: BigNumber.from('0'),
+        });
+      });
+    });
+
+    it('sets balance to 0 when Solana token is not found in nonEvmTokens list', async () => {
+      const state = cloneDeep(initialState);
+      state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+        solanaAccountId;
+
+      const nonExistentTokenAddress =
+        'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:NonExistentToken123' as CaipAssetId;
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            chainId: SolScope.Mainnet,
+            address: nonExistentTokenAddress,
+            decimals: 9,
+          }),
+        { state },
+      );
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          displayBalance: '0',
+          atomicBalance: BigNumber.from('0'),
+        });
+      });
+    });
+
+    it('sets balance to 0 when non-EVM token has undefined balance in controller', async () => {
+      const state = cloneDeep(initialState);
+      state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+        solanaAccountId;
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            chainId: SolScope.Mainnet,
+            address: 'UnknownSolanaToken456',
+            decimals: 6,
+          }),
+        { state },
+      );
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          displayBalance: '0',
+          atomicBalance: BigNumber.from('0'),
+        });
+      });
+    });
+
+    it('returns valid balance when Solana token is found in nonEvmTokens', async () => {
+      const state = cloneDeep(initialState);
+      state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+        solanaAccountId;
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            chainId: SolScope.Mainnet,
+            address: solanaToken2Address,
+            decimals: 6,
+          }),
+        { state },
+      );
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          displayBalance: '20000.456',
+          atomicBalance: BigNumber.from('20000456000'),
+        });
+      });
+    });
+
+    it('re-reads the Solana balance when featureId changes', async () => {
+      const state = cloneDeep(initialState);
+      state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+        solanaAccountId;
+      let featureId = FeatureId.UNIFIED_SWAP_BRIDGE;
+
+      const { result, rerender } = renderHookWithProvider(
+        () =>
+          useLatestBalance(
+            {
+              chainId: SolScope.Mainnet,
+              address: solanaNativeTokenAddress,
+              decimals: 9,
+            },
+            featureId,
+          ),
+        { state },
+      );
+
+      await waitFor(() => {
+        expect(result.current?.displayBalance).toBe('100.123');
+      });
+
+      await act(async () => {
+        featureId = FeatureId.LIMIT_ORDER;
+        rerender({ state });
+      });
+
+      expect(result.current).toEqual({
+        displayBalance: '100.123',
+        atomicBalance: BigNumber.from('100123000000'),
+      });
+    });
+
+    it('handles empty balance string from controller by setting to 0', async () => {
+      const state = cloneDeep(initialState);
+      state.engine.backgroundState.AccountsController.internalAccounts.selectedAccount =
+        solanaAccountId;
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useLatestBalance({
+            chainId: SolScope.Mainnet,
+            address: 'TokenWithEmptyBalance789',
+            decimals: 9,
+          }),
+        { state },
+      );
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          displayBalance: '0',
+          atomicBalance: BigNumber.from('0'),
+        });
+      });
+    });
+  });
+
+  describe('fetchEvmAtomicBalance', () => {
+    it('returns the native balance when the token address is the zero address', async () => {
+      const balance = await fetchEvmAtomicBalance(
+        mockProvider as never,
+        '0x1234567890123456789012345678901234567890',
+        constants.AddressZero,
+        '0x1' as Hex,
+      );
+
+      expect(mockProvider.getBalance).toHaveBeenCalledWith(
+        '0x1234567890123456789012345678901234567890',
+      );
+      expect(balance).toEqual(BigNumber.from('1000000000000000000'));
+    });
+
+    it('returns the ERC20 balance when the token address is a contract', async () => {
+      const balance = await fetchEvmAtomicBalance(
+        mockProvider as never,
+        '0x1234567890123456789012345678901234567890',
+        '0x1111111111111111111111111111111111111111',
+        '0x1' as Hex,
+      );
+
+      expect(balance).toEqual(BigNumber.from('1000000'));
+    });
+
+    it('returns undefined when the token address is empty', async () => {
+      const balance = await fetchEvmAtomicBalance(
+        mockProvider as never,
+        '0x1234567890123456789012345678901234567890',
+        '',
+        '0x1' as Hex,
+      );
+
+      expect(balance).toBeUndefined();
+    });
+
+    it('returns undefined when chainId is empty', async () => {
+      const balance = await fetchEvmAtomicBalance(
+        mockProvider as never,
+        '0x1234567890123456789012345678901234567890',
+        constants.AddressZero,
+        '' as Hex,
+      );
+
+      expect(balance).toBeUndefined();
+    });
+  });
+
+  describe('fetchAtomicTokenBalance', () => {
+    it('returns the contract balanceOf result', async () => {
+      const balance = await fetchAtomicTokenBalance(
+        '0x1111111111111111111111111111111111111111',
+        '0x1234567890123456789012345678901234567890',
+        mockProvider as never,
+      );
+
+      expect(balance).toEqual(BigNumber.from('1000000'));
+    });
+  });
+});

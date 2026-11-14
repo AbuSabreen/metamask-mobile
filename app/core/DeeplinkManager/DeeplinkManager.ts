@@ -1,31 +1,99 @@
 'use strict';
 
-import { NavigationProp, ParamListBase } from '@react-navigation/native';
-import { ParseOutput } from 'eth-url-parser';
-import { AnyAction, Dispatch, Store } from 'redux';
-import handleBrowserUrl from './Handlers/handleBrowserUrl';
-import handleEthereumUrl from './Handlers/handleEthereumUrl';
-import handleRampUrl from './Handlers/handleRampUrl';
-import switchNetwork from './Handlers/switchNetwork';
-import parseDeeplink from './ParseManager/parseDeeplink';
-import approveTransaction from './TransactionManager/approveTransaction';
-import { RampType } from '../../reducers/fiatOrders/types';
+import parseDeeplink from './utils/parseDeeplink';
+import branch from 'react-native-branch';
+import { Linking } from 'react-native';
+import type { Notification as NotifeeNotification } from '@notifee/react-native';
+import Logger from '../../util/Logger';
+import { handleDeeplink } from './handlers/handleDeeplink';
+import FCMService, {
+  toPushTapResult,
+} from '../../util/notifications/services/FCMService';
+import AppConstants from '../AppConstants';
+import { BranchParams } from './types/deepLinkAnalytics.types';
+import {
+  getBrazeInitialPush,
+  subscribeToBrazePushOpens,
+} from '../Braze/BrazeDeeplinks';
+import {
+  AppOpenedPushProvider,
+  AppStateEventProcessor,
+} from '../AppStateEventListener';
+import type { DeeplinkIntent } from './types/DeeplinkIntent';
+import NotificationsService from '../../util/notifications/services/NotificationService';
+import {
+  startDeeplinkProcessedTrace,
+  endDeeplinkProcessedTrace,
+  cancelDeeplinkProcessedTrace,
+  type DeeplinkPerfAppStartType,
+} from '../Performance/DeeplinkPerformance';
+import { getUnlockAppStartType } from '../Performance/unlockTraces';
 
-class DeeplinkManager {
-  public navigation: NavigationProp<ParamListBase>;
+// `false` means the deeplink was handled but intentionally rejected, for
+// example when the user dismisses the interstitial during startup resolution.
+export type DeeplinkResolveResult = DeeplinkIntent | false | null;
+
+/**
+ * When Branch resolves a short link (e.g. metamask-alternate.app.link/1WkF6GmE40b),
+ * the URI path may be link ID, not an in-app route. If the resolved params indicate
+ * a clicked Branch link with a $deeplink_path, replace the host and path segment
+ * with link.metamask.io/$deeplink_path while preserving the original query string.
+ * A query on `$deeplink_path` itself (e.g. `social/profile?traderId=…`) fills
+ * the keys that string does not already have.
+ */
+export function rewriteBranchUri(
+  uri: string | undefined,
+  params: BranchParams | undefined,
+): string | undefined {
+  try {
+    if (!uri || !params?.['+clicked_branch_link']) return uri;
+    const rawPath = params.$deeplink_path;
+    if (typeof rawPath !== 'string') return uri;
+
+    const parsed = new URL(uri);
+    parsed.host = AppConstants.MM_IO_UNIVERSAL_LINK_HOST;
+    const queryStart = rawPath.indexOf('?');
+    const path = queryStart === -1 ? rawPath : rawPath.slice(0, queryStart);
+    // Set the pathname to the sanitized $deeplink_path
+    parsed.pathname = `/${path.replace(/^\//, '')}`;
+    // A Branch short link's own query does not carry the route's ids (e.g. a
+    // shared trader's traderId and positionId); the share flow puts them on
+    // $deeplink_path. Copy only keys the short link does not already have, so
+    // an existing query such as a swap amount stays as it was.
+    if (queryStart !== -1) {
+      new URLSearchParams(rawPath.slice(queryStart + 1)).forEach(
+        (value, key) => {
+          if (!parsed.searchParams.has(key)) {
+            parsed.searchParams.set(key, value);
+          }
+        },
+      );
+    }
+    return parsed.toString();
+  } catch (error) {
+    Logger.error(error as Error, `Error rewriting Branch URI: ${uri}`);
+    return uri;
+  }
+}
+
+export class DeeplinkManager {
+  // singleton instance
+  private static _instance: DeeplinkManager | null = null;
   public pendingDeeplink: string | null;
-  public dispatch: Dispatch<any>;
 
-  constructor({
-    navigation,
-    dispatch,
-  }: {
-    navigation: NavigationProp<ParamListBase>;
-    dispatch: Store<any, AnyAction>['dispatch'];
-  }) {
-    this.navigation = navigation;
+  constructor() {
     this.pendingDeeplink = null;
-    this.dispatch = dispatch;
+  }
+
+  static getInstance(): DeeplinkManager {
+    if (!DeeplinkManager._instance) {
+      DeeplinkManager._instance = new DeeplinkManager();
+    }
+    return DeeplinkManager._instance;
+  }
+
+  static resetInstance(): void {
+    this._instance = null;
   }
 
   setDeeplink = (url: string) => (this.pendingDeeplink = url);
@@ -34,76 +102,242 @@ class DeeplinkManager {
 
   expireDeeplink = () => (this.pendingDeeplink = null);
 
-  /**
-   * Method in charge of changing network if is needed
-   *
-   * @param switchToChainId - Corresponding chain id for new network
-   */
-  _handleNetworkSwitch = (switchToChainId: `${number}` | undefined) =>
-    switchNetwork({
-      deeplinkManager: this,
-      switchToChainId,
-    });
-
-  _approveTransaction = async (ethUrl: ParseOutput, origin: string) =>
-    approveTransaction({
-      deeplinkManager: this,
-      ethUrl,
-      origin,
-    });
-
-  async _handleEthereumUrl(url: string, origin: string) {
-    return handleEthereumUrl({
-      deeplinkManager: this,
-      url,
-      origin,
-    });
-  }
-
-  _handleBrowserUrl(url: string, callback?: (url: string) => void) {
-    return handleBrowserUrl({
-      deeplinkManager: this,
-      url,
-      callback,
-    });
-  }
-
-  _handleBuyCrypto(rampPath: string) {
-    handleRampUrl({
-      rampPath,
-      navigation: this.navigation,
-      rampType: RampType.BUY,
-    });
-  }
-
-  _handleSellCrypto(rampPath: string) {
-    handleRampUrl({
-      rampPath,
-      navigation: this.navigation,
-      rampType: RampType.SELL,
-    });
-  }
-
-  parse(
+  async parse(
     url: string,
     {
       browserCallBack,
       origin,
       onHandled,
+      appStartType = 'warm',
     }: {
       browserCallBack?: (url: string) => void;
       origin: string;
       onHandled?: () => void;
+      appStartType?: DeeplinkPerfAppStartType;
     },
-  ) {
-    return parseDeeplink({
+  ): Promise<boolean> {
+    const processedTraceToken = startDeeplinkProcessedTrace({
+      url,
+      source: 'parse',
+      appStartType,
+    });
+
+    const result = await parseDeeplink({
       deeplinkManager: this,
       url,
       origin,
       browserCallBack,
       onHandled,
+      processedTraceToken,
+    });
+
+    return typeof result === 'boolean' ? result : Boolean(result);
+  }
+
+  async resolve(
+    url: string,
+    {
+      origin,
+      appStartType = getUnlockAppStartType(),
+    }: {
+      origin: string;
+      appStartType?: DeeplinkPerfAppStartType;
+    },
+  ): Promise<DeeplinkResolveResult> {
+    const processedTraceToken = startDeeplinkProcessedTrace({
+      url,
+      source: 'resolve',
+      appStartType,
+    });
+
+    const result = await parseDeeplink({
+      deeplinkManager: this,
+      url,
+      origin,
+      mode: 'resolve',
+      processedTraceToken,
+    });
+
+    if (result === false) {
+      cancelDeeplinkProcessedTrace({
+        reason: 'rejected',
+        traceToken: processedTraceToken,
+      });
+      return false;
+    }
+
+    const intent = result && typeof result !== 'boolean' ? result : null;
+
+    if (intent === null) {
+      cancelDeeplinkProcessedTrace({
+        reason: 'unresolved',
+        traceToken: processedTraceToken,
+      });
+    }
+
+    return intent;
+  }
+
+  static start() {
+    DeeplinkManager.getInstance();
+
+    const getBranchDeeplink = async (uri?: string) => {
+      if (uri) {
+        handleDeeplink({ uri });
+        return;
+      }
+
+      try {
+        const latestParams = await branch.getLatestReferringParams();
+
+        // Cold start: params may contain a resolved Branch link with $deeplink_path.
+        const rewritten = rewriteBranchUri(
+          latestParams?.['~referring_link'] as string | undefined,
+          latestParams as Record<string, unknown> | undefined,
+        );
+        if (rewritten) {
+          handleDeeplink({ uri: rewritten });
+          return;
+        }
+
+        const deeplink = latestParams?.['+non_branch_link'] as string;
+        if (deeplink) {
+          handleDeeplink({ uri: deeplink });
+        }
+      } catch (error) {
+        Logger.error(error as Error, 'Error getting Branch deeplink');
+      }
+    };
+
+    // Every push tap is reported to AppStateEventProcessor regardless of the
+    // payload, so App Opened can attribute the open to push even when there is
+    // no deeplink to carry the origin. handleDeeplink still only runs when
+    // there is somewhere to navigate.
+    const PROVIDER_ORIGIN = {
+      [AppOpenedPushProvider.Braze]: AppConstants.DEEPLINKS.ORIGIN_BRAZE,
+      [AppOpenedPushProvider.Wallet]:
+        AppConstants.DEEPLINKS.ORIGIN_PUSH_NOTIFICATION,
+    };
+
+    const onPushTap = (
+      provider: AppOpenedPushProvider,
+      tap: {
+        deeplink: string | null;
+        notificationType?: string;
+        notificationSubtype?: string;
+      },
+    ) => {
+      AppStateEventProcessor.markOpenedFromPush({
+        provider,
+        notificationType: tap.notificationType,
+        notificationSubtype: tap.notificationSubtype,
+      });
+      if (tap.deeplink) {
+        handleDeeplink({
+          uri: tap.deeplink,
+          source: PROVIDER_ORIGIN[provider],
+        });
+      }
+    };
+
+    FCMService.onClickPushNotificationWhenAppClosed().then((tap) => {
+      if (tap.opened) {
+        onPushTap(AppOpenedPushProvider.Wallet, tap);
+      }
+    });
+
+    FCMService.onClickPushNotificationWhenAppSuspended((tap) => {
+      if (tap.opened) {
+        onPushTap(AppOpenedPushProvider.Wallet, tap);
+      }
+    });
+
+    const handleNotifeeNotification = (
+      notification: NotifeeNotification | undefined,
+    ) => {
+      if (!notification) {
+        return;
+      }
+
+      const tap = toPushTapResult(notification.data, true);
+      if (!tap.deeplink && !tap.notificationType && !tap.notificationSubtype) {
+        return;
+      }
+
+      onPushTap(AppOpenedPushProvider.Wallet, tap);
+    };
+
+    NotificationsService.onForegroundEvent(async (event) => {
+      await NotificationsService.handleNotificationEvent({
+        ...event,
+        callback: handleNotifeeNotification,
+      });
+    });
+
+    getBrazeInitialPush().then(({ opened, deeplink }) => {
+      if (opened) {
+        onPushTap(AppOpenedPushProvider.Braze, { deeplink });
+      }
+    });
+
+    subscribeToBrazePushOpens((deeplink) => {
+      onPushTap(AppOpenedPushProvider.Braze, { deeplink });
+    });
+
+    Linking.getInitialURL().then((url) => {
+      if (!url) {
+        return;
+      }
+      Logger.log(`handleDeeplink:: got initial URL ${url}`);
+      handleDeeplink({ uri: url });
+    });
+
+    Linking.addEventListener('url', (params) => {
+      const { url } = params;
+      handleDeeplink({ uri: url });
+    });
+
+    // branch.subscribe is not called for iOS cold start after the new RN architecture upgrade.
+    // This is a workaround to ensure that the deeplink is processed for iOS cold start.
+    // TODO: Remove this once branch.subscribe is called for iOS cold start.
+    getBranchDeeplink();
+
+    branch.subscribe((opts) => {
+      const { error } = opts;
+      if (error) {
+        const branchError = new Error(error);
+        Logger.error(branchError, 'Error subscribing to branch.');
+      }
+      const rewritten = rewriteBranchUri(
+        opts.uri,
+        opts.params as Record<string, unknown> | undefined,
+      );
+      getBranchDeeplink(rewritten ?? opts.uri);
     });
   }
 }
 
-export default DeeplinkManager;
+export default {
+  init: () => DeeplinkManager.getInstance(),
+  start: () => DeeplinkManager.start(),
+  getInstance: () => DeeplinkManager.getInstance(),
+  parse: (
+    url: string,
+    args: {
+      browserCallBack?: (url: string) => void;
+      origin: string;
+      onHandled?: () => void;
+      appStartType?: DeeplinkPerfAppStartType;
+    },
+  ) => DeeplinkManager.getInstance().parse(url, args),
+  resolve: (
+    url: string,
+    args: {
+      origin: string;
+      appStartType?: DeeplinkPerfAppStartType;
+    },
+  ) => DeeplinkManager.getInstance().resolve(url, args),
+  setDeeplink: (url: string) => DeeplinkManager.getInstance().setDeeplink(url),
+  getPendingDeeplink: () => DeeplinkManager.getInstance().getPendingDeeplink(),
+  expireDeeplink: () => DeeplinkManager.getInstance().expireDeeplink(),
+};

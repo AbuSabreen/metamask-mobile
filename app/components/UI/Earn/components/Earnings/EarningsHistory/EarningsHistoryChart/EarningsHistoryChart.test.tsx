@@ -1,0 +1,205 @@
+import React from 'react';
+import { fireEvent, render, RenderResult } from '@testing-library/react-native';
+import { EarningsHistoryChart } from './EarningsHistoryChart';
+import { fireLayoutEvent } from '../../../../../../../util/testUtils/react-native-svg-charts';
+import { mockTheme } from '../../../../../../../util/theme';
+
+jest.mock('react-native-svg-charts', () => {
+  const reactNativeSvgCharts = jest.requireActual('react-native-svg-charts'); // Get the actual Grid component
+  return {
+    ...reactNativeSvgCharts,
+    Grid: () => <></>,
+  };
+});
+
+const mockEarningsData = {
+  earnings: [
+    { value: 1.0, label: 'Day 1' },
+    { value: 3.0, label: 'Day 2' },
+    { value: 2.0, label: 'Day 3' },
+  ],
+  earningsTotal: '6.00000',
+  ticker: 'ETH',
+};
+
+const barChartComponent = (
+  <EarningsHistoryChart
+    earnings={mockEarningsData.earnings}
+    earningsTotal={mockEarningsData.earningsTotal}
+    ticker={mockEarningsData.ticker}
+  ></EarningsHistoryChart>
+);
+
+const renderChart = () => {
+  const chartContainer = render(barChartComponent);
+  fireLayoutEvent(chartContainer.root, { width: 500, height: 200 });
+  const chart = chartContainer.getByTestId('earnings-history-chart-container')
+    .props.children.props.children[1].props.children.props;
+  return {
+    chartContainer,
+    chart,
+  };
+};
+
+describe('EarningsHistoryChart', () => {
+  let chartContainer: RenderResult;
+  let chart: {
+    data: {
+      value: number;
+      label: string;
+      svg: { fill: string; testID: string };
+    }[];
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    ({ chartContainer, chart } = renderChart());
+  });
+
+  it('renders correct initial state', async () => {
+    expect(chartContainer.getByText('Lifetime earnings')).toBeOnTheScreen();
+    expect(chartContainer.getByText('6.00000 ETH')).toBeOnTheScreen();
+    expect(
+      chartContainer.getByTestId('earning-history-chart-bar-0'),
+    ).toBeOnTheScreen();
+    expect(
+      chartContainer.getByTestId('earning-history-chart-bar-1'),
+    ).toBeOnTheScreen();
+    expect(
+      chartContainer.getByTestId('earning-history-chart-bar-2'),
+    ).toBeOnTheScreen();
+    expect(
+      chartContainer.getByTestId('earning-history-chart-line-0'),
+    ).toBeOnTheScreen();
+    expect(
+      chartContainer.getByTestId('earning-history-chart-line-1'),
+    ).toBeOnTheScreen();
+    expect(
+      chartContainer.getByTestId('earning-history-chart-line-2'),
+    ).toBeOnTheScreen();
+    expect(chart.data.length).toBe(mockEarningsData.earnings.length);
+  });
+
+  it('updates chart state when bar 1 is clicked', () => {
+    // click bar 1
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchStart',
+      {
+        nativeEvent: { locationX: 50 },
+      },
+    );
+    // expect bar 1 to be selected and highlighted on touch
+    expect(chartContainer.getByText('Day 1')).toBeOnTheScreen();
+    expect(chartContainer.getByText('1.00000 ETH')).toBeOnTheScreen();
+    expect(chart.data[0].svg.fill).toBe(mockTheme.colors.success.default);
+    // end touch bar 1
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchEnd',
+      {
+        nativeEvent: { pageX: 50, pageY: 50 },
+      },
+    );
+    // expect bar 1 to be selected and highlighted after touch end
+    expect(chartContainer.getByText('Day 1')).toBeOnTheScreen();
+    expect(chartContainer.getByText('1.00000 ETH')).toBeOnTheScreen();
+    expect(chart.data[0].svg.fill).toBe(mockTheme.colors.success.default);
+  });
+
+  it('updates chart state when bar 2 is clicked', async () => {
+    // click bar 2
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchStart',
+      {
+        nativeEvent: { locationX: 250 },
+      },
+    );
+    // expect bar 2 to be selected and highlighted on touch
+    expect(chartContainer.getByText('Day 2')).toBeOnTheScreen();
+    expect(chartContainer.getByText('3.00000 ETH')).toBeOnTheScreen();
+    expect(chart.data[1].svg.fill).toBe(mockTheme.colors.success.default);
+    // end touch bar 2
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchEnd',
+      {
+        nativeEvent: { locationX: 250 },
+      },
+    );
+    // expect bar 2 to be selected and highlighted after touch end
+    expect(chartContainer.getByText('Day 2')).toBeOnTheScreen();
+    expect(chartContainer.getByText('3.00000 ETH')).toBeOnTheScreen();
+    expect(chart.data[1].svg.fill).toBe(mockTheme.colors.success.default);
+  });
+
+  it('updates chart state when bar 3 is clicked', async () => {
+    // click bar 3
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchStart',
+      {
+        nativeEvent: { locationX: 450 },
+      },
+    );
+    expect(chartContainer.getByText('Day 3')).toBeOnTheScreen();
+    expect(chartContainer.getByText('2.00000 ETH')).toBeOnTheScreen();
+    expect(chart.data[2].svg.fill).toBe(mockTheme.colors.success.default);
+    // end touch bar 3
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchEnd',
+      {
+        nativeEvent: { locationX: 450 },
+      },
+    );
+    expect(chartContainer.getByText('Day 3')).toBeOnTheScreen();
+    expect(chartContainer.getByText('2.00000 ETH')).toBeOnTheScreen();
+    expect(chart.data[2].svg.fill).toBe(mockTheme.colors.success.default);
+  });
+
+  it('updates chart to initial state when selected bar is set unselected', async () => {
+    // click bar 3
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchStart',
+      {
+        nativeEvent: { locationX: 450 },
+      },
+    );
+    // end touch bar 3
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchEnd',
+      {
+        nativeEvent: { locationX: 450 },
+      },
+    );
+    // expect bar 3 to be selected and highlighted
+    expect(chart.data[2].svg.fill).toBe(mockTheme.colors.success.default);
+    // click again
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchStart',
+      {
+        nativeEvent: { locationX: 450 },
+      },
+    );
+    // end touch bar 3
+    fireEvent(
+      chartContainer.getByTestId('earnings-history-chart'),
+      'onTouchEnd',
+      {
+        nativeEvent: { locationX: 450 },
+      },
+    );
+    // expect bar 3 to be unselected and not highlighted
+    expect(chart.data[0].svg.fill).toBe('url(#bar-gradient)');
+    expect(chart.data[1].svg.fill).toBe('url(#bar-gradient)');
+    expect(chart.data[2].svg.fill).toBe('url(#bar-gradient)');
+    // expect chart to be in initial state
+    expect(chartContainer.getByText('Lifetime earnings')).toBeOnTheScreen();
+    expect(chartContainer.getByText('6.00000 ETH')).toBeOnTheScreen();
+  });
+});

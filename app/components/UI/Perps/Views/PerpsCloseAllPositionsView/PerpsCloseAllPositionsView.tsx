@@ -1,0 +1,437 @@
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+
+import React, { useCallback, useMemo, useRef } from 'react';
+import { View, ActivityIndicator } from 'react-native';
+import {
+  BottomSheet,
+  BottomSheetFooter,
+  BottomSheetRef,
+  Box,
+  ButtonSize,
+  ButtonsAlignment,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import {
+  ImpactMoment,
+  NotificationMoment,
+  useHaptics,
+} from '../../../../../util/haptics';
+import { strings } from '../../../../../../locales/i18n';
+import { IconName } from '../../../../../component-library/components/Icons/Icon';
+import { ToastVariants } from '../../../../../component-library/components/Toast/Toast.types';
+import {
+  usePerpsLivePositions,
+  usePerpsCloseAllCalculations,
+  usePerpsCloseAllPositions,
+  usePerpsRewardAccountOptedIn,
+} from '../../hooks';
+import { usePerpsLivePrices } from '../../hooks/stream';
+import usePerpsToasts, {
+  type PerpsToastOptions,
+} from '../../hooks/usePerpsToasts';
+import PerpsCloseSummary from '../../components/PerpsCloseSummary';
+import PerpsRebateBanner from '../../components/PerpsRebateBanner';
+import { createStyles } from './PerpsCloseAllPositionsView.styles';
+import { useTheme } from '../../../../../util/theme';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import { usePerpsEventTracking } from '../../hooks/usePerpsEventTracking';
+import {
+  PERPS_EVENT_PROPERTY,
+  PERPS_EVENT_VALUE,
+  type ClosePositionsResult,
+  type Position,
+} from '@metamask/perps-controller';
+import { PerpsCloseAllPositionsViewSelectorsIDs } from '../../Perps.testIds';
+import BottomSheetHeaderGlass from '../../../../../component-library/components-temp/BottomSheetHeaderGlass';
+import { useSelector } from 'react-redux';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+interface PerpsCloseAllPositionsViewProps {
+  sheetRef?: React.RefObject<BottomSheetRef | null>;
+  onClose?: () => void;
+  /** When provided, only these positions are shown and closed. */
+  positions?: Position[];
+  /** Drops "all" from the title, which would misdescribe a filtered subset. */
+  isFiltered?: boolean;
+  enableHaptics?: boolean;
+}
+
+const PerpsCloseAllPositionsView: React.FC<PerpsCloseAllPositionsViewProps> = ({
+  sheetRef: externalSheetRef,
+  onClose: onExternalClose,
+  positions: propPositions,
+  isFiltered = false,
+  enableHaptics = false,
+}) => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const theme = useTheme();
+  const styles = createStyles(theme);
+  const navigation = useNavigation<AppNavigationProp>();
+  const internalSheetRef = useRef<BottomSheetRef>(null);
+  const sheetRef = externalSheetRef || internalSheetRef;
+  const { showToast } = usePerpsToasts();
+  const { playImpact } = useHaptics();
+
+  // Fetch positions from live stream (used only when no positions prop is passed)
+  const liveResult = usePerpsLivePositions({
+    throttleMs: 1000,
+  });
+  const positions = propPositions ?? liveResult.positions;
+  const isInitialLoading = propPositions ? false : liveResult.isInitialLoading;
+
+  // Fetch current prices for fee calculations (throttled to avoid excessive updates)
+  const symbols = useMemo(
+    () => (positions || []).map((pos) => pos.symbol),
+    [positions],
+  );
+  const priceData = usePerpsLivePrices({
+    symbols,
+    throttleMs: 1000,
+  });
+
+  // Use hook for accurate fee and rewards calculations
+  const calculations = usePerpsCloseAllCalculations({
+    positions: positions || [],
+    priceData,
+  });
+  // Check opt-in status for rewards
+  const { accountOptedIn, account: rewardsAccount } =
+    usePerpsRewardAccountOptedIn(calculations?.totalEstimatedPoints);
+
+  // Track screen viewed event
+  usePerpsEventTracking({
+    eventName: MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+    conditions: [!isInitialLoading],
+    properties: {
+      [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+        PERPS_EVENT_VALUE.SCREEN_TYPE.CLOSE_ALL_POSITIONS,
+      [PERPS_EVENT_PROPERTY.OPEN_POSITION]: positions?.length || 0,
+      [PERPS_EVENT_PROPERTY.SOURCE]:
+        PERPS_EVENT_VALUE.SOURCE.CLOSE_ALL_POSITIONS_BUTTON,
+    },
+  });
+
+  // Toast helper for success
+  const showSuccessToast = useCallback(
+    (title: string, message?: string) => {
+      const toastConfig: PerpsToastOptions = {
+        variant: ToastVariants.Icon,
+        iconName: IconName.CheckBold,
+        backgroundColor: theme.colors.accent03.normal,
+        iconColor: theme.colors.accent03.dark,
+        hapticsType: NotificationMoment.Success,
+        hasNoTimeout: false,
+        labelOptions: message
+          ? [
+              { label: title, isBold: true },
+              { label: '\n', isBold: false },
+              { label: message, isBold: false },
+            ]
+          : [{ label: title, isBold: true }],
+      } as PerpsToastOptions;
+      showToast(toastConfig);
+    },
+    [showToast, theme.colors.accent03],
+  );
+
+  // Toast helper for errors
+  const showErrorToast = useCallback(
+    (title: string, message?: string) => {
+      const toastConfig: PerpsToastOptions = {
+        variant: ToastVariants.Icon,
+        iconName: IconName.Warning,
+        backgroundColor: theme.colors.accent01.light,
+        iconColor: theme.colors.accent01.dark,
+        hapticsType: NotificationMoment.Error,
+        hasNoTimeout: false,
+        labelOptions: message
+          ? [
+              { label: title, isBold: true },
+              { label: '\n', isBold: false },
+              { label: message, isBold: false },
+            ]
+          : [{ label: title, isBold: true }],
+      } as PerpsToastOptions;
+      showToast(toastConfig);
+    },
+    [showToast, theme.colors.accent01],
+  );
+
+  // Handle success callback from hook
+  const handleSuccess = useCallback(
+    (result: ClosePositionsResult) => {
+      if (result.success && result.successCount > 0) {
+        showSuccessToast(
+          strings('perps.close_all_modal.success_title'),
+          strings('perps.close_all_modal.success_message', {
+            count: result.successCount,
+          }),
+        );
+        // Close sheet after success when using external ref
+        if (externalSheetRef && result.successCount > 0) {
+          sheetRef.current?.onCloseBottomSheet(() => {
+            onExternalClose?.();
+          });
+        }
+      } else if (result.successCount > 0 && result.failureCount > 0) {
+        showSuccessToast(
+          strings('perps.close_all_modal.success_title'),
+          strings('perps.close_all_modal.partial_success', {
+            successCount: result.successCount,
+            totalCount: result.successCount + result.failureCount,
+          }),
+        );
+        // Close sheet after partial success when using external ref
+        if (externalSheetRef && result.successCount > 0) {
+          sheetRef.current?.onCloseBottomSheet(() => {
+            onExternalClose?.();
+          });
+        }
+      }
+    },
+    [showSuccessToast, externalSheetRef, sheetRef, onExternalClose],
+  );
+
+  // Handle error callback from hook
+  const handleError = useCallback(
+    (error: Error) => {
+      showErrorToast(
+        strings('perps.close_all_modal.error_title'),
+        error.message || 'Unknown error',
+      );
+    },
+    [showErrorToast],
+  );
+
+  // Use close all positions hook for business logic
+  const { isClosing, handleCloseAll, handleKeepPositions } =
+    usePerpsCloseAllPositions(positions, {
+      onSuccess: handleSuccess,
+      onError: handleError,
+      navigateBackOnSuccess: !externalSheetRef, // Don't navigate if using external ref
+      calculations: {
+        totalMargin: String(calculations.totalMargin),
+        totalPnl: String(calculations.totalPnl),
+        totalFees: String(calculations.totalFees),
+        receiveAmount: String(calculations.receiveAmount),
+      },
+    });
+
+  const handleCloseAllPress = useCallback(() => {
+    if (isClosing) {
+      return;
+    }
+    if (enableHaptics) {
+      playImpact(ImpactMoment.PrimaryCTA).catch(() => undefined);
+    }
+    handleCloseAll();
+  }, [enableHaptics, handleCloseAll, isClosing, playImpact]);
+
+  const handleClose = useCallback(() => {
+    if (externalSheetRef) {
+      sheetRef.current?.onCloseBottomSheet(() => {
+        onExternalClose?.();
+      });
+    } else {
+      navigation.goBack();
+    }
+  }, [navigation, externalSheetRef, sheetRef, onExternalClose]);
+
+  // Wrapper for "Keep Positions" button that properly handles overlay dismissal
+  const handleKeepButtonPress = useCallback(() => {
+    if (externalSheetRef) {
+      // When used as overlay, close the sheet properly to remove overlay
+      handleClose();
+    } else {
+      // When used as standalone screen, use hook's navigation
+      handleKeepPositions();
+    }
+  }, [externalSheetRef, handleClose, handleKeepPositions]);
+
+  const secondaryButtonProps = useMemo(
+    () => ({
+      children: strings('perps.close_all_modal.keep_positions'),
+      onPress: handleKeepButtonPress,
+      size: ButtonSize.Lg,
+      isDisabled: isClosing,
+      testID: PerpsCloseAllPositionsViewSelectorsIDs.KEEP_BUTTON,
+    }),
+    [handleKeepButtonPress, isClosing],
+  );
+
+  const closeCount = positions?.length ?? 0;
+
+  const primaryButtonProps = useMemo(
+    () => ({
+      children: isClosing
+        ? strings('perps.close_all_modal.closing')
+        : strings('perps.close_all_modal.close_count', { count: closeCount }),
+      onPress: handleCloseAllPress,
+      size: ButtonSize.Lg,
+      isDisabled: isClosing,
+      isDanger: true,
+      testID: PerpsCloseAllPositionsViewSelectorsIDs.CLOSE_ALL_BUTTON,
+    }),
+    [closeCount, handleCloseAllPress, isClosing],
+  );
+
+  const title = isFiltered
+    ? strings('perps.close_all_modal.title_filtered')
+    : strings('perps.close_all_modal.title');
+  const description = strings('perps.close_all_modal.description', {
+    count: closeCount,
+  });
+
+  const goBack = externalSheetRef ? undefined : navigation.goBack;
+  const onClose = externalSheetRef ? onExternalClose : undefined;
+
+  // Show loading state while fetching positions
+  if (isInitialLoading) {
+    return (
+      <BottomSheet
+        ref={sheetRef}
+        goBack={goBack}
+        onClose={onClose}
+        testID={PerpsCloseAllPositionsViewSelectorsIDs.SHEET}
+      >
+        <BottomSheetHeaderGlass
+          isGlass={isGlassHeader}
+          onClose={handleClose}
+          testID={PerpsCloseAllPositionsViewSelectorsIDs.TITLE}
+        >
+          {title}
+        </BottomSheetHeaderGlass>
+        <Box paddingHorizontal={4}>
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator
+              size="large"
+              color={theme.colors.primary.default}
+            />
+          </View>
+        </Box>
+      </BottomSheet>
+    );
+  }
+
+  // Show empty state if no positions
+  if (!positions || positions.length === 0) {
+    return (
+      <BottomSheet
+        ref={sheetRef}
+        goBack={goBack}
+        onClose={onClose}
+        testID={PerpsCloseAllPositionsViewSelectorsIDs.SHEET}
+      >
+        <BottomSheetHeaderGlass
+          isGlass={isGlassHeader}
+          onClose={handleClose}
+          testID={PerpsCloseAllPositionsViewSelectorsIDs.TITLE}
+        >
+          {title}
+        </BottomSheetHeaderGlass>
+        <Box paddingHorizontal={4}>
+          <View style={styles.emptyContainer}>
+            <Text
+              variant={TextVariant.BodyMd}
+              color={TextColor.TextAlternative}
+              testID={PerpsCloseAllPositionsViewSelectorsIDs.EMPTY_STATE}
+            >
+              {strings('perps.position.no_positions')}
+            </Text>
+          </View>
+        </Box>
+      </BottomSheet>
+    );
+  }
+
+  return (
+    <BottomSheet
+      ref={sheetRef}
+      goBack={goBack}
+      onClose={onClose}
+      testID={PerpsCloseAllPositionsViewSelectorsIDs.SHEET}
+    >
+      <BottomSheetHeaderGlass
+        isGlass={isGlassHeader}
+        onClose={handleClose}
+        testID={PerpsCloseAllPositionsViewSelectorsIDs.TITLE}
+      >
+        {title}
+      </BottomSheetHeaderGlass>
+
+      <Box twClassName="py-2">
+        <Box paddingHorizontal={4}>
+          <Text
+            variant={TextVariant.BodyMd}
+            color={TextColor.TextAlternative}
+            style={styles.description}
+            testID={PerpsCloseAllPositionsViewSelectorsIDs.DESCRIPTION}
+          >
+            {description}
+          </Text>
+        </Box>
+
+        {isClosing ? (
+          <Box paddingHorizontal={4}>
+            <View
+              style={styles.loadingContainer}
+              testID={PerpsCloseAllPositionsViewSelectorsIDs.CLOSING_STATE}
+            >
+              <ActivityIndicator
+                size="large"
+                color={theme.colors.primary.default}
+              />
+              <Text
+                variant={TextVariant.BodyMd}
+                color={TextColor.TextAlternative}
+                style={styles.loadingText}
+              >
+                {strings('perps.close_all_modal.closing')}
+              </Text>
+            </View>
+          </Box>
+        ) : (
+          <PerpsCloseSummary
+            totalMargin={calculations.totalMargin}
+            totalPnl={calculations.totalPnl}
+            totalFees={calculations.totalFees}
+            originalTotalFees={calculations.originalTotalFees}
+            feeDiscountPercentage={calculations.avgFeeDiscountPercentage}
+            feeDiscountKind={calculations.feeDiscountKind}
+            metamaskFeeRate={calculations.avgMetamaskFeeRate}
+            protocolFeeRate={calculations.avgProtocolFeeRate}
+            originalMetamaskFeeRate={calculations.avgOriginalMetamaskFeeRate}
+            receiveAmount={calculations.receiveAmount}
+            shouldShowRewards={calculations.shouldShowRewards}
+            estimatedPoints={calculations.totalEstimatedPoints}
+            bonusBips={calculations.avgBonusBips}
+            isLoadingFees={calculations.isLoading}
+            isLoadingRewards={calculations.isLoading}
+            hasRewardsError={calculations.hasError}
+            accountOptedIn={accountOptedIn}
+            rewardsAccount={rewardsAccount}
+            enableTooltips={false}
+            afterFees={<PerpsRebateBanner containerTwClassName="px-4 mb-3" />}
+            testIDs={{
+              feesValue: PerpsCloseAllPositionsViewSelectorsIDs.FEES_VALUE,
+              marginValue: PerpsCloseAllPositionsViewSelectorsIDs.MARGIN_VALUE,
+              receiveValue:
+                PerpsCloseAllPositionsViewSelectorsIDs.RECEIVE_VALUE,
+            }}
+          />
+        )}
+      </Box>
+
+      <BottomSheetFooter
+        buttonsAlignment={ButtonsAlignment.Horizontal}
+        secondaryButtonProps={secondaryButtonProps}
+        primaryButtonProps={primaryButtonProps}
+      />
+    </BottomSheet>
+  );
+};
+
+export default PerpsCloseAllPositionsView;

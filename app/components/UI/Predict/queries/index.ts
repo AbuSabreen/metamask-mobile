@@ -1,0 +1,117 @@
+import {
+  predictAccountStateKeys,
+  predictAccountStateOptions,
+} from './accountState';
+import { predictActivityKeys, predictActivityOptions } from './activity';
+import { predictBalanceKeys, predictBalanceOptions } from './balance';
+import {
+  predictFeaturedCarouselKeys,
+  predictFeaturedCarouselOptions,
+} from './featuredCarousel';
+import {
+  predictFilterOptionsKeys,
+  predictFilterOptionsOptions,
+} from './filterOptions';
+import { predictGameKeys } from './game';
+import { predictMarketKeys, predictMarketOptions } from './market';
+import { predictMarketListKeys, predictMarketListOptions } from './marketList';
+import {
+  predictOrderPreviewKeys,
+  predictOrderPreviewOptions,
+} from './orderPreview';
+import {
+  predictMaxBuyOrderPreviewKeys,
+  predictMaxBuyOrderPreviewOptions,
+} from './maxBuyOrderPreview';
+import { predictPositionsKeys, predictPositionsOptions } from './positions';
+import {
+  predictCryptoPriceHistoryKeys,
+  predictCryptoPriceHistoryOptions,
+} from './cryptoPriceHistory';
+import {
+  predictPriceHistoryKeys,
+  predictPriceHistoryOptions,
+} from './priceHistory';
+import { predictSeriesKeys, predictSeriesOptions } from './series';
+import {
+  predictCryptoTargetPriceKeys,
+  predictCryptoTargetPriceOptions,
+} from './cryptoTargetPrice';
+import {
+  predictUnrealizedPnLKeys,
+  predictUnrealizedPnLOptions,
+} from './unrealizedPnL';
+import {
+  predictWithdrawGasFeeTokenKeys,
+  predictWithdrawGasFeeTokenOptions,
+} from './withdrawGasFeeToken';
+
+export const predictQueries = {
+  accountState: {
+    keys: predictAccountStateKeys,
+    options: predictAccountStateOptions,
+  },
+  activity: {
+    keys: predictActivityKeys,
+    options: predictActivityOptions,
+  },
+  balance: {
+    keys: predictBalanceKeys,
+    options: predictBalanceOptions,
+  },
+  cryptoTargetPrice: {
+    keys: predictCryptoTargetPriceKeys,
+    options: predictCryptoTargetPriceOptions,
+  },
+  featuredCarousel: {
+    keys: predictFeaturedCarouselKeys,
+    options: predictFeaturedCarouselOptions,
+  },
+  filterOptions: {
+    keys: predictFilterOptionsKeys,
+    options: predictFilterOptionsOptions,
+  },
+  game: {
+    keys: predictGameKeys,
+  },
+  market: {
+    keys: predictMarketKeys,
+    options: predictMarketOptions,
+  },
+  marketList: {
+    keys: predictMarketListKeys,
+    options: predictMarketListOptions,
+  },
+  maxBuyOrderPreview: {
+    keys: predictMaxBuyOrderPreviewKeys,
+    options: predictMaxBuyOrderPreviewOptions,
+  },
+  orderPreview: {
+    keys: predictOrderPreviewKeys,
+    options: predictOrderPreviewOptions,
+  },
+  positions: {
+    keys: predictPositionsKeys,
+    options: predictPositionsOptions,
+  },
+  cryptoPriceHistory: {
+    keys: predictCryptoPriceHistoryKeys,
+    options: predictCryptoPriceHistoryOptions,
+  },
+  priceHistory: {
+    keys: predictPriceHistoryKeys,
+    options: predictPriceHistoryOptions,
+  },
+  series: {
+    keys: predictSeriesKeys,
+    options: predictSeriesOptions,
+  },
+  unrealizedPnL: {
+    keys: predictUnrealizedPnLKeys,
+    options: predictUnrealizedPnLOptions,
+  },
+  withdrawGasFeeToken: {
+    keys: predictWithdrawGasFeeTokenKeys,
+    options: predictWithdrawGasFeeTokenOptions,
+  },
+};

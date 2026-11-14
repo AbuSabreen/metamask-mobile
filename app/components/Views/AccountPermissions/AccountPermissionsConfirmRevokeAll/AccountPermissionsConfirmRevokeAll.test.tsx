@@ -1,0 +1,114 @@
+import React from 'react';
+import renderWithProvider, {
+  DeepPartial,
+} from '../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../util/test/initial-root-state';
+import { RootState } from '../../../../reducers';
+import AccountPermissionsConfirmRevokeAll from './AccountPermissionsConfirmRevokeAll';
+import { fireEvent } from '@testing-library/react-native';
+import { strings } from '../../../../../locales/i18n';
+
+const mockedNavigate = jest.fn();
+const mockedGoBack = jest.fn();
+const mockedOnRevokeAll = jest.fn();
+jest.mock('@react-navigation/native', () => {
+  const actualNav = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualNav,
+    useNavigation: () => ({
+      navigate: mockedNavigate,
+      goBack: mockedGoBack,
+      isFocused: jest.fn(() => true),
+    }),
+  };
+});
+
+const mockInitialState: DeepPartial<RootState> = {
+  settings: {},
+  engine: {
+    backgroundState: {
+      ...backgroundState,
+    },
+  },
+};
+
+describe('AccountPermissionsConfirmRevokeAll', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders correctly', () => {
+    const { getByTestId } = renderWithProvider(
+      <AccountPermissionsConfirmRevokeAll
+        route={{
+          params: {
+            hostInfo: { metadata: { origin: 'test' } },
+          },
+        }}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(
+      getByTestId('revoke-all-permissions-cancel-button'),
+    ).toBeOnTheScreen();
+    expect(getByTestId('confirm_disconnect_networks')).toBeOnTheScreen();
+  });
+
+  it('handles cancel button press', () => {
+    const { getByTestId } = renderWithProvider(
+      <AccountPermissionsConfirmRevokeAll
+        route={{
+          params: {
+            hostInfo: { metadata: { origin: 'test' } },
+          },
+        }}
+      />,
+      { state: mockInitialState },
+    );
+
+    const cancelButton = getByTestId('revoke-all-permissions-cancel-button');
+    fireEvent.press(cancelButton);
+
+    expect(mockedGoBack).toHaveBeenCalled();
+  });
+
+  it('handles revoke button press', () => {
+    const { getByTestId } = renderWithProvider(
+      <AccountPermissionsConfirmRevokeAll
+        route={{
+          params: {
+            hostInfo: { metadata: { origin: 'test' } },
+            onRevokeAll: mockedOnRevokeAll,
+          },
+        }}
+      />,
+      { state: mockInitialState },
+    );
+
+    const revokeButton = getByTestId('confirm_disconnect_networks');
+    fireEvent.press(revokeButton);
+
+    expect(mockedOnRevokeAll).toHaveBeenCalled();
+  });
+
+  it('displays correct host information', () => {
+    const testOrigin = 'test.example.com';
+    const { getByText } = renderWithProvider(
+      <AccountPermissionsConfirmRevokeAll
+        route={{
+          params: {
+            hostInfo: { metadata: { origin: testOrigin } },
+          },
+        }}
+      />,
+      { state: mockInitialState },
+    );
+
+    const expectedText = strings('accounts.reconnect_notice', {
+      dappUrl: testOrigin,
+    });
+
+    expect(getByText(expectedText)).toBeOnTheScreen();
+  });
+});

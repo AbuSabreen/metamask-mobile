@@ -1,0 +1,121 @@
+import React from 'react';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import Quotes from '../Views/Quotes';
+import CheckoutWebView from '../Views/Checkout';
+import BuildQuote from '../Views/BuildQuote';
+import TokenSelectModal from '../components/TokenSelectModal/TokenSelectModal';
+import PaymentMethodSelectorModal from '../components/PaymentMethodSelectorModal';
+import FiatSelectorModal from '../components/FiatSelectorModal';
+
+import { RampType } from '../types';
+import { RampSDKProvider } from '../sdk';
+import Routes from '../../../../../constants/navigation/Routes';
+import IncompatibleAccountTokenModal from '../components/IncompatibleAccountTokenModal';
+import RegionSelectorModal from '../components/RegionSelectorModal';
+import UnsupportedRegionModal from '../components/UnsupportedRegionModal';
+import SettingsModal from '../Views/Modals/Settings';
+import {
+  clearNativeStackNavigatorOptions,
+  transparentModalScreenOptions,
+} from '../../../../../constants/navigation/clearStackNavigatorOptions';
+import type {
+  RampAggregatorRootParamList,
+  RampAggregatorScreensStackParamList,
+  RampModalsNavigationParamList,
+} from '../../types/navigation';
+
+const ScreensStack =
+  createNativeStackNavigator<RampAggregatorScreensStackParamList>();
+const RootStack = createNativeStackNavigator<RampAggregatorRootParamList>();
+const ModalsStack = createNativeStackNavigator<RampModalsNavigationParamList>();
+
+const overlayScreenOptions = {
+  ...clearNativeStackNavigatorOptions,
+  ...transparentModalScreenOptions,
+  gestureEnabled: false,
+};
+
+const MainRoutes = () => (
+  <ScreensStack.Navigator initialRouteName={Routes.RAMP.BUILD_QUOTE}>
+    <ScreensStack.Screen
+      name={Routes.RAMP.BUILD_QUOTE}
+      component={BuildQuote}
+      options={{ headerShown: false }}
+    />
+    <ScreensStack.Screen
+      name={Routes.RAMP.BUILD_QUOTE_HAS_STARTED}
+      component={BuildQuote}
+      options={{ animation: 'none', headerShown: false }}
+    />
+    <ScreensStack.Screen
+      name={Routes.RAMP.QUOTES}
+      component={Quotes}
+      options={overlayScreenOptions}
+    />
+    <ScreensStack.Screen
+      name={Routes.RAMP.CHECKOUT}
+      component={CheckoutWebView}
+      options={overlayScreenOptions}
+    />
+  </ScreensStack.Navigator>
+);
+
+const RampModalsRoutes = () => (
+  <ModalsStack.Navigator
+    screenOptions={{
+      ...clearNativeStackNavigatorOptions,
+      presentation: 'modal',
+    }}
+  >
+    <ModalsStack.Screen
+      name={Routes.RAMP.MODALS.TOKEN_SELECTOR}
+      component={TokenSelectModal}
+    />
+    <ModalsStack.Screen
+      name={Routes.RAMP.MODALS.PAYMENT_METHOD_SELECTOR}
+      component={PaymentMethodSelectorModal}
+    />
+    <ModalsStack.Screen
+      name={Routes.RAMP.MODALS.FIAT_SELECTOR}
+      component={FiatSelectorModal}
+    />
+
+    <ModalsStack.Screen
+      name={Routes.RAMP.MODALS.INCOMPATIBLE_ACCOUNT_TOKEN}
+      component={IncompatibleAccountTokenModal}
+    />
+    <ModalsStack.Screen
+      name={Routes.RAMP.MODALS.REGION_SELECTOR}
+      component={RegionSelectorModal}
+    />
+    <ModalsStack.Screen
+      name={Routes.RAMP.MODALS.UNSUPPORTED_REGION}
+      component={UnsupportedRegionModal}
+    />
+    <ModalsStack.Screen
+      name={Routes.RAMP.MODALS.SETTINGS}
+      component={SettingsModal}
+    />
+  </ModalsStack.Navigator>
+);
+
+const RampRoutes = ({ rampType }: { rampType: RampType }) => (
+  <RampSDKProvider rampType={rampType}>
+    <RootStack.Navigator
+      initialRouteName={Routes.RAMP.ID}
+      screenOptions={{ headerShown: false }}
+    >
+      <RootStack.Screen name={Routes.RAMP.ID} component={MainRoutes} />
+      <RootStack.Screen
+        name={Routes.RAMP.MODALS.ID}
+        component={RampModalsRoutes}
+        options={{
+          ...clearNativeStackNavigatorOptions,
+          ...transparentModalScreenOptions,
+        }}
+      />
+    </RootStack.Navigator>
+  </RampSDKProvider>
+);
+
+export default RampRoutes;

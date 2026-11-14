@@ -1,0 +1,459 @@
+import React from 'react';
+import { render, fireEvent } from '@testing-library/react-native';
+import CampaignsPreview from './CampaignsPreview';
+import {
+  type CampaignDto,
+  CampaignType,
+} from '../../../../../core/Engine/controllers/rewards-controller/types';
+import Routes from '../../../../../constants/navigation/Routes';
+import { useRewardCampaigns } from '../../hooks/useRewardCampaigns';
+import { REWARDS_VIEW_SELECTORS } from '../../Views/RewardsView.constants';
+
+const mockNavigate = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({ navigate: mockNavigate }),
+}));
+
+jest.mock('@metamask/design-system-react-native', () => {
+  const actual = jest.requireActual('@metamask/design-system-react-native');
+  return { ...actual };
+});
+
+jest.mock('@metamask/design-system-twrnc-preset', () => ({
+  useTailwind: () => {
+    const tw = (..._args: unknown[]) => ({});
+    tw.style = jest.fn(() => ({}));
+    return tw;
+  },
+}));
+
+jest.mock('../../hooks/useRewardCampaigns');
+const mockUseRewardCampaigns = jest.mocked(useRewardCampaigns);
+
+jest.mock('./CampaignTile', () => {
+  const ReactActual = jest.requireActual('react');
+  const { Text } = jest.requireActual('react-native');
+  const { isCampaignTypeSupported } = jest.requireActual(
+    './CampaignTile.utils',
+  );
+  return {
+    __esModule: true,
+    default: ({
+      campaign,
+      onPress,
+    }: {
+      campaign: CampaignDto;
+      onPress?: () => void;
+    }) => {
+      const isInteractive =
+        onPress != null || isCampaignTypeSupported(campaign.type);
+      return ReactActual.createElement(
+        Text,
+        {
+          testID: `campaign-tile-${campaign.id}`,
+          accessibilityState: { disabled: !isInteractive },
+        },
+        campaign.name,
+      );
+    },
+  };
+});
+
+jest.mock('../../../../../../locales/i18n', () => ({
+  strings: (key: string) => {
+    const translations: Record<string, string> = {
+      'rewards.campaigns_preview.title': 'Campaigns',
+    };
+    return translations[key] || key;
+  },
+}));
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Campaign status is derived from the clock, so the suite pins both the system
+// time and every fixture date to keep active/upcoming/previous deterministic.
+const FIXED_NOW = new Date('2025-08-15T12:00:00.000Z');
+const futureDate = new Date(FIXED_NOW.getTime() + 30 * DAY_MS);
+const furtherFutureDate = new Date(FIXED_NOW.getTime() + 90 * DAY_MS);
+const pastDate = new Date(FIXED_NOW.getTime() - 30 * DAY_MS);
+
+const createTestCampaign = (
+  overrides: Partial<CampaignDto> = {},
+): CampaignDto => ({
+  id: 'campaign-1',
+  type: CampaignType.ONDO_HOLDING,
+  name: 'Test Campaign',
+  startDate: pastDate.toISOString(),
+  endDate: futureDate.toISOString(),
+  termsAndConditions: null,
+  excludedRegions: [],
+  details: null,
+  featured: true,
+  showUpcomingDate: false,
+  ...overrides,
+});
+
+const createHookDefaults = (): ReturnType<typeof useRewardCampaigns> => ({
+  campaigns: [],
+  categorizedCampaigns: { active: [], upcoming: [], previous: [] },
+  isLoading: false,
+  hasError: false,
+  hasLoaded: true,
+  fetchCampaigns: jest.fn(),
+});
+
+let mockHookDefaults = createHookDefaults();
+
+describe('CampaignsPreview', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(FIXED_NOW);
+    jest.clearAllMocks();
+    mockHookDefaults = createHookDefaults();
+    mockUseRewardCampaigns.mockReturnValue(mockHookDefaults);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('renders the section with no campaigns when none are featured', () => {
+    const { getByTestId, queryByTestId } = render(<CampaignsPreview />);
+
+    expect(
+      getByTestId(REWARDS_VIEW_SELECTORS.CAMPAIGNS_PREVIEW),
+    ).toBeOnTheScreen();
+    expect(queryByTestId('campaign-tile-campaign-1')).toBeNull();
+  });
+
+  it('treats undefined campaigns as an empty list for featured selection', () => {
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: undefined as unknown as CampaignDto[],
+    });
+
+    const { getByTestId, queryByTestId } = render(<CampaignsPreview />);
+
+    expect(
+      getByTestId(REWARDS_VIEW_SELECTORS.CAMPAIGNS_PREVIEW),
+    ).toBeOnTheScreen();
+    expect(queryByTestId('campaign-tile-campaign-1')).toBeNull();
+  });
+
+  it('renders loading skeleton when campaigns have never been loaded', () => {
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      hasLoaded: false,
+      isLoading: false,
+    });
+
+    const { Skeleton } = jest.requireActual(
+      '@metamask/design-system-react-native',
+    );
+    const { UNSAFE_getByType } = render(<CampaignsPreview />);
+
+    expect(UNSAFE_getByType(Skeleton)).toBeDefined();
+  });
+
+  it('renders loading skeleton while campaigns are fetching for the first time', () => {
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      hasLoaded: false,
+      isLoading: true,
+    });
+
+    const { Skeleton } = jest.requireActual(
+      '@metamask/design-system-react-native',
+    );
+    const { UNSAFE_getByType } = render(<CampaignsPreview />);
+
+    expect(UNSAFE_getByType(Skeleton)).toBeDefined();
+  });
+
+  it('retries the campaigns fetch from the error banner', () => {
+    const fetchCampaigns = jest.fn();
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      hasError: true,
+      hasLoaded: true,
+      fetchCampaigns,
+    });
+
+    const { getByText } = render(<CampaignsPreview />);
+
+    fireEvent.press(getByText('rewards.campaigns_view.retry_button'));
+
+    expect(fetchCampaigns).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps featured tiles instead of the error banner when campaigns already loaded', () => {
+    const activeCampaign = createTestCampaign({
+      id: 'active-1',
+      name: 'Active Campaign',
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [activeCampaign],
+      hasError: true,
+      hasLoaded: true,
+    });
+
+    const { getByText, queryByText } = render(<CampaignsPreview />);
+
+    expect(getByText('Active Campaign')).toBeOnTheScreen();
+    expect(queryByText('rewards.campaigns_view.error_title')).toBeNull();
+  });
+
+  it('renders error banner when there is an error and no featured campaigns', () => {
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      hasError: true,
+      hasLoaded: true,
+    });
+
+    const { getByText } = render(<CampaignsPreview />);
+
+    expect(getByText('rewards.campaigns_view.error_title')).toBeOnTheScreen();
+  });
+
+  it('renders error banner on first-load failure (not skeleton)', () => {
+    const { Skeleton } = jest.requireActual(
+      '@metamask/design-system-react-native',
+    );
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      hasError: true,
+      hasLoaded: true,
+      isLoading: false,
+    });
+
+    const { getByText, UNSAFE_queryByType } = render(<CampaignsPreview />);
+
+    expect(getByText('rewards.campaigns_view.error_title')).toBeOnTheScreen();
+    expect(UNSAFE_queryByType(Skeleton)).toBeNull();
+  });
+
+  it('renders the preview when a featured active campaign exists', () => {
+    const activeCampaign = createTestCampaign({
+      id: 'active-1',
+      name: 'Active Campaign',
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [activeCampaign],
+    });
+
+    const { getByText, getByTestId } = render(<CampaignsPreview />);
+
+    expect(
+      getByTestId(REWARDS_VIEW_SELECTORS.CAMPAIGNS_PREVIEW),
+    ).toBeOnTheScreen();
+    expect(getByText('Active Campaign')).toBeOnTheScreen();
+    expect(getByText('Campaigns')).toBeOnTheScreen();
+  });
+
+  it('renders a CampaignTile for a featured active campaign', () => {
+    const activeCampaign = createTestCampaign({
+      id: 'active-1',
+      name: 'Active Campaign',
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [activeCampaign],
+    });
+
+    const { getByText } = render(<CampaignsPreview />);
+
+    expect(getByText('Active Campaign')).toBeOnTheScreen();
+  });
+
+  it('does not render non-featured campaigns', () => {
+    const nonFeaturedCampaign = createTestCampaign({
+      id: 'non-featured',
+      name: 'Non Featured',
+      featured: false,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [nonFeaturedCampaign],
+    });
+
+    const { queryByTestId } = render(<CampaignsPreview />);
+
+    expect(queryByTestId('campaign-tile-non-featured')).toBeNull();
+  });
+
+  it('renders all featured active campaigns when multiple exist', () => {
+    const firstCampaign = createTestCampaign({
+      id: 'first-1',
+      name: 'First Campaign',
+      startDate: pastDate.toISOString(),
+      endDate: futureDate.toISOString(),
+      featured: true,
+    });
+    const secondCampaign = createTestCampaign({
+      id: 'second-1',
+      name: 'Second Campaign',
+      startDate: pastDate.toISOString(),
+      endDate: futureDate.toISOString(),
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [firstCampaign, secondCampaign],
+    });
+
+    const { getByTestId, getAllByTestId } = render(<CampaignsPreview />);
+
+    expect(getByTestId('campaign-tile-first-1')).toBeOnTheScreen();
+    expect(getByTestId('campaign-tile-second-1')).toBeOnTheScreen();
+
+    const tiles = getAllByTestId(/^campaign-tile-/);
+    expect(tiles).toHaveLength(2);
+  });
+
+  it('renders the standard image CampaignTile for a featured upcoming campaign', () => {
+    const upcomingCampaign = createTestCampaign({
+      id: 'upcoming-featured',
+      name: 'Soon Campaign',
+      startDate: futureDate.toISOString(),
+      endDate: furtherFutureDate.toISOString(),
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [upcomingCampaign],
+    });
+
+    const { getByTestId } = render(<CampaignsPreview />);
+
+    expect(getByTestId('campaign-tile-upcoming-featured')).toBeOnTheScreen();
+    expect(
+      getByTestId('campaign-tile-upcoming-featured').props.accessibilityState,
+    ).toEqual({ disabled: false });
+  });
+
+  it('renders SEASON_1 campaign type as interactive', () => {
+    const season1Campaign = createTestCampaign({
+      id: 'season-1',
+      name: 'Season 1 Campaign',
+      type: CampaignType.SEASON_1,
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [season1Campaign],
+    });
+
+    const { getByTestId } = render(<CampaignsPreview />);
+
+    const tile = getByTestId('campaign-tile-season-1');
+    expect(tile.props.accessibilityState.disabled).toBe(false);
+  });
+
+  it('renders unsupported campaign types as non-interactive', () => {
+    const unknownCampaign = createTestCampaign({
+      id: 'unknown-1',
+      name: 'Unknown Campaign',
+      type: 'UNKNOWN_TYPE' as CampaignType,
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [unknownCampaign],
+    });
+
+    const { getByTestId } = render(<CampaignsPreview />);
+
+    const tile = getByTestId('campaign-tile-unknown-1');
+    expect(tile.props.accessibilityState.disabled).toBe(true);
+  });
+
+  it('renders supported campaign types as interactive', () => {
+    const ondoCampaign = createTestCampaign({
+      id: 'ondo-1',
+      name: 'Ondo Campaign',
+      type: CampaignType.ONDO_HOLDING,
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [ondoCampaign],
+    });
+
+    const { getByTestId } = render(<CampaignsPreview />);
+
+    const tile = getByTestId('campaign-tile-ondo-1');
+    expect(tile.props.accessibilityState.disabled).toBe(false);
+  });
+
+  it('navigates to campaigns view when the title header is pressed', () => {
+    const activeCampaign = createTestCampaign({
+      id: 'active-1',
+      name: 'Active Campaign',
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [activeCampaign],
+    });
+
+    const { getByText } = render(<CampaignsPreview />);
+    fireEvent.press(getByText('Campaigns'));
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.REWARDS_FLOW, {
+      screen: Routes.REWARDS_CAMPAIGNS_VIEW,
+      params: undefined,
+    });
+  });
+
+  it('navigates to campaigns view even when no featured campaigns exist', () => {
+    mockUseRewardCampaigns.mockReturnValue(mockHookDefaults);
+
+    const { getByText } = render(<CampaignsPreview />);
+    fireEvent.press(getByText('Campaigns'));
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.REWARDS_FLOW, {
+      screen: Routes.REWARDS_CAMPAIGNS_VIEW,
+      params: undefined,
+    });
+  });
+
+  it('collapses multiple MONEY_ACCOUNT_SWEEPSTAKES campaigns into one featured tile', () => {
+    const week1Start = new Date(FIXED_NOW.getTime() - 3 * DAY_MS);
+    const week1End = new Date(FIXED_NOW.getTime() + 4 * DAY_MS);
+    const week2Start = week1End;
+    const week2End = new Date(week2Start.getTime() + 7 * DAY_MS);
+
+    const week1 = createTestCampaign({
+      id: 'mas-week-1',
+      name: 'Money Account Sweepstakes',
+      type: CampaignType.MONEY_ACCOUNT_SWEEPSTAKES,
+      startDate: week1Start.toISOString(),
+      endDate: week1End.toISOString(),
+      featured: true,
+    });
+    const week2 = createTestCampaign({
+      id: 'mas-week-2',
+      name: 'Money Account Sweepstakes',
+      type: CampaignType.MONEY_ACCOUNT_SWEEPSTAKES,
+      startDate: week2Start.toISOString(),
+      endDate: week2End.toISOString(),
+      featured: true,
+    });
+    mockUseRewardCampaigns.mockReturnValue({
+      ...mockHookDefaults,
+      campaigns: [week1, week2],
+    });
+
+    const { getAllByTestId, queryByTestId } = render(<CampaignsPreview />);
+
+    const tiles = getAllByTestId(/^campaign-tile-/);
+    expect(tiles).toHaveLength(1);
+    expect(getAllByTestId('campaign-tile-mas-week-1')).toHaveLength(1);
+    expect(queryByTestId('campaign-tile-mas-week-2')).toBeNull();
+  });
+});

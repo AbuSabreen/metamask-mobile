@@ -4,6 +4,14 @@ import {
   OrderOrderTypeEnum,
 } from '@consensys/on-ramp-sdk/dist/API';
 import {
+  DepositOrder,
+  DepositOrderType,
+  DepositCryptoCurrency,
+  DepositPaymentMethod,
+  DepositRegion,
+} from '../../components/UI/Ramp/types/legacyDeposit';
+import type { RampsOrder } from '@metamask/ramps-controller';
+import {
   addAuthenticationUrl,
   addFiatCustomIdData,
   addFiatOrder,
@@ -15,14 +23,19 @@ import {
   resetFiatOrders,
   setFiatOrdersGetStartedAGG,
   setFiatOrdersGetStartedSell,
+  setFiatOrdersGetStartedDeposit,
   setFiatOrdersPaymentMethodAGG,
   setFiatOrdersRegionAGG,
+  setFiatOrdersRegionDeposit,
+  setFiatOrdersCryptoCurrencyDeposit,
+  setFiatOrdersPaymentMethodDeposit,
   updateFiatCustomIdData,
   updateFiatOrder,
   updateActivationKey,
   updateOnRampNetworks,
   setFiatSellTxHash,
   removeFiatSellTxHash,
+  setHasAgreedTransakNativePolicy,
 } from '.';
 import {
   FIAT_ORDER_PROVIDERS,
@@ -52,10 +65,11 @@ export interface FiatOrder {
   txHash?: string; // Transaction hash
   sellTxHash?: string; // Sell transaction hash the user has sent
   excludeFromPurchases: boolean; // Exclude from purchases
-  orderType: OrderOrderTypeEnum; // Order type
+  orderType: OrderOrderTypeEnum | DepositOrderType; // Order type
   errorCount?: number; // Number of errors
   lastTimeFetched?: number; // Last time fetched
-  data: Order | WyreOrder; // Original provider data
+  forceUpdate?: boolean; // Force update when processing
+  data: Order | WyreOrder | DepositOrder | RampsOrder; // Original provider data
 }
 
 export interface CustomIdData {
@@ -67,6 +81,8 @@ export interface CustomIdData {
   errorCount: number;
   orderType: OrderOrderTypeEnum;
   expired?: boolean;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   order?: Record<string, any>;
 }
 
@@ -80,9 +96,15 @@ export interface FiatOrdersState {
   customOrderIds: CustomIdData[];
   networks: AggregatorNetwork[];
   selectedRegionAgg: Country | null;
+  selectedRegionDeposit: DepositRegion | null;
+  selectedCryptoCurrencyDeposit: DepositCryptoCurrency | null;
+  selectedPaymentMethodDeposit: DepositPaymentMethod | null;
   selectedPaymentMethodAgg: string | null;
   getStartedAgg: boolean;
   getStartedSell: boolean;
+  getStartedDeposit: boolean;
+  /** Unified Buy / Transak native: user agreed to policy copy on the verify-identity explainer screen */
+  hasAgreedTransakNativePolicy: boolean;
   authenticationUrls: string[];
   activationKeys: ActivationKey[];
 }
@@ -95,9 +117,13 @@ export const ACTIONS = {
   FIAT_SET_COUNTRY: 'FIAT_SET_COUNTRY',
   // aggregator actions
   FIAT_SET_REGION_AGG: 'FIAT_SET_REGION_AGG',
+  FIAT_SET_REGION_DEPOSIT: 'FIAT_SET_REGION_DEPOSIT',
+  FIAT_SET_CRYPTO_CURRENCY_DEPOSIT: 'FIAT_SET_CRYPTO_CURRENCY_DEPOSIT',
+  FIAT_SET_PAYMENT_METHOD_DEPOSIT: 'FIAT_SET_PAYMENT_METHOD_DEPOSIT',
   FIAT_SET_PAYMENT_METHOD_AGG: 'FIAT_SET_PAYMENT_METHOD_AGG',
   FIAT_SET_GETSTARTED_AGG: 'FIAT_SET_GETSTARTED_AGG',
   FIAT_SET_GETSTARTED_SELL: 'FIAT_SET_GETSTARTED_SELL',
+  FIAT_SET_GETSTARTED_DEPOSIT: 'FIAT_SET_GETSTARTED_DEPOSIT',
   FIAT_ADD_CUSTOM_ID_DATA: 'FIAT_ADD_CUSTOM_ID_DATA',
   FIAT_UPDATE_CUSTOM_ID_DATA: 'FIAT_UPDATE_CUSTOM_ID_DATA',
   FIAT_REMOVE_CUSTOM_ID_DATA: 'FIAT_REMOVE_CUSTOM_ID_DATA',
@@ -109,6 +135,8 @@ export const ACTIONS = {
   FIAT_UPDATE_NETWORKS: 'FIAT_UPDATE_NETWORKS',
   FIAT_SET_SELL_TX_HASH: 'FIAT_SET_SELL_TX_HASH',
   FIAT_REMOVE_SELL_TX_HASH: 'FIAT_REMOVE_SELL_TX_HASH',
+  FIAT_SET_HAS_AGREED_TRANSAK_NATIVE_POLICY:
+    'FIAT_SET_HAS_AGREED_TRANSAK_NATIVE_POLICY',
 } as const;
 
 export type Action =
@@ -117,9 +145,13 @@ export type Action =
   | ReturnType<typeof removeFiatOrder>
   | ReturnType<typeof updateFiatOrder>
   | ReturnType<typeof setFiatOrdersRegionAGG>
+  | ReturnType<typeof setFiatOrdersRegionDeposit>
+  | ReturnType<typeof setFiatOrdersCryptoCurrencyDeposit>
+  | ReturnType<typeof setFiatOrdersPaymentMethodDeposit>
   | ReturnType<typeof setFiatOrdersPaymentMethodAGG>
   | ReturnType<typeof setFiatOrdersGetStartedAGG>
   | ReturnType<typeof setFiatOrdersGetStartedSell>
+  | ReturnType<typeof setFiatOrdersGetStartedDeposit>
   | ReturnType<typeof addFiatCustomIdData>
   | ReturnType<typeof updateFiatCustomIdData>
   | ReturnType<typeof removeFiatCustomIdData>
@@ -130,7 +162,8 @@ export type Action =
   | ReturnType<typeof removeActivationKey>
   | ReturnType<typeof updateOnRampNetworks>
   | ReturnType<typeof setFiatSellTxHash>
-  | ReturnType<typeof removeFiatSellTxHash>;
+  | ReturnType<typeof removeFiatSellTxHash>
+  | ReturnType<typeof setHasAgreedTransakNativePolicy>;
 
 export type Region = Country & State;
 

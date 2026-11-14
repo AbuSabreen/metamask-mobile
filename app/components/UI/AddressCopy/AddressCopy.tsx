@@ -1,104 +1,85 @@
 // Third parties dependencies
-import React from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import React, { useCallback } from 'react';
+import { useSelector } from 'react-redux';
+import { View } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import { AccountGroupId } from '@metamask/account-api';
 
 // External dependencies
-import Text, {
-  TextColor,
-  TextVariant,
-} from '../../../component-library/components/Texts/Text';
-import { TouchableOpacity } from 'react-native-gesture-handler';
-import { formatAddress } from '../../../util/address';
-import Icon, {
-  IconColor,
+import {
+  ButtonIcon,
+  ButtonIconSize,
   IconName,
-  IconSize,
-} from '../../../component-library/components/Icons/Icon';
-import ClipboardManager from '../../../core/ClipboardManager';
-import { showAlert } from '../../../actions/alert';
-import { protectWalletModalVisible } from '../../../actions/user';
+} from '@metamask/design-system-react-native';
+
 import { strings } from '../../../../locales/i18n';
-import { Platform, View } from 'react-native';
-import { MetaMetricsEvents } from '../../../core/Analytics';
 import { useStyles } from '../../../component-library/hooks';
-import generateTestId from '../../../../wdio/utils/generateTestId';
+import { WalletViewSelectorsIDs } from '../../Views/Wallet/WalletView.testIds';
+import { selectSelectedAccountGroupId } from '../../../selectors/multichainAccounts/accountTreeController';
+import { createAddressListNavigationDetails } from '../../Views/MultichainAccounts/AddressList';
+import { AddressListViewedSource } from '../../../util/analytics/addressListViewedTracking';
+import { navigateWithDetails } from '../../../util/navigation/navUtils';
 
 // Internal dependencies
 import styleSheet from './AddressCopy.styles';
-import { AddressCopyProps } from './AddressCopy.types';
+import type { AddressCopyProps } from './AddressCopy.types';
 import {
-  selectIdentities,
-  selectSelectedAddress,
-} from '../../../selectors/preferencesController';
-import { useMetrics } from '../../../components/hooks/useMetrics';
+  endTrace,
+  trace,
+  TraceName,
+  TraceOperation,
+} from '../../../util/trace';
 
-const AddressCopy = ({ formatAddressType = 'full' }: AddressCopyProps) => {
+const AddressCopy = ({ iconColor, hitSlop, testID }: AddressCopyProps) => {
   const { styles } = useStyles(styleSheet, {});
+  const navigation = useNavigation<AppNavigationProp>();
 
-  const dispatch = useDispatch();
-  const { trackEvent } = useMetrics();
+  const selectedAccountGroupId = useSelector(selectSelectedAccountGroupId);
 
-  const handleShowAlert = (config: {
-    isVisible: boolean;
-    autodismiss: number;
-    content: string;
-    data: { msg: string };
-  }) => dispatch(showAlert(config));
+  const endShowAccountAddressListTrace = useCallback(() => {
+    endTrace({ name: TraceName.ShowAccountAddressList });
+  }, []);
 
-  const handleProtectWalletModalVisible = () =>
-    dispatch(protectWalletModalVisible());
-
-  /**
-   * A string that represents the selected address
-   */
-  const selectedAddress = useSelector(selectSelectedAddress);
-
-  /**
-   * An object containing each identity in the format address => account
-   */
-  const identities = useSelector(selectIdentities);
-
-  const account = {
-    ...identities[selectedAddress],
-    address: selectedAddress,
-  };
-
-  const copyAccountToClipboard = async () => {
-    await ClipboardManager.setString(selectedAddress);
-    handleShowAlert({
-      isVisible: true,
-      autodismiss: 1500,
-      content: 'clipboard-alert',
-      data: { msg: strings('account_details.account_copied_to_clipboard') },
+  const handleOnPress = useCallback(() => {
+    // Start the trace before navigating to the address list to include the
+    // navigation and render times in the trace.
+    trace({
+      name: TraceName.ShowAccountAddressList,
+      op: TraceOperation.AccountUi,
+      tags: {
+        screen: 'navbar.copy_address',
+      },
     });
-    setTimeout(() => handleProtectWalletModalVisible(), 2000);
 
-    trackEvent(MetaMetricsEvents.WALLET_COPIED_ADDRESS);
-  };
+    try {
+      navigateWithDetails(
+        navigation,
+        createAddressListNavigationDetails({
+          groupId: selectedAccountGroupId as AccountGroupId,
+          title: `${strings(
+            'multichain_accounts.address_list.receiving_address',
+          )}`,
+          source: AddressListViewedSource.COPY_BUTTON,
+          onLoad: endShowAccountAddressListTrace,
+        }),
+      );
+    } catch (error) {
+      endShowAccountAddressListTrace();
+      throw error;
+    }
+  }, [endShowAccountAddressListTrace, navigation, selectedAccountGroupId]);
+
   return (
-    <View style={styles.address}>
-      <Text variant={TextVariant.BodySMBold}>
-        {strings('asset_overview.address')}:
-      </Text>
-      <TouchableOpacity
-        style={styles.copyButton}
-        onPress={copyAccountToClipboard}
-        {...generateTestId(Platform, 'wallet-account-copy-button')}
-      >
-        <Text
-          color={TextColor.Primary}
-          variant={TextVariant.BodySM}
-          {...generateTestId(Platform, 'wallet-account-address')}
-        >
-          {formatAddress(account.address, formatAddressType)}
-        </Text>
-        <Icon
-          name={IconName.Copy}
-          size={IconSize.Sm}
-          color={IconColor.Primary}
-          style={styles.icon}
-        />
-      </TouchableOpacity>
+    <View style={styles.address} testID={testID}>
+      <ButtonIcon
+        iconName={IconName.Copy}
+        size={ButtonIconSize.Md}
+        iconProps={iconColor && { color: iconColor }}
+        onPress={handleOnPress}
+        testID={WalletViewSelectorsIDs.ACCOUNT_COPY_BUTTON}
+        hitSlop={hitSlop}
+      />
     </View>
   );
 };

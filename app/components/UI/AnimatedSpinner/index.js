@@ -8,9 +8,26 @@ import { ThemeContext, mockTheme } from '../../../util/theme';
 export const SpinnerSize = {
   MD: 'MD',
   SM: 'SM',
+  XS: 'XS',
 };
 
 const measures = {
+  [SpinnerSize.XS]: {
+    Android: {
+      height: 24.5,
+      width: 24.5,
+    },
+    iOS: {
+      height: 22,
+      width: 22,
+    },
+    static: {
+      borderRadius: 36,
+      width: 18,
+      height: 18,
+      iconSize: 18,
+    },
+  },
   [SpinnerSize.SM]: {
     Android: {
       height: 30.5,
@@ -65,6 +82,11 @@ const createStyles = (colors, measures) =>
     },
   });
 
+/**
+ * @deprecated Use `Spinner` from `@metamask/design-system-react-native`
+ * instead. This component relies on the deprecated `react-native-vector-icons`
+ * package and predates the design-system spinner.
+ */
 export default class AnimatedSpinner extends PureComponent {
   spinValue = new Animated.Value(0);
 

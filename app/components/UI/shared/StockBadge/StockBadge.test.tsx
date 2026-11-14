@@ -1,0 +1,213 @@
+import React from 'react';
+import { render, waitFor } from '@testing-library/react-native';
+import { IconName } from '@metamask/design-system-react-native';
+import StockBadge from './StockBadge';
+import { useRWAToken } from '../../Bridge/hooks/useRWAToken';
+import { BridgeToken } from '../../Bridge/types';
+
+const tokenWithRwaData: BridgeToken = {
+  address: '0x123',
+  symbol: 'TEST',
+  decimals: 18,
+  chainId: '0x1',
+  rwaData: {
+    instrumentType: 'stock',
+    market: { nextOpen: '2024-01-01', nextClose: '2024-01-02' },
+  },
+};
+
+jest.mock('../../Bridge/hooks/useRWAToken');
+
+jest.mock('../../../../../locales/i18n', () => ({
+  strings: jest.fn((key: string) => {
+    const translations: Record<string, string> = {
+      'token.stock': 'Stock',
+    };
+    return translations[key] || key;
+  }),
+}));
+
+const mockUseRWAToken = useRWAToken as jest.MockedFunction<typeof useRWAToken>;
+
+describe('StockBadge', () => {
+  const mockIsTokenTradingOpen = jest.fn();
+  const mockIsStockToken = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockIsStockToken.mockImplementation((token?: BridgeToken) =>
+      Boolean(token),
+    );
+    mockUseRWAToken.mockReturnValue({
+      isStockToken: mockIsStockToken,
+      isTokenTradingOpen: mockIsTokenTradingOpen,
+      isTokenTradable: jest.fn(() => true),
+      isTokenMarketFullyClosed: jest.fn(() => false),
+    });
+  });
+
+  describe('rendering', () => {
+    it('renders badge with "Stock" text', async () => {
+      mockIsTokenTradingOpen.mockReturnValue(true);
+
+      const { getByText } = render(<StockBadge />);
+
+      await waitFor(() => {
+        expect(getByText('Stock')).toBeOnTheScreen();
+      });
+    });
+
+    it('renders badge container', async () => {
+      mockIsTokenTradingOpen.mockReturnValue(true);
+
+      const { getByText } = render(<StockBadge />);
+
+      await waitFor(() => {
+        const textElement = getByText('Stock');
+        expect(textElement).toBeOnTheScreen();
+      });
+    });
+
+    it('renders a known label localized', () => {
+      mockIsTokenTradingOpen.mockReturnValue(true);
+
+      const { getByText } = render(<StockBadge label="stock" />);
+
+      expect(getByText('Stock')).toBeOnTheScreen();
+    });
+
+    it('renders an unknown label as provided', () => {
+      mockIsTokenTradingOpen.mockReturnValue(true);
+
+      const { getByText } = render(<StockBadge label="ETF" />);
+
+      expect(getByText('ETF')).toBeOnTheScreen();
+    });
+  });
+
+  describe('clock icon visibility', () => {
+    it('displays clock icon when trading is NOT open', async () => {
+      mockIsTokenTradingOpen.mockReturnValue(false);
+
+      const { UNSAFE_queryByProps } = render(
+        <StockBadge
+          token={{
+            ...tokenWithRwaData,
+            rwaData: {
+              ...tokenWithRwaData.rwaData,
+              market: { nextOpen: '2024-01-02', nextClose: '2024-01-01' },
+            },
+          }}
+        />,
+      );
+
+      await waitFor(() => {
+        const clockIcon = UNSAFE_queryByProps({
+          name: IconName.AfterHours,
+        });
+        expect(clockIcon).toBeTruthy();
+      });
+    });
+
+    it('does NOT display clock icon when trading IS open', async () => {
+      mockIsTokenTradingOpen.mockReturnValue(true);
+
+      const { UNSAFE_queryByProps } = render(
+        <StockBadge token={tokenWithRwaData} />,
+      );
+
+      await waitFor(() => {
+        const clockIcon = UNSAFE_queryByProps({
+          name: IconName.AfterHours,
+        });
+        expect(clockIcon).toBeNull();
+      });
+    });
+
+    it('does NOT display clock icon for tokens that are not stocks', () => {
+      mockIsStockToken.mockReturnValue(false);
+      mockIsTokenTradingOpen.mockReturnValue(false);
+
+      const { UNSAFE_queryByProps } = render(
+        <StockBadge
+          token={{
+            ...tokenWithRwaData,
+            rwaData: {
+              instrumentType: 'unspecified',
+              market: { nextOpen: '', nextClose: '' },
+            },
+          }}
+          label="Stock"
+        />,
+      );
+
+      expect(UNSAFE_queryByProps({ name: IconName.AfterHours })).toBeNull();
+    });
+
+    it('does NOT display clock icon when no token is provided', async () => {
+      const { UNSAFE_queryByProps } = render(<StockBadge />);
+
+      await waitFor(() => {
+        const clockIcon = UNSAFE_queryByProps({
+          name: IconName.AfterHours,
+        });
+        expect(clockIcon).toBeNull();
+      });
+    });
+  });
+
+  describe('token handling', () => {
+    it('calls isTokenTradingOpen', async () => {
+      mockIsTokenTradingOpen.mockReturnValue(true);
+
+      render(<StockBadge token={tokenWithRwaData} />);
+
+      await waitFor(() => {
+        expect(mockIsTokenTradingOpen).toHaveBeenCalledWith(tokenWithRwaData);
+      });
+    });
+  });
+
+  describe('trading status updates', () => {
+    it('updates icon visibility when trading status changes to closed', async () => {
+      mockIsTokenTradingOpen.mockReturnValue(false);
+
+      const { UNSAFE_queryByProps } = render(
+        <StockBadge
+          token={
+            {
+              ...tokenWithRwaData,
+              rwaData: {
+                ...tokenWithRwaData.rwaData,
+                market: { nextOpen: '2024-01-02', nextClose: '2024-01-01' },
+              },
+            } as BridgeToken
+          }
+        />,
+      );
+
+      await waitFor(() => {
+        const clockIcon = UNSAFE_queryByProps({
+          name: IconName.AfterHours,
+        });
+        expect(clockIcon).toBeTruthy();
+      });
+    });
+
+    it('updates icon visibility when trading status changes to open', async () => {
+      mockIsTokenTradingOpen.mockReturnValue(true);
+
+      const { UNSAFE_queryByProps, getByText } = render(
+        <StockBadge token={tokenWithRwaData} />,
+      );
+
+      await waitFor(() => {
+        expect(getByText('Stock')).toBeOnTheScreen();
+        const clockIcon = UNSAFE_queryByProps({
+          name: IconName.AfterHours,
+        });
+        expect(clockIcon).toBeNull();
+      });
+    });
+  });
+});

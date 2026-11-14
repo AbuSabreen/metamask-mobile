@@ -1,11 +1,6 @@
 import React, { useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import {
-  StyleSheet,
-  TouchableOpacity,
-  View,
-  ViewPropTypes,
-} from 'react-native';
+import { StyleSheet, TouchableOpacity, View } from 'react-native';
 import AndroidMediaPlayer from './AndroidMediaPlayer';
 import Video from 'react-native-video';
 import Device from '../../../util/device';
@@ -20,6 +15,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { useStyles } from '../../../component-library/hooks';
+import { ViewPropTypes } from 'deprecated-react-native-prop-types';
 
 const styleSheet = ({ theme: { colors }, vars: { isPlaying } }) =>
   StyleSheet.create({
@@ -38,7 +34,7 @@ const styleSheet = ({ theme: { colors }, vars: { isPlaying } }) =>
       alignItems: 'center',
     },
     videoControlsStyle: {
-      ...StyleSheet.absoluteFillObject,
+      ...StyleSheet.absoluteFill,
       justifyContent: 'center',
       alignItems: 'center',
     },
@@ -56,6 +52,14 @@ const styleSheet = ({ theme: { colors }, vars: { isPlaying } }) =>
     },
   });
 
+/**
+ * @param {object} props
+ * @param {any} props.uri
+ * @param {any} [props.style]
+ * @param {() => void} [props.onClose]
+ * @param {any} [props.textTracks]
+ * @param {any} [props.selectedTextTrack]
+ */
 function MediaPlayer({ uri, style, onClose, textTracks, selectedTextTrack }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -136,7 +140,7 @@ function MediaPlayer({ uri, style, onClose, textTracks, selectedTextTrack }) {
             <Animated.View style={videoControlsStyle}>
               <View style={styles.playButtonCircle}>
                 <Ionicons
-                  name={isPlaying ? 'ios-play' : 'ios-pause'}
+                  name={isPlaying ? 'play' : 'pause'}
                   size={24}
                   color={colors.overlay.inverse}
                   style={styles.playIcon}
@@ -151,7 +155,7 @@ function MediaPlayer({ uri, style, onClose, textTracks, selectedTextTrack }) {
               onPress={onPressVolumeControls}
             >
               <Ionicons
-                name={isMuted ? 'ios-volume-off' : 'ios-volume-mute'}
+                name={isMuted ? 'volume-off' : 'volume-mute'}
                 size={isMuted ? 22 : 28}
                 color={colors.overlay.inverse}
               />
@@ -186,10 +190,6 @@ MediaPlayer.propTypes = {
    * The selected text track to display by id, language, title, index
    */
   selectedTextTrack: PropTypes.object,
-};
-
-MediaPlayer.defaultProps = {
-  onError: () => null,
 };
 
 export default MediaPlayer;

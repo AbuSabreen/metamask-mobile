@@ -1,7 +1,8 @@
 /* eslint-disable react/prop-types */
+
 // Third party dependencies.
 import React, { useState, useCallback } from 'react';
-import { GestureResponderEvent } from 'react-native';
+import { GestureResponderEvent, StyleProp, TextStyle } from 'react-native';
 
 // External dependencies.
 import Text from '../../../../Texts/Text';
@@ -21,6 +22,20 @@ import {
   DEFAULT_BUTTONLINK_LABEL_COLOR_ERROR_PRESSED,
 } from './ButtonLink.constants';
 
+/**
+ * @deprecated ButtonLink has been replaced by design-system components.
+ *
+ * - Use `TextButton` for inline links within text flows.
+ * - Use `Button` with `variant={ButtonVariant.Tertiary}` for standalone link‑style buttons (e.g., CTAs, headers, separators).
+ *
+ * Examples:
+ * Inline: <Text>Forgot your password? <TextButton onPress={...}>Reset</TextButton></Text>
+ * Standalone: <Button variant={ButtonVariant.Tertiary} onPress={...}>Forgot password?</Button>
+ *
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/TextButton/README.md | TextButton}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/Button/README.md | Button}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#textbutton-component-buttonlink Migration docs}
+ */
 const ButtonLink: React.FC<ButtonLinkProps> = ({
   style,
   onPressIn,
@@ -28,6 +43,7 @@ const ButtonLink: React.FC<ButtonLinkProps> = ({
   isDanger = false,
   size = DEFAULT_BUTTONLINK_SIZE,
   label,
+  labelTextVariant = DEFAULT_BUTTONLINK_LABEL_TEXTVARIANT,
   ...props
 }) => {
   const [pressed, setPressed] = useState(false);
@@ -55,13 +71,13 @@ const ButtonLink: React.FC<ButtonLinkProps> = ({
         ? DEFAULT_BUTTONLINK_LABEL_COLOR_ERROR_PRESSED
         : DEFAULT_BUTTONLINK_LABEL_COLOR_ERROR
       : pressed
-      ? DEFAULT_BUTTONLINK_LABEL_COLOR_PRESSED
-      : DEFAULT_BUTTONLINK_LABEL_COLOR;
+        ? DEFAULT_BUTTONLINK_LABEL_COLOR_PRESSED
+        : DEFAULT_BUTTONLINK_LABEL_COLOR;
 
   const renderLabel = () =>
     typeof label === 'string' ? (
       <Text
-        variant={DEFAULT_BUTTONLINK_LABEL_TEXTVARIANT}
+        variant={labelTextVariant}
         color={getLabelColor()}
         style={pressed && styles.pressedText}
       >
@@ -75,13 +91,13 @@ const ButtonLink: React.FC<ButtonLinkProps> = ({
     <>
       {size === ButtonSize.Auto ? (
         <Text
-          style={styles.base}
+          style={styles.base as StyleProp<TextStyle>}
           suppressHighlighting
           onPressIn={triggerOnPressedIn}
           onPressOut={triggerOnPressedOut}
           accessibilityRole="link"
           accessible
-          {...props}
+          {...(props as object)}
         >
           {renderLabel()}
         </Text>

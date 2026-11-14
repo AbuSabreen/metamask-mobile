@@ -1,0 +1,232 @@
+import React from 'react';
+import { fireEvent, within } from '@testing-library/react-native';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import SearchTokenResults from './SearchTokenResults';
+import { ImportTokenViewSelectorsIDs } from '../../ImportAssetView.testIds';
+import { NATIVE_SWAPS_TOKEN_ADDRESS } from '../../../../../constants/bridge';
+import { getImportAssetKey, ImportAsset } from '../../utils/utils';
+
+jest.mock('../../../../../util/networks', () => ({
+  ...jest.requireActual('../../../../../util/networks'),
+  getNetworkImageSource: jest.fn().mockReturnValue('mockedImageSource'),
+}));
+
+jest.mock('../../../../UI/AssetOverview/Balance/Balance', () => ({
+  NetworkBadgeSource: jest.fn().mockReturnValue('mockedImageSource'),
+}));
+
+const mockToken = {
+  address: '0xdac17f958d2ee523a2206206994597c13d831ec7',
+  symbol: 'USDT',
+  name: 'Tether USD',
+  image: 'https://example.com/usdt.png',
+  decimals: 6,
+  chainId: '0x1' as const,
+};
+
+const mockInitialState = {
+  engine: { backgroundState: { ...backgroundState } },
+};
+
+const mockHandleSelectAsset = jest.fn();
+
+const defaultProps = {
+  searchResults: [mockToken] as ImportAsset[],
+  handleSelectAsset: mockHandleSelectAsset,
+  selectedAsset: [] as ImportAsset[],
+  searchQuery: '',
+  alreadyAddedTokens: undefined as Set<string> | undefined,
+  isLoading: false,
+};
+
+const renderComponent = (overrides: Partial<typeof defaultProps> = {}) =>
+  renderWithProvider(<SearchTokenResults {...defaultProps} {...overrides} />, {
+    state: mockInitialState,
+  });
+
+describe('SearchTokenResults', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('shows skeleton loaders when loading', () => {
+    const { queryByText, queryByTestId } = renderComponent({
+      isLoading: true,
+    });
+
+    expect(queryByText('Tether USD')).toBeNull();
+    expect(
+      queryByTestId(ImportTokenViewSelectorsIDs.SEARCH_TOKEN_RESULT),
+    ).toBeNull();
+  });
+
+  it('shows empty description when no results and no query', () => {
+    const { getByText } = renderComponent({
+      searchResults: [],
+      searchQuery: '',
+    });
+
+    expect(getByText('Search for any token and import it')).toBeOnTheScreen();
+  });
+
+  it('shows "no tokens found" when no results but has query', () => {
+    const { getByText } = renderComponent({
+      searchResults: [],
+      searchQuery: 'USDT',
+    });
+
+    expect(
+      getByText("We couldn't find any tokens with that name."),
+    ).toBeOnTheScreen();
+  });
+
+  it('offers to add a custom token when a search has no results', () => {
+    const onAddCustomToken = jest.fn();
+    const { getByTestId } = renderWithProvider(
+      <SearchTokenResults
+        {...defaultProps}
+        searchResults={[]}
+        searchQuery="USDT"
+        onAddCustomToken={onAddCustomToken}
+      />,
+      { state: mockInitialState },
+    );
+
+    fireEvent.press(
+      getByTestId(ImportTokenViewSelectorsIDs.EMPTY_STATE_CUSTOM_TOKEN_BUTTON),
+    );
+
+    expect(onAddCustomToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not offer a custom token when there is no search query', () => {
+    const { queryByTestId } = renderWithProvider(
+      <SearchTokenResults
+        {...defaultProps}
+        searchResults={[]}
+        searchQuery=""
+        onAddCustomToken={jest.fn()}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(
+      queryByTestId(
+        ImportTokenViewSelectorsIDs.EMPTY_STATE_CUSTOM_TOKEN_BUTTON,
+      ),
+    ).toBeNull();
+  });
+
+  it('renders token name and symbol from search results', () => {
+    const { getByText } = renderComponent();
+
+    expect(getByText('Tether USD')).toBeOnTheScreen();
+    expect(getByText('USDT')).toBeOnTheScreen();
+  });
+
+  it('calls handleSelectAsset when a token is pressed', () => {
+    const { getByTestId } = renderComponent();
+
+    fireEvent.press(
+      getByTestId(ImportTokenViewSelectorsIDs.SEARCH_TOKEN_RESULT),
+    );
+
+    expect(mockHandleSelectAsset).toHaveBeenCalledWith(mockToken);
+  });
+
+  it('disables already-added tokens and does not call handleSelectAsset', () => {
+    const alreadyAddedTokens = new Set([
+      getImportAssetKey(mockToken.chainId, mockToken.address),
+    ]);
+
+    const { getByTestId } = renderComponent({
+      alreadyAddedTokens,
+    });
+
+    const listItem = getByTestId(
+      ImportTokenViewSelectorsIDs.SEARCH_TOKEN_RESULT,
+    );
+
+    expect(listItem).toBeDisabled();
+    expect(listItem).toHaveProp('accessibilityRole', 'checkbox');
+    expect(listItem).toHaveProp('accessibilityState', {
+      checked: true,
+      disabled: true,
+    });
+
+    fireEvent.press(listItem);
+    expect(mockHandleSelectAsset).not.toHaveBeenCalled();
+  });
+
+  it('treats the native token as already added', () => {
+    const { getByTestId } = renderComponent({
+      searchResults: [
+        { ...mockToken, address: NATIVE_SWAPS_TOKEN_ADDRESS },
+      ] as ImportAsset[],
+    });
+
+    expect(
+      getByTestId(ImportTokenViewSelectorsIDs.SEARCH_TOKEN_RESULT),
+    ).toBeDisabled();
+  });
+
+  it('keeps selection on the correct token when search results reorder', () => {
+    const tokenA = {
+      ...mockToken,
+      address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      symbol: 'AAA',
+      name: 'Token A',
+    };
+    const tokenB = {
+      ...mockToken,
+      address: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      symbol: 'BBB',
+      name: 'Token B',
+      chainId: '0x89' as const,
+    };
+
+    const { getAllByTestId, rerender } = renderComponent({
+      searchResults: [tokenA, tokenB] as ImportAsset[],
+      selectedAsset: [tokenA] as ImportAsset[],
+      searchQuery: 'token',
+    });
+
+    const findRowByTokenName = (name: string) => {
+      const row = getAllByTestId(
+        ImportTokenViewSelectorsIDs.SEARCH_TOKEN_RESULT,
+      ).find((candidate) => within(candidate).queryByText(name));
+      if (!row) {
+        throw new Error(`Row for token "${name}" not found`);
+      }
+      return row;
+    };
+
+    expect(findRowByTokenName('Token A')).toHaveProp(
+      'accessibilityState',
+      expect.objectContaining({ checked: true }),
+    );
+    expect(findRowByTokenName('Token B')).toHaveProp(
+      'accessibilityState',
+      expect.objectContaining({ checked: false }),
+    );
+
+    rerender(
+      <SearchTokenResults
+        {...defaultProps}
+        searchResults={[tokenB, tokenA] as ImportAsset[]}
+        selectedAsset={[tokenA] as ImportAsset[]}
+        searchQuery="token"
+      />,
+    );
+
+    expect(findRowByTokenName('Token A')).toHaveProp(
+      'accessibilityState',
+      expect.objectContaining({ checked: true }),
+    );
+    expect(findRowByTokenName('Token B')).toHaveProp(
+      'accessibilityState',
+      expect.objectContaining({ checked: false }),
+    );
+  });
+});

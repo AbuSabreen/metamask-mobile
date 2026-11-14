@@ -1,0 +1,93 @@
+import type { Json } from '@metamask/utils';
+
+/**
+ * Build-time rollout flag for consolidated Basic Functionality. Remote flags
+ * are unavailable while Basic Functionality is off, so those wallets fall back
+ * to this flag to receive the migration notice.
+ */
+export function isBftcConsolidationBuildEnabled(): boolean {
+  return process.env.MM_BFTC_CONSOLIDATION_ENABLED === 'true';
+}
+
+/**
+ * Build-time gate for the Money MPC keyring stub. When enabled, the Money MPC
+ * keyring builders are registered with the `KeyringController`.
+ *
+ * The variable is inlined from `.js.env` at build time; restart Metro after
+ * changing it. Registration stays fenced while no released build can hold a
+ * Money MPC keyring in its vault — see `buildMpcMoneyKeyringBuilder`.
+ */
+export function isMpcMoneyKeyringBuildEnabled(): boolean {
+  return process.env.MM_MONEY_MPC_KEYRING_ENABLED === 'true';
+}
+
+/**
+ * Feature flag names that can be overridden in development tools.
+ * These correspond to remote feature flags that have selector implementations
+ * in app/selectors/featureFlagController/
+ */
+export enum FeatureFlagNames {
+  otaUpdatesEnabled = 'otaUpdatesEnabled',
+  fullPageAccountList = 'fullPageAccountList',
+  assetsDefiPositionsEnabled = 'assetsDefiPositionsEnabled',
+  assetsMemecoinTdpV1 = 'assetsMemecoinTdpV1',
+  defiControllerV2 = 'defiControllerV2',
+  tokenDetailsV2Buttons = 'tokenDetailsV2Buttons',
+  tokenDetailsV2ButtonLayout = 'tokenDetailsV2ButtonLayout',
+  complianceEnabled = 'complianceEnabled',
+  legacyIosGoogleConfigEnabled = 'legacyIosGoogleConfigEnabled',
+  googleLoginIosUnsupportedBlockingEnabled = 'googleLoginIosUnsupportedBlockingEnabled',
+  telegramLoginEnabled = 'telegram_login_enabled',
+  tronClaimUnstakedTrxButtonEnabled = 'tronClaimUnstakedTrxButtonEnabled',
+  addDeviceSyncEnabled = 'addDeviceSyncEnabled',
+  hapticsKillSwitch = 'hapticsKillSwitch',
+  ledgerDmk = 'ledgerDmk',
+  tokenDetailsBrandRefresh = 'tokenDetailsBrandRefresh',
+  crossmintApplePayCheckout = 'crossmintApplePayCheckout',
+  nativeTabBarEnabled = 'nativeTabBarEnabled',
+  predictBrandRefresh = 'predictBrandRefresh',
+  homeInterimHeaderNavBar = 'homeInterimHeaderNavBar',
+  homeBrandRefreshSurfaces = 'homeBrandRefreshSurfaces',
+  moneyBrandRefresh = 'moneyBrandRefresh',
+  moneyVbaPendingActivityEnabled = 'moneyVbaPendingActivityEnabled',
+  moneyVbaCompletedActivityEnabled = 'moneyVbaCompletedActivityEnabled',
+  perpsBrandRefresh = 'perpsBrandRefresh',
+  exploreBrandRefresh = 'exploreBrandRefresh',
+  glassHeaders = 'glassHeaders',
+  mfaUiKit = 'mfaUiKit',
+}
+
+/** Minimum expected app version required for QR add-device account sync. Will update if extends */
+export const ADD_DEVICE_SYNC_MINIMUM_VERSION = '9.0.0';
+
+/** Minimum expected app version required for Ledger DMK (Device Management Key). */
+export const LEDGER_DMK_MINIMUM_VERSION = '8.2.0';
+
+export const DEFAULT_FEATURE_FLAG_VALUES: Partial<
+  Record<FeatureFlagNames, Json>
+> = {
+  [FeatureFlagNames.assetsDefiPositionsEnabled]: true,
+  [FeatureFlagNames.assetsMemecoinTdpV1]: { enabled: false },
+  [FeatureFlagNames.defiControllerV2]: { enabled: false },
+  [FeatureFlagNames.tokenDetailsV2Buttons]: false,
+  [FeatureFlagNames.tokenDetailsV2ButtonLayout]: false,
+  [FeatureFlagNames.tronClaimUnstakedTrxButtonEnabled]: false,
+  [FeatureFlagNames.googleLoginIosUnsupportedBlockingEnabled]: false,
+  [FeatureFlagNames.addDeviceSyncEnabled]: {
+    enabled: false,
+    minimumVersion: ADD_DEVICE_SYNC_MINIMUM_VERSION,
+  },
+  [FeatureFlagNames.ledgerDmk]: {
+    enabled: false,
+    minimumVersion: null,
+  },
+  [FeatureFlagNames.telegramLoginEnabled]: false,
+  [FeatureFlagNames.moneyVbaPendingActivityEnabled]: {
+    enabled: false,
+    minimumVersion: null,
+  },
+  [FeatureFlagNames.moneyVbaCompletedActivityEnabled]: {
+    enabled: false,
+    minimumVersion: null,
+  },
+};

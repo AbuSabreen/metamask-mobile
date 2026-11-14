@@ -1,0 +1,376 @@
+import { useCallback } from 'react';
+import { BigNumber } from 'bignumber.js';
+import { useSelector } from 'react-redux';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import { ORIGIN_METAMASK } from '@metamask/controller-utils';
+import { Hex } from '@metamask/utils';
+import { TransactionType } from '@metamask/transaction-controller';
+import { addTransactionBatch } from '../../../../util/transaction-controller';
+import { selectMoneyAccountVaultConfig } from '../../../../selectors/featureFlagController/moneyAccount';
+import { selectPrimaryMoneyAccount } from '../../../../selectors/moneyAccountController';
+import { selectEvmAddress } from '../../../../selectors/accountsController';
+import { createMoneyAccountBatchId } from '../utils/createMoneyAccountBatchId';
+import {
+  buildMoneyAccountDepositBatch,
+  buildMoneyAccountWithdrawBatch,
+  getMoneyAccountDepositAssetAddress,
+} from '../utils/moneyAccountTransactions';
+import { getProviderByChainId } from '../../../../util/notifications/methods/common';
+import Logger from '../../../../util/Logger';
+import { showDevErrorAlert } from '../utils/devErrorAlert';
+import { isMonadMainnetChainId } from '../../../../util/networks';
+import Engine from '../../../../core/Engine';
+import NavigationService from '../../../../core/NavigationService/NavigationService';
+import Routes from '../../../../constants/navigation/Routes';
+import {
+  ConfirmationLoader,
+  type ConfirmationLaunchSource,
+} from '../../../Views/confirmations/components/confirm/confirm-component';
+import { useConfirmNavigation } from '../../../Views/confirmations/hooks/useConfirmNavigation';
+import { useMoneyAccountDepositPrefillEnabled } from '../../../Views/confirmations/hooks/transactions/useMoneyAccountDepositPrefillEnabled';
+import { ensureError } from '../../../../util/errorUtils';
+import { isUserRejectedError } from '../../../../util/errorHandling/isUserRejectedError';
+import useMoneyToasts from './useMoneyToasts';
+import { useMoneyAccountAvailability } from './useMoneyAccountAvailability';
+import {
+  clearMoneyAccountDepositIntent,
+  setMoneyAccountDepositIntent,
+  type MoneyAccountDepositIntent,
+} from '../utils/moneyAccountDepositIntent';
+
+export type { MoneyAccountDepositIntent };
+export {
+  clearMoneyAccountDepositIntent,
+  getMoneyAccountDepositIntent,
+} from '../utils/moneyAccountDepositIntent';
+
+const LOG_TAG = '[Money Account]';
+
+export interface InitiateDepositOptions {
+  /** Initial editable deposit amount in USD, automatically quoted for token deposits. */
+  amount?: string;
+  preferredPaymentToken?: {
+    address: Hex;
+    chainId: Hex;
+  };
+  intent?: MoneyAccountDepositIntent;
+  autoSelectFiatPayment?: boolean;
+  replaceConfirmation?: boolean;
+  forceBottomSheet?: boolean;
+  bottomSheetHeightPercentage?: number;
+  /**
+   * Where the deposit was started from. Carried to the confirmation so it can
+   * land somewhere other than the Money tab — see `navigateOnConfirm`.
+   */
+  launchedFrom?: ConfirmationLaunchSource;
+  transactionType?: TransactionType;
+  /**
+   * Optional batch id so a caller can subscribe to transaction events before
+   * `addTransactionBatch` runs and avoid missing the confirmed/rejected race.
+   */
+  batchId?: Hex;
+  onDepositSetupFailure?: (error: Error) => void;
+}
+
+function resolveNetworkClientId(chainId: Hex): string {
+  const networkClientId =
+    Engine.context.NetworkController.findNetworkClientIdByChainId(chainId);
+  if (!networkClientId) {
+    throw new Error(`${LOG_TAG} Network client not found for chain ${chainId}`);
+  }
+  return networkClientId;
+}
+
+function waitForNextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+function isMoneyConfirmationActive(forceBottomSheet = false): boolean {
+  return (
+    NavigationService.navigation.getCurrentRoute()?.name ===
+    (forceBottomSheet
+      ? Routes.CONFIRMATION_REQUEST_MODAL
+      : Routes.FULL_SCREEN_CONFIRMATIONS.REDESIGNED_CONFIRMATIONS)
+  );
+}
+
+export function useMoneyAccountDeposit() {
+  const vaultConfig = useSelector(selectMoneyAccountVaultConfig);
+  const primaryMoneyAccount = useSelector(selectPrimaryMoneyAccount);
+  const { assertMoneyAccountAccessible } = useMoneyAccountAvailability();
+  const isDepositPrefillEnabled = useMoneyAccountDepositPrefillEnabled();
+  const { navigateToConfirmation } = useConfirmNavigation();
+  const navigation = useNavigation<AppNavigationProp>();
+  const { showToast, MoneyToastOptions } = useMoneyToasts();
+
+  const initiateDeposit = useCallback(
+    async (options?: InitiateDepositOptions) => {
+      assertMoneyAccountAccessible();
+
+      const preferredPaymentToken = options?.preferredPaymentToken;
+      const getDepositSetup = () => {
+        if (!vaultConfig) {
+          throw new Error(`${LOG_TAG} Missing vault config`);
+        }
+        if (!primaryMoneyAccount?.address) {
+          throw new Error(`${LOG_TAG} Missing money account address`);
+        }
+        const moneyAccountAddress = primaryMoneyAccount.address;
+
+        const {
+          chainId,
+          boringVault,
+          tellerAddress,
+          accountantAddress,
+          lensAddress,
+        } = vaultConfig;
+
+        const chainIdHex = chainId as Hex;
+        const provider = getProviderByChainId(chainIdHex);
+        if (!provider) {
+          throw new Error(
+            `${LOG_TAG} No provider available for chain ${chainId}`,
+          );
+        }
+
+        return {
+          chainIdHex,
+          boringVault,
+          tellerAddress,
+          accountantAddress,
+          lensAddress,
+          provider,
+          moneyAccountAddress,
+          networkClientId: resolveNetworkClientId(chainIdHex),
+          isGasFeeSponsored: isMonadMainnetChainId(chainIdHex),
+        };
+      };
+
+      let depositSetup: ReturnType<typeof getDepositSetup>;
+      try {
+        depositSetup = getDepositSetup();
+      } catch (error) {
+        options?.onDepositSetupFailure?.(
+          ensureError(error, `${LOG_TAG} Deposit setup failed`),
+        );
+        throw error;
+      }
+
+      const batchId = options?.batchId ?? createMoneyAccountBatchId();
+      // Only record an explicit funding intent (card / addMusd). Generic deposits
+      // (e.g. the home "Add" button) are left unset so the toast derives the
+      // intent from the transaction's actual payment method instead of a guess.
+      if (options?.intent) {
+        setMoneyAccountDepositIntent(batchId, options.intent);
+      }
+
+      const explicitAmount = new BigNumber(options?.amount ?? '0');
+      const shouldQuoteExplicitAmount =
+        explicitAmount.isFinite() &&
+        explicitAmount.gt(0) &&
+        options?.intent !== 'card' &&
+        !options?.autoSelectFiatPayment;
+
+      const confirmationParams = {
+        amount: options?.amount,
+        loader: (
+          options?.amount !== undefined
+            ? shouldQuoteExplicitAmount
+            : isDepositPrefillEnabled(options?.intent)
+        )
+          ? ConfirmationLoader.PrefillCustomAmount
+          : ConfirmationLoader.AdvancedCustomAmount,
+        preferredPaymentToken,
+        autoSelectFiatPayment: options?.autoSelectFiatPayment,
+        launchedFrom: options?.launchedFrom,
+        forceBottomSheet: options?.forceBottomSheet,
+        bottomSheetHeightPercentage: options?.bottomSheetHeightPercentage,
+      };
+
+      // Navigate early for better UX; recover on failure below.
+      navigateToConfirmation({
+        ...confirmationParams,
+        stack: Routes.MONEY.CONFIRMATIONS_ROOT,
+        replace: options?.replaceConfirmation,
+      });
+
+      try {
+        // Allows confirmation skeleton to render immediately before setup work for immediate navigation.
+        await waitForNextFrame();
+
+        const { approveTx, depositTx } = await buildMoneyAccountDepositBatch({
+          amount: BigInt(0),
+          chainId: depositSetup.chainIdHex,
+          boringVault: depositSetup.boringVault,
+          tellerAddress: depositSetup.tellerAddress,
+          accountantAddress: depositSetup.accountantAddress,
+          lensAddress: depositSetup.lensAddress,
+          provider: depositSetup.provider,
+          initialiseWithoutData: true,
+        });
+
+        // We only set the transaction from the money account perspective.
+        // MM Pay selects the user's account and moves funds to the money account,
+        // so `from` must be the money account and `networkClientId` its chain.
+        await addTransactionBatch({
+          batchId,
+          disableHook: true,
+          disableSequential: true,
+          disableUpgrade: true,
+          from: depositSetup.moneyAccountAddress as Hex,
+          isGasFeeSponsored: depositSetup.isGasFeeSponsored,
+          isInternal: true,
+          networkClientId: depositSetup.networkClientId,
+          origin: ORIGIN_METAMASK,
+          requiredAssets: [
+            {
+              address: getMoneyAccountDepositAssetAddress(
+                depositSetup.chainIdHex,
+              ),
+              amount: '0x0' as Hex,
+              standard: 'erc20',
+            },
+          ],
+          skipInitialGasEstimate: true,
+          transactions: [
+            approveTx,
+            { ...depositTx, type: options?.transactionType ?? depositTx.type },
+          ],
+        });
+      } catch (error) {
+        const errorObj = ensureError(error, `${LOG_TAG} Deposit setup failed`);
+        clearMoneyAccountDepositIntent(batchId);
+        if (!isUserRejectedError(error, errorObj.message)) {
+          if (isMoneyConfirmationActive(options?.forceBottomSheet)) {
+            if (options?.forceBottomSheet) {
+              // The container ref routes Back to the focused confirmation,
+              // not the nested navigator that initiated the deposit.
+              NavigationService.navigation.goBack();
+            } else {
+              navigation.goBack();
+            }
+          }
+          showToast(
+            MoneyToastOptions.deposit.failed({ intent: options?.intent }),
+          );
+          Logger.error(errorObj, `${LOG_TAG} Deposit setup failed`);
+          showDevErrorAlert(`${LOG_TAG} Deposit setup failed`, errorObj);
+        }
+        // Rethrow so the caller can log the failed initiation.
+        throw error;
+      }
+    },
+    [
+      MoneyToastOptions.deposit,
+      assertMoneyAccountAccessible,
+      isDepositPrefillEnabled,
+      navigateToConfirmation,
+      navigation,
+      primaryMoneyAccount,
+      showToast,
+      vaultConfig,
+    ],
+  );
+
+  return { initiateDeposit };
+}
+
+export function useMoneyAccountWithdrawal() {
+  const vaultConfig = useSelector(selectMoneyAccountVaultConfig);
+  const primaryMoneyAccount = useSelector(selectPrimaryMoneyAccount);
+  const { assertMoneyAccountAccessible } = useMoneyAccountAvailability();
+  const recipient = useSelector(selectEvmAddress);
+  const { navigateToConfirmation } = useConfirmNavigation();
+  const navigation = useNavigation<AppNavigationProp>();
+  const { showToast, MoneyToastOptions } = useMoneyToasts();
+
+  const initiateWithdrawal = useCallback(async () => {
+    assertMoneyAccountAccessible();
+
+    if (!vaultConfig) {
+      throw new Error(`${LOG_TAG} Missing vault config`);
+    }
+    if (!primaryMoneyAccount?.address) {
+      throw new Error(`${LOG_TAG} Missing money account address`);
+    }
+    if (!recipient) {
+      throw new Error(`${LOG_TAG} Missing recipient EVM address`);
+    }
+
+    const { chainId, tellerAddress, accountantAddress } = vaultConfig;
+
+    const chainIdHex = chainId as Hex;
+    const provider = getProviderByChainId(chainIdHex);
+    if (!provider) {
+      throw new Error(`${LOG_TAG} No provider available for chain ${chainId}`);
+    }
+
+    const networkClientId = resolveNetworkClientId(chainIdHex);
+    const isGasFeeSponsored = isMonadMainnetChainId(chainIdHex);
+
+    // Show the confirmation skeleton while the withdrawal batch is created.
+    navigateToConfirmation({
+      loader: ConfirmationLoader.AdvancedCustomAmount,
+      stack: Routes.MONEY.CONFIRMATIONS_ROOT,
+    });
+
+    try {
+      // Allows confirmation skeleton to render immediately before setup work for immediate navigation.
+      await waitForNextFrame();
+
+      // Placeholder amount — MM Pay re-encodes both calls via
+      // `updateMoneyAccountWithdrawTokenAmount` once the user picks an amount.
+      const { withdrawTx, transferTx } = await buildMoneyAccountWithdrawBatch({
+        amount: BigInt(0),
+        chainId: chainIdHex,
+        tellerAddress: tellerAddress as Hex,
+        accountantAddress: accountantAddress as Hex,
+        moneyAccountAddress: primaryMoneyAccount.address as Hex,
+        recipient: recipient as Hex,
+        provider,
+      });
+
+      await addTransactionBatch({
+        disableHook: true,
+        disableSequential: true,
+        disableUpgrade: true,
+        from: primaryMoneyAccount.address as Hex,
+        isGasFeeSponsored,
+        isInternal: true,
+        networkClientId,
+        origin: ORIGIN_METAMASK,
+        skipInitialGasEstimate: true,
+        transactions: [withdrawTx, transferTx],
+      });
+    } catch (error) {
+      const errorObj = ensureError(
+        error,
+        `${LOG_TAG} Withdrawal transaction failed`,
+      );
+      if (!isUserRejectedError(error, errorObj.message)) {
+        if (isMoneyConfirmationActive()) {
+          navigation.goBack();
+        }
+        showToast(MoneyToastOptions.withdraw.failed());
+        Logger.error(errorObj, `${LOG_TAG} Withdrawal transaction failed`);
+        showDevErrorAlert(`${LOG_TAG} Withdrawal transaction failed`, errorObj);
+      }
+      // Rethrow so the caller can roll back navigation / surface a toast.
+      throw error;
+    }
+  }, [
+    MoneyToastOptions.withdraw,
+    assertMoneyAccountAccessible,
+    navigateToConfirmation,
+    navigation,
+    primaryMoneyAccount,
+    recipient,
+    showToast,
+    vaultConfig,
+  ]);
+
+  return { initiateWithdrawal };
+}

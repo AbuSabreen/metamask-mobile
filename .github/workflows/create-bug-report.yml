@@ -5,31 +5,48 @@ on: create
 jobs:
   create-bug-report:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Extract version from branch name if release branch
         id: extract_version
         run: |
-          if [[ "$GITHUB_REF" =~ ^refs/heads/release/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ "$GITHUB_REF" =~ ^refs/heads/release/[0-9]+\.[0-9]+\.[0-9]+(-ota)?$ ]]; then
             version="${GITHUB_REF#refs/heads/release/}"
+            # Strip `-ota` suffix: it is a branch-name convention only. Downstream
+            # (create-bug-report-issue.ts → isValidVersionFormat) expects strict X.Y.Z.
+            version="${version%-ota}"
             echo "New release branch($version), continue next steps"
-            echo "version=$version" >> "$GITHUB_ENV"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
           else
             echo "Not a release branch, skip next steps"
           fi
 
+      - name: Checkout repository
+        if: steps.extract_version.outputs.version
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        if: steps.extract_version.outputs.version
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Install dependencies with retry
+        if: steps.extract_version.outputs.version
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 #v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: cd .github/scripts && yarn --immutable
+
       - name: Create bug report issue on planning repo
-        if: env.version
-        run: |
-          payload=$(cat <<EOF
-          {
-            "title": "v${{ env.version }} Bug Report",
-            "body": "This bug report was automatically created by a GitHub action upon the creation of release branch \`release/${{ env.version }}\` (release cut).\n\n**Expected actions for release engineers:**\n\n1. Convert this issue into a Zenhub epic and link all bugs identified during the release regression testing phase to this epic.\n\n2. After completing the first regression run, move this epic to \"Regression Completed\" on the [Mobile Release Regression board](https://app.zenhub.com/workspaces/mobile-release-regression-6249e5242464b70013315a98/board?filterLogic=any&labels=release-${{ env.version }},release-task).\n\nNote that once the release is prepared for store submission, meaning the \`release/${{ env.version }}\` branch merges into \`main\`, another GitHub action will automatically close this epic.",
-            "labels": ["type-bug", "team-mobile-platform", "regression-RC-${{ env.version }}"]
-          }
-          EOF
-          )
-          curl -X POST \
-            -H "Authorization: token ${{ secrets.BUG_REPORT_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/MetaMask/mobile-planning/issues \
-            -d "$payload"
+        if: steps.extract_version.outputs.version
+        env:
+          BUG_REPORT_TOKEN: ${{ secrets.BUG_REPORT_TOKEN }}
+          RELEASES_GITHUB_PROJECT_BOARD_NUMBER: ${{ vars.RELEASES_GITHUB_PROJECT_BOARD_NUMBER }}
+          RELEASES_GITHUB_PROJECT_BOARD_VIEW_NUMBER: ${{ vars.RELEASES_GITHUB_PROJECT_BOARD_VIEW_NUMBER }}
+          RELEASE_VERSION: ${{ steps.extract_version.outputs.version }}
+        run: yarn create-bug-report-issue
+        working-directory: '.github/scripts'

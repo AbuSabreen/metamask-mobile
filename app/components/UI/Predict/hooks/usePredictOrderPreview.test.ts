@@ -1,0 +1,717 @@
+import React from 'react';
+import { renderHook, act, waitFor } from '@testing-library/react-native';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  usePredictOrderPreview,
+  type RefetchPreviewResult,
+} from './usePredictOrderPreview';
+import { OrderPreview, PreviewOrderParams, Side } from '../types';
+import { DEFAULT_FEE_COLLECTION_FLAG } from '../constants/flags';
+import { PREDICT_ERROR_CODES } from '../constants/errors';
+import Logger from '../../../../util/Logger';
+
+jest.mock('react-redux', () => ({
+  useSelector: (selector: (state: unknown) => unknown) => selector({}),
+}));
+
+const mockPreviewOrder = jest.fn();
+jest.mock('../../../../core/Engine', () => ({
+  context: {
+    PredictController: {
+      previewOrder: (...args: unknown[]) => mockPreviewOrder(...args),
+    },
+  },
+}));
+
+jest.mock('../../../../util/Logger', () => ({
+  error: jest.fn(),
+}));
+
+jest.mock('../../../../../locales/i18n', () => ({
+  strings: (key: string) => {
+    const translations: Record<string, string> = {
+      'predict.error_messages.preview_failed': 'Failed to preview order',
+      'predict.error_messages.unknown_error': 'An unknown error occurred',
+    };
+    return translations[key] || key;
+  },
+}));
+
+const createWrapper = () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const Wrapper = ({ children }: { children: React.ReactNode }) =>
+    React.createElement(QueryClientProvider, { client: queryClient }, children);
+  return { Wrapper, queryClient };
+};
+
+describe('usePredictOrderPreview', () => {
+  const mockPreview: OrderPreview = {
+    marketId: 'market-1',
+    outcomeId: 'outcome-1',
+    outcomeTokenId: 'token-1',
+    timestamp: Date.now(),
+    side: Side.BUY,
+    sharePrice: 0.5,
+    maxAmountSpent: 100,
+    minAmountReceived: 200,
+    slippage: 0.005,
+    tickSize: 0.01,
+    minOrderSize: 0.01,
+    negRisk: false,
+    fees: {
+      metamaskFee: 1,
+      providerFee: 1,
+      totalFee: 2,
+      totalFeePercentage: 4,
+      collector: DEFAULT_FEE_COLLECTION_FLAG.collector,
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    mockPreviewOrder.mockResolvedValue(mockPreview);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const defaultParams: PreviewOrderParams = {
+    marketId: 'market-1',
+    outcomeId: 'outcome-1',
+    outcomeTokenId: 'token-1',
+    side: Side.BUY,
+    size: 100,
+  };
+
+  describe('basic functionality', () => {
+    it('initializes with null preview and loading state', () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      expect(result.current.preview).toBeNull();
+      expect(result.current.isLoading).toBe(true);
+      expect(result.current.error).toBeNull();
+    });
+
+    it('calculates preview when size is valid', async () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      // Advance past debounce timer
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toEqual(mockPreview);
+      });
+
+      expect(mockPreviewOrder).toHaveBeenCalledWith({
+        marketId: 'market-1',
+        outcomeId: 'outcome-1',
+        outcomeTokenId: 'token-1',
+        side: Side.BUY,
+        size: 100,
+        positionId: undefined,
+      });
+
+      expect(result.current.isLoading).toBe(false);
+      expect(result.current.error).toBeNull();
+    });
+
+    it('does not calculate preview when size is 0', async () => {
+      const { Wrapper } = createWrapper();
+      const params = { ...defaultParams, size: 0 };
+      const { result } = renderHook(() => usePredictOrderPreview(params), {
+        wrapper: Wrapper,
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      expect(mockPreviewOrder).not.toHaveBeenCalled();
+      expect(result.current.preview).toBeNull();
+    });
+
+    it('does not calculate preview when size is negative', async () => {
+      const { Wrapper } = createWrapper();
+      const params = { ...defaultParams, size: -10 };
+      const { result } = renderHook(() => usePredictOrderPreview(params), {
+        wrapper: Wrapper,
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      expect(mockPreviewOrder).not.toHaveBeenCalled();
+      expect(result.current.preview).toBeNull();
+    });
+
+    it('calculates preview for SELL side', async () => {
+      const { Wrapper } = createWrapper();
+      mockPreviewOrder.mockResolvedValue({ ...mockPreview, side: Side.SELL });
+
+      const params = { ...defaultParams, side: Side.SELL };
+      const { result } = renderHook(() => usePredictOrderPreview(params), {
+        wrapper: Wrapper,
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toBeTruthy();
+      });
+
+      expect(mockPreviewOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ side: Side.SELL }),
+      );
+      expect(result.current.preview?.side).toBe(Side.SELL);
+    });
+  });
+
+  describe('isLoading state', () => {
+    it('returns true when preview is null and no error', () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      expect(result.current.preview).toBeNull();
+      expect(result.current.error).toBeNull();
+      expect(result.current.isLoading).toBe(true);
+    });
+
+    it('returns false when preview exists', async () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toEqual(mockPreview);
+      });
+
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('returns false when error exists', async () => {
+      const { Wrapper } = createWrapper();
+      mockPreviewOrder.mockRejectedValue(new Error('API Error'));
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeTruthy();
+      });
+
+      expect(result.current.preview).toBeNull();
+      expect(result.current.isLoading).toBe(false);
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('returns true when size is invalid', async () => {
+      const { Wrapper } = createWrapper();
+      const params = { ...defaultParams, size: 0 };
+      const { result } = renderHook(() => usePredictOrderPreview(params), {
+        wrapper: Wrapper,
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      expect(result.current.preview).toBeNull();
+      expect(result.current.isLoading).toBe(true);
+    });
+  });
+
+  describe('auto-refresh', () => {
+    it('does not auto-refresh when autoRefreshTimeout is not provided', async () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toBeTruthy();
+      });
+
+      expect(mockPreviewOrder).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+
+      expect(mockPreviewOrder).toHaveBeenCalledTimes(1);
+    });
+
+    it('auto-refreshes when autoRefreshTimeout is provided', async () => {
+      const { Wrapper } = createWrapper();
+      const params = { ...defaultParams, autoRefreshTimeout: 2000 };
+      const { result } = renderHook(() => usePredictOrderPreview(params), {
+        wrapper: Wrapper,
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toBeTruthy();
+      });
+
+      expect(mockPreviewOrder).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      await waitFor(() => {
+        expect(mockPreviewOrder).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
+  describe('error handling', () => {
+    it('does not log an error when preview loads from API', async () => {
+      const { Wrapper } = createWrapper();
+
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toEqual(mockPreview);
+      });
+
+      expect(result.current.error).toBeNull();
+      expect(Logger.error).not.toHaveBeenCalled();
+    });
+
+    it('handles preview calculation errors with localized message', async () => {
+      const { Wrapper } = createWrapper();
+      mockPreviewOrder.mockRejectedValue(new Error('Failed to calculate'));
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('Failed to preview order');
+      });
+
+      expect(result.current.preview).toBeNull();
+      expect(result.current.isLoading).toBe(false);
+
+      // Verify Sentry logging via Logger
+      expect(Logger.error).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          tags: { feature: 'Predict', component: 'usePredictOrderPreview' },
+        }),
+      );
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('handles non-Error exceptions with localized message', async () => {
+      const { Wrapper } = createWrapper();
+      mockPreviewOrder.mockRejectedValue('String error');
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('Failed to preview order');
+      });
+
+      expect(result.current.isLoading).toBe(false);
+
+      // Verify Logger is called even for non-Error exceptions
+      expect(Logger.error).toHaveBeenCalledWith(
+        expect.any(Error),
+        expect.objectContaining({
+          tags: { feature: 'Predict', component: 'usePredictOrderPreview' },
+        }),
+      );
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('handles known error codes with specific localized message', async () => {
+      const { Wrapper } = createWrapper();
+      mockPreviewOrder.mockRejectedValue(new Error('PREDICT_PREVIEW_FAILED'));
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('Failed to preview order');
+      });
+
+      expect(result.current.isLoading).toBe(false);
+
+      consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe('sticky error behavior', () => {
+    it('preserves error during background auto-refresh', async () => {
+      const { Wrapper } = createWrapper();
+      mockPreviewOrder.mockRejectedValue(new Error('Not enough shares'));
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      const params = { ...defaultParams, autoRefreshTimeout: 1000 };
+      const { result } = renderHook(() => usePredictOrderPreview(params), {
+        wrapper: Wrapper,
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('Failed to preview order');
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(1000);
+      });
+
+      expect(result.current.error).toBe('Failed to preview order');
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('clears error when auto-refresh succeeds after previous failure', async () => {
+      const { Wrapper } = createWrapper();
+      mockPreviewOrder.mockRejectedValue(new Error('Not enough shares'));
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      const params = { ...defaultParams, autoRefreshTimeout: 1000 };
+      const { result } = renderHook(() => usePredictOrderPreview(params), {
+        wrapper: Wrapper,
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('Failed to preview order');
+      });
+
+      mockPreviewOrder.mockResolvedValue(mockPreview);
+
+      await act(async () => {
+        jest.advanceTimersByTime(1000);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeNull();
+      });
+
+      expect(result.current.preview).toEqual(mockPreview);
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('clears error when size changes', async () => {
+      const { Wrapper } = createWrapper();
+      mockPreviewOrder.mockRejectedValue(new Error('Not enough shares'));
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      const { result, rerender } = renderHook(
+        (props: PreviewOrderParams) => usePredictOrderPreview(props),
+        { wrapper: Wrapper, initialProps: defaultParams },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('Failed to preview order');
+      });
+
+      mockPreviewOrder.mockResolvedValue(mockPreview);
+      rerender({ ...defaultParams, size: 200 });
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeNull();
+      });
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('returns false for isLoading when sticky error exists during refetch', async () => {
+      const { Wrapper } = createWrapper();
+      mockPreviewOrder.mockRejectedValue(new Error('Not enough shares'));
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      const params = { ...defaultParams, autoRefreshTimeout: 1000 };
+      const { result } = renderHook(() => usePredictOrderPreview(params), {
+        wrapper: Wrapper,
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeTruthy();
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(1000);
+      });
+
+      expect(result.current.isLoading).toBe(false);
+
+      consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe('parameter changes', () => {
+    it('reacts to outcomeTokenId changes', async () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () =>
+          usePredictOrderPreview({
+            ...defaultParams,
+            outcomeTokenId: 'new-token',
+          }),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toBeTruthy();
+      });
+
+      expect(mockPreviewOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ outcomeTokenId: 'new-token' }),
+      );
+    });
+
+    it('reacts to marketId changes', async () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () =>
+          usePredictOrderPreview({
+            ...defaultParams,
+            marketId: 'market-2',
+          }),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toBeTruthy();
+      });
+
+      expect(mockPreviewOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ marketId: 'market-2' }),
+      );
+    });
+  });
+
+  describe('refetchPreview', () => {
+    it('re-fetches the live book and resolves with the fresh preview', async () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toEqual(mockPreview);
+      });
+
+      const refreshedPreview = { ...mockPreview, sharePrice: 0.62 };
+      mockPreviewOrder.mockResolvedValue(refreshedPreview);
+
+      let refetchResult: RefetchPreviewResult | undefined;
+      await act(async () => {
+        refetchResult = await result.current.refetchPreview();
+      });
+
+      expect(mockPreviewOrder).toHaveBeenCalledTimes(2);
+      expect(refetchResult).toEqual({
+        status: 'ok',
+        preview: refreshedPreview,
+      });
+    });
+
+    it('resolves with unavailable when the re-fetch fails', async () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toEqual(mockPreview);
+      });
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+      mockPreviewOrder.mockRejectedValue(new Error('API Error'));
+
+      let refetchResult: RefetchPreviewResult | undefined;
+      await act(async () => {
+        refetchResult = await result.current.refetchPreview();
+      });
+
+      expect(refetchResult).toEqual({ status: 'unavailable' });
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('resolves with no_match when the book cannot match the order', async () => {
+      const { Wrapper } = createWrapper();
+      const { result } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      await waitFor(() => {
+        expect(result.current.preview).toEqual(mockPreview);
+      });
+
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+      mockPreviewOrder.mockRejectedValue(
+        new Error(PREDICT_ERROR_CODES.PREVIEW_NO_ORDER_MATCH_BUY),
+      );
+
+      let refetchResult: RefetchPreviewResult | undefined;
+      await act(async () => {
+        refetchResult = await result.current.refetchPreview();
+      });
+
+      expect(refetchResult).toEqual({ status: 'no_match' });
+
+      consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe('cleanup', () => {
+    it('cleans up on unmount', () => {
+      const { Wrapper } = createWrapper();
+      const { unmount } = renderHook(
+        () => usePredictOrderPreview(defaultParams),
+        { wrapper: Wrapper },
+      );
+
+      expect(() => unmount()).not.toThrow();
+    });
+  });
+});

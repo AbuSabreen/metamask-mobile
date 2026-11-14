@@ -1,22 +1,599 @@
 import { createSelector } from 'reselect';
 import { RootState } from '../reducers';
-import { createDeepEqualSelector } from './util';
+import {
+  selectPendingSmartTransactionsBySender,
+  selectPendingSmartTransactionsForSelectedAccountGroup,
+} from './smartTransactionsController';
+import { selectEvmAddress } from './accountsController';
+import { selectFirstPendingApproval } from './approvalController';
+import { selectSelectedAccountGroupEvmInternalAccount } from './multichainAccounts/accountTreeController';
+import {
+  TransactionMeta,
+  TransactionStatus,
+  TransactionType,
+  hasTransactionType,
+} from '@metamask/transaction-controller';
+import { Hex } from '@metamask/utils';
+import { SmartTransaction } from '@metamask/smart-transactions-controller';
+import { isMusdOnMoneyAccountChain } from '@metamask/money-account-utils';
+import { areAddressesEqual } from '../util/address';
+import { decodeErc20Transfer } from '../util/transactions/erc20-transfer';
+
+interface MetaMaskPayToken {
+  address: Hex;
+  chainId: Hex;
+}
+
+type LocalTransaction = TransactionMeta | SmartTransaction;
+const MONEY_DEPOSIT_TYPES = [TransactionType.moneyAccountDeposit];
+const MONEY_WITHDRAW_TYPES = [TransactionType.moneyAccountWithdraw];
+const EMPTY_TRANSACTIONS: TransactionMeta[] = [];
+const EMPTY_BATCH_TRANSACTION_COUNTS: Record<string, number> = {};
+
+function isTerminalFailedStatus(status: unknown): boolean {
+  return (
+    status === TransactionStatus.failed ||
+    status === TransactionStatus.rejected ||
+    status === TransactionStatus.dropped
+  );
+}
+
+// Extracted from UnifiedTransactionsView
+function dedupeTransactions(transactions: LocalTransaction[]) {
+  // Pre-scan: collect nonce keys that have at least one non-terminal-failed
+  // attempt (pending/submitted/confirmed). When a retry produces a fresh
+  // attempt at the same nonce, prior failed attempts are suppressed so the
+  // activity list shows only the latest live attempt. If every attempt is
+  // terminal-failed, the failure history remains visible (deduped by id).
+  const noncesWithLiveAttempt = new Set<string>();
+  for (const transaction of transactions) {
+    const { chainId, txParams, status, isTransfer } =
+      transaction as TransactionMeta;
+    if (isTransfer !== undefined) continue;
+    const { from, nonce } = txParams || {};
+    if (!from || nonce === undefined || nonce === null) continue;
+    if (isTerminalFailedStatus(status)) continue;
+    noncesWithLiveAttempt.add(
+      `${chainId}-${String(from).toLowerCase()}-${nonce}`,
+    );
+  }
+
+  const seenTransactions = new Set<string>();
+
+  return transactions.filter((transaction) => {
+    const { chainId, txParams, id, isTransfer, status } =
+      transaction as TransactionMeta;
+    const { from, nonce } = txParams || {};
+    const hash = 'hash' in transaction ? transaction.hash : undefined;
+    const isBridgeTransaction = transaction.type === TransactionType.bridge;
+    const hasNonce = nonce !== undefined && nonce !== null;
+    const isTerminalFailed = isTerminalFailedStatus(status);
+
+    if (!from || isTransfer !== undefined) {
+      return false;
+    }
+
+    const dedupeKeyPrefix = `${chainId}-${String(from).toLowerCase()}`;
+
+    // Hide prior failed attempts when a live attempt exists at the same nonce.
+    // Bridges dedupe by hash (cross-chain), so this nonce-based suppression
+    // doesn't apply to them.
+    if (isTerminalFailed && hasNonce && !isBridgeTransaction) {
+      const nonceKey = `${dedupeKeyPrefix}-${nonce}`;
+      if (noncesWithLiveAttempt.has(nonceKey)) {
+        return false;
+      }
+    }
+
+    // Retries reuse the same nonce. If no live attempt exists at this nonce,
+    // dedupe terminal-failed txs by id so multiple failed attempts remain
+    // visible side-by-side as failure history.
+    let dedupeKey: string;
+    if (isBridgeTransaction && hash) {
+      dedupeKey = `${dedupeKeyPrefix}-bridge-${hash.toLowerCase()}`;
+    } else if (hasNonce && !isTerminalFailed) {
+      dedupeKey = `${dedupeKeyPrefix}-${nonce}`;
+    } else {
+      dedupeKey = `${dedupeKeyPrefix}-${id}`;
+    }
+
+    if (seenTransactions.has(dedupeKey)) {
+      return false;
+    }
+
+    seenTransactions.add(dedupeKey);
+    return true;
+  });
+}
+
+function getNestedTransactionTypes(
+  transaction: TransactionMeta,
+): TransactionType[] {
+  if (!transaction.nestedTransactions) {
+    return [];
+  }
+
+  return transaction.nestedTransactions
+    .map((nestedTransaction) => nestedTransaction.type)
+    .filter((type): type is TransactionType => Boolean(type));
+}
+
+function matchesTransactionType(
+  transaction: TransactionMeta,
+  transactionType: string,
+): boolean {
+  return (
+    transaction.type === transactionType ||
+    transaction.originalType === transactionType ||
+    (Boolean(transaction.metamaskPay) &&
+      getNestedTransactionTypes(transaction).some(
+        (nestedTransactionType) => nestedTransactionType === transactionType,
+      ))
+  );
+}
 
 const selectTransactionControllerState = (state: RootState) =>
   state.engine.backgroundState.TransactionController;
 
-const selectTransactionsStrict = createSelector(
+export const selectTransactions = createSelector(
   selectTransactionControllerState,
-  (transactionControllerState) => transactionControllerState.transactions,
+  (transactionControllerState) =>
+    transactionControllerState?.transactions ?? EMPTY_TRANSACTIONS,
 );
 
-export const selectTransactions = createDeepEqualSelector(
-  selectTransactionsStrict,
-  (transactions) => transactions,
+/** Expected leg count per in-flight batch, keyed by batch ID. */
+export const selectBatchTransactionCounts = createSelector(
+  selectTransactionControllerState,
+  (transactionControllerState) =>
+    transactionControllerState?.batchTransactionCounts ??
+    EMPTY_BATCH_TRANSACTION_COUNTS,
 );
 
-export const selectNonReplacedTransactions = createDeepEqualSelector(
-  selectTransactionsStrict,
+const selectTransactionBatchesStrict = createSelector(
+  selectTransactionControllerState,
+  (transactionControllerState) =>
+    transactionControllerState?.transactionBatches,
+);
+
+export const selectRequiredTransactionIds = createSelector(
+  selectTransactions,
   (transactions) =>
-    transactions.filter((tx) => !(tx.replacedBy && tx.replacedById && tx.hash)),
+    new Set(transactions.flatMap((tx) => tx.requiredTransactionIds ?? [])),
+);
+
+export const selectRequiredTransactions = createSelector(
+  [selectTransactions, selectRequiredTransactionIds],
+  (transactions, requiredTransactionIds) =>
+    transactions.filter((tx) => requiredTransactionIds.has(tx.id)),
+);
+
+export const selectRequiredTransactionHashes = createSelector(
+  selectRequiredTransactions,
+  (transactions) =>
+    new Set(
+      transactions
+        .map((tx) => tx.hash?.toLowerCase())
+        .filter((hash): hash is string => Boolean(hash)),
+    ),
+);
+
+/**
+ * STX gas-token fee legs (`TransactionType.gasPayment`) are batch siblings of
+ * the user action. Redesigned Activity hides them as separate rows (TMCU-1064).
+ */
+export const selectGasPaymentTransactions = createSelector(
+  selectTransactions,
+  (transactions) =>
+    transactions.filter((tx) => tx.type === TransactionType.gasPayment),
+);
+
+export const selectGasPaymentTransactionIds = createSelector(
+  selectGasPaymentTransactions,
+  (gasPaymentTransactions) =>
+    new Set(gasPaymentTransactions.map((tx) => tx.id)),
+);
+
+export const selectGasPaymentTransactionHashes = createSelector(
+  selectGasPaymentTransactions,
+  (gasPaymentTransactions) =>
+    new Set(
+      gasPaymentTransactions
+        .map((tx) => tx.hash?.toLowerCase())
+        .filter((hash): hash is string => Boolean(hash)),
+    ),
+);
+
+/**
+ * Hashes that Activity API feeds should drop: MetaMask Pay / required children,
+ * plus gas-token fee legs when redesigned Activity is enabled (legacy keeps
+ * fee legs visible — it has no compensating gasToken fee UI).
+ */
+export const selectExcludedActivityTransactionHashes = createSelector(
+  [selectRequiredTransactionHashes, selectGasPaymentTransactionHashes],
+  (requiredHashes, gasPaymentHashes) =>
+    new Set([...requiredHashes, ...gasPaymentHashes]),
+);
+
+export const selectRelatedChainIdsByTransactionId = createSelector(
+  selectTransactions,
+  (transactions) => {
+    const transactionsById = new Map<string, TransactionMeta>(
+      transactions.map((tx) => [tx.id, tx]),
+    );
+
+    return new Map<string, string[]>(
+      transactions
+        .map((tx) => {
+          const childChainIds = (tx.requiredTransactionIds ?? []).map(
+            (childId) => transactionsById.get(childId)?.chainId,
+          );
+
+          const chainIds = [
+            tx.chainId,
+            tx.metamaskPay?.chainId,
+            ...childChainIds,
+          ]
+            .filter((chainId): chainId is Hex => Boolean(chainId))
+            .map((chainId) => chainId.toLowerCase());
+
+          return [tx.id, [...new Set(chainIds)]] satisfies [string, string[]];
+        })
+        .filter(([, chainIds]) => chainIds.length > 0),
+    );
+  },
+);
+
+function getMoneyWithdrawRecipients(transaction: TransactionMeta): string[] {
+  return (transaction.nestedTransactions ?? []).flatMap((nestedTransaction) => {
+    if (!isMusdOnMoneyAccountChain(nestedTransaction.to, transaction.chainId)) {
+      return [];
+    }
+    const transfer = decodeErc20Transfer(
+      nestedTransaction.data,
+      nestedTransaction.type,
+    );
+    if (!transfer) {
+      return [];
+    }
+    return [transfer.recipient];
+  });
+}
+
+/**
+ * Addresses related to each local transaction.
+ *
+ * MetaMask Pay parent transactions can be signed by a product account rather
+ * than the EOA shown in Activity. Required child senders identify the EOA that
+ * funded a Money deposit, while the nested ERC-20 recipient identifies the EOA
+ * receiving a Money withdrawal.
+ */
+const selectRelatedAddressesByTransactionId = createSelector(
+  selectTransactions,
+  (transactions) => {
+    const transactionsById = new Map<string, TransactionMeta>(
+      transactions.map((transaction) => [transaction.id, transaction]),
+    );
+
+    return new Map<string, string[]>(
+      transactions.flatMap((transaction) => {
+        const isMoneyDeposit = hasTransactionType(
+          transaction,
+          MONEY_DEPOSIT_TYPES,
+        );
+        const isMoneyWithdraw = hasTransactionType(
+          transaction,
+          MONEY_WITHDRAW_TYPES,
+        );
+        if (!isMoneyDeposit && !isMoneyWithdraw) {
+          return [];
+        }
+        const requiredTransactionSenders = isMoneyDeposit
+          ? (transaction.requiredTransactionIds ?? []).map(
+              (transactionId) =>
+                transactionsById.get(transactionId)?.txParams?.from,
+            )
+          : [];
+        const addresses = [
+          ...requiredTransactionSenders,
+          ...(isMoneyWithdraw ? getMoneyWithdrawRecipients(transaction) : []),
+        ]
+          .filter((address): address is string => Boolean(address))
+          .map((address) => address.toLowerCase());
+
+        return addresses.length
+          ? [
+              [transaction.id, [...new Set(addresses)]] satisfies [
+                string,
+                string[],
+              ],
+            ]
+          : [];
+      }),
+    );
+  },
+);
+
+export const selectHasUnapprovedTransactions = createSelector(
+  selectTransactions,
+  (transactions) =>
+    transactions.some((tx) => tx.status === TransactionStatus.unapproved),
+);
+
+/**
+ * A transaction is "replaced" once its speed-up/cancel replacement has fully
+ * committed: the controller sets `replacedBy` (replacement hash) and
+ * `replacedById` (replacement id) while the original keeps its own `hash`.
+ */
+function isReplacedTransaction(
+  transaction: Pick<TransactionMeta, 'replacedBy' | 'replacedById' | 'hash'>,
+): boolean {
+  const { replacedBy, replacedById, hash } = transaction;
+  return Boolean(replacedBy && replacedById && hash);
+}
+
+/** Whether a transaction belongs to the active account directly or through a related product flow. */
+function belongsToActiveAccount(
+  transaction: LocalTransaction,
+  activeEvmAddress: string | undefined,
+  relatedAddresses: string[] = [],
+): boolean {
+  if (!activeEvmAddress) {
+    return false;
+  }
+
+  const addresses = [transaction.txParams?.from, ...relatedAddresses].filter(
+    (address): address is string => Boolean(address),
+  );
+  return addresses.some((address) =>
+    areAddressesEqual(address, activeEvmAddress),
+  );
+}
+
+export const selectNonReplacedTransactions = createSelector(
+  selectTransactions,
+  (transactions) =>
+    transactions.filter((transaction) => !isReplacedTransaction(transaction)),
+);
+
+export const selectSortedTransactions = createSelector(
+  [selectNonReplacedTransactions, selectPendingSmartTransactionsBySender],
+  (nonReplacedTransactions, pendingSmartTransactions) =>
+    [...nonReplacedTransactions, ...pendingSmartTransactions].sort(
+      (a, b) => (b?.time ?? 0) - (a?.time ?? 0),
+    ),
+);
+
+function findLatestMetaMaskPayToken(
+  transactions: TransactionMeta[],
+  transactionType: string | undefined,
+  excludeTransactionId?: string,
+): MetaMaskPayToken | undefined {
+  if (!transactionType) {
+    return undefined;
+  }
+
+  const latestTransaction = [...transactions]
+    .reverse()
+    .find(
+      (transaction) =>
+        (!excludeTransactionId || transaction.id !== excludeTransactionId) &&
+        matchesTransactionType(transaction, transactionType) &&
+        transaction.metamaskPay?.tokenAddress &&
+        transaction.metamaskPay?.chainId,
+    );
+
+  const tokenAddress = latestTransaction?.metamaskPay?.tokenAddress;
+  const chainId = latestTransaction?.metamaskPay?.chainId;
+
+  if (!tokenAddress || !chainId) {
+    return undefined;
+  }
+
+  return {
+    address: tokenAddress,
+    chainId,
+  };
+}
+
+export const selectLastWithdrawTokenByType = createSelector(
+  selectNonReplacedTransactions,
+  (_state: RootState, transactionType?: string) => transactionType,
+  (transactions, transactionType): MetaMaskPayToken | undefined =>
+    findLatestMetaMaskPayToken(transactions, transactionType),
+);
+
+export const selectLastUsedPaymentMethod = createSelector(
+  selectNonReplacedTransactions,
+  (_state: RootState, transactionType?: string) => transactionType,
+  (
+    _state: RootState,
+    _transactionType?: string,
+    currentTransactionId?: string,
+  ) => currentTransactionId,
+  (
+    transactions,
+    transactionType,
+    currentTransactionId,
+  ): MetaMaskPayToken | undefined =>
+    findLatestMetaMaskPayToken(
+      transactions,
+      transactionType,
+      currentTransactionId,
+    ),
+);
+
+export const selectSortedEVMTransactionsForSelectedAccountGroup =
+  createSelector(
+    [
+      selectNonReplacedTransactions,
+      selectPendingSmartTransactionsForSelectedAccountGroup,
+    ],
+    (sortedTransactions, pendingSmartTransactions) =>
+      [...sortedTransactions, ...pendingSmartTransactions].sort(
+        (a, b) => (b?.time ?? 0) - (a?.time ?? 0),
+      ),
+  );
+
+export const selectLocalTransactions = createSelector(
+  [
+    selectNonReplacedTransactions,
+    selectPendingSmartTransactionsForSelectedAccountGroup,
+    selectSelectedAccountGroupEvmInternalAccount,
+    selectEvmAddress,
+    selectRequiredTransactionIds,
+    selectGasPaymentTransactionIds,
+    selectRelatedAddressesByTransactionId,
+  ],
+  (
+    nonReplacedTransactions,
+    pendingSmartTransactions,
+    groupEvmAccount,
+    fallbackEvmAddress,
+    requiredTransactionIds,
+    gasPaymentTransactionIds,
+    relatedAddressesByTransactionId,
+  ) => {
+    const activeEvmAddress = groupEvmAccount?.address ?? fallbackEvmAddress;
+
+    const transactions = nonReplacedTransactions.filter((transaction) => {
+      if (requiredTransactionIds.has(transaction.id)) {
+        return false;
+      }
+      if (gasPaymentTransactionIds.has(transaction.id)) {
+        return false;
+      }
+      return belongsToActiveAccount(
+        transaction,
+        activeEvmAddress,
+        relatedAddressesByTransactionId.get(transaction.id),
+      );
+    });
+
+    const pendingSmartTransactionsForActiveAddress =
+      pendingSmartTransactions.filter((transaction) =>
+        belongsToActiveAccount(transaction, activeEvmAddress),
+      );
+
+    return dedupeTransactions([
+      ...transactions,
+      ...pendingSmartTransactionsForActiveAddress,
+    ]).sort((a, b) => (b?.time ?? 0) - (a?.time ?? 0));
+  },
+);
+
+/**
+ * Replaced (speed-up/cancel) local transactions for the active account — the
+ * inverse of what {@link selectNonReplacedTransactions} keeps. The activity list
+ * drops these so it shows one row per nonce, but the redesigned list re-merges
+ * them into their nonce group so the original attempt still drives the group's
+ * type and amount (its live replacement drives the status). Address/required
+ * filtering mirrors {@link selectLocalTransactions} so the two align by nonce.
+ */
+export const selectReplacedLocalTransactions = createSelector(
+  [
+    selectTransactions,
+    selectSelectedAccountGroupEvmInternalAccount,
+    selectEvmAddress,
+    selectRequiredTransactionIds,
+    selectGasPaymentTransactionIds,
+    selectRelatedAddressesByTransactionId,
+  ],
+  (
+    transactions,
+    groupEvmAccount,
+    fallbackEvmAddress,
+    requiredTransactionIds,
+    gasPaymentTransactionIds,
+    relatedAddressesByTransactionId,
+  ) => {
+    const activeEvmAddress = groupEvmAccount?.address ?? fallbackEvmAddress;
+
+    return transactions.filter((transaction) => {
+      if (!isReplacedTransaction(transaction)) {
+        return false;
+      }
+      if (requiredTransactionIds.has(transaction.id)) {
+        return false;
+      }
+      if (gasPaymentTransactionIds.has(transaction.id)) {
+        return false;
+      }
+      return belongsToActiveAccount(
+        transaction,
+        activeEvmAddress,
+        relatedAddressesByTransactionId.get(transaction.id),
+      );
+    });
+  },
+);
+
+export const selectSwapsTransactions = createSelector(
+  selectTransactionControllerState,
+  (transactionControllerState) =>
+    //@ts-expect-error - This is populated at the app level, the TransactionController is not aware of this property
+    transactionControllerState?.swapsTransactions ?? {},
+);
+
+export const selectTransactionMetadataById = createSelector(
+  selectTransactions,
+  (_: RootState, id: string) => id,
+  (transactions, id) => transactions.find((tx) => tx.id === id),
+);
+
+export const selectCurrentTransaction = createSelector(
+  [
+    (state: RootState) => state,
+    selectFirstPendingApproval,
+    (_: RootState, overrideTransactionId?: string | null) =>
+      overrideTransactionId,
+  ],
+  (state, approvalRequest, overrideTransactionId) => {
+    const transactionId = overrideTransactionId ?? approvalRequest?.id;
+
+    return transactionId === undefined
+      ? undefined
+      : selectTransactionMetadataById(state, transactionId);
+  },
+);
+
+export const makeSelectTransactionMetadataById =
+  (id: string) => (state: RootState) =>
+    selectTransactionMetadataById(state, id);
+
+/**
+ * Local `TransactionMeta` for an on-chain hash. Needed by callers that only
+ * hold a hash — e.g. provider-backed activity rows (Perps) whose feed entry
+ * carries the tx hash but none of the local metadata.
+ */
+export const selectTransactionMetadataByHash = createSelector(
+  selectTransactions,
+  (_: RootState, hash: string | undefined) => hash,
+  (transactions, hash) =>
+    hash
+      ? transactions.find(
+          (tx) => tx.hash?.toLowerCase() === hash?.toLowerCase(),
+        )
+      : undefined,
+);
+
+export const selectTransactionBatchMetadataById = createSelector(
+  selectTransactionBatchesStrict,
+  (_: RootState, id: string) => id,
+  (transactionBatches, id) => transactionBatches?.find((tx) => tx.id === id),
+);
+
+export const selectTransactionsByIds = createSelector(
+  selectTransactions,
+  (_: RootState, ids: string[]) => ids,
+  (transactions, ids) =>
+    ids
+      .map((id) => transactions.find((tx) => tx.id === id))
+      .filter(Boolean) as TransactionMeta[],
+);
+
+export const selectTransactionsByBatchId = createSelector(
+  selectTransactions,
+  (_: RootState, batchId: string) => batchId,
+  (transactions, batchId) =>
+    transactions.filter((tx) => tx.batchId === batchId),
 );

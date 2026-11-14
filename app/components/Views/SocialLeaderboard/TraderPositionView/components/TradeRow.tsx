@@ -1,0 +1,189 @@
+import React, { useEffect, useRef } from 'react';
+import { Animated, Pressable, StyleSheet } from 'react-native';
+import {
+  AvatarIcon,
+  AvatarIconSeverity,
+  AvatarIconSize,
+  Box,
+  Text,
+  TextVariant,
+  TextColor,
+  FontWeight,
+  BoxFlexDirection,
+  BoxAlignItems,
+  IconName,
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import type { Trade } from '@metamask/social-controllers';
+import { strings } from '../../../../../../locales/i18n';
+import { ImpactMoment, playImpact } from '../../../../../util/haptics';
+import {
+  formatUsd,
+  formatTradeTime,
+} from '../../../../UI/SocialFeed/utils/formatters';
+import { isPerpTrade } from '../../../../UI/SocialFeed/utils/perp';
+import {
+  getTradeActionI18nKey,
+  type TradeAction,
+} from '../../../../UI/SocialFeed/utils/tradeAction';
+
+import TraderAvatar from '../../../../UI/SocialFeed/components/TraderAvatar';
+
+const AVATAR_SIZE = 32;
+/** How long the highlight lingers before fading out, ms. */
+const EMPHASIS_FADE_MS = 1600;
+
+export interface TradeRowProps {
+  trade: Trade;
+  /**
+   * Where this fill sits in the position's lifecycle, as provided by the API.
+   * Missing lifecycle metadata falls back to a neutral trade label.
+   */
+  action?: TradeAction;
+  traderImageUrl?: string;
+  traderAddress?: string;
+  traderProfileId?: string;
+  /**
+   * Replaces the trader photo with a plus or minus avatar. Plus when this fill
+   * adds to the position, minus when it leaves it, matching the amount's color.
+   */
+  showValueAvatar?: boolean;
+  /** When provided, the row is tappable (e.g. to focus the chart on this trade). */
+  onPress?: (trade: Trade) => void;
+  /**
+   * When true, the row briefly flashes a highlight — used by the reverse
+   * interaction (tapping a circle on the chart emphasizes its trade row).
+   */
+  isEmphasized?: boolean;
+}
+
+const TradeRow: React.FC<TradeRowProps> = ({
+  trade,
+  action,
+  traderImageUrl,
+  traderAddress,
+  traderProfileId,
+  showValueAvatar = false,
+  onPress,
+  isEmphasized = false,
+}) => {
+  const tw = useTailwind();
+  // Highlight overlay fades from fully-tinted to transparent when emphasized.
+  const highlight = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!isEmphasized) return;
+    highlight.setValue(1);
+    const animation = Animated.timing(highlight, {
+      toValue: 0,
+      duration: EMPHASIS_FADE_MS,
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [isEmphasized, highlight]);
+
+  const isEntry = trade.intent === 'enter';
+  const isPerp = isPerpTrade(trade);
+
+  const actionLabel = strings(
+    getTradeActionI18nKey('trader_position', isPerp, action),
+  );
+
+  return (
+    <Pressable
+      onPress={
+        onPress
+          ? () => {
+              playImpact(ImpactMoment.ChartCrosshair);
+              onPress(trade);
+            }
+          : undefined
+      }
+      disabled={!onPress}
+      accessibilityRole={onPress ? 'button' : undefined}
+      testID={`trade-row-${trade.transactionHash}`}
+      style={({ pressed }) =>
+        pressed && onPress ? { opacity: 0.6 } : undefined
+      }
+    >
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          StyleSheet.absoluteFill,
+          tw.style('bg-primary-muted'),
+          { opacity: highlight },
+        ]}
+      />
+      <Box
+        flexDirection={BoxFlexDirection.Row}
+        alignItems={BoxAlignItems.Center}
+        twClassName="px-4 py-3"
+      >
+        <Box
+          flexDirection={BoxFlexDirection.Row}
+          alignItems={BoxAlignItems.Center}
+          gap={4}
+          twClassName="flex-1 min-w-0 mr-3"
+        >
+          {showValueAvatar ? (
+            <AvatarIcon
+              iconName={isEntry ? IconName.Add : IconName.Minus}
+              severity={
+                isEntry ? AvatarIconSeverity.Success : AvatarIconSeverity.Danger
+              }
+              size={AvatarIconSize.Lg}
+              testID={`trade-row-value-avatar-${trade.transactionHash}`}
+            />
+          ) : (
+            <TraderAvatar
+              imageUrl={traderImageUrl}
+              address={traderAddress}
+              profileId={traderProfileId}
+              size={AVATAR_SIZE}
+            />
+          )}
+          <Box twClassName="flex-1 min-w-0">
+            <Box
+              flexDirection={BoxFlexDirection.Row}
+              alignItems={BoxAlignItems.Center}
+              gap={2}
+            >
+              <Text
+                variant={TextVariant.BodyMd}
+                fontWeight={FontWeight.Medium}
+                color={TextColor.TextDefault}
+                numberOfLines={1}
+                twClassName="shrink"
+              >
+                {actionLabel}
+              </Text>
+            </Box>
+            <Text
+              variant={TextVariant.BodySm}
+              color={TextColor.TextAlternative}
+              numberOfLines={1}
+            >
+              {formatTradeTime(trade.timestamp)}
+            </Text>
+          </Box>
+        </Box>
+
+        <Box alignItems={BoxAlignItems.End}>
+          <Text
+            variant={TextVariant.BodyMd}
+            fontWeight={FontWeight.Medium}
+            twClassName={
+              isEntry ? 'text-success-default' : 'text-error-default'
+            }
+          >
+            {formatUsd(
+              isEntry ? Math.abs(trade.usdCost) : -Math.abs(trade.usdCost),
+            )}
+          </Text>
+        </Box>
+      </Box>
+    </Pressable>
+  );
+};
+
+export default TradeRow;

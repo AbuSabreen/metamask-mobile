@@ -1,0 +1,500 @@
+import {
+  selectProfileAccountGroups,
+  selectProfileWalletSections,
+  selectMultichainWallets,
+  selectWallets,
+} from './wallets';
+import { RootState } from '../../reducers';
+import {
+  AccountGroupObject,
+  AccountTreeControllerState,
+  AccountWalletObject,
+} from '@metamask/account-tree-controller';
+import { DeepPartial } from 'redux';
+import { AccountGroupType, AccountWalletType } from '@metamask/account-api';
+import { KeyringTypes } from '@metamask/keyring-controller';
+
+// Mock KeyringTypes since it's not available in tests
+const mockKeyringTypes = {
+  HD_KEY_TREE: 'HD Key Tree' as KeyringTypes,
+};
+
+const WALLET_ID_1 = 'keyring:wallet1' as const;
+const WALLET_ID_2 = 'keyring:wallet2' as const;
+const MULTICHAIN_WALLET_ID_1 = 'entropy:wallet1' as const;
+const MULTICHAIN_WALLET_ID_2 = 'entropy:wallet2' as const;
+const GROUP_ID_1 = 'keyring:wallet1/0' as const;
+const GROUP_ID_2 = 'keyring:wallet2/1' as const;
+
+/**
+ * Helper function to create a base mock state with RemoteFeatureFlagController
+ */
+const createMockState = (
+  accountTreeController:
+    | DeepPartial<AccountTreeControllerState>
+    | undefined = {},
+): RootState =>
+  ({
+    engine: {
+      backgroundState: {
+        AccountTreeController: accountTreeController,
+      },
+    },
+  }) as unknown as RootState;
+
+describe('selectWallets', () => {
+  it('returns wallets array when multichain accounts feature is enabled and wallets exist', () => {
+    const wallet1: AccountWalletObject = {
+      id: WALLET_ID_1,
+      type: AccountWalletType.Keyring,
+      status: 'ready',
+      groups: {
+        [GROUP_ID_1]: {
+          accounts: ['account1' as const],
+          id: GROUP_ID_1,
+          type: AccountGroupType.SingleAccount,
+          metadata: {
+            name: 'Account 1',
+            pinned: false,
+            hidden: false,
+            lastSelected: 0,
+          },
+        },
+      },
+      metadata: {
+        name: 'Wallet 1',
+        keyring: {
+          type: mockKeyringTypes.HD_KEY_TREE,
+        },
+      },
+    };
+
+    const wallet2: AccountWalletObject = {
+      id: WALLET_ID_2,
+      type: AccountWalletType.Keyring,
+      status: 'ready',
+      groups: {
+        [GROUP_ID_2]: {
+          accounts: ['account2' as const],
+          id: GROUP_ID_2,
+          type: AccountGroupType.SingleAccount,
+          metadata: {
+            name: 'Account 2',
+            pinned: false,
+            hidden: false,
+            lastSelected: 0,
+          },
+        },
+      },
+      metadata: {
+        name: 'Wallet 2',
+        keyring: {
+          type: mockKeyringTypes.HD_KEY_TREE,
+        },
+      },
+    };
+
+    const walletMetadata = {
+      [WALLET_ID_1]: {
+        name: { value: 'Wallet 1', lastUpdatedAt: expect.any(Number) },
+      },
+      [WALLET_ID_2]: {
+        name: { value: 'Wallet 2', lastUpdatedAt: expect.any(Number) },
+      },
+    };
+
+    const groupMetadata = {
+      [GROUP_ID_1]: {
+        name: { value: 'Account 1', lastUpdatedAt: expect.any(Number) },
+      },
+      [GROUP_ID_2]: {
+        name: { value: 'Account 2', lastUpdatedAt: expect.any(Number) },
+      },
+    };
+
+    const mockState = createMockState({
+      accountTree: {
+        wallets: {
+          [WALLET_ID_1]: wallet1,
+          [WALLET_ID_2]: wallet2,
+        },
+      },
+      selectedAccountGroup: '',
+      accountGroupsMetadata: groupMetadata,
+      accountWalletsMetadata: walletMetadata,
+    });
+
+    const result = selectWallets(mockState);
+    expect(result).toEqual([wallet1, wallet2]);
+  });
+
+  it('returns empty array when multichain accounts feature is enabled but no wallets exist', () => {
+    const mockState = createMockState({
+      accountTree: {
+        wallets: {},
+      },
+    });
+
+    const result = selectWallets(mockState);
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty array when accountTree is undefined', () => {
+    const mockState = createMockState(undefined);
+    const result = selectWallets(mockState);
+    expect(result).toEqual([]);
+  });
+
+  it('handles wallets with empty groups', () => {
+    const walletWithEmptyGroups: AccountWalletObject = {
+      id: WALLET_ID_1,
+      type: AccountWalletType.Keyring,
+      status: 'ready',
+      metadata: {
+        name: 'Empty Groups Wallet',
+        keyring: {
+          type: mockKeyringTypes.HD_KEY_TREE,
+        },
+      },
+      groups: {},
+    };
+
+    const mockState = createMockState({
+      accountTree: {
+        wallets: {
+          [WALLET_ID_1]: walletWithEmptyGroups,
+        },
+      },
+    });
+
+    const result = selectWallets(mockState);
+    expect(result).toEqual([walletWithEmptyGroups]);
+    expect(result[0].groups).toEqual({});
+  });
+});
+
+describe('selectMultichainWallets', () => {
+  it('returns multichain wallets when multichain accounts feature is enabled and multichain wallets exist', () => {
+    const mockState = createMockState({
+      accountTree: {
+        wallets: {
+          [MULTICHAIN_WALLET_ID_1]: {
+            id: MULTICHAIN_WALLET_ID_1,
+            type: AccountWalletType.Entropy,
+            status: 'ready',
+            metadata: {
+              name: 'Multichain Wallet 1',
+              entropy: {
+                id: 'entropy1',
+              },
+            },
+            groups: {},
+          },
+          [MULTICHAIN_WALLET_ID_2]: {
+            id: MULTICHAIN_WALLET_ID_2,
+            type: AccountWalletType.Entropy,
+            status: 'ready',
+            metadata: {
+              name: 'Multichain Wallet 2',
+              entropy: {
+                id: 'entropy2',
+              },
+            },
+            groups: {},
+          },
+          [WALLET_ID_1]: {
+            id: WALLET_ID_1,
+            type: AccountWalletType.Keyring,
+            status: 'ready',
+            metadata: {
+              name: 'Wallet 1',
+              keyring: {
+                type: mockKeyringTypes.HD_KEY_TREE,
+              },
+            },
+            groups: {},
+          },
+          [WALLET_ID_2]: {
+            id: WALLET_ID_2,
+            type: AccountWalletType.Keyring,
+            status: 'ready',
+            metadata: {
+              name: 'Wallet 2',
+              keyring: {
+                type: mockKeyringTypes.HD_KEY_TREE,
+              },
+            },
+            groups: {},
+          },
+        },
+      },
+      selectedAccountGroup: '',
+    });
+    const result = selectMultichainWallets(mockState);
+    expect(result).toEqual([
+      {
+        id: MULTICHAIN_WALLET_ID_1,
+        type: AccountWalletType.Entropy,
+        status: 'ready',
+        metadata: {
+          name: 'Multichain Wallet 1',
+          entropy: {
+            id: 'entropy1',
+          },
+        },
+        groups: {},
+      },
+      {
+        id: MULTICHAIN_WALLET_ID_2,
+        type: AccountWalletType.Entropy,
+        status: 'ready',
+        metadata: {
+          name: 'Multichain Wallet 2',
+          entropy: {
+            id: 'entropy2',
+          },
+        },
+        groups: {},
+      },
+    ]);
+  });
+});
+
+describe('selectProfileAccountGroups', () => {
+  const PRIMARY = 'primary-entropy';
+  const PAIRED = 'paired-entropy';
+  const UNPAIRED = 'unpaired-entropy';
+
+  const buildGroup = (id: string, name: string, hidden = false) =>
+    ({
+      id,
+      type: AccountGroupType.MultichainAccount,
+      accounts: ['account1' as const],
+      metadata: { name, pinned: false, hidden, lastSelected: 0 },
+    }) as unknown as AccountGroupObject;
+
+  const buildEntropyWallet = (
+    entropySourceId: string,
+    groups: AccountGroupObject[],
+  ) =>
+    ({
+      id: `entropy:${entropySourceId}`,
+      type: AccountWalletType.Entropy,
+      status: 'ready',
+      metadata: { name: entropySourceId, entropy: { id: entropySourceId } },
+      groups: Object.fromEntries(groups.map((group) => [group.id, group])),
+    }) as unknown as AccountWalletObject;
+
+  const session = (identifierId: string, pairedIdentifierIds?: string[]) => ({
+    profile: {
+      identifierId,
+      canonicalProfileId: 'canonical',
+      ...(pairedIdentifierIds && {
+        pairedIdentifierIds: pairedIdentifierIds.map((id) => ({
+          id,
+          type: 'SRP',
+        })),
+      }),
+    },
+  });
+
+  const buildState = ({
+    wallets,
+    srpSessionData,
+  }: {
+    wallets: AccountWalletObject[];
+    srpSessionData?: Record<string, ReturnType<typeof session>>;
+  }) =>
+    ({
+      engine: {
+        backgroundState: {
+          AccountTreeController: {
+            accountTree: {
+              wallets: Object.fromEntries(
+                wallets.map((wallet) => [wallet.id, wallet]),
+              ),
+            },
+          },
+          AuthenticationController: { isSignedIn: true, srpSessionData },
+          KeyringController: {
+            isUnlocked: true,
+            keyrings: [
+              {
+                type: 'HD Key Tree',
+                accounts: [],
+                metadata: { id: PRIMARY, name: '' },
+              },
+            ],
+          },
+        },
+      },
+    }) as unknown as RootState;
+
+  const wallets = [
+    buildEntropyWallet(PRIMARY, [
+      buildGroup(`entropy:${PRIMARY}/0`, 'Primary 1'),
+      buildGroup(`entropy:${PRIMARY}/1`, 'Primary 2'),
+    ]),
+    buildEntropyWallet(PAIRED, [buildGroup(`entropy:${PAIRED}/0`, 'Paired')]),
+    buildEntropyWallet(UNPAIRED, [
+      buildGroup(`entropy:${UNPAIRED}/0`, 'Unpaired'),
+    ]),
+  ];
+
+  it('returns the groups of the primary SRP and the SRPs paired to it', () => {
+    const state = buildState({
+      wallets,
+      srpSessionData: {
+        [PRIMARY]: session('primary-identifier', ['paired-identifier']),
+        [PAIRED]: session('paired-identifier'),
+        [UNPAIRED]: session('unpaired-identifier'),
+      },
+    });
+
+    expect(selectProfileAccountGroups(state).map((group) => group.id)).toEqual([
+      `entropy:${PRIMARY}/0`,
+      `entropy:${PRIMARY}/1`,
+      `entropy:${PAIRED}/0`,
+    ]);
+  });
+
+  it('excludes hidden account groups', () => {
+    const state = buildState({
+      wallets: [
+        buildEntropyWallet(PRIMARY, [
+          buildGroup(`entropy:${PRIMARY}/0`, 'Visible'),
+          buildGroup(`entropy:${PRIMARY}/1`, 'Hidden', true),
+        ]),
+      ],
+      srpSessionData: { [PRIMARY]: session('primary-identifier') },
+    });
+
+    expect(selectProfileAccountGroups(state).map((group) => group.id)).toEqual([
+      `entropy:${PRIMARY}/0`,
+    ]);
+  });
+
+  it('returns only the primary SRP groups when there is no session data', () => {
+    const state = buildState({ wallets });
+
+    expect(selectProfileAccountGroups(state).map((group) => group.id)).toEqual([
+      `entropy:${PRIMARY}/0`,
+      `entropy:${PRIMARY}/1`,
+    ]);
+  });
+
+  it('returns an empty array when the profile SRPs have no wallet', () => {
+    const state = buildState({
+      wallets: [],
+      srpSessionData: { [PRIMARY]: session('primary-identifier') },
+    });
+
+    expect(selectProfileAccountGroups(state)).toEqual([]);
+  });
+});
+
+describe('selectProfileWalletSections', () => {
+  const PRIMARY = 'primary-entropy';
+  const PAIRED = 'paired-entropy';
+
+  const buildGroup = (id: string, name: string, hidden = false) =>
+    ({
+      id,
+      type: AccountGroupType.MultichainAccount,
+      accounts: ['account1' as const],
+      metadata: { name, pinned: false, hidden, lastSelected: 0 },
+    }) as unknown as AccountGroupObject;
+
+  const buildEntropyWallet = (
+    entropySourceId: string,
+    name: string,
+    groups: AccountGroupObject[],
+  ) =>
+    ({
+      id: `entropy:${entropySourceId}`,
+      type: AccountWalletType.Entropy,
+      status: 'ready',
+      metadata: { name, entropy: { id: entropySourceId } },
+      groups: Object.fromEntries(groups.map((group) => [group.id, group])),
+    }) as unknown as AccountWalletObject;
+
+  const session = (identifierId: string, pairedIdentifierIds?: string[]) => ({
+    profile: {
+      identifierId,
+      canonicalProfileId: 'canonical',
+      ...(pairedIdentifierIds && {
+        pairedIdentifierIds: pairedIdentifierIds.map((id) => ({
+          id,
+          type: 'SRP',
+        })),
+      }),
+    },
+  });
+
+  const buildState = (wallets: AccountWalletObject[]) =>
+    ({
+      engine: {
+        backgroundState: {
+          AccountTreeController: {
+            accountTree: {
+              wallets: Object.fromEntries(
+                wallets.map((wallet) => [wallet.id, wallet]),
+              ),
+            },
+          },
+          AuthenticationController: {
+            isSignedIn: true,
+            srpSessionData: {
+              [PRIMARY]: session('primary-identifier', ['paired-identifier']),
+              [PAIRED]: session('paired-identifier'),
+            },
+          },
+          KeyringController: {
+            isUnlocked: true,
+            keyrings: [
+              {
+                type: 'HD Key Tree',
+                accounts: [],
+                metadata: { id: PRIMARY, name: '' },
+              },
+            ],
+          },
+        },
+      },
+    }) as unknown as RootState;
+
+  it('groups visible accounts under each profile wallet name', () => {
+    const state = buildState([
+      buildEntropyWallet(PRIMARY, 'Wallet 1', [
+        buildGroup(`entropy:${PRIMARY}/0`, 'Account 1'),
+        buildGroup(`entropy:${PRIMARY}/1`, 'Hidden', true),
+      ]),
+      buildEntropyWallet(PAIRED, 'Wallet 2', [
+        buildGroup(`entropy:${PAIRED}/0`, 'Paired account'),
+      ]),
+    ]);
+
+    expect(selectProfileWalletSections(state)).toEqual([
+      {
+        id: `entropy:${PRIMARY}`,
+        name: 'Wallet 1',
+        groups: [buildGroup(`entropy:${PRIMARY}/0`, 'Account 1')],
+      },
+      {
+        id: `entropy:${PAIRED}`,
+        name: 'Wallet 2',
+        groups: [buildGroup(`entropy:${PAIRED}/0`, 'Paired account')],
+      },
+    ]);
+  });
+
+  it('omits a wallet whose accounts are all hidden', () => {
+    const state = buildState([
+      buildEntropyWallet(PRIMARY, 'Wallet 1', [
+        buildGroup(`entropy:${PRIMARY}/0`, 'Hidden', true),
+      ]),
+    ]);
+
+    expect(selectProfileWalletSections(state)).toEqual([]);
+  });
+});

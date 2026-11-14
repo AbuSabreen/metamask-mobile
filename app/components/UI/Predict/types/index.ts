@@ -1,0 +1,998 @@
+/* eslint-disable @typescript-eslint/consistent-type-definitions */
+
+import { Hex } from '@metamask/utils';
+import type { TransactionActiveAbTestEntry } from '../../../../util/transactions/transaction-active-ab-test-attribution-registry';
+import type { PredictMarketListOrder } from '../constants/flags';
+import type {
+  PredictOutcomeVersionValue,
+  PredictPaymentMethodValue,
+} from '../constants/eventNames';
+
+export enum Side {
+  BUY = 'BUY',
+  SELL = 'SELL',
+}
+
+export type PredictOrderType = 'FOK' | 'FAK';
+
+export enum ActiveOrderState {
+  PREVIEW = 'preview',
+  PAY_WITH_ANY_TOKEN = 'pay_with_any_token',
+  DEPOSITING = 'depositing',
+  PLACING_ORDER = 'placing_order',
+  SUCCESS = 'success',
+}
+
+/**
+ * Authoritative order state for the retry guard, supplied by each screen
+ * from its own order-state source. Anything other than 'unknown' is in
+ * flight or terminal and must never be retried as a fresh failure:
+ *
+ * - 'pending'  — a submission is in flight
+ * - 'filled'   — the order actually filled
+ * - 'canceled' — the user rejected/canceled the order
+ * - 'unknown'  — no authoritative signal (a not-filled failure is retryable)
+ */
+export type PredictRetryOrderState =
+  | 'unknown'
+  | 'pending'
+  | 'filled'
+  | 'canceled';
+
+/**
+ * Which leg of a PWAT buy failed. Defaults to `'order'` when omitted so
+ * existing failure UX (Retry-only) is preserved for non-payment failures.
+ */
+export type PredictOrderErrorStage = 'payment' | 'order';
+
+export enum PredictPriceHistoryInterval {
+  ONE_HOUR = '1h',
+  SIX_HOUR = '6h',
+  ONE_DAY = '1d',
+  ONE_WEEK = '1w',
+  ONE_MONTH = '1m',
+  MAX = 'max',
+}
+
+export interface GetPositionsParams {
+  address?: string;
+  claimable?: boolean;
+  marketId?: string;
+  outcomeId?: string;
+  limit?: number;
+}
+
+export interface GetActivityParams {
+  address?: string;
+  limit?: number;
+  /** Opaque Polymarket Data API v2 cursor from a previous page's `next_cursor`. */
+  cursor?: string;
+}
+
+/** One page of Predict activity, following the Polymarket Data API v2 envelope. */
+export interface PredictActivityPage {
+  activities: PredictActivity[];
+  /** Pass to the next `getActivity` call; absent or null when there are no more pages. */
+  nextCursor?: string;
+}
+
+export enum PredictMarketStatus {
+  OPEN = 'open',
+  CLOSED = 'closed',
+  RESOLVED = 'resolved',
+}
+
+export const OPEN_PREDICT_OUTCOME_STATUS: PredictOutcome['status'] = 'open';
+
+export enum Recurrence {
+  NONE = 'none',
+  DAILY = 'daily',
+  WEEKLY = 'weekly',
+  MONTHLY = 'monthly',
+  YEARLY = 'yearly',
+  QUARTERLY = 'quarterly',
+  ANNUALLY = 'annually',
+}
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OnchainTradeParams = {
+  from: string;
+  to: string;
+  data: string;
+  value: string;
+  chainId: number;
+  transactionId?: string;
+};
+
+// This is provider-specific
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type OffchainTradeParams = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+};
+
+export interface OffchainTradeResponse {
+  success: boolean;
+  response: unknown;
+}
+
+export enum PredictClaimStatus {
+  IDLE = 'idle',
+  PENDING = 'pending',
+  CONFIRMED = 'confirmed',
+  CANCELLED = 'cancelled',
+  ERROR = 'error',
+}
+
+export enum PredictDepositStatus {
+  IDLE = 'idle',
+  PENDING = 'pending',
+  CONFIRMED = 'confirmed',
+  CANCELLED = 'cancelled',
+  ERROR = 'error',
+}
+
+export enum PredictWithdrawStatus {
+  IDLE = 'idle',
+  PENDING = 'pending',
+  CONFIRMED = 'confirmed',
+  CANCELLED = 'cancelled',
+  ERROR = 'error',
+}
+
+export type PredictMarket = {
+  id: string;
+  providerId: string;
+  slug: string;
+  title: string;
+  description: string;
+  endDate?: string;
+  image: string;
+  status: 'open' | 'closed' | 'resolved';
+  active?: boolean;
+  recurrence: Recurrence;
+  category: PredictCategory;
+  tags: string[];
+  outcomes: PredictOutcome[];
+  outcomeGroups?: PredictOutcomeGroup[];
+  liquidity: number;
+  volume: number;
+  game?: PredictMarketGame;
+  series?: PredictSeries;
+  parentMarketId?: string | number | null;
+  childMarketIds?: string[];
+  isHighlighted?: boolean;
+  priceToBeat?: number;
+  twapWindowSeconds?: CryptoTwapWindowSeconds;
+  /** Vendor the market settles against, read from its Gamma resolution source. */
+  cryptoPriceProvider?: CryptoPriceProvider;
+};
+
+export type CryptoTwapWindowSeconds = 30 | 60;
+
+export type CryptoPriceProvider = 'chainlink' | 'binance';
+
+export type PredictSeries = {
+  id: string;
+  slug: string;
+  title: string;
+  recurrence: string;
+};
+
+export interface GetSeriesParams {
+  seriesId: string;
+  endDateMin: string; // ISO 8601
+  endDateMax: string; // ISO 8601
+  limit?: number; // Default: 50
+}
+
+export type PredictCategory =
+  | 'trending'
+  | 'ending-soon'
+  | 'new'
+  | 'sports'
+  | 'crypto'
+  | 'politics'
+  | 'hot'
+  | 'wimbledon';
+
+// Sports league types
+export type PredictSportsLeague =
+  | 'nfl'
+  | 'cfb'
+  | 'cfl'
+  | 'nba'
+  | 'wnba'
+  | 'mlb'
+  | 'kbo'
+  | 'npb'
+  | 'cpbl'
+  | 'nhl'
+  | 'shl'
+  | 'khl'
+  | 'cehl'
+  | 'dehl'
+  | 'ucl'
+  | 'fif'
+  | 'lal'
+  | 'uef'
+  | 'bra2'
+  | 'tur'
+  | 'col1'
+  | 'mls'
+  | 'mex'
+  | 'bun'
+  | 'chi'
+  | 'epl'
+  | 'elc'
+  | 'bel1'
+  | 'cze1'
+  | 'j1100'
+  | 'j2100'
+  | 'fl1'
+  | 'nor'
+  | 'aus'
+  | 'den'
+  | 'sea'
+  | 'kor'
+  | 'ere'
+  | 'spl'
+  | 'bra'
+  | 'por'
+  | 'chi1'
+  | 'per1'
+  | 'lib'
+  | 'cdr'
+  | 'sud'
+  | 'egy1'
+  | 'uel'
+  | 'rou1'
+  | 'col'
+  | 'bol1'
+  | 'itc'
+  | 'dfb'
+  | 'cde'
+  | 'fifwc'
+  | 'usc'
+  | 'efa'
+  | 'clf'
+  | 'saf1'
+  | 'atp'
+  | 'wta'
+  | 'itf'
+  | 'cs2'
+  | 'lol'
+  | 'dota2'
+  | 'val'
+  | 'r6siege';
+
+// Game status
+export type PredictGameStatus = 'scheduled' | 'ongoing' | 'ended';
+
+// Team data
+export type PredictSportTeam = {
+  id: string;
+  name: string;
+  logo: string;
+  abbreviation: string; // e.g., "SEA", "DEN"
+  color: string; // Team primary color (hex)
+  alias?: string; // Team alias (e.g., "Seahawks")
+};
+
+// Parsed score data
+export type PredictGameScore = {
+  away: number;
+  home: number;
+  raw: string; // Original "away-home" format (e.g., "21-14")
+};
+
+export type PredictGamePeriod =
+  | 'NS' // Not Started
+  | 'Q1' // First Quarter
+  | 'End Q1' // End of First Quarter
+  | 'Q2' // Second Quarter
+  | 'HT' // Halftime
+  | 'Q3' // Third Quarter
+  | 'End Q3' // End of Third Quarter
+  | 'Q4' // Fourth Quarter
+  | 'End Q4' // End of Fourth Quarter
+  | 'OT' // Overtime
+  | 'FT' // Final
+  | 'VFT' // Verified fulltime (when closed=true)
+  | '1H' // First Half (soccer)
+  | '2H' // Second Half (soccer)
+  | 'ET' // Extra Time (soccer)
+  | 'PK' // Penalties (soccer)
+  | (string & {}); // Escape hatch for future sports with different period formats
+
+// Game data attached to market
+export type PredictMarketGame = {
+  id: string;
+  startTime: string;
+  endTime?: string; // ISO date when game ended, available for ended games
+  status: PredictGameStatus;
+  league: PredictSportsLeague;
+  elapsed: string | null; // Game clock, null if not available
+  period: PredictGamePeriod | null; // Current period, null if not available
+  score: PredictGameScore | null; // Parsed score with away/home values, null if not available
+  homeTeam: PredictSportTeam;
+  awayTeam: PredictSportTeam;
+  turn?: string; // Team abbreviation with possession
+};
+
+// Live update types for WebSocket data
+export interface GameUpdate {
+  gameId: string;
+  score: string;
+  elapsed: string;
+  period: PredictGamePeriod;
+  status: PredictGameStatus;
+  turn?: string;
+}
+
+export interface PriceUpdate {
+  tokenId: string;
+  price: number;
+  bestBid: number;
+  bestAsk: number;
+}
+
+export interface CryptoPriceUpdate {
+  symbol: string;
+  price: number;
+  timestamp: number;
+  twapWindowSeconds?: CryptoTwapWindowSeconds;
+}
+
+export interface CryptoPriceSubscriptionOptions {
+  twapWindowSeconds?: CryptoTwapWindowSeconds;
+  /** Vendor to stream. Omit for the feed default, Chainlink. */
+  provider?: CryptoPriceProvider;
+}
+
+export interface OrderbookLevel {
+  price: number;
+  size: number;
+}
+
+export interface OrderbookSnapshot {
+  tokenId: string;
+  bids: OrderbookLevel[];
+  asks: OrderbookLevel[];
+  timestamp: number;
+}
+
+export type PredictOutcomeGroup = {
+  key: string;
+  outcomes: PredictOutcome[];
+  subgroups?: PredictOutcomeGroup[];
+  title?: string;
+};
+
+export type PredictOutcome = {
+  id: string;
+  providerId: string;
+  marketId: string;
+  title: string;
+  description: string;
+  image: string;
+  status: 'open' | 'closed' | 'resolved';
+  active?: boolean;
+  acceptingOrders?: boolean;
+  tokens: PredictOutcomeToken[];
+  volume: number;
+  liquidity?: number;
+  groupItemTitle: string;
+  groupItemThreshold?: number;
+  negRisk?: boolean;
+  tickSize?: string;
+  sportsMarketType?: string;
+  line?: number;
+  resolvedBy?: string;
+  resolutionStatus?: string;
+  /**
+   * Gamma market version for this outcome's market, as reported by Gamma.
+   * Informational only: order routing reads `OrderPreview.outcomeVersion`,
+   * which the provider resolves when it builds the preview.
+   */
+  version?: string;
+};
+
+export type PredictOutcomeToken = {
+  id: string;
+  title: string;
+  shortTitle?: string;
+  image?: string;
+  /**
+   * Mid price = implied probability / quoted odds. Use this for "% chance" and
+   * odds display so it matches the chart and Polymarket.
+   */
+  price: number;
+  /**
+   * Best ask = the price to actually buy this token. Optional; populated by
+   * hooks that fetch live/REST prices (e.g. useOpenOutcomes). Falls back to
+   * `price` when absent. Use this for BUY CTAs, never for the odds %.
+   */
+  buyPrice?: number;
+};
+
+export type PredictMarketBuyButtonPressParams = {
+  market: PredictMarket;
+  outcome: PredictOutcome;
+  outcomeToken: PredictOutcomeToken;
+};
+
+/** Called when the user taps a buy button (before the betslip opens). */
+export type PredictMarketBuyButtonPress = (
+  params: PredictMarketBuyButtonPressParams,
+) => void;
+
+export interface PredictActivity {
+  id: string;
+  providerId: string;
+  entry: PredictActivityEntry;
+  title?: string;
+  outcome?: string;
+  icon?: string;
+  slug?: string;
+  eventSlug?: string;
+  netPnlUsd?: number;
+  totalNetPnlUsd?: number;
+}
+
+export type PredictActivityEntry =
+  | PredictActivityBuy
+  | PredictActivitySell
+  | PredictActivityClaimWinnings;
+
+export interface PredictActivityTrade {
+  timestamp: number;
+  marketId: string;
+  outcomeId: string;
+  outcomeTokenId: number;
+  amount: number;
+  price: number;
+  size?: number;
+}
+
+export interface PredictActivityBuy extends PredictActivityTrade {
+  type: 'buy';
+}
+
+export interface PredictActivitySell extends PredictActivityTrade {
+  type: 'sell';
+}
+
+export interface PredictActivityClaimWinnings {
+  type: 'claimWinnings';
+  timestamp: number;
+  amount: number;
+}
+
+export enum PredictActivityType {
+  BUY = 'BUY',
+  SELL = 'SELL',
+  CLAIM = 'CLAIM',
+}
+
+export interface PredictActivityItem {
+  id: string;
+  type: PredictActivityType;
+  marketTitle: string;
+  detail: string;
+  amountUsd: number;
+  icon?: string;
+  outcome?: string;
+  percentChange?: number;
+  providerId?: string;
+  priceImpactPercentage?: number;
+  metamaskFeeUsd?: number;
+  providerFeeUsd?: number;
+  totalUsd?: number;
+  netPnlUsd?: number;
+  totalNetPnlUsd?: number;
+  entry: PredictActivityEntry;
+}
+
+export interface PredictPriceHistoryPoint {
+  timestamp: number;
+  price: number;
+}
+
+export interface GetPriceHistoryParams {
+  /** Outcome token id. */
+  marketId: string;
+  /**
+   * Bucket width in minutes. Omit it to let the server size the bucket to the
+   * window. An explicit width is served exactly, so a fine width over a window
+   * older than that grain's retention (about 7 days for 1-minute data) comes
+   * back empty.
+   */
+  fidelity?: number;
+  interval?: PredictPriceHistoryInterval;
+  /** Window start, epoch seconds. Used with `endTs`; the window may span at most 15 days. */
+  startTs?: number;
+  /** Window end, epoch seconds (exclusive). */
+  endTs?: number;
+}
+
+export interface GetCryptoTargetPriceParams {
+  symbol: string;
+  eventStartTime: string;
+  variant: string;
+  endDate: string;
+  twapWindowSeconds?: CryptoTwapWindowSeconds;
+}
+
+/**
+ * Parameters for fetching crypto asset price history from Polymarket.
+ */
+export interface GetCryptoPriceHistoryParams {
+  /** Crypto symbol (e.g., 'BTC', 'ETH') */
+  symbol: string;
+  /** Event start time as ISO 8601 string or Unix timestamp */
+  eventStartTime: string;
+  /** Time variant: 'fiveminute' | 'fifteen' | 'hourly' | 'fourhour' | 'daily' */
+  variant: string;
+  /** Optional end date as ISO 8601 string (omit for live/current data) */
+  endDate?: string;
+  /** Chainlink TWAP lookback window when requesting TWAP history */
+  twapWindowSeconds?: CryptoTwapWindowSeconds;
+}
+
+/**
+ * A single point from the crypto price history source.
+ */
+export interface CryptoPriceHistoryPoint {
+  /** Unix timestamp in seconds or milliseconds */
+  timestamp: number;
+  /** Price value */
+  value: number;
+}
+
+/**
+ * Parameters for fetching prices from CLOB /prices endpoint
+ */
+export interface GetPriceParams {
+  queries: PriceQuery[];
+}
+
+export interface PriceQuery {
+  marketId: string;
+  outcomeId: string;
+  outcomeTokenId: string;
+}
+
+export interface GetPriceResponse {
+  providerId: string;
+  results: PriceResult[];
+}
+
+export interface PriceResult {
+  marketId: string;
+  outcomeId: string;
+  outcomeTokenId: string;
+  entry: PriceEntry;
+}
+
+export interface PriceEntry {
+  buy: number;
+  sell: number;
+}
+
+export enum PredictPositionStatus {
+  OPEN = 'open',
+  REDEEMABLE = 'redeemable',
+  WON = 'won',
+  LOST = 'lost',
+}
+
+export type PredictPosition = {
+  id: string;
+  providerId: string;
+  marketId: string;
+  outcomeId: string;
+  outcome: string;
+  outcomeTokenId: string;
+  currentValue: number;
+  title: string;
+  icon: string;
+  amount: number;
+  price: number;
+  status: PredictPositionStatus;
+  size: number;
+  outcomeIndex: number;
+  realizedPnl?: number;
+  percentPnl: number;
+  cashPnl: number;
+  claimable: boolean;
+  initialValue: number;
+  avgPrice: number;
+  endDate: string;
+  negRisk?: boolean;
+  optimistic?: boolean;
+};
+
+export type PredictBalance = {
+  balance: number;
+  validUntil: number;
+};
+
+export interface PredictTradeAnalyticsProperties {
+  marketId?: string;
+  marketTitle?: string;
+  marketCategory?: string;
+  marketTags?: string[];
+  actionType?: string;
+  entryPoint?: string;
+  predictFeedTab?: string;
+  predictScreen?: string;
+  predictComponent?: string;
+  transactionType?: string;
+  sharePrice?: number;
+  liquidity?: number;
+  volume?: number;
+  openPositionsCount?: number;
+  claimablePositionsCount?: number;
+  hasClaimableWinnings?: boolean;
+  portfolioModuleEnabled?: boolean;
+  marketType?: string;
+  outcome?: string;
+  /**
+   * `outcome_version` analytics value: `v1`, `v2`, or `mixed` (claims only).
+   * Normalized, unlike the raw Gamma version in `OrderPreview.outcomeVersion`.
+   */
+  outcomeVersion?: PredictOutcomeVersionValue;
+  marketSlug?: string;
+  gameId?: string;
+  gameStartTime?: string;
+  gameLeague?: string;
+  gameStatus?: string;
+  gamePeriod?: string | null;
+  gameClock?: string | null;
+}
+
+export interface ClaimParams {
+  analyticsProperties?: PredictTradeAnalyticsProperties;
+}
+
+export interface GetMarketPriceResponse {
+  price: number;
+}
+
+export type Result<T = void> =
+  | {
+      success: true;
+      response: T;
+      error?: never;
+    }
+  | {
+      success: false;
+      error: string;
+      response?: never;
+    };
+
+export interface UnrealizedPnL {
+  user: string;
+  /** Latest cumulative unrealized P&L from the Polymarket PnL series. Stays missing (not zero) when the series has no value. */
+  cashUpnl?: number;
+  /** Derived from open positions: (sum current value − sum entry cost) / sum entry cost. */
+  percentUpnl?: number;
+}
+
+export type PredictClaim = {
+  batchId: string;
+  chainId: number;
+  status: PredictClaimStatus;
+};
+
+export type PredictDeposit = {
+  batchId: string;
+  chainId: number;
+  status: PredictDepositStatus;
+  providerId: string;
+};
+
+export type PredictWithdraw = {
+  chainId: number;
+  status: PredictWithdrawStatus;
+  providerId: string;
+  predictAddress: Hex;
+  transactionId: string;
+  amount: number;
+};
+
+export type PredictAccountMeta = {
+  isOnboarded: boolean;
+};
+
+export interface PredictCarouselMetadata {
+  marketId: string;
+}
+
+export interface GetMarketsParams {
+  category?: PredictCategory;
+  afterCursor?: string | null;
+  limit?: number;
+  customQueryParams?: string;
+}
+
+export interface GetMarketsResult {
+  markets: PredictMarket[];
+  nextCursor: string | null;
+}
+
+export interface PredictMarketListParams {
+  tags?: string[]; // tag IDs -> tag_id (multi).
+  tagSlugs?: string[]; // tag slugs -> tag_slug (multi). Parallel to `tags` (IDs); both ride /events/keyset.
+  excludedTags?: string[]; // tag IDs -> exclude_tag_id (multi).
+  series?: string[]; // series IDs -> series_id (multi)
+  order?: PredictMarketListOrder;
+  // 'resolved' maps to the same 'closed' params by design (no separate server-side filter).
+  status?: 'open' | 'closed' | 'resolved';
+  live?: boolean;
+  // Raw query string override for `/events/keyset` without a leading `?`.
+  queryParams?: string;
+  // Relative lower bound computed in minutes when the request is built -> start_time_min.
+  startTimeMinMinutesAgo?: number;
+  // Free-text title filter. The provider maps this to Polymarket's
+  // `title_search` query param, which composes with cursor pagination, so
+  // search stays on the same feed endpoint (handled in the provider layer, not
+  // the UI). Blank/whitespace is ignored (browse mode).
+  search?: string;
+  /** Raw Polymarket query params that override matching generated params. */
+  customQueryParams?: string;
+  limit?: number;
+  afterCursor?: string | null;
+}
+
+export interface PredictMarketListResponse {
+  markets: PredictMarket[];
+  nextCursor?: string | null;
+}
+
+/**
+ * Where a dynamic feed filter list is derived from. Keeps the UI decoupled from
+ * the concrete derivation strategy (V1: Polymarket related-tags endpoint).
+ */
+export type PredictFilterOptionSource =
+  | 'related-tags'
+  | 'hot-tags'
+  | 'trending-series'
+  | 'sports-leagues';
+
+export interface PredictFilterOptionsParams {
+  /** Base list params every derived option should also carry (e.g. a feed's base topic). */
+  baseParams?: PredictMarketListParams;
+  source: PredictFilterOptionSource;
+  /** Polymarket tag slug used as the related-tags root. Defaults to 'all' (general Popular/Trending). */
+  baseTagSlug?: string;
+  /** Max number of options to return. */
+  limit?: number;
+  /** Reserved for a future market-volume-derived fallback strategy (unused in V1). */
+  sampleSize?: number;
+}
+
+export interface PredictFilterOption {
+  /** Stable, slug-based id used for dedupe (not the display label). */
+  id: string;
+  label: string;
+  /** Ready-to-use list params for this filter; feed straight into `listMarkets`. */
+  params: PredictMarketListParams;
+  source: string;
+}
+
+export interface SearchMarketsParams {
+  q: string;
+  limit?: number;
+  page?: number;
+}
+
+export interface GetBalanceParams {
+  address?: string;
+}
+
+export interface PredictFees {
+  metamaskFee: number;
+  providerFee: number;
+  marketFee?: number;
+  totalFee: number;
+  totalFeePercentage: number;
+  collector: Hex;
+  executors?: string[];
+  permit2Enabled?: boolean;
+}
+
+export interface PredictFeePolicy {
+  builderCode: string;
+}
+
+/**
+ * @example
+ * side = BUY;
+ * maxAmountSpent = 12.34; // $12.34
+ * minAmountReceived = 54.32; // 54.32 shares
+ * sharePrice = 0.1234; // $0.1234
+ * slippage = 0.01; // 1%
+ *
+ * side = SELL;
+ * maxAmountSpent = 42.23; // 42.23 shares
+ * minAmountReceived = 48.56; // $48.56
+ * sharePrice = 0.3456; // $0.3456
+ * slippage = 0.005; // 0.5%
+ */
+export interface OrderPreview {
+  marketId: string;
+  outcomeId: string;
+  outcomeTokenId: string;
+  timestamp: number;
+  side: Side;
+  sharePrice: number;
+  /**
+   * Sell previews only: the lowest bid price used to fill the full size from
+   * the order book snapshot.
+   */
+  worstFillPrice?: number;
+  maxAmountSpent: number;
+  minAmountReceived: number;
+  slippage: number;
+  tickSize: number;
+  minOrderSize: number;
+  negRisk: boolean;
+  feeRateBps?: string;
+  fees?: PredictFees;
+  /** Standard fees before applying the membership MetaMask fee waiver. */
+  originalFees?: PredictFees;
+  feePolicy?: PredictFeePolicy;
+  rateLimited?: boolean;
+  // For sell orders, we can store the position ID
+  // so we can perform optimistic updates
+  positionId?: string;
+  orderType?: PredictOrderType;
+  /**
+   * Gamma market version of the traded outcome's market, resolved when the
+   * provider builds the preview. Routes the order: "v2" uses the positions
+   * protocol; any other value uses the CTF path.
+   */
+  outcomeVersion?: string;
+}
+
+export type OrderResult = Result<{
+  id: string;
+  spentAmount: string;
+  receivedAmount: string;
+  txHashes?: string[];
+}>;
+
+export interface PredictBuyAttempt {
+  attemptId: string;
+  amountUsd: number;
+  paymentMethod: PredictPaymentMethodValue;
+}
+
+export interface PlaceOrderParams {
+  preview: OrderPreview;
+  address?: string;
+  transactionId?: string;
+  activeAbTests?: TransactionActiveAbTestEntry[];
+  analyticsProperties?: PredictTradeAnalyticsProperties;
+  attempt?: PredictBuyAttempt;
+}
+
+/**
+ * Order context kept in memory between a pay-with-any-token deposit and the
+ * order leg that runs once the deposit confirms. `depositedAmount` is recorded
+ * at deposit confirmation because the amount is no longer available if the
+ * order leg later fails.
+ */
+export interface PendingOrderPreview {
+  preview: OrderPreview;
+  signerAddress: string;
+  analyticsProperties?: PlaceOrderParams['analyticsProperties'];
+  activeAbTests?: PlaceOrderParams['activeAbTests'];
+  depositedAmount?: number;
+  attempt?: PlaceOrderParams['attempt'];
+}
+
+export interface PredictBuyAttemptContext {
+  attempt: PredictBuyAttempt;
+  address: string;
+  analyticsProperties?: PlaceOrderParams['analyticsProperties'];
+  sharePrice?: number;
+  orderType?: OrderPreview['orderType'];
+  activeAbTests?: PlaceOrderParams['activeAbTests'];
+}
+
+export interface StartPredictBuyAttemptArgs {
+  amountUsd: number;
+  paymentMethod: PredictBuyAttempt['paymentMethod'];
+  analyticsProperties?: PlaceOrderParams['analyticsProperties'];
+  sharePrice?: number;
+  orderType?: OrderPreview['orderType'];
+  activeAbTests?: PlaceOrderParams['activeAbTests'];
+}
+
+export interface PreviewOrderParams {
+  marketId: string;
+  outcomeId: string;
+  outcomeTokenId: string;
+  side: Side;
+  size: number;
+  feePolicy?: PredictFeePolicy;
+  // For sell orders, we can store the position ID
+  // so we can perform optimistic updates
+  positionId?: string;
+}
+
+export interface PreviewMaxBuyOrderParams {
+  marketId: string;
+  outcomeId: string;
+  outcomeTokenId: string;
+  availableBalance: number;
+  feePolicy?: PredictFeePolicy;
+}
+
+export type PredictWalletType = 'safe' | 'deposit-wallet';
+
+export interface AccountState {
+  address: Hex;
+  isDeployed: boolean;
+  walletType: PredictWalletType;
+}
+
+/**
+ * Definitive geoblock result. Providers must throw instead of returning when
+ * the check does not complete (timeout, network failure, non-2xx, malformed or
+ * incomplete payload), so a connectivity problem is never reported as a
+ * geo-restriction.
+ */
+export interface GeoBlockResponse {
+  isEligible: boolean;
+  country: string;
+}
+
+export type PredictEligibilityStatus =
+  | 'checking'
+  | 'eligible'
+  | 'ineligible'
+  | 'unavailable';
+
+/**
+ * Predict eligibility as tracked by the controller.
+ *
+ * checking: a geoblock check is in flight and no definitive result exists yet.
+ * eligible / ineligible: definitive result; country is always present.
+ * unavailable: the last check failed or returned an incomplete payload, so
+ * eligibility could not be determined. This is a connectivity problem, not a
+ * legal restriction, and callers must not describe it as one.
+ *
+ * Sensitive actions stay fail-closed for every status other than eligible.
+ */
+export type PredictEligibility =
+  | { status: 'checking' | 'unavailable'; eligible?: boolean; country?: string }
+  | { status: 'eligible' | 'ineligible'; country: string; eligible?: boolean };
+
+export interface ConnectionStatus {
+  sportsConnected: boolean;
+  marketConnected: boolean;
+  rtdsConnected: boolean;
+}
+
+export type ConnectionStatusCallback = (status: ConnectionStatus) => void;
+
+export type GameUpdateCallback = (update: GameUpdate) => void;
+export type PriceUpdateCallback = (updates: PriceUpdate[]) => void;
+export type CryptoPriceUpdateCallback = (update: CryptoPriceUpdate) => void;
+export type OrderbookCallback = (snapshot: OrderbookSnapshot) => void;
+
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface PrepareDepositParams {}
+
+export interface GetAccountStateParams {
+  forceRefresh?: boolean;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface PrepareWithdrawParams {}
+
+export type { PredictFeatureFlags } from './flags';

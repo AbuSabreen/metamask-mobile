@@ -1,0 +1,1982 @@
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+} from 'react';
+import { View, Alert, BackHandler, ImageSourcePropType } from 'react-native';
+import { isEqual } from 'lodash';
+import { WebView, WebViewMessageEvent } from '@metamask/react-native-webview';
+import type { WebViewOpenWindowEvent } from '@metamask/react-native-webview/lib/WebViewTypes';
+import { useSharedValue } from 'react-native-reanimated';
+import BrowserBottomBar from '../../UI/BrowserBottomBar';
+import { connect, useSelector } from 'react-redux';
+import BackgroundBridge from '../../../core/BackgroundBridge/BackgroundBridge';
+import Engine from '../../../core/Engine';
+import WebviewProgressBar from '../../UI/WebviewProgressBar';
+import Logger from '../../../util/Logger';
+import {
+  processUrlForBrowser,
+  prefixUrlWithProtocol,
+  isTLD,
+  protocolAllowList,
+  trustedProtocolToDeeplink,
+  getAlertMessage,
+  allowLinkOpen,
+} from '../../../util/browser';
+import {
+  SPA_urlChangeListener,
+  JS_DESELECT_TEXT,
+  SCROLL_TRACKER_SCRIPT,
+  DOCUMENT_URL_FOR_URL_BAR,
+  WEB_SHARE_MESSAGE_TYPE,
+  buildWebSharePolyfillScript,
+  buildWebShareResultScript,
+  buildWebClipboardPolyfillScript,
+  WEB_DOWNLOAD_MESSAGE_TYPE,
+  buildWebDownloadInterceptorScript,
+  buildDocumentUrlForUrlBarScript,
+} from '../../../util/browserScripts';
+import {
+  handleWebShare,
+  WEB_SHARE_MAX_MESSAGE_LENGTH,
+} from '../../../util/browser/handleWebShare';
+import {
+  handleWebDownload,
+  WEB_DOWNLOAD_MAX_MESSAGE_LENGTH,
+} from '../../../util/browser/handleWebDownload';
+import resolveEnsToIpfsContentId from '../../../lib/ens-ipfs/resolver';
+import { strings } from '../../../../locales/i18n';
+import URLParse from 'url-parse';
+import WebviewErrorComponent from '../../UI/WebviewError';
+import {
+  addToHistory,
+  addToWhitelist,
+  toggleFullscreen,
+} from '../../../actions/browser';
+import Device from '../../../util/device';
+import AppConstants from '../../../core/AppConstants';
+import DrawerStatusTracker from '../../../core/DrawerStatusTracker';
+import EntryScriptWeb3 from '../../../core/EntryScriptWeb3';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import ErrorBoundary from '../ErrorBoundary';
+import { getRpcMethodMiddleware } from '../../../core/RPCMethods/RPCMethodMiddleware';
+import downloadFile from '../../../util/browser/downloadFile';
+import { MAX_MESSAGE_LENGTH } from '../../../constants/dapp';
+import sanitizeUrlInput from '../../../util/url/sanitizeUrlInput';
+import { isSameOrigin } from '../../../util/url';
+import {
+  getPermittedCaipAccountIdsByHostname,
+  getPermittedEvmAddressesByHostname,
+  sortMultichainAccountsByLastSelected,
+} from '../../../core/Permissions';
+import Routes from '../../../constants/navigation/Routes';
+import { useNavigateToPerpsHome } from '../../UI/Perps/utils/perpsModeSwitch';
+import { usePredictEntryActions } from '../../UI/PredictNext';
+import { isInternalDeepLink } from '../../../core/DeeplinkManager/util/deeplinks';
+import SharedDeeplinkManager from '../../../core/DeeplinkManager/DeeplinkManager';
+import {
+  selectIpfsGateway,
+  selectIsIpfsGatewayEnabled,
+} from '../../../selectors/preferencesController';
+import { selectSelectedInternalAccountFormattedAddress } from '../../../selectors/accountsController';
+import useFavicon from '../../hooks/useFavicon/useFavicon';
+import {
+  HOMEPAGE_HOST,
+  IPFS_GATEWAY_DISABLED_ERROR,
+  NOTIFICATION_NAMES,
+} from './constants';
+import GestureWebViewWrapper from './GestureWebViewWrapper';
+import { regex } from '../../../../app/util/regex';
+import { selectEvmChainId } from '../../../selectors/networkController';
+import { BrowserViewSelectorsIDs } from './BrowserView.testIds';
+import { trackDappViewedEvent } from '../../../util/metrics';
+import trackErrorAsAnalytics from '../../../util/metrics/TrackError/trackErrorAsAnalytics';
+import { selectPermissionControllerState } from '../../../selectors/snaps/permissionController';
+import { isTestEnvironment } from '../../../util/test/utils.js';
+import { EXTERNAL_LINK_TYPE } from '../../../constants/browser';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
+import { useStyles } from '../../hooks/useStyles';
+import styleSheet from './styles';
+import { type RootState } from '../../../reducers';
+import { type Dispatch } from 'redux';
+import {
+  type SessionENSNames,
+  type BrowserTabProps,
+  type IpfsContentResult,
+  type PendingBackForwardNav,
+  WebViewNavigationEventName,
+} from './types';
+import {
+  WebViewNavigationEvent,
+  WebViewErrorEvent,
+  WebViewError,
+  WebViewProgressEvent,
+  WebViewNavigation,
+} from '@metamask/react-native-webview/src/WebViewTypes';
+import PhishingModal from './components/PhishingModal';
+import BrowserUrlBar, {
+  ConnectionType,
+  BrowserUrlBarRef,
+} from '../../UI/BrowserUrlBar';
+import {
+  createRequestId,
+  getMaskedUrl,
+  isDisallowedExplicitPort,
+  isDocumentUrlForUrlBarPayload,
+  isENSUrl,
+  isHttpPageUrl,
+  resolveCommittedDocumentUrl,
+} from './utils';
+import { getURLProtocol } from '../../../util/general';
+import { PROTOCOLS } from '../../../constants/deeplinks';
+import IpfsBanner from './components/IpfsBanner';
+import UrlAutocomplete, {
+  AutocompleteSearchResult,
+  UrlAutocompleteRef,
+  UrlAutocompleteCategory,
+} from '../../UI/UrlAutocomplete';
+import { selectSearchEngine } from '../../../reducers/browser/selectors';
+import { getPhishingTestResultAsync } from '../../../util/phishingDetection';
+import { RequestSourceFlow } from '@metamask/phishing-controller';
+import { parseCaipAccountId } from '@metamask/utils';
+import { selectBrowserFullscreen } from '../../../selectors/browser';
+import {
+  Box,
+  BoxFlexDirection,
+  BoxAlignItems,
+  ButtonIcon,
+  ButtonIconSize,
+  IconName,
+} from '@metamask/design-system-react-native';
+
+/**
+ * Tab component for the in-app browser
+ */
+export const BrowserTab: React.FC<BrowserTabProps> = React.memo(
+  ({
+    id: tabId,
+    isIpfsGatewayEnabled,
+    addToWhitelist: triggerAddToWhitelist,
+    showTabs,
+    linkType,
+    updateTabInfo,
+    addToBrowserHistory,
+    initialUrl,
+    ipfsGateway,
+    newTab,
+    activeChainId,
+    fromExploreSearch,
+    fromPerps,
+    fromBenefit,
+    fromCard,
+    fromWhatsHappening,
+    fromMarketInsights,
+    fromMoney,
+    fromEarnStrategySelection,
+  }) => {
+    // Opted out of the React Compiler since it's a large component and we don't want to risk breaking changes.
+    'use no memo';
+    const navigation = useNavigation();
+    const navigateToPerpsHome = useNavigateToPerpsHome();
+    const { openPredict } = usePredictEntryActions();
+    const { styles } = useStyles(styleSheet, {});
+    const [backEnabled, setBackEnabled] = useState(false);
+    const [forwardEnabled, setForwardEnabled] = useState(false);
+    const [progress, setProgress] = useState(0);
+    const [firstUrlLoaded, setFirstUrlLoaded] = useState(false);
+    const [error, setError] = useState<boolean | WebViewError>(false);
+    const [entryScriptWeb3, setEntryScriptWeb3] = useState<string>();
+    const [showPhishingModal, setShowPhishingModal] = useState(false);
+    const [blockedUrl, setBlockedUrl] = useState<string>();
+    const [ipfsBannerVisible, setIpfsBannerVisible] = useState(false);
+    const [isResolvedIpfsUrl, setIsResolvedIpfsUrl] = useState(false);
+    const [isUrlBarFocused, setIsUrlBarFocused] = useState(false);
+    const [connectionType, setConnectionType] = useState(
+      ConnectionType.UNKNOWN,
+    );
+    const webviewRef = useRef<WebView>(null);
+    // Track if webview is loaded for the first time
+    const isWebViewReadyToLoad = useRef(false);
+    // URL-bar / autocomplete / deeplink navigation must update WebView
+    // `source.uri` (native loadRequest) instead of injecting
+    // `window.location.href`. On iOS the latter can trigger Universal Links
+    // and open associated native apps instead of keeping the session in
+    // MetaMask's in-app browser. Explore already opens tabs via `source.uri`;
+    // this mirrors that behavior on both platforms for consistency (MCWP-748).
+    const [webViewUri, setWebViewUri] = useState(() =>
+      prefixUrlWithProtocol(initialUrl),
+    );
+    const webViewUriRef = useRef(webViewUri);
+
+    /**
+     * GESTURE NAVIGATION
+     *
+     * Gesture handling is abstracted into GestureWebViewWrapper component.
+     * These shared values are passed to the wrapper for scroll position tracking.
+     */
+    const scrollY = useSharedValue(0); // Current scroll position from WebView
+    const isRefreshing = useSharedValue(false); // Pull-to-refresh in progress
+    const urlBarRef = useRef<BrowserUrlBarRef>(null);
+    const autocompleteRef = useRef<UrlAutocompleteRef>(null);
+    // Track when navigating to detail screen (Token/Perps/Predictions) to prevent onBlur from hiding autocomplete
+    const isNavigatingToDetailRef = useRef(false);
+    const onSubmitEditingRef = useRef<(text: string) => Promise<void>>(
+      async () => {
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
+      },
+    );
+    // Ref for synchronous reads (bridge, phishing, submit). State so
+    // BrowserUrlBar re-renders after JS redirects that do not change
+    // connection type or back/forward flags (#33815).
+    const [resolvedUrl, setResolvedUrl] = useState('');
+    const resolvedUrlRef = useRef('');
+    const commitResolvedUrl = useCallback((url: string) => {
+      resolvedUrlRef.current = url;
+      setResolvedUrl(url);
+    }, []);
+    // Tracks currently loading URL to prevent phishing alerts when user navigates away from malicious sites before detection completes
+    const loadingUrlRef = useRef('');
+    const loadStartIdRef = useRef(0);
+    const lastBoundWebViewKeyRef = useRef<number | null>(null);
+    const [webViewReloadKey, setWebViewReloadKey] = useState(0);
+    const submittedUrlRef = useRef('');
+    const titleRef = useRef<string>('');
+    const iconRef = useRef<ImageSourcePropType | undefined>(undefined);
+    const sessionENSNamesRef = useRef<SessionENSNames>({});
+    const ensIgnoreListRef = useRef<string[]>([]);
+    const pendingBackForwardNavRef = useRef<PendingBackForwardNav | null>(null);
+    const backgroundBridgeRef = useRef<
+      | {
+          url: string;
+          sendNotificationEip1193: (payload: unknown) => void;
+          onDisconnect: () => void;
+          onMessage: (message: Record<string, unknown>) => void;
+        }
+      | undefined
+    >(undefined);
+    const searchEngine = useSelector(selectSearchEngine);
+
+    const webSharePolyfillScript = useMemo(
+      () => buildWebSharePolyfillScript(Device.isAndroid()),
+      [],
+    );
+
+    // blob:/data: downloads are broken in the WebView on both platforms, so the
+    // interceptor is installed everywhere (it is idempotent via a window guard).
+    const webBrowserBridgeScript = useMemo(
+      () =>
+        webSharePolyfillScript +
+        buildWebDownloadInterceptorScript() +
+        buildWebClipboardPolyfillScript(Device.isAndroid()),
+      [webSharePolyfillScript],
+    );
+
+    const permittedEvmAccountsList = useSelector((state: RootState) => {
+      const permissionsControllerState = selectPermissionControllerState(state);
+      const hostname = new URLParse(resolvedUrlRef.current).origin;
+      const permittedAcc = getPermittedEvmAddressesByHostname(
+        permissionsControllerState,
+        hostname,
+      );
+      return permittedAcc;
+    }, isEqual);
+    const permittedCaipAccountAddressesList = useSelector(
+      (state: RootState) => {
+        const permissionsControllerState =
+          selectPermissionControllerState(state);
+        const hostname = new URLParse(resolvedUrlRef.current).origin;
+        const permittedAccountIds = getPermittedCaipAccountIdsByHostname(
+          permissionsControllerState,
+          hostname,
+        );
+        const sortedPermittedAccountIds =
+          sortMultichainAccountsByLastSelected(permittedAccountIds);
+        const permittedAccountAddresses = sortedPermittedAccountIds.map(
+          (accountId) => {
+            const { address } = parseCaipAccountId(accountId);
+            return address;
+          },
+        );
+        return permittedAccountAddresses;
+      },
+      isEqual,
+    );
+
+    const { faviconURI: favicon } = useFavicon(resolvedUrl);
+
+    /**
+     * Is the current tab the active tab
+     */
+    const isTabActive = useSelector(
+      (state: RootState) => state.browser.activeTab === tabId,
+    );
+
+    /**
+     * True when the Browser screen is focused (no modal or other screen drawn on top).
+     * When false, webview JS dialogs (alert/confirm/prompt) will be suppressed.
+     */
+    const isBrowserScreenFocused = useIsFocused();
+
+    /**
+     * Only show webview JS dialogs when this tab is active and the browser screen is visible.
+     */
+    const canShowJsDialogs = isTabActive && isBrowserScreenFocused;
+
+    /**
+     * whitelisted url to bypass the phishing detection
+     */
+    const whitelist = useSelector(
+      (state: RootState) => state.browser.whitelist,
+    );
+
+    const notifyAllConnections = useCallback((payload: unknown) => {
+      backgroundBridgeRef.current?.sendNotificationEip1193(payload);
+    }, []);
+
+    /**
+     * Dismiss the text selection on the current website
+     */
+    const dismissTextSelectionIfNeeded = useCallback(() => {
+      if (isTabActive && Device.isAndroid()) {
+        const { current } = webviewRef;
+        if (current) {
+          setTimeout(() => {
+            current.injectJavaScript(JS_DESELECT_TEXT);
+          }, 50);
+        }
+      }
+    }, [isTabActive]);
+
+    /**
+     * Go back to previous website in history
+     */
+    const goBack = useCallback(() => {
+      if (!backEnabled) return;
+
+      const { current } = webviewRef;
+      if (!current) {
+        Logger.log('WebviewRef current is not defined!');
+      }
+      // Reset error state
+      setError(false);
+      current?.goBack?.();
+    }, [backEnabled]);
+
+    /**
+     * Go forward to the next website in history
+     */
+    const goForward = useCallback(async () => {
+      if (!forwardEnabled) return;
+
+      const { current } = webviewRef;
+      current?.goForward?.();
+    }, [forwardEnabled]);
+
+    /**
+     * Check if a URL is allowed.
+     *
+     * The full URL (including its path) is forwarded to the dapp-scanning
+     * check rather than just the origin, since the scanner performs path-aware
+     * evaluation for certain shared-host domains and requires the complete URL.
+     * The whitelist remains origin-based.
+     */
+    const isAllowedUrl = useCallback(
+      async (urlToCheck: string): Promise<boolean> => {
+        const { origin: urlOrigin } = new URLParse(urlToCheck);
+        if (whitelist?.includes(urlOrigin)) {
+          return true;
+        }
+
+        const testResult = await getPhishingTestResultAsync(
+          urlToCheck,
+          RequestSourceFlow.Browser,
+        );
+        return !testResult?.result;
+      },
+      [whitelist],
+    );
+
+    /**
+     * Determines if we should show the phishing modal for a detected phishing URL
+     * For real-time dapp scanning, we may want to skip showing the modal in certain cases:
+     * - The user has completely navigated and loaded web content for another website
+     * - The user has started navigating and loading web content for another website
+     *
+     * This is important because if we've navigated to something like metamask.io after being on
+     * a phishing website and the response from the dapp scanning API returns after we've already
+     * navigated away on the phishing website, then the user thinks the modal is for metamask.io.
+     */
+    const shouldShowPhishingModal = useCallback(
+      (phishingUrlOrigin: string): boolean => {
+        const resolvedUrlOrigin = new URLParse(resolvedUrlRef.current).origin;
+        const loadingUrlOrigin = new URLParse(loadingUrlRef.current).origin;
+        const shouldNotShow =
+          resolvedUrlOrigin !== phishingUrlOrigin &&
+          loadingUrlOrigin !== phishingUrlOrigin &&
+          loadingUrlOrigin !== 'null';
+
+        return !shouldNotShow;
+      },
+      [resolvedUrlRef, loadingUrlRef],
+    );
+
+    /**
+     * Show a phishing modal when a url is not allowed
+     */
+    const handleNotAllowedUrl = useCallback(
+      (urlOrigin: string) => {
+        if (!shouldShowPhishingModal(urlOrigin)) {
+          return;
+        }
+
+        setBlockedUrl(urlOrigin);
+        setTimeout(() => setShowPhishingModal(true), 1000);
+      },
+      [shouldShowPhishingModal, setBlockedUrl, setShowPhishingModal],
+    );
+
+    /**
+     * Get IPFS info from a ens url
+     * TODO: Consider improving this function and it's types
+     */
+    const handleIpfsContent = useCallback(
+      async (
+        fullUrl: string,
+        {
+          hostname,
+          pathname,
+          query,
+        }: { hostname: string; pathname: string; query: string },
+      ): Promise<IpfsContentResult | undefined | null> => {
+        const { provider } =
+          Engine.context.NetworkController.getProviderAndBlockTracker();
+        let gatewayUrl;
+        try {
+          const { type, hash } = await resolveEnsToIpfsContentId({
+            provider,
+            name: hostname,
+            chainId: activeChainId,
+          });
+          if (type === 'ipfs-ns') {
+            gatewayUrl = `${ipfsGateway}${hash}${pathname || '/'}${
+              query || ''
+            }`;
+            const response = await fetch(gatewayUrl, {
+              headers: {
+                'User-Agent': 'MetaMask Mobile Browser',
+              },
+            });
+            const statusCode = response.status;
+            if (statusCode >= 400) {
+              Logger.log('Status code ', statusCode, gatewayUrl);
+              return null;
+            }
+          } else if (type === 'swarm-ns') {
+            gatewayUrl = `${AppConstants.SWARM_DEFAULT_GATEWAY_URL}${hash}${
+              pathname || '/'
+            }${query || ''}`;
+          } else if (type === 'ipns-ns') {
+            gatewayUrl = `${AppConstants.IPNS_DEFAULT_GATEWAY_URL}${hostname}${
+              pathname || '/'
+            }${query || ''}`;
+          }
+          return {
+            url: gatewayUrl,
+            hash,
+            type,
+          };
+        } catch (err: unknown) {
+          const handleIpfsContentError = err as Error;
+          //if it's not a ENS but a TLD (Top Level Domain)
+          if (isTLD(hostname, handleIpfsContentError)) {
+            ensIgnoreListRef.current.push(hostname);
+            return { url: fullUrl, reload: true };
+          }
+          if (
+            handleIpfsContentError?.message?.startsWith(
+              'EnsIpfsResolver - no known ens-ipfs registry for chainId',
+            )
+          ) {
+            trackErrorAsAnalytics(
+              'Browser: Failed to resolve ENS name for chainId',
+              handleIpfsContentError?.message,
+            );
+          } else {
+            Logger.error(handleIpfsContentError, 'Failed to resolve ENS name');
+          }
+
+          if (
+            handleIpfsContentError?.message?.startsWith(
+              IPFS_GATEWAY_DISABLED_ERROR,
+            )
+          ) {
+            setIpfsBannerVisible(true);
+            goBack();
+            throw new Error(handleIpfsContentError?.message);
+          } else {
+            Alert.alert(
+              strings('browser.failed_to_resolve_ens_name'),
+              handleIpfsContentError.message,
+            );
+          }
+          goBack();
+        }
+      },
+      [goBack, ipfsGateway, setIpfsBannerVisible, activeChainId],
+    );
+
+    const triggerDappViewedEvent = useCallback((urlToTrigger: string) => {
+      const permissionsControllerState =
+        Engine.context.PermissionController.state;
+      const hostname = new URLParse(urlToTrigger).origin;
+      const connectedAccounts = getPermittedCaipAccountIdsByHostname(
+        permissionsControllerState,
+        hostname,
+      );
+
+      // Check if there are any connected accounts
+      if (!connectedAccounts.length) {
+        return;
+      }
+
+      // Track dapp viewed event
+      trackDappViewedEvent({
+        hostname,
+        numberOfConnectedAccounts: connectedAccounts.length,
+      });
+    }, []);
+
+    /**
+     * Open a new tab
+     */
+    const openNewTab = useCallback(
+      (newTabUrl?: string) => {
+        dismissTextSelectionIfNeeded();
+        newTab(newTabUrl);
+      },
+      [dismissTextSelectionIfNeeded, newTab],
+    );
+
+    /**
+     * Show the tabs view
+     */
+    const showTabsView = useCallback(() => {
+      dismissTextSelectionIfNeeded();
+      showTabs();
+    }, [dismissTextSelectionIfNeeded, showTabs]);
+
+    /**
+     * Handle when the drawer (app menu) is opened
+     */
+    const drawerOpenHandler = useCallback(() => {
+      dismissTextSelectionIfNeeded();
+    }, [dismissTextSelectionIfNeeded]);
+
+    const handleFirstUrl = useCallback(async () => {
+      setIsResolvedIpfsUrl(false);
+      setFirstUrlLoaded(true);
+      setProgress(0);
+      return;
+    }, []);
+
+    /**
+     * Set initial url, dapp scripts and engine. Similar to componentDidMount
+     */
+    useEffect(() => {
+      if (!isTabActive || isWebViewReadyToLoad.current) return;
+
+      isWebViewReadyToLoad.current = true;
+
+      const getEntryScriptWeb3 = async () => {
+        const entryScriptWeb3Fetched = await EntryScriptWeb3.get();
+        setEntryScriptWeb3(
+          webBrowserBridgeScript +
+            entryScriptWeb3Fetched +
+            SPA_urlChangeListener +
+            SCROLL_TRACKER_SCRIPT,
+        );
+      };
+
+      getEntryScriptWeb3();
+      handleFirstUrl();
+    }, [isTabActive, handleFirstUrl, webBrowserBridgeScript]);
+
+    const teardownBackgroundBridge = useCallback(() => {
+      backgroundBridgeRef.current?.onDisconnect();
+      backgroundBridgeRef.current = undefined;
+    }, []);
+
+    // Cleanup bridges when tab is closed
+    useEffect(
+      () => () => {
+        teardownBackgroundBridge();
+      },
+      [teardownBackgroundBridge],
+    );
+
+    useEffect(() => {
+      if (Device.isAndroid()) {
+        DrawerStatusTracker.hub.on('drawer::open', drawerOpenHandler);
+      }
+
+      return function cleanup() {
+        if (Device.isAndroid()) {
+          DrawerStatusTracker?.hub?.removeListener(
+            'drawer::open',
+            drawerOpenHandler,
+          );
+        }
+      };
+    }, [drawerOpenHandler]);
+
+    /**
+     * Set navigation listeners
+     */
+    useEffect(() => {
+      const handleAndroidBackPress = () => {
+        if (!isTabActive) return false;
+        goBack();
+        return true;
+      };
+
+      let backHandlerSubscription = BackHandler.addEventListener(
+        'hardwareBackPress',
+        handleAndroidBackPress,
+      );
+
+      // Handle hardwareBackPress event only for browser, not components rendered on top
+      const unsubscribeFocus = navigation.addListener('focus', () => {
+        backHandlerSubscription?.remove();
+        backHandlerSubscription = BackHandler.addEventListener(
+          'hardwareBackPress',
+          handleAndroidBackPress,
+        );
+      });
+      const unsubscribeBlur = navigation.addListener('blur', () => {
+        backHandlerSubscription?.remove();
+      });
+
+      return function cleanup() {
+        backHandlerSubscription?.remove();
+        unsubscribeFocus();
+        unsubscribeBlur();
+      };
+    }, [goBack, isTabActive, navigation]);
+
+    /**
+     * Handles error for example, ssl certificate error or cannot open page
+     */
+    const handleError = useCallback(
+      (webViewError: WebViewError) => {
+        commitResolvedUrl(submittedUrlRef.current);
+        titleRef.current = `Can't Open Page`;
+        iconRef.current = undefined;
+        setConnectionType(ConnectionType.UNKNOWN);
+        setBackEnabled(true);
+        setForwardEnabled(false);
+        // Show error and reset progress bar
+        setError(webViewError);
+        setProgress(0);
+
+        // Prevent url from being set when the url bar is focused
+        !isUrlBarFocused &&
+          urlBarRef.current?.setNativeProps({ text: submittedUrlRef.current });
+
+        isTabActive &&
+          navigation.setParams({
+            url: getMaskedUrl(
+              submittedUrlRef.current,
+              sessionENSNamesRef.current,
+            ),
+          });
+
+        Logger.log(webViewError);
+      },
+      [
+        commitResolvedUrl,
+        setConnectionType,
+        setBackEnabled,
+        setForwardEnabled,
+        setError,
+        setProgress,
+        isUrlBarFocused,
+        isTabActive,
+        navigation,
+      ],
+    );
+
+    const initializeBackgroundBridge = useCallback(
+      (urlBridge: string, isMainFrame: boolean) => {
+        let hostname: string;
+        try {
+          hostname = new URL(urlBridge).origin;
+        } catch {
+          return;
+        }
+        if (!hostname || hostname === 'null') {
+          return;
+        }
+
+        teardownBackgroundBridge();
+
+        //@ts-expect-error - We should type bacgkround bridge js file
+        const newBridge = new BackgroundBridge({
+          webview: webviewRef,
+          url: urlBridge,
+          getRpcMethodMiddleware: ({
+            getProviderState,
+          }: {
+            getProviderState: () => void;
+          }) =>
+            getRpcMethodMiddleware({
+              hostname,
+              getProviderState,
+              navigation,
+              // Website info
+              url: resolvedUrlRef,
+              title: titleRef,
+              icon: iconRef,
+              tabId,
+              // TODO: This properties were missing, and were not optional
+              isWalletConnect: false,
+              isMMSDK: false,
+              analytics: {},
+            }),
+          isMainFrame,
+        });
+        backgroundBridgeRef.current = newBridge;
+        lastBoundWebViewKeyRef.current = webViewReloadKey;
+      },
+      [navigation, tabId, teardownBackgroundBridge, webViewReloadKey],
+    );
+
+    const sendActiveAccount = useCallback(
+      async (targetUrl?: string) => {
+        // Use targetUrl if explicitly provided (even if empty), otherwise fall back to resolvedUrlRef.current
+        const urlToCheck =
+          targetUrl !== undefined ? targetUrl : resolvedUrlRef.current;
+
+        if (!urlToCheck) {
+          // If no URL to check, send empty accounts
+          notifyAllConnections({
+            method: NOTIFICATION_NAMES.accountsChanged,
+            params: [],
+          });
+          return;
+        }
+
+        // Get permitted accounts for the target URL
+        const permissionsControllerState =
+          Engine.context.PermissionController.state;
+        let origin = ''; // notifyAllConnections will return empty array if ''
+        try {
+          origin = new URLParse(urlToCheck).origin;
+        } catch (err) {
+          Logger.log('Error parsing WebView URL', err);
+        }
+        const permittedAcc = getPermittedEvmAddressesByHostname(
+          permissionsControllerState,
+          origin,
+        );
+
+        notifyAllConnections({
+          method: NOTIFICATION_NAMES.accountsChanged,
+          params: permittedAcc,
+        });
+      },
+      [notifyAllConnections],
+    );
+
+    /**
+     * Handles state changes for when the url changes
+     */
+    const handleSuccessfulPageResolution = useCallback(
+      async (siteInfo: {
+        url: string;
+        title: string;
+        icon: ImageSourcePropType;
+        canGoBack: boolean;
+        canGoForward: boolean;
+      }) => {
+        const hostName = new URLParse(siteInfo.url).origin;
+        if (resolvedUrlRef.current === siteInfo.url) {
+          titleRef.current = siteInfo.title || titleRef.current;
+          if (siteInfo.icon) iconRef.current = siteInfo.icon;
+          !isUrlBarFocused &&
+            urlBarRef.current?.setNativeProps({ text: hostName });
+          setBackEnabled(siteInfo.canGoBack);
+          setForwardEnabled(siteInfo.canGoForward);
+          return;
+        }
+
+        commitResolvedUrl(siteInfo.url);
+        titleRef.current = siteInfo.title;
+        if (siteInfo.icon) iconRef.current = siteInfo.icon;
+
+        // Bind on commit unless the destination-origin bridge was already
+        // created when this navigation started. Recreating it here would
+        // disconnect in-flight provider traffic on permitted dapps.
+        const existingBridge = backgroundBridgeRef.current;
+        if (!existingBridge || !isSameOrigin(existingBridge.url, hostName)) {
+          initializeBackgroundBridge(hostName, true);
+        }
+        // Send the active account after the bridge has been initialized for the
+        // committed origin, so account data is delivered through a bridge whose
+        // origin matches the rendered page.
+        sendActiveAccount(siteInfo.url);
+
+        // Prevent url from being set when the url bar is focused
+        !isUrlBarFocused &&
+          urlBarRef.current?.setNativeProps({ text: hostName });
+
+        const contentProtocol = getURLProtocol(siteInfo.url);
+        if (contentProtocol === PROTOCOLS.HTTPS) {
+          setConnectionType(ConnectionType.SECURE);
+        } else if (contentProtocol === PROTOCOLS.HTTP) {
+          setConnectionType(ConnectionType.UNSECURE);
+        }
+        setBackEnabled(siteInfo.canGoBack);
+        setForwardEnabled(siteInfo.canGoForward);
+
+        isTabActive &&
+          navigation.setParams({
+            url: getMaskedUrl(siteInfo.url, sessionENSNamesRef.current),
+          });
+
+        updateTabInfo(tabId, {
+          url: getMaskedUrl(siteInfo.url, sessionENSNamesRef.current),
+        });
+
+        addToBrowserHistory({
+          name: siteInfo.title,
+          url: getMaskedUrl(siteInfo.url, sessionENSNamesRef.current),
+        });
+      },
+      [
+        commitResolvedUrl,
+        isUrlBarFocused,
+        setConnectionType,
+        isTabActive,
+        tabId,
+        updateTabInfo,
+        addToBrowserHistory,
+        navigation,
+        initializeBackgroundBridge,
+        sendActiveAccount,
+      ],
+    );
+
+    /**
+     * Resolves the URL bar from a document URL reported by the WebView after a
+     * back/forward navigation. Only the message matching the pending request is
+     * applied; messages without a matching request are ignored.
+     *
+     * Same-origin document URLs are used so SPA path updates still apply.
+     * Otherwise the navigation event URL is used.
+     */
+    const handleDocumentUrlForUrlBar = useCallback(
+      (payload: unknown) => {
+        const pendingNav = pendingBackForwardNavRef.current;
+        if (
+          !pendingNav ||
+          !isDocumentUrlForUrlBarPayload(payload) ||
+          payload.requestId !== pendingNav.requestId
+        ) {
+          return;
+        }
+
+        pendingBackForwardNavRef.current = null;
+
+        const committedUrl = resolveCommittedDocumentUrl(
+          pendingNav.url,
+          payload.url,
+        );
+
+        if (!committedUrl) {
+          Logger.log(
+            `Skipping back/forward address bar update. Navigation: ${pendingNav.url} Document: ${payload.url}`,
+          );
+          return;
+        }
+
+        const usedPageReportedUrl = committedUrl === payload.url;
+        if (!usedPageReportedUrl) {
+          Logger.log(
+            `Using navigation URL for address bar. Navigation: ${pendingNav.url} Document: ${payload.url}`,
+          );
+        }
+
+        handleSuccessfulPageResolution({
+          title: usedPageReportedUrl
+            ? (payload.title ?? pendingNav.title ?? titleRef.current)
+            : (pendingNav.title ?? titleRef.current),
+          url: committedUrl,
+          icon: favicon,
+          canGoBack: pendingNav.canGoBack,
+          canGoForward: pendingNav.canGoForward,
+        });
+      },
+      [handleSuccessfulPageResolution, favicon],
+    );
+
+    /**
+     * Navigates the WebView via `source.uri` (native loadRequest) rather than
+     * `window.location.href`. On iOS this prevents Universal Link handoff to
+     * associated native apps; applied on both platforms for a single code path
+     * (MCWP-748).
+     *
+     * Remounting (`webViewReloadKey`) is required because mid-session
+     * `source.uri` prop updates do not reliably trigger WKWebView loadRequest
+     * on iOS (RNCWebView's iOS `loadUrl` command is a no-op; Android uses
+     * native `loadUrl`). Remount matches Explore's fresh-tab loadRequest path.
+     */
+    const navigateWebViewToUrl = useCallback((url: string) => {
+      const sanitizedUrl = sanitizeUrlInput(url);
+      if (!sanitizedUrl) {
+        return;
+      }
+
+      if (webViewUriRef.current === sanitizedUrl) {
+        webviewRef.current?.reload?.();
+        return;
+      }
+
+      webViewUriRef.current = sanitizedUrl;
+      setWebViewUri(sanitizedUrl);
+      setWebViewReloadKey((key) => key + 1);
+    }, []);
+
+    /**
+     * Function that allows custom handling of any web view requests.
+     * Return `true` to continue loading the request and `false` to stop loading.
+     */
+    const onShouldStartLoadWithRequest = useCallback(
+      ({ url: urlToLoad }: { url: string }) => {
+        if (!isTabActive) return false;
+
+        if (isDisallowedExplicitPort(urlToLoad)) {
+          Logger.log(
+            `Skipping navigation with explicit non-default port: ${urlToLoad}`,
+          );
+          return false;
+        }
+
+        if (!isIpfsGatewayEnabled && isResolvedIpfsUrl) {
+          setIpfsBannerVisible(true);
+          return false;
+        }
+
+        // Check if this is an internal MetaMask deeplink that should be handled within the app
+        if (isInternalDeepLink(urlToLoad)) {
+          // Handle the deeplink internally instead of passing to OS
+          SharedDeeplinkManager.getInstance()
+            .parse(urlToLoad, {
+              origin: AppConstants.DEEPLINKS.ORIGIN_IN_APP_BROWSER,
+              browserCallBack: (url: string) => {
+                // If the deeplink handler wants to navigate to a different URL in the browser
+                if (url) {
+                  navigateWebViewToUrl(url);
+                }
+              },
+            })
+            .catch((deeplinkError) => {
+              Logger.error(
+                deeplinkError,
+                'BrowserTab: Failed to handle internal deeplink in browser',
+              );
+            });
+          return false; // Stop the webview from loading this URL
+        }
+
+        const { protocol } = new URLParse(urlToLoad);
+
+        if (trustedProtocolToDeeplink.includes(protocol)) {
+          allowLinkOpen(urlToLoad);
+
+          // Webview should not load deeplink protocols
+          // We redirect them to the OS linking system instead
+          return false;
+        }
+
+        if (protocolAllowList.includes(protocol)) {
+          // Continue with the URL loading on the Webview
+          return true;
+        }
+
+        // Use Sentry Breadcumbs to log the untrusted protocol
+        Logger.log(`Protocol not allowed ${protocol}`);
+
+        // Pop up an alert dialog box to prompt the user for permission
+        // to execute the request
+        const alertMsg = getAlertMessage(protocol, strings);
+        Alert.alert(strings('onboarding.warning_title'), alertMsg, [
+          {
+            text: strings('browser.protocol_alert_options.ignore'),
+            onPress: () => null,
+            style: 'cancel',
+          },
+          {
+            text: strings('browser.protocol_alert_options.allow'),
+            onPress: () => allowLinkOpen(urlToLoad),
+            style: 'default',
+          },
+        ]);
+
+        return false;
+      },
+      [
+        isIpfsGatewayEnabled,
+        isResolvedIpfsUrl,
+        setIpfsBannerVisible,
+        isTabActive,
+        navigateWebViewToUrl,
+      ],
+    );
+
+    /**
+     * Handles target="_blank" links and window.open() calls.
+     * On Android, without this handler, such links open in the system browser (Chrome)
+     * because the native WebChromeClient creates a bare WebView with no fallback.
+     * On iOS, the native fallback loads the URL in the same WebView, but providing
+     * this explicit handler ensures consistent behavior across both platforms.
+     */
+    const handleOpenWindow = useCallback(
+      (event: WebViewOpenWindowEvent) => {
+        const { targetUrl } = event.nativeEvent;
+        if (targetUrl) {
+          navigateWebViewToUrl(targetUrl);
+        }
+      },
+      [navigateWebViewToUrl],
+    );
+
+    /**
+     * Sets loading bar progress
+     */
+    const onLoadProgress = useCallback(
+      ({
+        nativeEvent: { progress: onLoadProgressProgress },
+      }: WebViewProgressEvent) => {
+        setProgress(onLoadProgressProgress);
+      },
+      [setProgress],
+    );
+
+    /**
+     * When website finished loading
+     */
+    const onLoadEnd = useCallback(
+      ({
+        event: { nativeEvent },
+      }: {
+        event: WebViewNavigationEvent | WebViewErrorEvent;
+      }) => {
+        if ('code' in nativeEvent) {
+          // Handle error - code is a property of WebViewErrorEvent
+          // Reset pull-to-refresh state even on error to prevent it being stuck
+          isRefreshing.value = false;
+          return handleError(nativeEvent);
+        }
+
+        // Handle navigation event
+        const { url, title, canGoBack, canGoForward } = nativeEvent;
+        loadingUrlRef.current = '';
+        // Always resolve a completed load, including JS cross-origin
+        // redirects that never fire a matching onLoadStart (#33815).
+        handleSuccessfulPageResolution({
+          title,
+          url,
+          icon: favicon,
+          canGoBack,
+          canGoForward,
+        });
+
+        // Reset pull-to-refresh state when page finishes loading
+        isRefreshing.value = false;
+
+        webviewRef.current?.injectJavaScript(webBrowserBridgeScript);
+      },
+      [
+        handleError,
+        handleSuccessfulPageResolution,
+        favicon,
+        isRefreshing,
+        webBrowserBridgeScript,
+      ],
+    );
+
+    /**
+     * Check if any iFrame URLs are prohibited
+     */
+    const checkIFrameUrls = useCallback(
+      async (iframeUrls: string[]) => {
+        for (const iframeUrl of iframeUrls) {
+          const { origin: iframeOrigin } = new URLParse(iframeUrl);
+          const isAllowed = await isAllowedUrl(iframeUrl);
+          if (!isAllowed) {
+            handleNotAllowedUrl(iframeOrigin);
+            return;
+          }
+        }
+      },
+      [isAllowedUrl, handleNotAllowedUrl],
+    );
+
+    const onAutocompleteSelectPressIn = useCallback(() => {
+      // Keep focus through pressIn → onPress so blur does not dismiss
+      // autocomplete before the selection handler runs.
+      urlBarRef.current?.suppressNextBlur();
+    }, []);
+
+    /**
+     * Handle message from website
+     */
+    const onMessage = useCallback(
+      ({ nativeEvent }: WebViewMessageEvent) => {
+        const data = nativeEvent.data;
+        try {
+          const isWebShareMessage =
+            typeof data === 'string' &&
+            data.startsWith(
+              `{"type":${JSON.stringify(WEB_SHARE_MESSAGE_TYPE)}`,
+            );
+          const isWebDownloadMessage =
+            typeof data === 'string' &&
+            data.startsWith(
+              `{"type":${JSON.stringify(WEB_DOWNLOAD_MESSAGE_TYPE)}`,
+            );
+          let maxMessageLength = MAX_MESSAGE_LENGTH;
+          if (isWebShareMessage) {
+            maxMessageLength = WEB_SHARE_MAX_MESSAGE_LENGTH;
+          } else if (isWebDownloadMessage) {
+            maxMessageLength = WEB_DOWNLOAD_MAX_MESSAGE_LENGTH;
+          }
+
+          if (data.length > maxMessageLength) {
+            console.warn(
+              `message exceeded size limit and will be dropped: ${data.slice(
+                0,
+                1000,
+              )}...`,
+            );
+            // Dropping the message here would leave the page-side
+            // navigator.share() promise pending forever, since the polyfill
+            // waits for a native result. Settle it with an error. The request
+            // id sits at the start of the payload (before the large files
+            // data), so it can be extracted without parsing the oversized JSON.
+            if (isWebShareMessage) {
+              const shareRequestId = data
+                .slice(0, 1000)
+                .match(/"id":"([^"]+)"/)?.[1];
+              if (shareRequestId) {
+                webviewRef.current?.injectJavaScript(
+                  buildWebShareResultScript(
+                    shareRequestId,
+                    'error',
+                    'Share data too large',
+                  ),
+                );
+              }
+            }
+            return;
+          }
+          const dataParsed = typeof data === 'string' ? JSON.parse(data) : data;
+          if (!dataParsed || (!dataParsed.type && !dataParsed.name)) {
+            return;
+          }
+          if (dataParsed.type === 'SCROLL_POSITION') {
+            // Update scroll position - gesture wrapper derives "at top" directly from this value
+            scrollY.value = dataParsed.payload?.scrollY || 0;
+            return;
+          }
+          if (
+            dataParsed.type === 'IFRAME_DETECTED' &&
+            Array.isArray(dataParsed.iframeUrls) &&
+            dataParsed.iframeUrls.length > 0
+          ) {
+            const validIframeUrls = dataParsed.iframeUrls.filter(
+              (url: unknown): url is string =>
+                typeof url === 'string' && url.trim().length > 0,
+            );
+            if (validIframeUrls.length > 0) {
+              checkIFrameUrls(validIframeUrls);
+            }
+            return;
+          }
+          if (dataParsed.type === DOCUMENT_URL_FOR_URL_BAR) {
+            handleDocumentUrlForUrlBar(dataParsed.payload);
+            return;
+          }
+          if (dataParsed.type === WEB_SHARE_MESSAGE_TYPE) {
+            const shareRequestId: string | undefined = dataParsed.payload?.id;
+            handleWebShare(dataParsed.payload).then((result) => {
+              // Settle the page-side navigator.share() promise so the page can
+              // distinguish success from cancel/failure like a real browser.
+              if (shareRequestId) {
+                webviewRef.current?.injectJavaScript(
+                  buildWebShareResultScript(
+                    shareRequestId,
+                    result.status,
+                    result.message,
+                  ),
+                );
+              }
+            });
+            return;
+          }
+          if (dataParsed.type === WEB_DOWNLOAD_MESSAGE_TYPE) {
+            handleWebDownload(dataParsed.payload);
+            return;
+          }
+          if (dataParsed.name) {
+            // Drop provider messages while the live bridge origin does not
+            // match the in-flight load. The destination-origin bridge is
+            // bound on allowed onLoadStart so permitted pages can talk
+            // before commit.
+            const bridgeUrl = backgroundBridgeRef.current?.url;
+            if (
+              isHttpPageUrl(loadingUrlRef.current) &&
+              bridgeUrl &&
+              !isSameOrigin(loadingUrlRef.current, bridgeUrl)
+            ) {
+              return;
+            }
+
+            // Provider messages use the frame URL from the WebView event.
+            const frameUrl = nativeEvent.url;
+            if (!isHttpPageUrl(frameUrl)) {
+              return;
+            }
+
+            backgroundBridgeRef.current?.onMessage({
+              ...dataParsed,
+              origin: frameUrl,
+            });
+            return;
+          }
+        } catch (e: unknown) {
+          const onMessageError = e as Error;
+          Logger.error(
+            onMessageError,
+            `Browser::onMessage on ${resolvedUrlRef.current}`,
+          );
+        }
+      },
+      [checkIFrameUrls, scrollY, handleDocumentUrlForUrlBar],
+    );
+
+    /**
+     * Website started to load
+     */
+    const onLoadStart = useCallback(
+      async ({ nativeEvent }: WebViewNavigationEvent) => {
+        const loadStartId = loadStartIdRef.current + 1;
+        loadStartIdRef.current = loadStartId;
+        loadingUrlRef.current = nativeEvent.url;
+
+        // Use URL to produce real url. This should be the actual website that the user is viewing.
+        const { origin: urlOrigin } = new URLParse(nativeEvent.url);
+        const canBindProvider = isHttpPageUrl(nativeEvent.url);
+
+        // Disconnect the previous-origin bridge on cross-origin http(s)
+        // navigation start. Compare against the live bridge origin — not the
+        // last committed document — so overlapping navigations (A → B → C
+        // before B commits) tear down the connection that is actually live.
+        // Same-origin navigations keep it. Blank loads from a WebView remount
+        // must not disconnect the live provider.
+        const liveBridgeUrl = backgroundBridgeRef.current?.url;
+        if (
+          canBindProvider &&
+          liveBridgeUrl &&
+          !isSameOrigin(nativeEvent.url, liveBridgeUrl)
+        ) {
+          teardownBackgroundBridge();
+        }
+
+        // Cancel loading the page if we detect its a phishing page.
+        // Pass the full URL (including path) so the scanner can evaluate it,
+        // not just the origin.
+        const isAllowed = await isAllowedUrl(nativeEvent.url);
+        if (loadStartId !== loadStartIdRef.current) {
+          return false;
+        }
+        if (!isAllowed) {
+          if (canBindProvider) {
+            handleNotAllowedUrl(urlOrigin);
+          }
+          return false;
+        }
+
+        // Bind the destination-origin bridge as soon as the load is allowed
+        // so the incoming page can use the provider before commit. Skip when
+        // the current bridge already matches this origin on the same WebView.
+        // URL-bar navigations remount the WebView; the previous Port is dead
+        // and must be rebuilt even when the origin is unchanged.
+        if (canBindProvider && urlOrigin) {
+          const existingBridge = backgroundBridgeRef.current;
+          const webViewRemounted =
+            lastBoundWebViewKeyRef.current !== webViewReloadKey;
+          if (
+            !existingBridge ||
+            !isSameOrigin(existingBridge.url, urlOrigin) ||
+            webViewRemounted
+          ) {
+            initializeBackgroundBridge(urlOrigin, true);
+          }
+        }
+        iconRef.current = undefined;
+      },
+      [
+        isAllowedUrl,
+        handleNotAllowedUrl,
+        teardownBackgroundBridge,
+        initializeBackgroundBridge,
+        webViewReloadKey,
+      ],
+    );
+
+    /**
+     * Check whenever permissions change / account changes for Dapp
+     */
+    useEffect(() => {
+      sendActiveAccount();
+    }, [sendActiveAccount, permittedEvmAccountsList]);
+
+    /**
+     * Check when the ipfs gateway is enabled to hide the banner
+     */
+    useEffect(() => {
+      if (isIpfsGatewayEnabled) {
+        setIpfsBannerVisible(false);
+      }
+    }, [isIpfsGatewayEnabled]);
+
+    /**
+     * Render the progress bar
+     */
+    const renderProgressBar = () => (
+      <View style={styles.progressBarWrapper}>
+        <WebviewProgressBar progress={progress} />
+      </View>
+    );
+
+    const isExternalLink = useMemo(
+      () => linkType === EXTERNAL_LINK_TYPE,
+      [linkType],
+    );
+
+    const handleEnsUrl = useCallback(
+      async (ens: string) => {
+        try {
+          webviewRef.current?.stopLoading();
+
+          const { hostname, query, pathname } = new URLParse(ens);
+          const ipfsContent = await handleIpfsContent(ens, {
+            hostname,
+            query,
+            pathname,
+          });
+          if (!ipfsContent?.url) return null;
+          const { url: ipfsUrl, reload } = ipfsContent;
+          // Reload with IPFS url
+          if (reload) return onSubmitEditingRef.current?.(ipfsUrl);
+          if (!ipfsContent.hash || !ipfsContent.type) {
+            Logger.error(
+              new Error('IPFS content is missing hash or type'),
+              'Error in handleEnsUrl',
+            );
+            return null;
+          }
+          const { type, hash } = ipfsContent;
+          sessionENSNamesRef.current[ipfsUrl] = { hostname, hash, type };
+          setIsResolvedIpfsUrl(true);
+          return ipfsUrl;
+        } catch (_) {
+          return null;
+        }
+      },
+      [handleIpfsContent, setIsResolvedIpfsUrl],
+    );
+
+    const onSubmitEditing = useCallback(
+      async (text: string) => {
+        if (!text) return;
+        setConnectionType(ConnectionType.UNKNOWN);
+        urlBarRef.current?.setNativeProps({ text });
+        submittedUrlRef.current = text;
+        // Format url for browser to be navigatable by webview
+        const processedUrl = processUrlForBrowser(text, searchEngine);
+        if (isENSUrl(processedUrl, ensIgnoreListRef.current)) {
+          const handledEnsUrl = await handleEnsUrl(
+            processedUrl.replace(regex.urlHttpToHttps, 'https://'),
+          );
+          if (!handledEnsUrl) {
+            trackErrorAsAnalytics(
+              'Browser: Failed to handle ENS url',
+              'Error in onSubmitEditing',
+            );
+            return;
+          }
+          return onSubmitEditingRef.current(handledEnsUrl);
+        }
+        // Load via WebView source.uri (same as Explore) instead of
+        // window.location.href to avoid iOS Universal Link handoff (MCWP-748).
+        navigateWebViewToUrl(processedUrl);
+        // Bottom bar stays mounted while focused (hidden visually), so we can
+        // leave edit mode immediately without remounting it mid-navigation.
+        urlBarRef.current?.dismissEditing();
+      },
+      [searchEngine, handleEnsUrl, setConnectionType, navigateWebViewToUrl],
+    );
+
+    // Assign the memoized function to the ref. This is needed since onSubmitEditing is a useCallback and is accessed recursively
+    useEffect(() => {
+      onSubmitEditingRef.current = onSubmitEditing;
+    }, [onSubmitEditing]);
+
+    /**
+     * Reload current page
+     */
+    const reload = useCallback(() => {
+      onSubmitEditing(resolvedUrlRef.current);
+      triggerDappViewedEvent(resolvedUrlRef.current);
+    }, [onSubmitEditing, triggerDappViewedEvent]);
+
+    const handleOnFileDownload = useCallback(
+      async ({
+        nativeEvent: { downloadUrl },
+      }: {
+        nativeEvent: { downloadUrl: string };
+      }) => {
+        if (!isTabActive) return;
+        const downloadResponse = await downloadFile(downloadUrl);
+        if (downloadResponse) {
+          reload();
+        } else {
+          Alert.alert(strings('download_files.error'));
+          reload();
+        }
+      },
+      [reload, isTabActive],
+    );
+
+    /**
+     * Return to the MetaMask Dapp Homepage
+     */
+    const returnHome = useCallback(() => {
+      onSubmitEditing(HOMEPAGE_HOST);
+    }, [onSubmitEditing]);
+
+    /**
+     * Render the bottom navigation bar.
+     * Keep the bar mounted while the URL bar is focused and only hide it
+     * visually — unmounting remounts siblings and can cancel WebView
+     * loadRequest when navigating via source.uri (MCWP-748).
+     */
+    const renderBottomBar = () =>
+      isTabActive ? (
+        <View
+          pointerEvents={isUrlBarFocused ? 'none' : 'auto'}
+          style={isUrlBarFocused ? styles.hide : undefined}
+        >
+          <BrowserBottomBar
+            canGoBack={backEnabled}
+            canGoForward={forwardEnabled}
+            goBack={goBack}
+            goForward={goForward}
+            reload={reload}
+            openNewTab={openNewTab}
+            activeUrl={resolvedUrl}
+            getMaskedUrl={getMaskedUrl}
+            title={titleRef.current}
+            sessionENSNames={sessionENSNamesRef.current}
+            favicon={favicon}
+            icon={iconRef.current}
+          />
+        </View>
+      ) : null;
+
+    /**
+     * Handle autocomplete selection
+     */
+    const onSelect = useCallback(
+      (item: AutocompleteSearchResult) => {
+        switch (item.category) {
+          case UrlAutocompleteCategory.Tokens:
+            // Set flag to prevent onBlur from hiding autocomplete
+            isNavigatingToDetailRef.current = true;
+            navigation.navigate('Asset', {
+              chainId: item.chainId,
+              address: item.address,
+              symbol: item.symbol,
+              name: item.name,
+              decimals: item.decimals,
+              image: item.logoUrl,
+              pricePercentChange1d: item.percentChange,
+              isFromTrending: true,
+            });
+            break;
+
+          case UrlAutocompleteCategory.Perps:
+            // Set flag to prevent onBlur from hiding autocomplete
+            isNavigatingToDetailRef.current = true;
+            navigation.navigate(Routes.PERPS.ROOT, {
+              screen: Routes.PERPS.MARKET_DETAILS,
+              params: {
+                market: {
+                  symbol: item.symbol,
+                  name: item.name,
+                  maxLeverage: item.maxLeverage,
+                  price: item.price,
+                  change24h: item.change24h,
+                  change24hPercent: item.change24hPercent,
+                  volume: item.volume,
+                  openInterest: item.openInterest,
+                  marketType: item.marketType,
+                  marketSource: item.marketSource,
+                },
+              },
+            });
+            break;
+
+          case UrlAutocompleteCategory.Predictions:
+            // Set flag to prevent onBlur from hiding autocomplete
+            isNavigatingToDetailRef.current = true;
+            if (!openPredict(item.intent)) {
+              // The Active Venue cannot open this market: nothing navigated.
+              isNavigatingToDetailRef.current = false;
+            }
+            break;
+
+          case UrlAutocompleteCategory.Sites:
+          case UrlAutocompleteCategory.Recents:
+          case UrlAutocompleteCategory.Favorites:
+          default:
+            onSubmitEditing(item.url);
+            break;
+        }
+      },
+      [onSubmitEditing, navigation, openPredict],
+    );
+
+    /**
+     * Handle autocomplete dismissal
+     */
+    const onDismissAutocomplete = useCallback(() => {
+      // Unfocus the url bar and hide the autocomplete results
+      urlBarRef.current?.hide();
+      const hostName =
+        new URLParse(resolvedUrlRef.current).origin || resolvedUrlRef.current;
+      urlBarRef.current?.setNativeProps({ text: hostName });
+    }, []);
+
+    /**
+     * Hide the autocomplete results
+     * Skips hiding if navigating to a detail screen (Token/Perps/Predictions)
+     * so user can explore multiple items
+     */
+    const hideAutocomplete = useCallback(() => {
+      if (isNavigatingToDetailRef.current) {
+        // Don't hide - user is navigating to explore a detail screen
+        // Reset the flag for next time
+        isNavigatingToDetailRef.current = false;
+        return;
+      }
+      autocompleteRef.current?.hide();
+    }, []);
+
+    const handleClosePress = useCallback(() => {
+      if (fromExploreSearch) {
+        // ExploreSearch is the previous screen on the root stack; goBack keeps
+        // the user on Search instead of dismissing it to Home or Explore.
+        navigation.goBack();
+      } else if (fromPerps) {
+        navigateToPerpsHome();
+      } else if (fromBenefit) {
+        navigation.goBack();
+      } else if (fromCard) {
+        navigation.navigate(
+          Routes.CARD.ROOT,
+          {
+            screen: Routes.CARD.HOME,
+            params: {
+              screen: Routes.CARD.HOME,
+            },
+          },
+          { pop: true },
+        );
+      } else if (fromWhatsHappening) {
+        // WhatsHappeningDetailView is in the stack navigator so goBack() works correctly.
+        navigation.goBack();
+      } else if (fromMarketInsights) {
+        // MarketInsightsView is in the stack navigator so goBack() works correctly.
+        navigation.goBack();
+      } else if (fromEarnStrategySelection) {
+        navigation.goBack();
+      } else if (fromMoney) {
+        navigation.navigate(
+          Routes.HOME_TABS,
+          {
+            screen: Routes.MONEY.ROOT,
+            params: { screen: Routes.MONEY.HOME },
+          },
+          { pop: true },
+        );
+      } else {
+        // Note: We use explicit navigation instead of goBack() because the browser
+        // is a separate tab in the Tab Navigator, and goBack() doesn't properly
+        // navigate back between tabs.
+        navigation.navigate(Routes.TRENDING_VIEW);
+      }
+    }, [
+      navigation,
+      navigateToPerpsHome,
+      fromExploreSearch,
+      fromPerps,
+      fromBenefit,
+      fromCard,
+      fromWhatsHappening,
+      fromMarketInsights,
+      fromEarnStrategySelection,
+      fromMoney,
+    ]);
+
+    const onCancelUrlBar = useCallback(() => {
+      hideAutocomplete();
+      // Reset the url bar to the current url
+      const hostName =
+        new URLParse(resolvedUrlRef.current).origin || resolvedUrlRef.current;
+      urlBarRef.current?.setNativeProps({ text: hostName });
+    }, [hideAutocomplete]);
+
+    const onFocusUrlBar = useCallback(() => {
+      // Show the autocomplete results
+      autocompleteRef.current?.show();
+      urlBarRef.current?.setNativeProps({ text: resolvedUrlRef.current });
+    }, []);
+
+    const onChangeUrlBar = useCallback((text: string) => {
+      // Search the autocomplete results
+      autocompleteRef.current?.search(text);
+    }, []);
+
+    const handleWebviewNavigationChange = useCallback(
+      (eventName: WebViewNavigationEventName) =>
+        (
+          syntheticEvent:
+            | WebViewNavigationEvent
+            | WebViewProgressEvent
+            | WebViewErrorEvent,
+        ) => {
+          const { OnLoadEnd, OnLoadProgress, OnLoadStart } =
+            WebViewNavigationEventName;
+
+          const mappingEventNameString = () => {
+            switch (eventName) {
+              case OnLoadProgress:
+                return 'onLoadProgress';
+              case OnLoadEnd:
+                return 'onLoadEnd';
+              case OnLoadStart:
+                return 'onLoadStart';
+              default:
+                return 'Invalid navigation name';
+            }
+          };
+
+          Logger.log(
+            `WEBVIEW NAVIGATING: ${mappingEventNameString()} \n Values: ${JSON.stringify(
+              syntheticEvent.nativeEvent,
+            )}`,
+          );
+
+          switch (eventName) {
+            case OnLoadProgress:
+              return onLoadProgress(syntheticEvent as WebViewProgressEvent);
+            case OnLoadEnd:
+              return onLoadEnd({
+                event: syntheticEvent as
+                  | WebViewNavigationEvent
+                  | WebViewErrorEvent,
+              });
+            case OnLoadStart:
+              return onLoadStart(syntheticEvent as WebViewNavigationEvent);
+            default:
+              return;
+          }
+        },
+      [onLoadProgress, onLoadEnd, onLoadStart],
+    );
+
+    const { OnLoadEnd, OnLoadProgress, OnLoadStart } =
+      WebViewNavigationEventName;
+
+    const rebindBridgeOnCrossOriginBackForward = useCallback(
+      (nextUrl: string) => {
+        const liveBridgeUrl = backgroundBridgeRef.current?.url;
+        if (
+          !isHttpPageUrl(nextUrl) ||
+          !liveBridgeUrl ||
+          isSameOrigin(nextUrl, liveBridgeUrl)
+        ) {
+          return;
+        }
+
+        teardownBackgroundBridge();
+        initializeBackgroundBridge(new URLParse(nextUrl).origin, true);
+      },
+      [teardownBackgroundBridge, initializeBackgroundBridge],
+    );
+
+    const handleOnNavigationStateChange = useCallback(
+      (event: WebViewNavigation) => {
+        const { canGoForward, canGoBack, navigationType, loading, url, title } =
+          event;
+        Logger.log(
+          `WEBVIEW NAVIGATING: OnNavigationStateChange \n Values: ${JSON.stringify(
+            event,
+          )}`,
+        );
+
+        // Handles force resolves url when going back since the behavior slightly differs that results in onLoadEnd not being called
+        if (navigationType === 'backforward') {
+          if (loading) {
+            return;
+          }
+
+          if (!url) {
+            return;
+          }
+
+          // Disconnect the previous-origin bridge before the document-URL
+          // handshake when back/forward lands on a different http(s) origin.
+          rebindBridgeOnCrossOriginBackForward(url);
+
+          // Sync the URL bar from the document; navigation events are not always
+          // aligned with window.location after back/forward transitions.
+          const requestId = createRequestId();
+          pendingBackForwardNavRef.current = {
+            requestId,
+            url,
+            title,
+            canGoBack,
+            canGoForward,
+          };
+          webviewRef.current?.injectJavaScript(
+            buildDocumentUrlForUrlBarScript(requestId),
+          );
+          return;
+        }
+
+        // Android reports History API path changes (pushState / replaceState)
+        // through onNavigationStateChange and does not fire onLoadEnd. Commit
+        // a finished navigation when the URL changed, including same-origin
+        // SPA routes. Cross-origin location.href updates that skip onLoadEnd
+        // still commit here.
+        if (!loading && url && url !== resolvedUrlRef.current) {
+          const incomingOrigin = new URLParse(url).origin;
+          if (incomingOrigin) {
+            handleSuccessfulPageResolution({
+              title: title ?? titleRef.current,
+              url,
+              icon: favicon,
+              canGoBack,
+              canGoForward,
+            });
+          }
+        }
+      },
+      [
+        favicon,
+        handleSuccessfulPageResolution,
+        rebindBridgeOnCrossOriginBackForward,
+      ],
+    );
+
+    /*
+     * Wildcard '*' matches all URL that go through WebView,
+     * so that all content gets filtered by onShouldStartLoadWithRequest function.
+     *
+     * All URL that do not match will bypass onShouldStartLoadWithRequest
+     * and go directly to the OS handler
+     *
+     * source: https://github.com/react-native-webview/react-native-webview/blob/master/docs/Reference.md#originwhitelist
+     *
+     */
+    const webViewOriginWhitelist = useMemo(() => ['*'], []);
+
+    const onReload = useCallback(() => {
+      webviewRef.current?.reload?.();
+    }, []);
+
+    const renderError = useCallback(
+      () => <WebviewErrorComponent error={error} returnHome={returnHome} />,
+      [error, returnHome],
+    );
+
+    const webViewSource = useMemo(
+      () => ({
+        uri: webViewUri,
+        ...(isExternalLink ? { headers: { Cookie: '' } } : null),
+      }),
+      [webViewUri, isExternalLink],
+    );
+
+    const webViewTestProps = useMemo(
+      () =>
+        process.env.HAS_TEST_OVERRIDES === 'true'
+          ? { javaScriptEnabled: true }
+          : {},
+      [],
+    );
+
+    const androidCollapsableProps = useMemo(
+      () => (Device.isAndroid() ? { collapsable: false } : {}),
+      [],
+    );
+
+    // Don't render webview unless ready to load. This should save on performance for initial app start.
+    if (!isWebViewReadyToLoad.current) return null;
+
+    /**
+     * Main render
+     */
+    return (
+      <ErrorBoundary navigation={navigation} view="BrowserTab">
+        <View style={[styles.wrapper, !isTabActive && styles.hide]}>
+          <View style={styles.wrapper} {...androidCollapsableProps}>
+            <Box
+              flexDirection={BoxFlexDirection.Row}
+              alignItems={BoxAlignItems.Center}
+              twClassName="gap-2"
+            >
+              {!isUrlBarFocused && (
+                <ButtonIcon
+                  iconName={IconName.ArrowLeft}
+                  size={ButtonIconSize.Md}
+                  onPress={handleClosePress}
+                  testID="browser-tab-close-button"
+                />
+              )}
+              <Box twClassName="flex-1">
+                <BrowserUrlBar
+                  ref={urlBarRef}
+                  connectionType={connectionType}
+                  onSubmitEditing={onSubmitEditing}
+                  onCancel={onCancelUrlBar}
+                  onFocus={onFocusUrlBar}
+                  onBlur={hideAutocomplete}
+                  onChangeText={onChangeUrlBar}
+                  connectedAccounts={permittedCaipAccountAddressesList}
+                  activeUrl={resolvedUrl}
+                  setIsUrlBarFocused={setIsUrlBarFocused}
+                  isUrlBarFocused={isUrlBarFocused}
+                  showTabs={showTabsView}
+                />
+              </Box>
+            </Box>
+            <View style={styles.wrapper}>
+              {renderProgressBar()}
+              <View style={styles.webview}>
+                {!!entryScriptWeb3 && firstUrlLoaded && (
+                  <GestureWebViewWrapper
+                    isTabActive={isTabActive}
+                    isUrlBarFocused={isUrlBarFocused}
+                    firstUrlLoaded={firstUrlLoaded}
+                    backEnabled={backEnabled}
+                    forwardEnabled={forwardEnabled}
+                    onGoBack={goBack}
+                    onGoForward={goForward}
+                    onReload={onReload}
+                    scrollY={scrollY}
+                    isRefreshing={isRefreshing}
+                  >
+                    <View style={styles.webview}>
+                      <WebView
+                        key={`browser-webview-${webViewReloadKey}`}
+                        originWhitelist={webViewOriginWhitelist}
+                        decelerationRate={0.998}
+                        ref={webviewRef}
+                        renderError={renderError}
+                        source={webViewSource}
+                        injectedJavaScriptBeforeContentLoaded={entryScriptWeb3}
+                        injectedJavaScript={webBrowserBridgeScript}
+                        style={styles.webview}
+                        onLoadStart={handleWebviewNavigationChange(OnLoadStart)}
+                        onLoadEnd={handleWebviewNavigationChange(OnLoadEnd)}
+                        onLoadProgress={handleWebviewNavigationChange(
+                          OnLoadProgress,
+                        )}
+                        onNavigationStateChange={handleOnNavigationStateChange}
+                        onMessage={onMessage}
+                        onShouldStartLoadWithRequest={
+                          onShouldStartLoadWithRequest
+                        }
+                        allowsInlineMediaPlayback
+                        onOpenWindow={handleOpenWindow}
+                        {...webViewTestProps}
+                        testID={BrowserViewSelectorsIDs.BROWSER_WEBVIEW_ID}
+                        applicationNameForUserAgent={'WebView MetaMaskMobile'}
+                        onFileDownload={handleOnFileDownload}
+                        webviewDebuggingEnabled={isTestEnvironment}
+                        paymentRequestEnabled
+                        allowFileDownloads={isTabActive}
+                        suppressJavaScriptDialogs={!canShowJsDialogs}
+                      />
+                      {ipfsBannerVisible && (
+                        <IpfsBanner
+                          setIpfsBannerVisible={setIpfsBannerVisible}
+                        />
+                      )}
+                    </View>
+                  </GestureWebViewWrapper>
+                )}
+              </View>
+              <UrlAutocomplete
+                ref={autocompleteRef}
+                onSelect={onSelect}
+                onSelectPressIn={onAutocompleteSelectPressIn}
+                onDismiss={onDismissAutocomplete}
+              />
+            </View>
+            {isTabActive && (
+              <PhishingModal
+                blockedUrl={blockedUrl}
+                showPhishingModal={showPhishingModal}
+                setShowPhishingModal={setShowPhishingModal}
+                setBlockedUrl={setBlockedUrl}
+                urlBarRef={urlBarRef}
+                addToWhitelist={triggerAddToWhitelist}
+                activeUrl={resolvedUrl}
+                goToUrl={onSubmitEditing}
+              />
+            )}
+
+            {renderBottomBar()}
+          </View>
+        </View>
+      </ErrorBoundary>
+    );
+  },
+);
+
+const mapStateToProps = (state: RootState) => ({
+  ipfsGateway: selectIpfsGateway(state),
+  selectedAddress: selectSelectedInternalAccountFormattedAddress(state),
+  isIpfsGatewayEnabled: selectIsIpfsGatewayEnabled(state),
+  activeChainId: selectEvmChainId(state),
+  isFullscreen: selectBrowserFullscreen(state),
+});
+
+const mapDispatchToProps = (dispatch: Dispatch) => ({
+  addToBrowserHistory: ({ url, name }: { name: string; url: string }) =>
+    dispatch(addToHistory({ url, name })),
+  addToWhitelist: (url: string) => dispatch(addToWhitelist(url)),
+  toggleFullscreen: (isFullscreen: boolean) => {
+    dispatch(toggleFullscreen(isFullscreen));
+  },
+});
+
+export default connect(mapStateToProps, mapDispatchToProps)(BrowserTab);

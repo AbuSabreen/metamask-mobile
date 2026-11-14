@@ -2,6 +2,7 @@ name: Bug Report
 description: Using MetaMask, but it's not working as you expect?
 title: "[Bug]: "
 labels: ["type-bug"]
+type: 'Bug'
 body:
  - type: markdown
    attributes:
@@ -11,7 +12,7 @@ body:
        ## **Before Submitting:**
 
        * Please search to make sure this issue has not been opened already.
-       * If this is a question about how to integrate MetaMask with your project, please ask in our [Community forum](https://community.metamask.io/c/developer-questions/) instead. This will get your question answered more quickly and make it easier for other devs to find the answer in the future.
+       * If this is a question about how to integrate MetaMask with your project, please ask in our [Community forum](https://community.metamask.io/c/developer-discussion/) instead. This will get your question answered more quickly and make it easier for other devs to find the answer in the future.
  - type: textarea
    id: what-happened
    attributes:
@@ -29,7 +30,7 @@ body:
    id: screenshot-recording
    attributes:
      label: Screenshots/Recordings
-     description: Please include screenshots/recordings if applicable! (https://recordit.co/ is recommended)
+     description: Please include screenshots/recordings if applicable!
  - type: textarea
    id: reproduce
    attributes:
@@ -48,12 +49,30 @@ body:
      label: Error messages or log output
      description: Please copy and paste any relevant error messages or log output. This will be automatically formatted, so there is no need for backticks.
      render: shell
+ - type: dropdown
+   id: stage
+   attributes:
+     label: Where was this bug found?
+     description: Help us understand where this bug was encountered.
+     options:
+       - Live version (from official store)
+       - Internal release testing
+   validations:
+     required: true
  - type: input
    id: version
    attributes:
      label: Version
-     description: What version of MetaMask are you running? You can find the version in "Settings" > "About"
-     placeholder: "7.1.0"
+     description: What version of MetaMask are you running? You can find the version in "Settings" > "About MetaMask"
+     placeholder: "7.50.0"
+   validations:
+     required: true
+ - type: input
+   id: build-number
+   attributes:
+     label: Build number
+     description: What build number of MetaMask are you running? You can find the build number in "Settings" > "About MetaMask"
+     placeholder: "3055"
    validations:
      required: true
  - type: dropdown

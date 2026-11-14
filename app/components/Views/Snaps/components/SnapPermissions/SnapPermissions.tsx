@@ -1,9 +1,14 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-nocheck - Snaps team directory
 import React, { useCallback, useMemo } from 'react';
 import { View } from 'react-native';
 import slip44 from '@metamask/slip44';
 import styleSheet from './SnapPermissions.styles';
+import lodash from 'lodash';
 import type { SupportedCurve } from '@metamask/key-tree';
+import { RequestedPermissions } from '@metamask/permission-controller';
+import { stripSnapPrefix } from '@metamask/snaps-utils';
+
 import { strings } from '../../../../../../locales/i18n';
 import Text, {
   TextVariant,
@@ -13,12 +18,10 @@ import {
   SnapsDerivationPath,
   SnapsDerivationPathType,
 } from '../../../../../constants/snaps';
-import lodash from 'lodash';
 import { useStyles } from '../../../../../component-library/hooks';
 import { SnapPermissionCell } from '../SnapPermissionCell';
-import { RequestedPermissions } from '@metamask/permission-controller';
 import { RestrictedMethods } from '../../../../../core/Permissions/constants';
-import { EndowmentPermissions } from '../../../../../constants/permissions';
+import { EndowmentPermissions } from '../../../../../core/Snaps';
 import SNAP_PERMISSIONS from './SnapPermissions.contants';
 
 interface SnapPermissionsProps {
@@ -145,6 +148,8 @@ const SnapPermissions = ({
     [],
   );
 
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const isSnapsDerivationPath = (object: any): object is SnapsDerivationPath =>
     typeof object === 'object' &&
     object !== null &&
@@ -183,6 +188,25 @@ const SnapPermissions = ({
       return bip32Data;
     },
     [getSnapDerivationPathName],
+  );
+
+  const handleWalletSnapPermissionTitle = useCallback(
+    (
+      permissionsList: RequestedPermissions,
+      key: typeof RestrictedMethods.wallet_snap,
+    ) => {
+      const date = permissionsList[key].date;
+      const requestedSnaps = permissionsList[key].caveats?.[0].value;
+
+      return Object.keys(requestedSnaps).map((snapId) => {
+        const title = strings(
+          `app_settings.snaps.snap_permissions.human_readable_permission_titles.${key}`,
+          { otherSnapName: stripSnapPrefix(snapId) },
+        );
+        return { label: title, date };
+      });
+    },
+    [],
   );
 
   /**
@@ -231,6 +255,12 @@ const SnapPermissions = ({
             );
             break;
           }
+          case RestrictedMethods.wallet_snap: {
+            permissionsData.push(
+              ...handleWalletSnapPermissionTitle(permissionsList, key),
+            );
+            break;
+          }
           default: {
             const title = strings(
               `app_settings.snaps.snap_permissions.human_readable_permission_titles.${key}`,
@@ -246,6 +276,7 @@ const SnapPermissions = ({
       handleBip32PermissionTitles,
       handleBip44EntropyPermissionTitles,
       handleRPCPermissionTitles,
+      handleWalletSnapPermissionTitle,
     ],
   );
 
@@ -271,4 +302,3 @@ const SnapPermissions = ({
 };
 
 export default React.memo(SnapPermissions);
-///: END:ONLY_INCLUDE_IF

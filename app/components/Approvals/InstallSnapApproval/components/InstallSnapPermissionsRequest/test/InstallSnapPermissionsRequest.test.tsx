@@ -1,4 +1,3 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
 import React from 'react';
 import { render } from '@testing-library/react-native';
 import InstallSnapPermissionsRequest from '../InstallSnapPermissionsRequest';
@@ -52,10 +51,10 @@ describe('InstallSnapPermissionsRequest', () => {
         approvalRequest={installSnapDataApprovalRequest}
         onConfirm={onConfirm}
         onCancel={onCancel}
+        snapId="mockId"
       />,
     );
     const permissionCells = getAllByTestId(SNAP_PERMISSION_CELL);
     expect(permissionCells).toHaveLength(3);
   });
 });
-///: END:ONLY_INCLUDE_IF

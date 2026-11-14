@@ -1,0 +1,244 @@
+import React from 'react';
+import DeleteWalletModal from './';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { fireEvent } from '@testing-library/react-native';
+import renderWithProvider, {
+  DeepPartial,
+} from '../../../util/test/renderWithProvider';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { RootState } from '../../../reducers';
+import { strings } from '../../../../locales/i18n';
+import { ForgotPasswordModalSelectorsIDs } from '../../../util/ForgotPasswordModal.testIds';
+import { InteractionManager } from 'react-native';
+import { clearHistory } from '../../../actions/browser';
+import { Authentication } from '../../../core/Authentication/Authentication';
+
+const mockInitialState = {
+  engine: { backgroundState },
+  security: {
+    dataCollectionForMarketing: false,
+  },
+};
+
+const mockUseDispatch = jest.fn();
+
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useDispatch: () => mockUseDispatch,
+  useSelector: jest.fn(),
+}));
+const mockNavigate = jest.fn();
+
+// Mock useRoute with default params
+const mockUseRoute = jest.fn().mockReturnValue({ params: {} });
+
+jest.mock('@react-navigation/native', () => {
+  const actualNav = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualNav,
+    useNavigation: () => ({
+      navigate: mockNavigate,
+      goBack: jest.fn(),
+      reset: jest.fn(),
+    }),
+    useRoute: () => mockUseRoute(),
+  };
+});
+
+jest.mock('@react-native-cookies/cookies', () => ({
+  set: jest.fn(),
+  get: jest.fn(),
+  clearAll: jest.fn(),
+}));
+
+jest.mock('../../../actions/browser', () => ({
+  clearHistory: jest.fn(),
+  BrowserActionTypes: {
+    ADD_TO_VIEWED_DAPP: 'ADD_TO_VIEWED_DAPP',
+  },
+}));
+
+jest.mock('../../../core/Authentication/Authentication', () => ({
+  Authentication: {
+    deleteWallet: jest.fn(() => Promise.resolve()),
+  },
+}));
+
+const Stack = createNativeStackNavigator();
+
+const renderComponent = (
+  state: DeepPartial<RootState> = {},
+  routeParams = {},
+) => {
+  // Update the mock to return the provided params
+  mockUseRoute.mockReturnValue({ params: routeParams });
+
+  return renderWithProvider(
+    <Stack.Navigator>
+      <Stack.Screen name="DeleteWalletModal" options={{}}>
+        {() => <DeleteWalletModal />}
+      </Stack.Screen>
+    </Stack.Navigator>,
+    { state },
+  );
+};
+
+describe('DeleteWalletModal', () => {
+  const mockRunAfterInteractions = jest.fn().mockImplementation((cb) => {
+    cb();
+    return {
+      then: (onfulfilled: () => void) => Promise.resolve(onfulfilled()),
+      done: (onfulfilled: () => void, onrejected: () => void) =>
+        Promise.resolve().then(onfulfilled, onrejected),
+      cancel: jest.fn(),
+    };
+  });
+  jest
+    .spyOn(InteractionManager, 'runAfterInteractions')
+    .mockImplementation(mockRunAfterInteractions);
+
+  describe('bottom sheet', () => {
+    it('renders the forgot password description', () => {
+      const wrapper = renderComponent(mockInitialState);
+
+      expect(
+        wrapper.getByText(strings('login.forgot_password_desc')),
+      ).toBeOnTheScreen();
+    });
+  });
+
+  describe('forgot password flow', () => {
+    it('renders matching snapshot for forgot password', async () => {
+      const wrapper = renderComponent(mockInitialState);
+
+      const title = wrapper.getByText(strings('login.forgot_password_desc'));
+      expect(title).toBeOnTheScreen();
+
+      const button = wrapper.getByRole('button', {
+        name: strings('login.reset_wallet'),
+      });
+      expect(button).toBeOnTheScreen();
+
+      fireEvent.press(button);
+
+      const title2 = wrapper.getByText(strings('login.are_you_sure'));
+      expect(title2).toBeOnTheScreen();
+
+      const button2 = wrapper.getByRole('button', {
+        name: strings('login.erase_my'),
+      });
+      expect(button2).toBeOnTheScreen();
+
+      fireEvent.press(button2);
+
+      // Wait for all promises to resolve
+      await Promise.resolve();
+
+      expect(Authentication.deleteWallet).toHaveBeenCalled();
+    });
+
+    it('calls deleteWallet when deleting the wallet', async () => {
+      const { getByTestId } = renderComponent(mockInitialState);
+
+      fireEvent.press(
+        getByTestId(ForgotPasswordModalSelectorsIDs.RESET_WALLET_BUTTON),
+      );
+      fireEvent.press(
+        getByTestId(ForgotPasswordModalSelectorsIDs.YES_RESET_WALLET_BUTTON),
+      );
+
+      // Wait for async operations
+      await Promise.resolve();
+
+      expect(Authentication.deleteWallet).toHaveBeenCalled();
+    });
+  });
+
+  describe('reset wallet flow passed as route param', () => {
+    it('shows reset wallet confirmation when isResetWalletFromParams is true', () => {
+      const wrapper = renderComponent(mockInitialState, {
+        isResetWallet: true,
+      });
+
+      // Should show the confirmation screen directly (not the forgot password screen)
+      const title = wrapper.getByText(strings('login.are_you_sure'));
+      expect(title).toBeOnTheScreen();
+
+      // Should not show the forgot password description
+      expect(
+        wrapper.queryByText(strings('login.forgot_password_desc')),
+      ).toBeNull();
+
+      // Should not show the back button when coming from params
+      const backButton = wrapper.queryByRole('button', { name: /arrow left/i });
+      expect(backButton).toBeNull();
+    });
+
+    it('shows forgot password flow when isResetWalletFromParams is false', () => {
+      const wrapper = renderComponent(mockInitialState, {
+        isResetWallet: false,
+      });
+
+      // Should show the forgot password screen first
+      const title = wrapper.getByText(strings('login.forgot_password_desc'));
+      expect(title).toBeOnTheScreen();
+
+      // Should not show the confirmation screen initially
+      expect(wrapper.queryByText(strings('login.are_you_sure'))).toBeNull();
+    });
+
+    it('hides the back button on the confirmation screen', () => {
+      const wrapper = renderComponent(mockInitialState, {
+        isResetWallet: false,
+      });
+
+      const resetButton = wrapper.getByRole('button', {
+        name: strings('login.reset_wallet'),
+      });
+      fireEvent.press(resetButton);
+
+      expect(
+        wrapper.getByText(strings('login.are_you_sure')),
+      ).toBeOnTheScreen();
+      expect(
+        wrapper.queryByTestId(ForgotPasswordModalSelectorsIDs.BACK_BUTTON),
+      ).toBeNull();
+    });
+  });
+
+  describe('error handling', () => {
+    it('handles errors during wallet deletion and resets loading state', async () => {
+      // Arrange - Mock console.error to track error logging
+      const consoleSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined);
+
+      // Mock clearHistory to return a thunk that throws an error
+      const mockClearHistoryThunk = jest
+        .fn()
+        .mockRejectedValue(new Error('Test error'));
+      (clearHistory as jest.Mock).mockReturnValue(mockClearHistoryThunk);
+
+      const { getByTestId } = renderComponent(mockInitialState);
+
+      // Act - Trigger the reset wallet flow and attempt deletion
+      fireEvent.press(
+        getByTestId(ForgotPasswordModalSelectorsIDs.RESET_WALLET_BUTTON),
+      );
+
+      const deleteButton = getByTestId(
+        ForgotPasswordModalSelectorsIDs.YES_RESET_WALLET_BUTTON,
+      );
+      fireEvent.press(deleteButton);
+
+      // Wait for async operations to complete
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // Assert - Verify error was logged and loading state was reset
+      expect(consoleSpy).toHaveBeenCalled();
+
+      // Cleanup
+      consoleSpy.mockRestore();
+    });
+  });
+});

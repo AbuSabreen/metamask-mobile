@@ -1,0 +1,612 @@
+import {
+  getPresentedOriginalMetamaskFeeRate,
+  getPerpsFeeDiscount,
+  type PerpsFeeDiscountKind,
+} from '../utils/feeDiscount';
+import { useMemo, useState, useEffect, useRef } from 'react';
+import { useSelector } from 'react-redux';
+import {
+  estimateCloseReceive,
+  formatAccountToCaipAccountId,
+  type Position,
+  type FeeCalculationResult,
+  type PerpsFeeSource,
+} from '@metamask/perps-controller';
+import type {
+  EstimatePointsDto,
+  EstimatedPointsDto,
+} from '../../../../core/Engine/controllers/rewards-controller/types';
+import Engine from '../../../../core/Engine';
+import { selectSelectedAccountGroupEvmInternalAccount } from '../../../../selectors/multichainAccounts/accountTreeController';
+import { selectChainId } from '../../../../selectors/networkController';
+import { selectPerpsProvider } from '../selectors/perpsController';
+import { resolveProviderId } from '../utils/perpsPostTradeShare';
+
+/**
+ * Aggregated calculations result for closing all positions
+ */
+export interface CloseAllCalculationsResult {
+  /** Margin returned across all positions, including the P&L (undefined while any is unknown) */
+  totalMargin: number | undefined;
+  /** P&L realized across all positions at the live price (undefined while any is unknown) */
+  totalPnl: number | undefined;
+  /** Total fees for closing all positions (undefined when unavailable) */
+  totalFees: number | undefined;
+  /** Total fee before the resolved builder discount, for the crossed out price */
+  originalTotalFees: number | undefined;
+  /** Amount user will receive after closing all positions (undefined while any is unknown) */
+  receiveAmount: number | undefined;
+  /** Aggregated estimated points for closing all positions (undefined when unavailable) */
+  totalEstimatedPoints: number | undefined;
+  /** Average fee discount percentage across all positions (undefined when unavailable) */
+  avgFeeDiscountPercentage: number | undefined;
+  /**
+   * Fee source contributing the largest weighted discount to the summary.
+   */
+  feeSource: PerpsFeeSource | undefined;
+  feeDiscountKind: PerpsFeeDiscountKind | undefined;
+  /** Average bonus multiplier in basis points (undefined when unavailable) */
+  avgBonusBips: number | undefined;
+  /** Average MetaMask fee rate across all positions (undefined when unavailable) */
+  avgMetamaskFeeRate: number | undefined;
+  /** Average protocol fee rate across all positions (undefined when unavailable) */
+  avgProtocolFeeRate: number | undefined;
+  /** Average original MetaMask fee rate before discounts (undefined when unavailable) */
+  avgOriginalMetamaskFeeRate: number | undefined;
+  /** Whether initial calculation is still loading (shows spinner) */
+  isLoading: boolean;
+  /** Whether background refresh is in progress (shows subtle indicator, keeps stale data visible) */
+  isFetchingInBackground: boolean;
+  /** Whether there was an error in any calculation */
+  hasError: boolean;
+  /** Whether rewards should be shown (at least one position has valid rewards) */
+  shouldShowRewards: boolean;
+}
+
+interface UsePerpsCloseAllCalculationsParams {
+  /** Array of positions to close */
+  positions: Position[];
+  /** Current market prices for fee calculation. Format: { [symbol]: { price: string } } */
+  priceData: Record<string, { price: string }>;
+}
+
+/**
+ * Per-position calculation result
+ */
+interface PerPositionResult {
+  position: Position;
+  fees: FeeCalculationResult;
+  notionalUsd?: number;
+  points: EstimatedPointsDto | null;
+  error?: string;
+}
+
+type CompleteFeeResult = PerPositionResult & {
+  notionalUsd: number;
+  fees: FeeCalculationResult & {
+    protocolFeeRate: number;
+    metamaskFeeRate: number;
+  };
+};
+
+function hasCompleteFeeRates(
+  result: PerPositionResult,
+): result is CompleteFeeResult {
+  return (
+    !result.error &&
+    result.notionalUsd !== undefined &&
+    result.fees.protocolFeeRate !== undefined &&
+    result.fees.metamaskFeeRate !== undefined
+  );
+}
+
+/**
+ * Hook to aggregate fee calculations and points estimation across multiple positions
+ *
+ * This hook:
+ * - Calculates resolved fees PER POSITION for accuracy (coin-specific parameters)
+ * - Uses BATCH points estimation API for performance (single API call for all positions)
+ * - Handles loading states and errors across all calculations
+ *
+ * @example
+ * ```tsx
+ * const calculations = usePerpsCloseAllCalculations({
+ *   positions,
+ * });
+ *
+ * return (
+ *   <View>
+ *     <Text>Total Fees: {calculations.totalFees}</Text>
+ *     <Text>Estimated Points: {calculations.totalEstimatedPoints}</Text>
+ *     <Text>You'll Receive: {calculations.receiveAmount}</Text>
+ *   </View>
+ * );
+ * ```
+ */
+export function usePerpsCloseAllCalculations({
+  positions,
+  priceData,
+}: UsePerpsCloseAllCalculationsParams): CloseAllCalculationsResult {
+  // Selectors for account and chain
+  const evmAccount = useSelector(selectSelectedAccountGroupEvmInternalAccount);
+  const selectedAddress = evmAccount?.address;
+  const currentChainId = useSelector(selectChainId);
+  const activeProvider = useSelector(selectPerpsProvider);
+
+  // Use ref to access latest priceData without triggering re-renders
+  const priceDataRef = useRef(priceData);
+  priceDataRef.current = priceData;
+
+  // Lifecycle refs for cleanup and race condition prevention
+  const isComponentMountedRef = useRef(true);
+  const calculationCounterRef = useRef(0);
+
+  // State for per-position calculations
+  const [perPositionResults, setPerPositionResults] = useState<
+    PerPositionResult[]
+  >([]);
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [isFetchingInBackground, setIsFetchingInBackground] = useState(false);
+  const [hasCalculationError, setHasCalculationError] = useState(false);
+
+  // Freeze mechanism: Prevent recalculation on WebSocket updates (price changes)
+  // Reset freeze when position or account inputs change to allow recalculation
+  const hasValidResultsRef = useRef(false);
+
+  // Per-position fee and rewards calculation
+  // This ensures accurate coin-specific rewards calculation
+  useEffect(() => {
+    // Increment counter to invalidate any in-flight calculations
+    const currentCalculationId = ++calculationCounterRef.current;
+    // Reset freeze when meaningful inputs change (not price updates)
+    // This MUST happen synchronously at effect start, before async function runs
+    // Allows recalculation for new positions or an account/network switch
+    hasValidResultsRef.current = false;
+
+    async function calculatePerPosition() {
+      // Skip if already frozen (prevents recalculation on WebSocket price updates)
+      // This check happens AFTER the synchronous reset above
+      if (hasValidResultsRef.current) {
+        return;
+      }
+
+      if (positions.length === 0) {
+        // Only update state if this is still the latest calculation and component is mounted
+        if (
+          calculationCounterRef.current === currentCalculationId &&
+          isComponentMountedRef.current
+        ) {
+          setPerPositionResults([]);
+          setHasCalculationError(false);
+        }
+        return;
+      }
+
+      if (!selectedAddress || !currentChainId) {
+        // Only update state if this is still the latest calculation and component is mounted
+        if (
+          calculationCounterRef.current === currentCalculationId &&
+          isComponentMountedRef.current
+        ) {
+          setHasCalculationError(true);
+        }
+        return;
+      }
+
+      // Determine if this is initial load or background refresh
+      const isInitialLoad = perPositionResults.length === 0;
+
+      // Only update state if this is still the latest calculation and component is mounted
+      if (
+        calculationCounterRef.current === currentCalculationId &&
+        isComponentMountedRef.current
+      ) {
+        setIsCalculating(isInitialLoad);
+        setIsFetchingInBackground(!isInitialLoad);
+        setHasCalculationError(false);
+      }
+
+      try {
+        // Convert address to CAIP format for rewards API
+        const caipAccountId = formatAccountToCaipAccountId(
+          selectedAddress,
+          currentChainId,
+        );
+        if (!caipAccountId) {
+          throw new Error('Failed to format account to CAIP ID');
+        }
+
+        // Step 1: Calculate fees for all positions in parallel
+        const feeResults = await Promise.all(
+          positions.map(async (pos) => {
+            try {
+              // Calculate position value using current market price for accurate fee estimation
+              // Fees must reflect the actual USD value being closed at current market conditions
+              // Use ref to get latest price without triggering re-renders
+              const currentPrice = priceDataRef.current[pos.symbol]?.price
+                ? parseFloat(priceDataRef.current[pos.symbol].price)
+                : parseFloat(pos.entryPrice); // Fallback to entry price if current price unavailable
+              const size = Math.abs(parseFloat(pos.size));
+              const positionValue = size * currentPrice;
+
+              // PerpsController returns the final priced quote and its fee source.
+              const resolvedFees =
+                await Engine.context.PerpsController.calculateFees({
+                  orderType: 'market',
+                  isMaker: false, // Market close orders are always taker
+                  amount: positionValue.toString(),
+                  symbol: pos.symbol,
+                });
+
+              return {
+                position: pos,
+                notionalUsd: positionValue,
+                fees: resolvedFees,
+                error: undefined,
+              };
+            } catch (error) {
+              return {
+                position: pos,
+                fees: {
+                  feeRate: undefined,
+                  feeAmount: undefined,
+                  protocolFeeRate: undefined,
+                  protocolFeeAmount: undefined,
+                  metamaskFeeRate: undefined,
+                  metamaskFeeAmount: undefined,
+                },
+                error: error instanceof Error ? error.message : 'Unknown error',
+              };
+            }
+          }),
+        );
+
+        // Step 2: Batch points estimation for all positions in a single API call
+        // Using batch API to improve performance (N+1 → 2 API calls)
+        let batchPoints: EstimatedPointsDto | null = null;
+        try {
+          const perpsContextArray = feeResults.map((result) => ({
+            type: 'CLOSE_POSITION' as const,
+            usdFeeValue: (result.fees.feeAmount ?? 0).toString(),
+            coin: result.position.symbol, // EstimatePerpsContextDto uses 'coin' field
+          }));
+
+          const batchEstimateBody: EstimatePointsDto = {
+            activityType: 'PERPS',
+            account: caipAccountId,
+            activityContext: {
+              perpsContext: perpsContextArray, // Batch API: array of positions
+            },
+          };
+
+          batchPoints =
+            await Engine.context.RewardsController.estimatePoints(
+              batchEstimateBody,
+            );
+        } catch (pointsError) {
+          console.warn('Failed to estimate batch points:', pointsError);
+        }
+
+        // Step 3: Combine fee results with batch points
+        // Batch API returns ONE aggregated response for ALL positions:
+        // - pointsEstimate: Total points sum across all positions
+        // - bonusBips: Average bonus multiplier already calculated by backend
+        // All positions intentionally share the same batchPoints object reference
+        const results = feeResults.map((result) => ({
+          position: result.position,
+          notionalUsd: result.notionalUsd,
+          fees: result.fees,
+          points: batchPoints, // Same batch result for all positions (aggregated)
+          error: result.error,
+        }));
+
+        // Check if any calculation had errors
+        const hasErrors = results.some((r) => r.error);
+
+        // Only update state if this is still the latest calculation and component is mounted
+        if (
+          calculationCounterRef.current === currentCalculationId &&
+          isComponentMountedRef.current
+        ) {
+          setPerPositionResults(results);
+          setHasCalculationError(hasErrors);
+
+          // Freeze results after successful calculation to prevent WebSocket price updates
+          // from triggering expensive points API calls. Position or account
+          // dependency changes reset the freeze.
+          if (!hasErrors && results.length > 0) {
+            hasValidResultsRef.current = true;
+          }
+        }
+      } catch (error) {
+        console.error('Failed to calculate per-position fees:', error);
+        // Only update state if this is still the latest calculation and component is mounted
+        if (
+          calculationCounterRef.current === currentCalculationId &&
+          isComponentMountedRef.current
+        ) {
+          setHasCalculationError(true);
+        }
+      } finally {
+        // Only update state if this is still the latest calculation and component is mounted
+        if (
+          calculationCounterRef.current === currentCalculationId &&
+          isComponentMountedRef.current
+        ) {
+          setIsCalculating(false);
+          setIsFetchingInBackground(false);
+        }
+      }
+    }
+
+    calculatePerPosition().catch((error) => {
+      console.error('Unhandled error in calculatePerPosition:', error);
+      // Only update state if this is still the latest calculation and component is mounted
+      if (
+        calculationCounterRef.current === currentCalculationId &&
+        isComponentMountedRef.current
+      ) {
+        setHasCalculationError(true);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [positions, selectedAddress, currentChainId]);
+  // Dependencies trigger freeze reset, allowing exactly one recalculation per change:
+  // - positions: Recalculate when user opens/closes positions
+  // - selectedAddress/currentChainId: Recalculate on account switch
+  // Price updates (priceDataRef) do NOT trigger recalculation due to freeze mechanism
+
+  // Cleanup effect to prevent state updates after component unmounts
+  useEffect(
+    () => () => {
+      isComponentMountedRef.current = false;
+    },
+    [],
+  );
+
+  // Aggregate results from per-position calculations
+  const aggregatedResults = useMemo(() => {
+    if (perPositionResults.length === 0) {
+      return {
+        originalTotalFees: undefined,
+        totalEstimatedPoints: undefined,
+        avgFeeDiscountPercentage: undefined,
+        feeDiscountKind: undefined,
+        feeSource: undefined,
+        avgBonusBips: undefined,
+        avgMetamaskFeeRate: undefined,
+        avgProtocolFeeRate: undefined,
+        avgOriginalMetamaskFeeRate: undefined,
+        shouldShowRewards: false,
+      };
+    }
+
+    // Attribute the summary discount to the source that drives most of
+    // avgFeeDiscountPercentage. Uses the same weight and guards as the
+    // fee-weighted average below so the badge and the percentage always
+    // describe the same positions; `default` and 0-bip wins contribute nothing.
+    let subscriptionContribution = 0;
+    let rewardsContribution = 0;
+    let grantContribution = 0;
+    perPositionResults.forEach(({ fees, notionalUsd }) => {
+      const weight = notionalUsd;
+      if (
+        weight === undefined ||
+        weight <= 0 ||
+        fees.metamaskFeeRate === undefined ||
+        fees.protocolFeeRate === undefined
+      ) {
+        return;
+      }
+      const discountBips = fees.metamaskFeeDiscountBips ?? 0;
+      if (discountBips <= 0) {
+        return;
+      }
+      if (fees.feeSource === 'subscription') {
+        subscriptionContribution += discountBips * weight;
+      } else if (fees.feeSource === 'rewards') {
+        rewardsContribution += discountBips * weight;
+      } else if (fees.feeSource === 'grant') {
+        grantContribution += discountBips * weight;
+      }
+    });
+    // Subscription retains the existing tie priority. A rewards/grant tie has
+    // no dominant source and uses generic discount presentation.
+    const largestContribution = Math.max(
+      subscriptionContribution,
+      rewardsContribution,
+      grantContribution,
+    );
+    let feeSource: PerpsFeeSource | undefined;
+    if (
+      subscriptionContribution > 0 &&
+      subscriptionContribution === largestContribution
+    ) {
+      feeSource = 'subscription';
+    } else if (
+      rewardsContribution > grantContribution &&
+      rewardsContribution > 0
+    ) {
+      feeSource = 'rewards';
+    } else if (
+      grantContribution > rewardsContribution &&
+      grantContribution > 0
+    ) {
+      feeSource = 'grant';
+    }
+
+    // Batch API returns aggregated total for ALL positions (not per-position)
+    // All positions share the same batchPoints object, so use first result directly
+    // Summing would incorrectly multiply by number of positions (e.g., 300 points × 3 positions = 900)
+    const totalEstimatedPoints =
+      perPositionResults.length > 0 && perPositionResults[0].points
+        ? perPositionResults[0].points.pointsEstimate
+        : undefined;
+    const completeFeeResults = perPositionResults.filter(hasCompleteFeeRates);
+    const hasCompleteFeeSet =
+      completeFeeResults.length === perPositionResults.length;
+    if (!hasCompleteFeeSet) {
+      feeSource = undefined;
+    }
+    const originalTotalFees = hasCompleteFeeSet
+      ? completeFeeResults.reduce((sum, { fees, notionalUsd }) => {
+          const originalMetamaskFeeRate =
+            getPresentedOriginalMetamaskFeeRate(fees);
+          return (
+            sum + notionalUsd * (fees.protocolFeeRate + originalMetamaskFeeRate)
+          );
+        }, 0)
+      : undefined;
+
+    // Weight rates by position notional so fully waived builder fees are retained.
+    let weightedMetamaskFeeRate = 0;
+    let weightedFeeDiscountBips = 0;
+    let weightedDiscountWeight = 0;
+    let weightedProtocolFeeRate = 0;
+    let totalWeight = 0;
+
+    completeFeeResults.forEach((result) => {
+      const weight = result.notionalUsd;
+      if (weight > 0) {
+        weightedMetamaskFeeRate += result.fees.metamaskFeeRate * weight;
+        if (result.fees.metamaskFeeDiscountBips !== undefined) {
+          weightedFeeDiscountBips +=
+            result.fees.metamaskFeeDiscountBips * weight;
+          weightedDiscountWeight += weight;
+        }
+        weightedProtocolFeeRate += result.fees.protocolFeeRate * weight;
+        totalWeight += weight;
+      }
+    });
+
+    const avgMetamaskFeeRate =
+      totalWeight > 0 ? weightedMetamaskFeeRate / totalWeight : undefined;
+    const avgProtocolFeeRate =
+      totalWeight > 0 ? weightedProtocolFeeRate / totalWeight : undefined;
+
+    const originalBuilderTotal = completeFeeResults.reduce(
+      (sum, { fees, notionalUsd }) =>
+        sum + notionalUsd * getPresentedOriginalMetamaskFeeRate(fees),
+      0,
+    );
+    const currentBuilderTotal = completeFeeResults.reduce(
+      (sum, { fees, notionalUsd }) => sum + notionalUsd * fees.metamaskFeeRate,
+      0,
+    );
+    const avgOriginalMetamaskFeeRate =
+      hasCompleteFeeSet && totalWeight > 0
+        ? originalBuilderTotal / totalWeight
+        : undefined;
+    const avgFeeDiscountBips =
+      weightedDiscountWeight > 0
+        ? Math.round(weightedFeeDiscountBips / weightedDiscountWeight)
+        : undefined;
+    const avgFeeDiscountPercentage = hasCompleteFeeSet
+      ? avgFeeDiscountBips !== undefined
+        ? avgFeeDiscountBips > 0
+          ? avgFeeDiscountBips / 100
+          : undefined
+        : undefined
+      : undefined;
+
+    const feeDiscountKind =
+      avgFeeDiscountPercentage === undefined
+        ? undefined
+        : getPerpsFeeDiscount({
+            feeSource,
+            currentFeeRate: currentBuilderTotal,
+            originalFeeRate: originalBuilderTotal,
+          }).kind;
+
+    // Batch API returns average bonusBips already calculated by backend
+    // All positions share the same batchPoints object, so use first result directly
+    // Return undefined when unavailable to allow UI to show proper loading/fallback state
+    const avgBonusBips =
+      perPositionResults.length > 0 && perPositionResults[0].points
+        ? perPositionResults[0].points.bonusBips
+        : undefined;
+
+    // Show rewards if at least one position has valid points
+    const shouldShowRewards = perPositionResults.some(
+      (result) => result.points !== null && result.points.pointsEstimate > 0,
+    );
+
+    return {
+      originalTotalFees,
+      totalEstimatedPoints,
+      avgFeeDiscountPercentage,
+      feeDiscountKind,
+      feeSource,
+      avgBonusBips,
+      avgMetamaskFeeRate,
+      avgProtocolFeeRate,
+      avgOriginalMetamaskFeeRate,
+      shouldShowRewards,
+    };
+  }, [perPositionResults]);
+
+  // Margin, P&L, fee and receive per position from Core's
+  // `estimateCloseReceive`, at the live price and each position's quoted fee
+  // rate. A total stays undefined while any position's figure is unknown.
+  const closeTotals = useMemo(() => {
+    // Keyed by provider and symbol: under aggregation two venues can hold
+    // the same symbol at different fee rates.
+    const positionKey = (pos: Position) =>
+      `${pos.providerId ?? ''}:${pos.symbol}`;
+    const feeRates = new Map(
+      perPositionResults.map((result) => [
+        positionKey(result.position),
+        result.fees.feeRate,
+      ]),
+    );
+    const estimates = positions.map((pos) =>
+      estimateCloseReceive({
+        position: pos,
+        providerId: pos.providerId ?? resolveProviderId(activeProvider),
+        closeSize: Math.abs(Number.parseFloat(pos.size)),
+        price: priceData[pos.symbol]?.price,
+        feeRate: feeRates.get(positionKey(pos)),
+      }),
+    );
+    const sum = (values: (number | undefined)[]): number | undefined =>
+      values.reduce<number | undefined>(
+        (total, value) =>
+          total === undefined || value === undefined
+            ? undefined
+            : total + value,
+        0,
+      );
+    return {
+      totalMargin: sum(
+        estimates.map(({ marginReturned, realizedPnl }) =>
+          marginReturned === undefined || realizedPnl === undefined
+            ? undefined
+            : marginReturned + realizedPnl,
+        ),
+      ),
+      totalPnl: sum(estimates.map(({ realizedPnl }) => realizedPnl)),
+      totalFees: sum(estimates.map(({ fee }) => fee)),
+      receiveAmount: sum(estimates.map(({ receive }) => receive)),
+    };
+  }, [positions, priceData, perPositionResults, activeProvider]);
+
+  return {
+    totalMargin: closeTotals.totalMargin,
+    totalPnl: closeTotals.totalPnl,
+    totalFees: closeTotals.totalFees,
+    originalTotalFees: aggregatedResults.originalTotalFees,
+    receiveAmount: closeTotals.receiveAmount,
+    totalEstimatedPoints: aggregatedResults.totalEstimatedPoints,
+    avgFeeDiscountPercentage: aggregatedResults.avgFeeDiscountPercentage,
+    feeDiscountKind: aggregatedResults.feeDiscountKind,
+    feeSource: aggregatedResults.feeSource,
+    avgBonusBips: aggregatedResults.avgBonusBips,
+    avgMetamaskFeeRate: aggregatedResults.avgMetamaskFeeRate,
+    avgProtocolFeeRate: aggregatedResults.avgProtocolFeeRate,
+    avgOriginalMetamaskFeeRate: aggregatedResults.avgOriginalMetamaskFeeRate,
+    isLoading: isCalculating,
+    isFetchingInBackground,
+    hasError: hasCalculationError,
+    shouldShowRewards: aggregatedResults.shouldShowRewards,
+  };
+}

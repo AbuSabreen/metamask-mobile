@@ -1,13 +1,16 @@
 /* eslint-disable react/prop-types */
 
 // Third party dependencies.
-import React from 'react';
-import { Image } from 'react-native';
+import React, { useMemo } from 'react';
+import { Image as RNImage } from 'react-native';
 import JazzIcon from 'react-native-jazzicon';
 
 // External dependencies.
 import AvatarBase from '../../foundation/AvatarBase';
 import { toDataUrl } from '../../../../../../util/blockies';
+import { Maskicon } from '@metamask/design-system-react-native';
+import { stringToBytes } from '@metamask/utils';
+import { useStyles } from '../../../../../hooks';
 
 // Internal dependencies.
 import { AvatarAccountProps, AvatarAccountType } from './AvatarAccount.types';
@@ -17,29 +20,71 @@ import {
   DEFAULT_AVATARACCOUNT_SIZE,
 } from './AvatarAccount.constants';
 
+function getJazziconSeed(address: string) {
+  // TODO: Consider making this more strict, but this should do for now.
+  if (!address.startsWith('0x')) {
+    return Array.from(stringToBytes(address.normalize('NFKC').toLowerCase()));
+  }
+  // Default behaviour for EIP155 namespace to match existing Jazzicons
+  return parseInt(address.slice(2, 10), 16);
+}
+
+/**
+ * @deprecated Please update your code to use `AvatarAccount` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/AvatarAccount/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#avataraccount-component Migration docs}
+ */
 const AvatarAccount = ({
-  type = DEFAULT_AVATARACCOUNT_TYPE,
+  type: avatarType = DEFAULT_AVATARACCOUNT_TYPE,
   accountAddress,
   size = DEFAULT_AVATARACCOUNT_SIZE,
   style,
   ...props
-}: AvatarAccountProps) => (
-  <AvatarBase size={size} style={style} {...props}>
-    {
-      {
-        [AvatarAccountType.JazzIcon]: (
-          <JazzIcon size={Number(size)} address={accountAddress} />
-        ),
-        [AvatarAccountType.Blockies]: (
-          <Image
-            source={{ uri: toDataUrl(accountAddress) }}
-            style={stylesheet.imageStyle}
+}: AvatarAccountProps) => {
+  const { styles } = useStyles(stylesheet, {
+    style,
+    size,
+  });
+
+  const avatar = useMemo(() => {
+    switch (avatarType) {
+      case AvatarAccountType.JazzIcon:
+        return (
+          <JazzIcon
+            size={Number(size)}
+            // @ts-expect-error The underlying PRNG supports the seed being an array but the component is typed wrong.
+            seed={getJazziconSeed(accountAddress)}
+            containerStyle={styles.artStyle}
           />
-        ),
-      }[type]
+        );
+      case AvatarAccountType.Blockies:
+        return (
+          <RNImage
+            source={{ uri: toDataUrl(accountAddress) }}
+            style={[styles.imageStyle, styles.artStyle]}
+          />
+        );
+      case AvatarAccountType.Maskicon:
+        return (
+          <Maskicon
+            address={accountAddress}
+            size={Number(size)}
+            style={styles.artStyle}
+          />
+        );
+      default:
+        avatarType satisfies never;
+        return null;
     }
-  </AvatarBase>
-);
+  }, [avatarType, accountAddress, size, styles.artStyle, styles.imageStyle]);
+
+  return (
+    <AvatarBase size={size} style={styles.avatarBase} {...props}>
+      {avatar}
+    </AvatarBase>
+  );
+};
 
 export default AvatarAccount;
 

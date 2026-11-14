@@ -1,60 +1,361 @@
 import React from 'react';
+import { renderHook, act, fireEvent } from '@testing-library/react-native';
+import { processNotification } from '@metamask/notification-services-controller/notification-services';
+import {
+  createMockNotificationEthSent,
+  createMockFeatureAnnouncementRaw,
+} from '@metamask/notification-services-controller/notification-services/mocks';
+
+import NotificationsView, {
+  useMarkAsReadCallback,
+  useNotificationFilters,
+} from './';
+import renderWithProvider, {
+  DeepPartial,
+  renderHookWithProvider,
+} from '../../../util/test/renderWithProvider';
 import { NavigationProp, ParamListBase } from '@react-navigation/native';
+import { RootState } from '../../../reducers';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+// eslint-disable-next-line import-x/no-namespace
+import * as UseNotificationsModule from '../../../util/notifications/hooks/useNotifications';
+import NotificationsService from '../../../util/notifications/services/NotificationService';
+import Logger from '../../../util/Logger';
+import Routes from '../../../constants/navigation/Routes';
+import { strings } from '../../../../locales/i18n';
+import { NotificationsViewSelectorsIDs } from './NotificationsView.testIds';
+import { NotificationMenuViewSelectorsIDs } from './NotificationMenuView.testIds';
+import { useNotificationListPerformance } from '../../../util/notifications/hooks/useNotificationListPerformance';
 
-import NotificationsView from '.';
-import renderWithProvider from '../../../util/test/renderWithProvider';
-import MOCK_NOTIFICATIONS from '../../../components/UI/Notification/__mocks__/mock_notifications';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
+const navigationMock = {
+  navigate: jest.fn(),
+  goBack: jest.fn(),
+  canGoBack: jest.fn().mockReturnValue(true),
+} as unknown as NavigationProp<ParamListBase>;
 
-const mockInitialState = {
-  settings: {
-    useBlockieIcon: false,
-  },
-  notificationsSettings: {
-    isEnabled: true,
-  },
+jest.mock('react-native-device-info', () => ({
+  getVersion: () => '99.0.0',
+}));
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: jest.fn().mockReturnValue({}),
+}));
+
+jest.mock('../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(),
+}));
+
+jest.mock(
+  '../../../util/notifications/hooks/useNotificationListPerformance',
+  () => ({
+    useNotificationListPerformance: jest.fn(),
+  }),
+);
+
+const mockMetrics = {
+  trackEvent: jest.fn(),
+  createEventBuilder: jest.fn().mockReturnValue({ build: jest.fn() }),
+} as unknown as ReturnType<typeof useAnalytics>;
+jest.mocked(useAnalytics).mockReturnValue(mockMetrics);
+
+const mockInitialState: DeepPartial<RootState> = {
   engine: {
     backgroundState: {
-      ...initialBackgroundState,
+      ...backgroundState,
+      NotificationServicesController: {
+        isNotificationServicesEnabled: true,
+        metamaskNotificationsList: [],
+      },
     },
   },
 };
-jest.mock('@react-navigation/native');
 
-describe('NotificationsView', () => {
-  let navigation: NavigationProp<ParamListBase>;
+const mockNotificationsDisabledState: DeepPartial<RootState> = {
+  engine: {
+    backgroundState: {
+      ...backgroundState,
+      NotificationServicesController: {
+        isNotificationServicesEnabled: false,
+        metamaskNotificationsList: [],
+      },
+    },
+  },
+};
+
+describe('NotificationsView - header', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const arrange = () => {
+    const renderResult = renderWithProvider(
+      <NotificationsView navigation={navigationMock} />,
+      { state: mockInitialState },
+    );
+    return renderResult;
+  };
+
+  it('finds header title', async () => {
+    const { getByTestId } = arrange();
+
+    expect(
+      getByTestId(NotificationMenuViewSelectorsIDs.TITLE).props.children,
+    ).toBe(strings('app_settings.notifications_title'));
+  });
+
+  it('finds close button and invokes navigation when pressed', async () => {
+    const { getByTestId } = arrange();
+
+    await act(() =>
+      fireEvent.press(
+        getByTestId(NotificationMenuViewSelectorsIDs.CLOSE_BUTTON),
+      ),
+    );
+    expect(navigationMock.goBack).toHaveBeenCalled();
+  });
+
+  it('navigates home when close button is pressed without back stack', async () => {
+    (navigationMock.canGoBack as jest.Mock).mockReturnValueOnce(false);
+    const { getByTestId } = arrange();
+
+    await act(() =>
+      fireEvent.press(
+        getByTestId(NotificationMenuViewSelectorsIDs.CLOSE_BUTTON),
+      ),
+    );
+
+    expect(navigationMock.navigate).toHaveBeenCalledWith(Routes.WALLET.HOME);
+  });
+
+  it('finds settings button and invokes navigation when pressed', async () => {
+    const { getByTestId } = arrange();
+
+    await act(() =>
+      fireEvent.press(getByTestId(NotificationMenuViewSelectorsIDs.COG_WHEEL)),
+    );
+    expect(navigationMock.navigate).toHaveBeenCalledWith(
+      Routes.SETTINGS.NOTIFICATIONS,
+    );
+  });
+});
+
+describe('NotificationsView - content', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('shows empty container when no notifications are available', () => {
+    const { getByTestId } = renderWithProvider(
+      <NotificationsView navigation={navigationMock} />,
+      { state: mockInitialState },
+    );
+    expect(
+      getByTestId(NotificationsViewSelectorsIDs.NO_NOTIFICATIONS_CONTAINER),
+    ).toBeOnTheScreen();
+  });
+
+  it('reports the deduplicated notification count for performance tracing', () => {
+    const notification = processNotification(createMockNotificationEthSent());
+    const state: DeepPartial<RootState> = {
+      engine: {
+        backgroundState: {
+          ...backgroundState,
+          NotificationServicesController: {
+            isNotificationServicesEnabled: true,
+            metamaskNotificationsList: [notification, notification],
+          },
+        },
+      },
+    };
+
+    renderWithProvider(<NotificationsView navigation={navigationMock} />, {
+      state,
+    });
+
+    expect(jest.mocked(useNotificationListPerformance)).toHaveBeenCalledWith(
+      expect.objectContaining({ notificationCount: 1 }),
+    );
+  });
+
+  it('shows enable prompt and opens settings when notifications are disabled', () => {
+    const { getByText, getByTestId } = renderWithProvider(
+      <NotificationsView navigation={navigationMock} />,
+      { state: mockNotificationsDisabledState },
+    );
+
+    expect(
+      getByTestId(
+        NotificationsViewSelectorsIDs.DISABLED_NOTIFICATIONS_CONTAINER,
+      ),
+    ).toBeOnTheScreen();
+    expect(
+      getByText(strings('notifications.disabled.title')),
+    ).toBeOnTheScreen();
+    expect(
+      getByText(strings('notifications.disabled.message')),
+    ).toBeOnTheScreen();
+
+    fireEvent.press(
+      getByTestId(NotificationsViewSelectorsIDs.ENABLE_NOTIFICATIONS_BUTTON),
+    );
+
+    expect(navigationMock.navigate).toHaveBeenCalledWith(
+      Routes.SETTINGS.NOTIFICATIONS,
+    );
+  });
+});
+
+describe('useMarkAsReadCallback', () => {
+  const arrangeMocks = () => {
+    const mockMarkNotificationsAsRead = jest.fn().mockResolvedValue(undefined);
+    jest
+      .spyOn(UseNotificationsModule, 'useMarkNotificationAsRead')
+      .mockReturnValue({
+        loading: false,
+        markNotificationAsRead: mockMarkNotificationsAsRead,
+      });
+
+    const mockSetBadgeCount = jest
+      .spyOn(NotificationsService, 'setBadgeCount')
+      .mockResolvedValue(undefined);
+
+    return {
+      mockMetrics,
+      mockMarkNotificationsAsRead,
+      mockSetBadgeCount,
+    };
+  };
 
   beforeEach(() => {
-    navigation = {
-      navigate: jest.fn(),
-    } as unknown as NavigationProp<ParamListBase>;
+    jest.clearAllMocks();
+    jest.spyOn(Logger, 'error').mockImplementation(() => undefined);
   });
 
-  it('matches snapshot', () => {
-    const { toJSON } = renderWithProvider(
-      <NotificationsView
-        navigation={navigation}
-        selectedAddress={'0x123123123'}
-        notifications={MOCK_NOTIFICATIONS}
-      />,
-      {
-        state: mockInitialState,
-      },
-    );
-    expect(toJSON()).toMatchSnapshot();
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
-  it('matches snapshot without notifications', () => {
-    const { toJSON } = renderWithProvider(
-      <NotificationsView
-        navigation={navigation}
-        selectedAddress={'0x123123123'}
-        notifications={[]}
-      />,
-      {
-        state: mockInitialState,
-      },
+  it('marks content as read and fires event', async () => {
+    const mocks = arrangeMocks();
+    const notifications = [
+      processNotification(createMockNotificationEthSent()),
+    ];
+    const hook = renderHookWithProvider(
+      () => useMarkAsReadCallback({ notifications }),
+      { state: mockInitialState },
     );
-    expect(toJSON()).toMatchSnapshot();
+
+    await act(() => hook.result.current.handleMarkAllAsRead());
+
+    expect(mocks.mockMarkNotificationsAsRead).toHaveBeenCalled();
+    expect(mocks.mockSetBadgeCount).toHaveBeenCalled();
+    expect(mocks.mockMetrics.trackEvent).toHaveBeenCalled();
+    expect(Logger.error).not.toHaveBeenCalled();
+  });
+
+  it('logs mark-all-as-read rejections when glass headers are off', async () => {
+    const mocks = arrangeMocks();
+    const markFailure = new Error('mark failed');
+    const badgeFailure = new Error('badge failed');
+    mocks.mockMarkNotificationsAsRead.mockRejectedValue(markFailure);
+    mocks.mockSetBadgeCount.mockRejectedValue(badgeFailure);
+    const notifications = [
+      processNotification(createMockNotificationEthSent()),
+    ];
+    const hook = renderHookWithProvider(
+      () => useMarkAsReadCallback({ notifications }),
+      { state: mockInitialState },
+    );
+
+    await act(async () => {
+      hook.result.current.handleMarkAllAsRead();
+    });
+
+    expect(Logger.error).toHaveBeenCalledWith(
+      markFailure,
+      'Failed to mark all notifications as read',
+    );
+    expect(Logger.error).toHaveBeenCalledWith(
+      badgeFailure,
+      'Failed to clear the notification badge',
+    );
+  });
+
+  it('logs when marking notifications as read rejects', async () => {
+    const mocks = arrangeMocks();
+    const failure = new Error('mark failed');
+    mocks.mockMarkNotificationsAsRead.mockRejectedValue(failure);
+    const notifications = [
+      processNotification(createMockNotificationEthSent()),
+    ];
+    const hook = renderHookWithProvider(
+      () => useMarkAsReadCallback({ notifications }),
+      { state: mockInitialState },
+    );
+
+    await act(async () => {
+      hook.result.current.handleMarkAllAsRead();
+    });
+
+    expect(Logger.error).toHaveBeenCalledWith(
+      failure,
+      'Failed to mark all notifications as read',
+    );
+    expect(mocks.mockMetrics.trackEvent).toHaveBeenCalled();
+  });
+
+  it('logs when clearing the notification badge rejects', async () => {
+    const mocks = arrangeMocks();
+    const failure = new Error('badge failed');
+    mocks.mockSetBadgeCount.mockRejectedValue(failure);
+    const notifications = [
+      processNotification(createMockNotificationEthSent()),
+    ];
+    const hook = renderHookWithProvider(
+      () => useMarkAsReadCallback({ notifications }),
+      { state: mockInitialState },
+    );
+
+    await act(async () => {
+      hook.result.current.handleMarkAllAsRead();
+    });
+
+    expect(Logger.error).toHaveBeenCalledWith(
+      failure,
+      'Failed to clear the notification badge',
+    );
+    expect(mocks.mockMetrics.trackEvent).toHaveBeenCalled();
+  });
+});
+
+describe('useNotificationFilters', () => {
+  const createEthNotif = () =>
+    processNotification(createMockNotificationEthSent());
+  const createAnnonucementNotif = () =>
+    processNotification(createMockFeatureAnnouncementRaw());
+
+  const arrangeNotifications = (ids: string[]) => {
+    const notifications = ids.map((id) => {
+      const notif = createEthNotif();
+      notif.id = id;
+      notif.createdAt = Date.now().toString();
+      return notif;
+    });
+
+    return notifications;
+  };
+
+  it('deduplicates any notifications', () => {
+    const notifications = arrangeNotifications(['1', '1', '1']);
+    const hook = renderHook(() => useNotificationFilters({ notifications }));
+    expect(hook.result.current.allNotifications).toHaveLength(1);
+  });
+
+  it('returns all notifications', () => {
+    const notifications = [createEthNotif(), createAnnonucementNotif()];
+    const hook = renderHook(() => useNotificationFilters({ notifications }));
+    expect(hook.result.current.allNotifications).toHaveLength(2);
   });
 });

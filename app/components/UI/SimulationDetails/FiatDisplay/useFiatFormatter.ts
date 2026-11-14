@@ -1,8 +1,8 @@
 import { useSelector } from 'react-redux';
 import { selectCurrentCurrency } from '../../../../selectors/currencyRateController';
-import I18n from '../../../../../locales/i18n';
+import formatFiat from '../../../../util/formatFiat';
 
-type FiatFormatter = (fiatAmount: number) => string;
+type FiatFormatter = (fiatAmount: BigNumber) => string;
 
 /**
  * Returns a function that formats a fiat amount as a localized string.
@@ -11,25 +11,23 @@ type FiatFormatter = (fiatAmount: number) => string;
  *
  * ```
  * const formatFiat = useFiatFormatter();
- * const formattedAmount = formatFiat(1000);
+ * const formattedAmount = formatFiat(new BigNumber(1000));
  * ```
  *
  * @returns A function that takes a fiat amount as a number and returns a formatted string.
  */
-const useFiatFormatter = (): FiatFormatter => {
-  const fiatCurrency = useSelector(selectCurrentCurrency);
+const useFiatFormatter = ({
+  currency,
+  fractionDigits,
+}: {
+  currency?: string;
+  fractionDigits?: number;
+} = {}): FiatFormatter => {
+  const currencyCurrency = useSelector(selectCurrentCurrency);
+  const fiatCurrency = currency ?? currencyCurrency;
 
-  return (fiatAmount: number) => {
-    try {
-      return new Intl.NumberFormat(I18n.locale, {
-        style: 'currency',
-        currency: fiatCurrency,
-      }).format(fiatAmount);
-    } catch (error) {
-      // Fallback for unknown or unsupported currencies
-      return `${fiatAmount} ${fiatCurrency}`;
-    }
-  };
+  return (fiatAmount: BigNumber) =>
+    formatFiat(fiatAmount, fiatCurrency, fractionDigits);
 };
 
 export default useFiatFormatter;

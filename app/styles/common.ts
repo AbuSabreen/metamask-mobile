@@ -12,11 +12,58 @@ import { TextStyle, ViewStyle } from 'react-native';
 export const colors = {
   blackTransparent: 'rgba(0, 0, 0, 0.5)',
   whiteTransparent: 'rgba(255, 255, 255, 0.7)',
+  white: '#FFFFFF',
   transparent: 'transparent',
+  overlay: 'rgba(242, 244, 246, 0.33)',
   // Do not change the values of applePay tokens unless noted by
   // https://developer.apple.com/design/human-interface-guidelines/apple-pay
   applePayBlack: '#000000',
   applePayWhite: '#FFFFFF',
+  telegramBlue: '#29B6F6',
+  btnBlack: '#1C1E21',
+  btnBlackText: '#FFFFFF',
+  btnBlackInverse: 'rgba(60, 77, 157, 0.1)',
+  modalScrollButton: '#ECEEFF',
+  gettingStartedPageBackgroundColor: '#E1A9FF',
+  gettingStartedTextColor: '#360853',
+  gettingStartedPageBackgroundColorLightMode: '#FFF2EB',
+  // Provider iframe backgrounds — these colors are set by each provider and
+  // outside our control. We match them in the checkout BottomSheet so the
+  // native chrome feels seamless with the embedded webview. Update only if
+  // a provider changes their iframe theme colors.
+  transakCheckoutDark: '#1a1a1a',
+  moonpayCheckoutDark: '#131416',
+  banxaCheckoutDark: '#0D0D0F',
+  // Perps Pro golds — not in the shared design-token palette. Sourced from
+  // Figma (chooser 11623-26935; header pills 11623-26982 / 11623-27029).
+  perpsProGoldDeep: '#946500',
+  perpsProGoldBright: '#CF8D00',
+  perpsProGoldPale: '#DDC598',
+  // Rewards badge colors — not in the shared design-token palette.
+  // Sourced from Figma VIP and Member badges.
+  rewardsVipGold: '#EAD797',
+  rewardsVipGoldTransparent: '#EAD79700',
+  rewardsMemberOrange: '#F58C40',
+  rewardsMemberOrangeTransparent: '#F58C4000',
+  rewardsMemberLabel: '#D97326',
+};
+
+export const onboardingCarouselColors: Record<
+  string,
+  { color: string; background: string }
+> = {
+  one: {
+    color: '#002139',
+    background: '#E3FF89',
+  },
+  two: {
+    color: '#360853',
+    background: '#FFC0A5',
+  },
+  three: {
+    color: '#002139',
+    background: '#B4D0FF',
+  },
 };
 
 /**
@@ -36,19 +83,18 @@ export const baseStyles: Record<string, ViewStyle> = {
  */
 export const fontStyles: Record<string, TextStyle> = {
   normal: {
-    fontFamily: 'EuclidCircularB-Regular',
-    fontWeight: '400',
+    fontFamily: 'Inter-Regular',
   },
   light: {
-    fontFamily: 'EuclidCircularB-Regular',
-    fontWeight: '300',
+    fontFamily: 'Inter-Regular',
   },
   thin: {
-    fontFamily: 'EuclidCircularB-Regular',
-    fontWeight: '100',
+    fontFamily: 'Inter-Regular',
   },
   bold: {
-    fontFamily: 'EuclidCircularB-Bold',
-    fontWeight: '600',
+    fontFamily: 'Inter-SemiBold',
+  },
+  medium: {
+    fontFamily: 'Inter-Medium',
   },
 };

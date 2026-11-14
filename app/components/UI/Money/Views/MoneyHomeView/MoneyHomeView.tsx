@@ -1,0 +1,1324 @@
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { RefreshControl, type LayoutChangeEvent } from 'react-native';
+import { useHeaderGlassInset } from '../../../../../component-library/components-temp/HeaderGlass';
+import {
+  NativeHeaderBackdrop,
+  useNativeHeaderScroll,
+} from '../../../../hooks/useNativeHeader';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import Animated from 'react-native-reanimated';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { useFloatingTabBarInset } from '../../../../../component-library/components/Navigation/TabBarFloating';
+import {
+  navigateWithDetails,
+  useParams,
+} from '../../../../../util/navigation/navUtils';
+import { useSelector } from 'react-redux';
+import BigNumber from 'bignumber.js';
+import {
+  Box,
+  BannerAlert,
+  BannerAlertSeverity,
+  useHeaderStandardAnimated,
+} from '@metamask/design-system-react-native';
+import { strings } from '../../../../../../locales/i18n';
+import Engine from '../../../../../core/Engine';
+import { selectPrivacyMode } from '../../../../../selectors/preferencesController';
+import { useStyles } from '../../../../hooks/useStyles';
+import MoneyHeader, {
+  type MoneyHeaderProps,
+  useMoneyNativeHeader,
+} from '../../components/MoneyHeader';
+import { selectMoneyBrandRefreshEnabled } from '../../../../../selectors/featureFlagController/moneyBrandRefresh';
+import { useIsGlassSurfaceEnabled } from '../../../../hooks/useIsGlassSurfaceEnabled';
+import MoneyBalanceSummary from '../../components/MoneyBalanceSummary';
+import MoneyActionButtonRow from '../../components/MoneyActionButtonRow';
+import MoneyEarnings from '../../components/MoneyEarnings';
+import MoneyOnboardingCard, {
+  MONEY_ONBOARDING_TOTAL_STEPS,
+} from '../../components/MoneyOnboardingCard';
+import MoneyVbaHomeCard from '../../components/MoneyVbaHomeCard';
+import {
+  getMoneyHomeCard,
+  type MoneyHomeVbaVariant,
+} from '../../hooks/getMoneyHomeCard';
+import { useActiveGroupCryptoPresence } from '../../hooks/useActiveGroupCryptoPresence';
+import {
+  getKycDecisionDismissDevOverride,
+  setMoneyHomeCardDevOverride,
+  useMoneyHomeCardDevOverride,
+} from '../../hooks/moneyHomeCardDevOverride';
+import { STEPPER_IDS } from '../../hooks/useOnboardingStep';
+import { selectOnboardingStepperProgress } from '../../../../../reducers/user/selectors';
+import {
+  useVbaHomeCard,
+  useVbaHomeCardRefresh,
+} from '../../../Ramp/Views/VirtualBankAccount/hooks/useVbaHomeCard';
+import { useVbaEligibility } from '../../../Ramp/Views/VirtualBankAccount/hooks/useVbaEligibility';
+import { selectUsableVbaAutoramp } from '../../../../../selectors/rampsController';
+import { openVbaEntry } from '../../../Ramp/Views/VirtualBankAccount/hooks/useVbaOnboardingRouting';
+import { startVbaCufJourney } from '../../../Ramp/Views/VirtualBankAccount/vbaCufTrace';
+import { VBA_CUF_ENTRY_SURFACE } from '../../../Ramp/Views/VirtualBankAccount/vbaCufTags';
+import MoneyCondensedInfoCards from '../../components/MoneyCondensedInfoCards';
+import MoneyHowItWorks from '../../components/MoneyHowItWorks';
+import MoneyPotentialEarnings from '../../components/MoneyPotentialEarnings';
+import MoneyMetaMaskCard from '../../components/MoneyMetaMaskCard';
+import MoneyWhatYouGet from '../../components/MoneyWhatYouGet';
+import MoneyActivityList, {
+  MAX_PREVIEW_ITEMS as MONEY_HOME_ACTIVITY_PREVIEW_COUNT,
+} from '../../components/MoneyActivityList';
+import Routes from '../../../../../constants/navigation/Routes';
+import { MoneyHomeViewTestIds } from './MoneyHomeView.testIds';
+import styleSheet from './MoneyHomeView.styles';
+import { useMoneyDepositTokens } from '../../hooks/useMoneyDepositTokens';
+import { useMoneyActivityItems } from '../../hooks/useMoneyActivityItems';
+import { useVbaTransactionRefresh } from '../../hooks/useVbaTransactionRefresh';
+import { MoneyActivityFilter } from '../../constants/moneyActivity';
+import {
+  deriveMoneyCardSetupPollIntervalMs,
+  deriveMoneyCardSetupView,
+  deriveMoneyMetaMaskCardMode,
+  MoneyMetaMaskCardMode,
+} from '../../utils/moneyMetaMaskCardMode';
+import { openInAppBrowser } from '../../utils/openInAppBrowser';
+import MoneyActivityLoading from '../../components/MoneyActivityLoading/MoneyActivityLoading';
+import useMoneyAccountBalance from '../../hooks/useMoneyAccountBalance';
+import useMoneyVaultApy from '../../hooks/useMoneyVaultApy';
+import useMoneyAccountInfo from '../../hooks/useMoneyAccountInfo';
+import { moneyFormatUsd, DUST_THRESHOLD } from '../../utils/moneyFormatFiat';
+import { convertSelectedFiatToUsd } from '../../utils/moneyActivityFiat';
+import { TOKEN_BALANCE_LOADING } from '../../../Tokens/constants';
+import { selectCurrencyRates } from '../../../../../selectors/currencyRateController';
+import { calculateProjectedEarnings } from '../../utils/projections';
+import AppConstants from '../../../../../core/AppConstants';
+import {
+  selectCardHomeDataStatus,
+  selectHasMetalCard,
+  selectIsCardholder,
+  selectIsCardHomeDataResolved,
+  selectIsCardStateResolved,
+  selectCardActiveProviderId,
+} from '../../../../../selectors/cardController';
+import {
+  selectMoneyEarningSectionEnabledFlag,
+  selectMoneyEnableHistoricalVaultShareValuationsFlag,
+} from '../../selectors/featureFlags';
+import { selectIsMoneyAccountVisible } from '../../selectors/visibility';
+import { useMoneyAccountCardLinkage } from '../../../Card/hooks/useMoneyAccountCardLinkage';
+import { useCardHomeData } from '../../../Card/hooks/useCardHomeData';
+import { useCardEnableCard } from '../../../Card/Views/CardHome/hooks/useCardEnableCard';
+import { getHardwareTier } from '../../../../../util/deviceCapability';
+import { useNetworkTier } from '../../../../../hooks/useNetworkTier';
+import { MONEY_HOME_CARD_ORIGIN } from '../../../Card/hooks/useCardPostAuthRedirect';
+import Logger from '../../../../../util/Logger';
+import { useTheme } from '../../../../../util/theme';
+import { MoneyBalanceDisplayState } from '../../types';
+import { Hex } from '@metamask/utils';
+import type { MoneyDepositAsset } from '../../selectors/depositTokens';
+import type { MoneyHomeParams } from '../../types/navigation';
+import { ConfirmationLaunchSource } from '../../../../Views/confirmations/components/confirm/confirm-component';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import {
+  CardActions,
+  CardEntryPoint,
+  CardFlow,
+  CardScreens,
+  deriveCardState,
+  withCardProvider,
+} from '../../../Card/util/metrics';
+
+import { TraceName } from '../../../../../util/trace';
+import { useMoneyDepositNavigation } from '../../hooks/useMoneyDepositNavigation';
+import { useMoneyAnalytics } from '../../hooks/useMoneyAnalytics';
+import {
+  useMoneyHomePerformance,
+  type MoneyHomeSegment,
+} from '../../hooks/useMoneyHomePerformance';
+import {
+  COMPONENT_NAMES,
+  MONEY_TOOLTIP_NAMES,
+  MONEY_TOOLTIP_TYPES,
+  SCREEN_NAMES,
+  BOTTOM_SHEET_NAMES,
+  MONEY_BUTTON_INTENTS,
+  MONEY_URLS,
+  MONEY_BUTTON_TYPES,
+} from '../../constants/moneyEvents';
+import { TransactionMeta } from '@metamask/transaction-controller';
+import useRefreshMusdFiatRate from '../../hooks/useRefreshMusdFiatRate';
+import useMoneyAccountInterest from '../../hooks/useMoneyAccountInterest';
+const Divider = () => <Box twClassName="h-px bg-border-muted my-5" />;
+
+/** Row is Add + Send + Card, plus Details once the VBA account is ready. */
+const ACTION_BUTTON_ROW_BASE_COUNT = 3;
+
+/**
+ * Blocks repeat Details taps until the loading route has had time to present. A
+ * second reset in that window would remount the loading route and start a
+ * second hydrate.
+ */
+const DETAILS_REENTRY_WINDOW_MS = 1000;
+
+const MoneyHomeView = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const { showBackButton, launchedFrom } = useParams<MoneyHomeParams>();
+  // Pushed over another stack (e.g. a Rewards campaign funding flow) rather
+  // than rooted in the tab bar, which is the only case that gets a back
+  // affordance and the title that collapses into the header on scroll.
+  const isPushed = Boolean(showBackButton);
+  const { titleSectionHeightSv, setTitleSectionHeight } =
+    useHeaderStandardAnimated();
+  const insets = useSafeAreaInsets();
+  const { styles } = useStyles(styleSheet, {});
+  const floatingTabBarInset = useFloatingTabBarInset();
+  const { colors } = useTheme();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const activeProviderId = useSelector(selectCardActiveProviderId);
+  const hasTrackedCardActionRowViewRef = useRef(false);
+  const { PreferencesController } = Engine.context;
+  const privacyMode = useSelector(selectPrivacyMode);
+
+  const {
+    trackButtonClicked,
+    trackTooltipClicked,
+    trackSurfaceClicked,
+    trackTokenButtonClicked,
+    trackTokenSurfaceClicked,
+    trackActivitySurfaceClicked,
+    trackScreenViewed,
+  } = useMoneyAnalytics({
+    screen_name: SCREEN_NAMES.MONEY_HOME,
+  });
+
+  const {
+    totalFiatFormatted,
+    totalFiatRaw,
+    tokenTotal,
+    isBalanceLoading,
+    lastKnownTotalFiatFormatted,
+    refetchBalance,
+  } = useMoneyAccountBalance();
+  const { vaultApyQuery, apyPercent, apyDecimal } = useMoneyVaultApy();
+  const { last30DaysQuery, sinceInceptionQuery, refetchInterest } =
+    useMoneyAccountInterest();
+
+  const refreshMusdFiatRate = useRefreshMusdFiatRate();
+
+  // Pull-to-refresh state
+  const [refreshing, setRefreshing] = useState(false);
+
+  useFocusEffect(
+    useCallback(() => {
+      trackScreenViewed();
+    }, [trackScreenViewed]),
+  );
+
+  const { hasMoneyAccount } = useMoneyAccountInfo();
+
+  // One card for the whole slot. The VBA hook still names the identity
+  // variant; the routing table decides whether that variant, the onboarding
+  // stepper, or nothing is mounted. The focus refresh is the one-shot KYC
+  // session GET.
+  const vbaHomeCard = useVbaHomeCard();
+  useVbaHomeCardRefresh();
+  const { isEligible: isVbaEligible, isLoading: isVbaEligibilityLoading } =
+    useVbaEligibility();
+  const { hasCrypto, isLoading: isCryptoBalanceLoading } =
+    useActiveGroupCryptoPresence();
+  const devOverride = useMoneyHomeCardDevOverride();
+  const onboardingProgress = useSelector(selectOnboardingStepperProgress);
+  const [dismissedVbaVariant, setDismissedVbaVariant] =
+    useState<MoneyHomeVbaVariant | null>(null);
+  if (dismissedVbaVariant && dismissedVbaVariant !== vbaHomeCard.type) {
+    setDismissedVbaVariant(null);
+  }
+  // One-shot autoramp transaction read per focus and app resume. The
+  // controller owns the last-seen-status record, so repeated reads do not
+  // emit duplicate Money VBA Transaction Updated events.
+  useVbaTransactionRefresh();
+  // The Details button is live for every VBA-eligible user (flag + IP region,
+  // the same eligibility gate the home cards use) and for an existing account.
+  // An approved account opens its details directly; otherwise the loading
+  // screen hydrates and forwards to the first incomplete module.
+  const usableVbaAutoramp = useSelector(selectUsableVbaAutoramp);
+  const hasPendingDetailsOpenRef = useRef(false);
+  const showVbaDetailsButton = isVbaEligible || Boolean(usableVbaAutoramp);
+  const actionButtonRowCount = showVbaDetailsButton
+    ? ACTION_BUTTON_ROW_BASE_COUNT + 1
+    : ACTION_BUTTON_ROW_BASE_COUNT;
+
+  const { tokens: depositTokens, isNoFeeToken } = useMoneyDepositTokens({
+    overrideToUsd: true,
+  });
+  const { navigateToMoneyDeposit } = useMoneyDepositNavigation();
+  const historicalValuationsEnabled = useSelector(
+    selectMoneyEnableHistoricalVaultShareValuationsFlag,
+  );
+  // Share the single merge/bucket path with the full activity view so the home
+  // preview and that view never diverge. The home preview shows the "All"
+  // bucket.
+  const {
+    buckets,
+    hasMore: hasMoreActivity,
+    // Still settling while the initial query loads or the auto-fill may yet
+    // deliver a first preview row — the hook derives this from the same
+    // predicate that drives its fetch loop, so the skeleton can neither
+    // vanish mid-fill nor outlive a fill that stopped (budget spent, error).
+    isSettling: isActivitySettling,
+    isValuationSettling,
+    error: activityError,
+    refetch: refetchActivity,
+    moneyAddress,
+    cardEnrichmentByHash,
+  } = useMoneyActivityItems({
+    fill: {
+      bucket: MoneyActivityFilter.All,
+      count: MONEY_HOME_ACTIVITY_PREVIEW_COUNT,
+      ...(historicalValuationsEnabled ? { maxPages: 1 } : {}),
+    },
+  });
+  const activityItems = buckets[MoneyActivityFilter.All];
+
+  const handlePullRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        refetchBalance(),
+        refetchInterest(),
+        refreshMusdFiatRate(),
+        Promise.resolve(refetchActivity()),
+        Engine.context.CardController.fetchCardHomeData({ force: true }),
+      ]);
+    } catch (error) {
+      Logger.error(error as Error, '[MoneyHomeView] Pull-to-refresh failed');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetchBalance, refetchInterest, refreshMusdFiatRate, refetchActivity]);
+
+  const isCardholder = useSelector(selectIsCardholder);
+  const cardHomeDataStatus = useSelector(selectCardHomeDataStatus);
+  const isCardStateResolved = useSelector(selectIsCardStateResolved);
+  const isCardHomeDataResolved = useSelector(selectIsCardHomeDataResolved);
+  const hasMetalCard = useSelector(selectHasMetalCard);
+  const isMoneyEarningSectionEnabled = useSelector(
+    selectMoneyEarningSectionEnabledFlag,
+  );
+  const isMoneyAccountVisible = useSelector(selectIsMoneyAccountVisible);
+  const {
+    getLinkFlowRedirectTarget,
+    startLinkFlow,
+    isCardAuthenticated,
+    isCardVerified,
+    isCardLinkedToMoneyAccount,
+    isLinking,
+    hasMoneyAccountRequirements,
+    hasMoneyAccountBaseRequirements,
+    isResidencyBlocked,
+    isMoneyCardSectionAvailable,
+    reportsVerificationStatus,
+  } = useMoneyAccountCardLinkage();
+
+  const hardwareTier = useMemo(() => getHardwareTier(), []);
+  const networkTier = useNetworkTier();
+  const cardSetupPollIntervalMs = deriveMoneyCardSetupPollIntervalMs(
+    hardwareTier,
+    networkTier,
+  );
+  const { data: cardHomeData, primaryToken: cardPrimaryToken } =
+    useCardHomeData();
+  const {
+    enableCard,
+    provisioningView,
+    setupStep,
+    isEnableCardPending,
+    markCardFlowOpened,
+  } = useCardEnableCard(cardHomeData, {
+    pollIntervalMs: cardSetupPollIntervalMs,
+    navigateFromOutsideCard: true,
+    recheckOnFocus: true,
+  });
+  const cardSetupView = deriveMoneyCardSetupView({
+    hasProvisioningAlert: (cardHomeData?.alerts ?? []).some(
+      (cardAlert) => cardAlert.type === 'card_provisioning',
+    ),
+    provisioningView,
+    setupStep,
+  });
+
+  const isMoneyAccountFunded = Boolean(
+    !isBalanceLoading && tokenTotal?.isGreaterThan(0),
+  );
+  const isCardStepSkipped =
+    (onboardingProgress[STEPPER_IDS.MONEY] ?? 0) >=
+    MONEY_ONBOARDING_TOTAL_STEPS;
+  const liveHomeCard = getMoneyHomeCard({
+    isEligibilityLoading: isVbaEligibilityLoading,
+    isMoneyBalanceLoading: isBalanceLoading,
+    isCryptoBalanceLoading,
+    isCardStateResolved,
+    vbaCard: vbaHomeCard,
+    isVbaEligible,
+    hasCrypto,
+    hasUsableAutoramp: Boolean(usableVbaAutoramp),
+    isMoneyAccountFunded,
+    isCardLinked: isCardLinkedToMoneyAccount,
+    isResidencyBlocked,
+    isCardStepSkipped,
+    isKycDecisionDismissed:
+      dismissedVbaVariant === 'kyc_decision' &&
+      vbaHomeCard.type === 'kyc_decision',
+  });
+  const moneyHomeCard = devOverride?.card ?? liveHomeCard;
+
+  const metamaskCardMode = deriveMoneyMetaMaskCardMode({
+    isCardLinkedToMoneyAccount,
+    isCardholder,
+    isCardAuthenticated,
+    isCardVerified,
+    isResidencyBlocked,
+    isMoneyAccountVisible,
+    hasMoneyAccountBaseRequirements,
+    hasMoneyAccountRequirements,
+    isCardStateResolved,
+    isCardHomeDataResolved,
+    hasCardHomeDataFailed: cardHomeDataStatus === 'error',
+    isMoneyCardSectionAvailable,
+    reportsVerificationStatus,
+    hasProviderCard: Boolean(cardHomeData?.card),
+    cardSetupView,
+  });
+  let displayState: MoneyBalanceDisplayState;
+  if (!hasMoneyAccount) {
+    displayState = { kind: 'noAccount' };
+  } else if (totalFiatFormatted !== undefined) {
+    // A fresh balance always wins — the banner is hidden on success.
+    displayState = { kind: 'balance', value: totalFiatFormatted };
+  } else {
+    // No fresh balance (loading, fetch error, or rate not ready). Carry the
+    // cached balance (when valid for this account/currency) so it renders as a
+    // muted "last known" figure; otherwise the slot shows a dash. Either way a
+    // BannerAlert accompanies it.
+    displayState = {
+      kind: 'unavailable',
+      lastKnownValue: lastKnownTotalFiatFormatted,
+    };
+  }
+
+  const showBalanceUnavailableBanner = displayState.kind === 'unavailable';
+
+  const hasBalanceValue = displayState.kind === 'balance';
+  const hasSpendableBalance =
+    hasBalanceValue &&
+    !!totalFiatRaw &&
+    new BigNumber(totalFiatRaw).abs().gte(DUST_THRESHOLD);
+  const isFunded = hasSpendableBalance || activityItems.length > 0;
+  const isEmptyState = hasBalanceValue && !isFunded;
+
+  const balanceReady = !isBalanceLoading;
+  // Only ready once the preview is no longer settling, so the time-to-content
+  // trace can't close before auto-fill rows are actually on screen. A failed
+  // fetch ends the span as a failure rather than a (fast) success.
+  const activityReady = !isActivitySettling;
+  const previewDisplayAmounts = activityItems
+    .slice(0, MONEY_HOME_ACTIVITY_PREVIEW_COUNT)
+    .flatMap((item) =>
+      item.kind === 'accountsApi' && item.tx.displayAmount
+        ? [item.tx.displayAmount]
+        : [],
+    );
+  const hasHistoricalActivityTargets =
+    historicalValuationsEnabled && previewDisplayAmounts.length > 0;
+  const hasUnresolvedHistoricalAmounts = previewDisplayAmounts.some(
+    (amount) => amount.type !== 'historical',
+  );
+  const historicalActivityReady =
+    hasHistoricalActivityTargets && !hasUnresolvedHistoricalAmounts;
+  const historicalActivityFailed =
+    hasHistoricalActivityTargets &&
+    hasUnresolvedHistoricalAmounts &&
+    !isValuationSettling;
+
+  const formattedZero = useMemo(() => moneyFormatUsd(new BigNumber(0)), []);
+
+  const projectedMonthlyFallback = useMemo(() => {
+    if (!totalFiatRaw || !apyDecimal) return formattedZero;
+    const balance = new BigNumber(totalFiatRaw);
+    if (balance.isZero() || balance.isNaN()) return formattedZero;
+    const earnings = calculateProjectedEarnings(
+      balance.toNumber(),
+      apyDecimal,
+      1 / 12,
+    );
+    if (!Number.isFinite(earnings)) return formattedZero;
+    const formatted = moneyFormatUsd(new BigNumber(earnings));
+    return formatted === formattedZero ? formatted : `+${formatted}`;
+  }, [totalFiatRaw, apyDecimal, formattedZero]);
+
+  const formatInterestEarned = useCallback(
+    (value: string | undefined): string | undefined => {
+      if (value === undefined) return undefined;
+      const earnings = new BigNumber(value);
+      if (earnings.isNaN() || !earnings.isFinite()) return undefined;
+
+      const formatted = moneyFormatUsd(earnings);
+      return earnings.isGreaterThan(0) && formatted !== formattedZero
+        ? `+${formatted}`
+        : formatted;
+    },
+    [formattedZero],
+  );
+
+  const formattedLast30DaysInterest = useMemo(
+    () => formatInterestEarned(last30DaysQuery.data?.interest_earned_usd),
+    [formatInterestEarned, last30DaysQuery.data?.interest_earned_usd],
+  );
+  const formattedSinceInceptionInterest = useMemo(
+    () => formatInterestEarned(sinceInceptionQuery.data?.interest_earned_usd),
+    [formatInterestEarned, sinceInceptionQuery.data?.interest_earned_usd],
+  );
+
+  const last30DaysInterest =
+    formattedLast30DaysInterest ?? projectedMonthlyFallback;
+  const sinceInceptionInterest =
+    formattedSinceInceptionInterest ??
+    (sinceInceptionQuery.isError ? undefined : formattedZero);
+
+  const isEarningsLoading =
+    last30DaysQuery.isLoading ||
+    sinceInceptionQuery.isLoading ||
+    (formattedLast30DaysInterest === undefined &&
+      (vaultApyQuery.isLoading || isBalanceLoading));
+
+  const hasEarningsContent = Boolean(last30DaysInterest);
+  const earningsFailed =
+    (last30DaysQuery.isError || sinceInceptionQuery.isError) &&
+    !hasEarningsContent;
+  const apyReady = apyPercent !== undefined || !vaultApyQuery.isLoading;
+  const apyFailed = vaultApyQuery.isError && apyPercent === undefined;
+
+  // Report each independently so the existing balance, activity, and combined
+  // Money Home metrics retain their definitions. Optional sections are
+  // backdated to screen mount by the hook when they become applicable.
+  const moneyHomePerformanceSegments: MoneyHomeSegment[] = [
+    {
+      name: TraceName.MoneyHomeBalanceTimeToContent,
+      ready: balanceReady,
+      contentState: hasSpendableBalance ? 'filled' : 'empty',
+    },
+    {
+      name: TraceName.MoneyHomeActivityTimeToContent,
+      ready: activityReady,
+      failed: activityError,
+      contentState: activityItems.length > 0 ? 'filled' : 'empty',
+    },
+    {
+      name: TraceName.MoneyHomeHistoricalActivityTimeToContent,
+      enabled: hasHistoricalActivityTargets,
+      backdateToMount: true,
+      ready: historicalActivityReady,
+      failed: historicalActivityFailed,
+      contentState: historicalActivityReady ? 'filled' : 'empty',
+    },
+    {
+      name: TraceName.MoneyHomeTimeToContent,
+      ready: balanceReady && activityReady,
+      failed: activityError,
+      contentState: isFunded ? 'filled' : 'empty',
+    },
+    {
+      name: TraceName.MoneyHomeApyTimeToContent,
+      enabled: hasMoneyAccount,
+      backdateToMount: true,
+      ready: apyReady,
+      failed: apyFailed,
+      contentState: apyPercent !== undefined ? 'filled' : 'empty',
+    },
+    {
+      name: TraceName.MoneyHomeEarningsTimeToContent,
+      enabled: isMoneyEarningSectionEnabled && hasBalanceValue && isFunded,
+      backdateToMount: true,
+      ready: !isEarningsLoading,
+      failed: earningsFailed,
+      contentState: hasEarningsContent ? 'filled' : 'empty',
+    },
+  ];
+  useMoneyHomePerformance({ segments: moneyHomePerformanceSegments });
+
+  const handleMenuPress = useCallback(() => {
+    trackButtonClicked({
+      button_type: MONEY_BUTTON_TYPES.ICON,
+      button_intent: MONEY_BUTTON_INTENTS.OPEN_MORE_MENU,
+      component_name: COMPONENT_NAMES.MONEY_MORE,
+      redirect_target: BOTTOM_SHEET_NAMES.MONEY_MORE_SHEET,
+    });
+
+    navigation.navigate(Routes.MONEY.MODALS.ROOT, {
+      screen: Routes.MONEY.MODALS.MORE_SHEET,
+    });
+  }, [navigation, trackButtonClicked]);
+
+  // Only set when this stack was pushed over the caller's (e.g. a Rewards
+  // campaign funding flow), so back returns there instead of to a tab.
+  const handleBackPress = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const isBrandRefresh = useSelector(selectMoneyBrandRefreshEnabled) === true;
+  const isGlass = useIsGlassSurfaceEnabled(selectMoneyBrandRefreshEnabled);
+  const isNativeHeader = useMoneyNativeHeader({
+    onMenuPress: handleMenuPress,
+    onBack: isPushed ? handleBackPress : undefined,
+    isEnabled: isBrandRefresh,
+  });
+
+  const { scrollY, scrollDistance, onScroll } =
+    useNativeHeaderScroll(isNativeHeader);
+  const isFloatingHeader = isBrandRefresh && !isNativeHeader;
+  const { inset: floatingHeaderInset, onLayout: handleFloatingHeaderLayout } =
+    useHeaderGlassInset(isFloatingHeader, insets.top);
+  const topInset = isNativeHeader || isFloatingHeader ? 0 : insets.top;
+
+  const handleTitleSectionLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      setTitleSectionHeight(event.nativeEvent.layout.height);
+    },
+    [setTitleSectionHeight],
+  );
+
+  // Built as a whole object so each arm matches one side of the header's
+  // props union; spreading a partial would widen both arms to optional.
+  const headerProps: MoneyHeaderProps = isPushed
+    ? {
+        onMenuPress: handleMenuPress,
+        onBack: handleBackPress,
+        scrollY,
+        titleSectionHeight: titleSectionHeightSv,
+      }
+    : {
+        onMenuPress: handleMenuPress,
+        scrollY,
+      };
+
+  const handleAddPress = useCallback(
+    ({
+      labelKey,
+      componentName,
+      buttonPosition,
+      buttonRowButtonCount,
+    }: {
+      labelKey: string;
+      componentName: COMPONENT_NAMES;
+      buttonPosition?: number;
+      buttonRowButtonCount?: number;
+    }) => {
+      trackButtonClicked({
+        button_type: MONEY_BUTTON_TYPES.TEXT,
+        button_intent: MONEY_BUTTON_INTENTS.ADD_MONEY,
+        label_key: labelKey,
+        component_name: componentName,
+        redirect_target: BOTTOM_SHEET_NAMES.MONEY_ADD_MONEY_SHEET,
+        ...(buttonPosition && { button_position: buttonPosition }),
+        ...(buttonRowButtonCount && {
+          button_row_button_count: buttonRowButtonCount,
+        }),
+      });
+
+      navigation.navigate(Routes.MONEY.MODALS.ROOT, {
+        screen: Routes.MONEY.MODALS.ADD_MONEY_SHEET,
+        // A Rewards-originated Money home is already on the stack, so the
+        // deposit it starts should return here rather than switch tabs.
+        ...(launchedFrom && {
+          params: { launchedFrom: ConfirmationLaunchSource.RewardsMoneyHome },
+        }),
+      });
+    },
+    [navigation, trackButtonClicked, launchedFrom],
+  );
+
+  const handleTransferPress = useCallback(() => {
+    trackButtonClicked({
+      button_type: MONEY_BUTTON_TYPES.TEXT,
+      button_intent: MONEY_BUTTON_INTENTS.TRANSFER_MONEY,
+      label_key: 'money.action.transfer',
+      redirect_target: BOTTOM_SHEET_NAMES.MONEY_TRANSFER_MONEY_SHEET,
+      component_name: COMPONENT_NAMES.MONEY_ACTION_BUTTON_ROW,
+      button_position: 2,
+      button_row_button_count: actionButtonRowCount,
+    });
+
+    navigation.navigate(Routes.MONEY.MODALS.ROOT, {
+      screen: Routes.MONEY.MODALS.TRANSFER_MONEY_SHEET,
+    });
+  }, [navigation, trackButtonClicked, actionButtonRowCount]);
+
+  const navigateToCardHome = useCallback(() => {
+    markCardFlowOpened();
+    const isUpsell = metamaskCardMode === 'upsell';
+
+    // Cross-navigator jump into the Card stack + top-level `animation` option.
+    navigateWithDetails(navigation, [
+      Routes.CARD.ROOT,
+      {
+        screen: Routes.CARD.HOME,
+        params: { postAuthRedirect: MONEY_HOME_CARD_ORIGIN },
+        ...(isUpsell ? { animation: 'slide_from_bottom' } : {}),
+      },
+    ]);
+  }, [markCardFlowOpened, navigation, metamaskCardMode]);
+
+  const handleActionButtonCardPress = useCallback(() => {
+    trackButtonClicked({
+      button_type: MONEY_BUTTON_TYPES.TEXT,
+      button_intent: MONEY_BUTTON_INTENTS.CARD_HOME,
+      label_key: 'money.action.card',
+      component_name: COMPONENT_NAMES.MONEY_ACTION_BUTTON_ROW,
+      redirect_target: SCREEN_NAMES.CARD_HOME,
+      button_position: 3,
+      button_row_button_count: actionButtonRowCount,
+    });
+
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.CARD_BUTTON_CLICKED)
+        .addProperties(
+          withCardProvider(activeProviderId, {
+            screen: CardScreens.MONEY_HOME,
+            entrypoint: CardEntryPoint.MONEY_HOME_ACTION_ROW,
+            action: CardActions.MONEY_ACCOUNT_CARD_ACTION_ROW_BUTTON,
+          }),
+        )
+        .build(),
+    );
+
+    navigateToCardHome();
+  }, [
+    trackButtonClicked,
+    trackEvent,
+    createEventBuilder,
+    activeProviderId,
+    navigateToCardHome,
+    actionButtonRowCount,
+  ]);
+
+  const handleActionButtonDetailsPress = useCallback(() => {
+    if (hasPendingDetailsOpenRef.current) {
+      return;
+    }
+    startVbaCufJourney(VBA_CUF_ENTRY_SURFACE.MONEY_ACTION_ROW);
+    hasPendingDetailsOpenRef.current = true;
+    // Self-clears so the button recovers if no navigator presents the route.
+    setTimeout(() => {
+      hasPendingDetailsOpenRef.current = false;
+    }, DETAILS_REENTRY_WINDOW_MS);
+    trackButtonClicked({
+      button_type: MONEY_BUTTON_TYPES.TEXT,
+      button_intent: MONEY_BUTTON_INTENTS.BANK_DETAILS,
+      label_key: 'money.action.details',
+      component_name: COMPONENT_NAMES.MONEY_ACTION_BUTTON_ROW,
+      redirect_target: SCREEN_NAMES.VBA_ONBOARDING,
+      button_position: 4,
+      button_row_button_count: actionButtonRowCount,
+    });
+
+    // Route immediately: an approved account opens its details directly.
+    // Otherwise the loading screen hydrates and replaces itself with the next
+    // destination, so Details never shows an in-place busy state.
+    openVbaEntry(navigation, {
+      source: 'vba-action-row-details',
+    });
+  }, [navigation, trackButtonClicked, actionButtonRowCount]);
+
+  const getPressRedirectTargetByMode = useCallback(
+    (mode: MoneyMetaMaskCardMode) => {
+      if (mode === 'link') {
+        return getLinkFlowRedirectTarget();
+      }
+
+      if (mode === 'upsell' || mode === 'manage' || mode === 'setup') {
+        return SCREEN_NAMES.CARD_HOME;
+      }
+
+      return undefined;
+    },
+    [getLinkFlowRedirectTarget],
+  );
+
+  const handleMetaMaskCardHeaderPress = useCallback(
+    (mode: MoneyMetaMaskCardMode) => {
+      const redirectTarget = getPressRedirectTargetByMode(mode);
+      if (!redirectTarget) return;
+
+      trackSurfaceClicked({
+        redirect_target: redirectTarget,
+        component_name: COMPONENT_NAMES.MONEY_METAMASK_CARD_SECTION_HEADER,
+      });
+    },
+    [getPressRedirectTargetByMode, trackSurfaceClicked],
+  );
+
+  const handleLinkCardPress = useCallback(() => {
+    markCardFlowOpened();
+    startLinkFlow({
+      ...MONEY_HOME_CARD_ORIGIN,
+      entrypoint: CardEntryPoint.MONEY_HOME_METAMASK_CARD,
+    });
+  }, [markCardFlowOpened, startLinkFlow]);
+
+  useEffect(() => {
+    if (hasTrackedCardActionRowViewRef.current) return;
+    hasTrackedCardActionRowViewRef.current = true;
+
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.CARD_VIEWED)
+        .addProperties(
+          withCardProvider(activeProviderId, {
+            screen: CardScreens.MONEY_HOME,
+            entrypoint: CardEntryPoint.MONEY_HOME_ACTION_ROW,
+          }),
+        )
+        .build(),
+    );
+  }, [trackEvent, createEventBuilder, activeProviderId]);
+
+  const handleApyInfoPress = useCallback(() => {
+    trackTooltipClicked({
+      tooltip_name: MONEY_TOOLTIP_NAMES.APY,
+      tooltip_type: MONEY_TOOLTIP_TYPES.INFO,
+      component_name: COMPONENT_NAMES.MONEY_BALANCE_SUMMARY_APY,
+    });
+
+    navigation.navigate(Routes.MONEY.MODALS.ROOT, {
+      screen: Routes.MONEY.MODALS.APY_INFO_SHEET,
+      params: { apy: apyPercent },
+    });
+  }, [trackTooltipClicked, navigation, apyPercent]);
+
+  const handleBalancePress = useCallback(() => {
+    PreferencesController.setPrivacyMode(!privacyMode);
+  }, [PreferencesController, privacyMode]);
+
+  const handleMonthlyEarningsInfoPress = useCallback(() => {
+    trackTooltipClicked({
+      tooltip_name: MONEY_TOOLTIP_NAMES.MONTHLY_EARNINGS,
+      tooltip_type: MONEY_TOOLTIP_TYPES.INFO,
+      component_name: COMPONENT_NAMES.MONEY_EARNINGS_SECTION,
+    });
+
+    navigation.navigate(Routes.MONEY.MODALS.ROOT, {
+      screen: Routes.MONEY.MODALS.EARNINGS_INFO_SHEET,
+      params: { variant: 'monthly' },
+    });
+  }, [navigation, trackTooltipClicked]);
+
+  const handleLifetimeEarningsInfoPress = useCallback(() => {
+    trackTooltipClicked({
+      tooltip_name: MONEY_TOOLTIP_NAMES.LIFETIME_EARNINGS,
+      tooltip_type: MONEY_TOOLTIP_TYPES.INFO,
+      component_name: COMPONENT_NAMES.MONEY_EARNINGS_SECTION,
+    });
+
+    navigation.navigate(Routes.MONEY.MODALS.ROOT, {
+      screen: Routes.MONEY.MODALS.EARNINGS_INFO_SHEET,
+      params: { variant: 'lifetime' },
+    });
+  }, [navigation, trackTooltipClicked]);
+
+  const handleEarnCryptoProjectedAmountPressed = useCallback(() => {
+    trackTooltipClicked({
+      tooltip_name: MONEY_TOOLTIP_NAMES.EARN_ON_YOUR_CRYPTO,
+      tooltip_type: MONEY_TOOLTIP_TYPES.INFO,
+      component_name: COMPONENT_NAMES.MONEY_POTENTIAL_EARNINGS_PROJECTED_AMOUNT,
+    });
+
+    navigation.navigate(Routes.MONEY.MODALS.ROOT, {
+      screen: Routes.MONEY.MODALS.EARN_CRYPTO_INFO_SHEET,
+    });
+  }, [navigation, trackTooltipClicked]);
+
+  const handleMusdRowPress = useCallback(
+    ({ componentName }: { componentName: COMPONENT_NAMES }) => {
+      trackSurfaceClicked({
+        component_name: componentName,
+        redirect_target: MONEY_URLS.MUSD_PRICE,
+      });
+
+      openInAppBrowser(navigation, AppConstants.URLS.MUSD_PRICE);
+    },
+    [navigation, trackSurfaceClicked],
+  );
+
+  const handleTokenButtonPress = useCallback(
+    async (
+      token: MoneyDepositAsset,
+      tokenIndex: number,
+      tokenCount: number,
+    ) => {
+      try {
+        await navigateToMoneyDeposit({
+          preferredPaymentToken: {
+            address: token.address as Hex,
+            chainId: token.chainId as Hex,
+          },
+          track: ({ button_intent, redirect_target }) => {
+            trackTokenButtonClicked({
+              button_type: MONEY_BUTTON_TYPES.TEXT,
+              button_intent,
+              component_name:
+                COMPONENT_NAMES.MONEY_POTENTIAL_EARNINGS_SECTION_TOKEN_ROW,
+              label_key: 'money.potential_earnings.add',
+              redirect_target,
+              token_symbol: token.symbol,
+              token_position_in_list: tokenIndex + 1,
+              token_chain_id: token.chainId ?? '',
+              tokens_in_list: tokenCount,
+              token_has_balance: new BigNumber(token.balance).gt(0),
+            });
+          },
+        });
+      } catch (error) {
+        Logger.error(error as Error, {
+          message:
+            '[MoneyHomeView] Failed to initiate deposit from potential earnings',
+        });
+      }
+    },
+    [navigateToMoneyDeposit, trackTokenButtonClicked],
+  );
+
+  const handleTokenCardPress = useCallback(
+    async (
+      token: MoneyDepositAsset,
+      tokenIndex: number,
+      tokenCount: number,
+    ) => {
+      try {
+        await navigateToMoneyDeposit({
+          preferredPaymentToken: {
+            address: token.address as Hex,
+            chainId: token.chainId as Hex,
+          },
+          track: ({ redirect_target }) => {
+            trackTokenSurfaceClicked({
+              component_name:
+                COMPONENT_NAMES.MONEY_POTENTIAL_EARNINGS_SECTION_TOKEN_ROW,
+              redirect_target,
+              token_symbol: token.symbol,
+              token_position_in_list: tokenIndex + 1,
+              token_chain_id: token.chainId ?? '',
+              tokens_in_list: tokenCount,
+              token_has_balance: new BigNumber(token.balance).gt(0),
+            });
+          },
+        });
+      } catch (error) {
+        Logger.error(error as Error, {
+          message:
+            '[MoneyHomeView] Failed to initiate deposit from potential earnings',
+        });
+      }
+    },
+    [navigateToMoneyDeposit, trackTokenSurfaceClicked],
+  );
+
+  const handleMoneyPotentialEarningsHeaderPressed = useCallback(() => {
+    trackSurfaceClicked({
+      component_name: COMPONENT_NAMES.MONEY_POTENTIAL_EARNINGS_SECTION_HEADER,
+      redirect_target: SCREEN_NAMES.MONEY_POTENTIAL_EARNINGS,
+    });
+
+    navigation.navigate(Routes.MONEY.POTENTIAL_EARNINGS, {
+      overrideToUsd: true,
+    });
+  }, [navigation, trackSurfaceClicked]);
+
+  const handleWhatYouGetPress = useCallback(() => {
+    trackSurfaceClicked({
+      component_name: COMPONENT_NAMES.MONEY_CONDENSED_INFO_CARDS_WHAT_YOU_GET,
+      redirect_target: MONEY_URLS.MONEY_LANDING,
+    });
+
+    openInAppBrowser(navigation, AppConstants.URLS.MONEY_LANDING);
+  }, [navigation, trackSurfaceClicked]);
+
+  const handleLearnMorePress = useCallback(() => {
+    trackButtonClicked({
+      button_type: MONEY_BUTTON_TYPES.TEXT,
+      button_intent: MONEY_BUTTON_INTENTS.LEARN_MORE,
+      component_name: COMPONENT_NAMES.MONEY_WHAT_YOU_GET_SECTION,
+      label_key: 'money.what_you_get.learn_more',
+      redirect_target: MONEY_URLS.MONEY_LANDING,
+    });
+
+    openInAppBrowser(navigation, AppConstants.URLS.MONEY_LANDING);
+  }, [navigation, trackButtonClicked]);
+
+  const handleHowItWorksPress = useCallback(
+    ({ componentName }: { componentName: COMPONENT_NAMES }) => {
+      trackSurfaceClicked({
+        component_name: componentName,
+        redirect_target: SCREEN_NAMES.MONEY_HOW_IT_WORKS,
+      });
+
+      navigation.navigate(Routes.MONEY.HOW_IT_WORKS);
+    },
+    [navigation, trackSurfaceClicked],
+  );
+
+  const handleActivityHeaderPress = useCallback(() => {
+    trackSurfaceClicked({
+      component_name: COMPONENT_NAMES.MONEY_ACTIVITY_SECTION_HEADER,
+      redirect_target: SCREEN_NAMES.MONEY_ACTIVITY,
+    });
+
+    navigation.navigate(Routes.MONEY.ACTIVITY);
+  }, [navigation, trackSurfaceClicked]);
+
+  const handleActivityItemPress = useCallback(
+    (transaction: TransactionMeta) => {
+      trackActivitySurfaceClicked({
+        transaction,
+        redirect_target: SCREEN_NAMES.MONEY_ACTIVITY_DETAILS,
+        component_name: COMPONENT_NAMES.MONEY_ACTIVITY_LIST_ITEM,
+      });
+
+      navigation.navigate(Routes.MONEY.TRANSACTION_DETAILS, {
+        transactionId: transaction.id,
+      });
+    },
+    [navigation, trackActivitySurfaceClicked],
+  );
+
+  const currencyRates = useSelector(selectCurrencyRates);
+  const isCardBalanceLoading =
+    cardPrimaryToken?.balanceFiat === TOKEN_BALANCE_LOADING;
+  // Money Account entries are already valued in USD. USD-pegged tokens use
+  // their token amount, which is already dollars. Other Card tokens report
+  // their fiat value in the user's selected currency.
+  const cardBalanceUsd = useMemo(() => {
+    if (!cardPrimaryToken || cardPrimaryToken.isUnavailable) {
+      return '—';
+    }
+    let usd: number | undefined;
+    if (cardPrimaryToken.isMoneyAccountEntry) {
+      usd = cardPrimaryToken.rawFiatNumber;
+    } else if (cardPrimaryToken.assumeUsdParity) {
+      usd = cardPrimaryToken.rawTokenBalance;
+    } else {
+      usd = convertSelectedFiatToUsd(
+        cardPrimaryToken.rawFiatNumber,
+        currencyRates,
+      );
+    }
+    return usd === undefined || Number.isNaN(usd)
+      ? '—'
+      : moneyFormatUsd(new BigNumber(usd));
+  }, [cardPrimaryToken, currencyRates]);
+
+  const cardState = deriveCardState({
+    isCardholder,
+    isCardAuthenticated,
+    isCardLinkedToMoneyAccount,
+  });
+
+  // Users with no card never fetch card home data, so its status stays 'idle'
+  // for them — `isCardStateResolved` is what tells us the upsell mode is final.
+  const isCardAnalyticsReady =
+    isCardStateResolved ||
+    cardHomeDataStatus === 'success' ||
+    cardHomeDataStatus === 'error';
+
+  const metamaskCardSection = metamaskCardMode
+    ? {
+        key: 'metamask-card',
+        node: (
+          <MoneyMetaMaskCard
+            mode={metamaskCardMode}
+            onHeaderPress={handleMetaMaskCardHeaderPress}
+            onGetNowPress={navigateToCardHome}
+            onLinkPress={handleLinkCardPress}
+            onManagePress={navigateToCardHome}
+            setupView={cardSetupView ?? undefined}
+            onSetupContinuePress={enableCard ?? navigateToCardHome}
+            isSetupContinueLoading={isEnableCardPending}
+            showMetalCard={hasMetalCard}
+            isLinkDisabled={isLinking}
+            cardBalance={cardBalanceUsd}
+            isBalanceLoading={isCardBalanceLoading}
+            isBalanceStale={cardHomeDataStatus === 'error'}
+            privacyMode={privacyMode}
+            apy={apyPercent}
+            analyticsScreen={CardScreens.MONEY_HOME}
+            analyticsEntryPoint={CardEntryPoint.MONEY_HOME_METAMASK_CARD}
+            analyticsFlow={CardFlow.MONEY_ACCOUNT_LINKAGE}
+            analyticsCardState={cardState}
+            analyticsReady={isCardAnalyticsReady}
+          />
+        ),
+      }
+    : null;
+
+  const shouldShowMetaMaskCardEarly =
+    metamaskCardMode !== null && metamaskCardMode !== 'upsell';
+
+  const contentSections: { key: string; node: React.ReactNode }[] = [];
+
+  if (isMoneyEarningSectionEnabled && hasBalanceValue && isFunded) {
+    contentSections.push({
+      key: 'earnings',
+      node: (
+        <MoneyEarnings
+          last30DaysEarnings={last30DaysInterest}
+          sinceInceptionEarnings={sinceInceptionInterest}
+          isLoading={isEarningsLoading}
+          onMonthlyInfoPress={handleMonthlyEarningsInfoPress}
+          onLifetimeInfoPress={handleLifetimeEarningsInfoPress}
+          privacyMode={privacyMode}
+        />
+      ),
+    });
+  }
+
+  if (isEmptyState) {
+    contentSections.push({
+      key: 'how-it-works',
+      node: (
+        <MoneyHowItWorks
+          apy={apyPercent}
+          onHeaderPress={() =>
+            handleHowItWorksPress({
+              componentName: COMPONENT_NAMES.MONEY_HOW_IT_WORKS_SECTION_HEADER,
+            })
+          }
+          isLoading={vaultApyQuery.isLoading}
+        />
+      ),
+    });
+  }
+
+  if (shouldShowMetaMaskCardEarly && metamaskCardSection) {
+    contentSections.push(metamaskCardSection);
+  }
+
+  if (isActivitySettling || activityItems.length >= 1) {
+    contentSections.push({
+      key: 'activity',
+      node: isActivitySettling ? (
+        <MoneyActivityLoading />
+      ) : (
+        <MoneyActivityList
+          items={activityItems}
+          moneyAddress={moneyAddress}
+          hasMore={hasMoreActivity}
+          onHeaderPress={handleActivityHeaderPress}
+          onItemPress={handleActivityItemPress}
+          privacyMode={privacyMode}
+          cardEnrichmentByHash={cardEnrichmentByHash}
+        />
+      ),
+    });
+  }
+
+  if (depositTokens.length > 0) {
+    contentSections.push({
+      key: 'potential-earnings',
+      node: (
+        <MoneyPotentialEarnings
+          tokens={depositTokens}
+          apyDecimal={apyDecimal}
+          isNoFeeToken={isNoFeeToken}
+          onTokenCardPress={handleTokenCardPress}
+          onTokenButtonPress={handleTokenButtonPress}
+          onHeaderPress={handleMoneyPotentialEarningsHeaderPressed}
+          onProjectedAmountPress={handleEarnCryptoProjectedAmountPressed}
+          privacyMode={privacyMode}
+        />
+      ),
+    });
+  }
+
+  if (!shouldShowMetaMaskCardEarly && metamaskCardSection) {
+    contentSections.push(metamaskCardSection);
+  }
+
+  if (isFunded) {
+    contentSections.push({
+      key: 'condensed-info',
+      node: (
+        <MoneyCondensedInfoCards
+          isGlass={isGlass}
+          onHowItWorksPress={() =>
+            handleHowItWorksPress({
+              componentName:
+                COMPONENT_NAMES.MONEY_CONDENSED_INFO_CARDS_HOW_IT_WORKS,
+            })
+          }
+          onMusdPress={() =>
+            handleMusdRowPress({
+              componentName: COMPONENT_NAMES.MONEY_CONDENSED_INFO_CARDS_MUSD,
+            })
+          }
+          onWhatYouGetPress={handleWhatYouGetPress}
+        />
+      ),
+    });
+  }
+
+  if (isEmptyState) {
+    contentSections.push({
+      key: 'what-you-get',
+      node: (
+        <MoneyWhatYouGet
+          apy={apyPercent}
+          onLearnMorePress={handleLearnMorePress}
+        />
+      ),
+    });
+  }
+
+  return (
+    <Box
+      style={[styles.safeArea, { paddingTop: topInset }]}
+      twClassName="flex-1 bg-default"
+      testID={MoneyHomeViewTestIds.CONTAINER}
+    >
+      {/* Mounted before the content so assistive tech reads the header first. */}
+      {!isNativeHeader && (
+        <MoneyHeader
+          {...headerProps}
+          isGlass={isFloatingHeader}
+          onLayout={isFloatingHeader ? handleFloatingHeaderLayout : undefined}
+        />
+      )}
+      <Animated.ScrollView
+        testID={MoneyHomeViewTestIds.SCROLL_VIEW}
+        contentInsetAdjustmentBehavior={
+          isNativeHeader ? 'automatic' : undefined
+        }
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingTop: floatingHeaderInset,
+            paddingBottom: 40 + floatingTabBarInset,
+          },
+        ]}
+        showsVerticalScrollIndicator={false}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handlePullRefresh}
+            tintColor={colors.icon.default}
+            colors={[colors.primary.default]}
+            progressViewOffset={floatingHeaderInset}
+          />
+        }
+      >
+        {/* Everything above the action buttons is measured as one block: the
+            header's compact title should only appear once the large title has
+            scrolled away, which the banner pushes further down when shown. */}
+        <Box
+          testID={MoneyHomeViewTestIds.TITLE_SECTION}
+          onLayout={isPushed ? handleTitleSectionLayout : undefined}
+        >
+          {showBalanceUnavailableBanner && (
+            <Box twClassName="px-4 pt-2 pb-2">
+              <BannerAlert
+                severity={BannerAlertSeverity.Warning}
+                title={strings('money.balance_unavailable')}
+                description={strings(
+                  'money.balance_unavailable_banner_description',
+                )}
+                style={styles.balanceUnavailableBanner}
+                testID={MoneyHomeViewTestIds.BALANCE_UNAVAILABLE_BANNER}
+              />
+            </Box>
+          )}
+          <MoneyBalanceSummary
+            apy={apyPercent}
+            displayState={displayState}
+            onApyInfoPress={handleApyInfoPress}
+            privacyMode={privacyMode}
+            onBalancePress={handleBalancePress}
+            showTitle={isPushed && !isNativeHeader}
+          />
+        </Box>
+        <MoneyActionButtonRow
+          isGlass={isGlass}
+          add={{
+            onPress: () =>
+              handleAddPress({
+                labelKey: 'money.action.add',
+                componentName: COMPONENT_NAMES.MONEY_ACTION_BUTTON_ROW,
+                buttonPosition: 1,
+                buttonRowButtonCount: actionButtonRowCount,
+              }),
+          }}
+          transfer={{
+            onPress: handleTransferPress,
+            // Keep Send available at $0 so pre-deposit users can inspect
+            // withdrawal routes before adding funds.
+            disabled: !hasBalanceValue,
+          }}
+          card={{ onPress: handleActionButtonCardPress }}
+          details={
+            showVbaDetailsButton
+              ? {
+                  onPress: handleActionButtonDetailsPress,
+                }
+              : undefined
+          }
+        />
+        {moneyHomeCard.type === 'vba' && (
+          <MoneyVbaHomeCard
+            key={devOverride?.id ?? moneyHomeCard.variant}
+            variant={moneyHomeCard.variant}
+            onDismiss={() => {
+              if (devOverride?.card.type === 'vba') {
+                if (devOverride.card.variant === 'kyc_decision') {
+                  setMoneyHomeCardDevOverride(
+                    getKycDecisionDismissDevOverride(isMoneyAccountFunded),
+                  );
+                }
+                return;
+              }
+              setDismissedVbaVariant(moneyHomeCard.variant);
+            }}
+          />
+        )}
+        {moneyHomeCard.type === 'onboarding' && (
+          <MoneyOnboardingCard
+            isGlass={isGlass}
+            forcedStep={
+              devOverride?.card.type === 'onboarding'
+                ? devOverride.onboardingStep
+                : undefined
+            }
+          />
+        )}
+        {contentSections.map((section, index) => (
+          <React.Fragment key={section.key}>
+            {index > 0 && <Divider />}
+            {section.node}
+          </React.Fragment>
+        ))}
+      </Animated.ScrollView>
+      {isNativeHeader && (
+        <NativeHeaderBackdrop
+          scrollDistance={scrollDistance}
+          testID={MoneyHomeViewTestIds.NATIVE_HEADER_BACKDROP}
+        />
+      )}
+    </Box>
+  );
+};
+
+export default MoneyHomeView;

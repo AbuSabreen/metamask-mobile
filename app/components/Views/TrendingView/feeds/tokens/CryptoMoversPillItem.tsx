@@ -1,0 +1,97 @@
+import React, { useMemo } from 'react';
+import type { TrendingAsset } from '@metamask/assets-controllers';
+import { isCaipChainId } from '@metamask/utils';
+import { TimeOption } from '../../../../UI/Trending/components/TrendingTokensBottomSheet';
+import {
+  getCaipChainIdFromAssetId,
+  getNetworkBadgeSrc,
+  getPriceChangeFieldKey,
+} from '../../../../UI/Trending/components/TrendingTokenRowItem/utils';
+import TrendingTokenLogo from '../../../../UI/Trending/components/TrendingTokenLogo';
+import {
+  BadgeNetwork,
+  BadgeWrapperPosition,
+  BadgeWrapper,
+  Box,
+} from '@metamask/design-system-react-native';
+import { useTrendingTokenPress } from '../../../../UI/Trending/hooks/useTrendingTokenPress/useTrendingTokenPress';
+import { TokenDetailsSource } from '../../../../UI/TokenDetails/constants/constants';
+import { CRYPTO_MOVERS_HOME_FILTER_CONTEXT } from '../search-utils';
+import { formatPercentChange } from '../formatPercentChange';
+import ExplorePill from '../../components/ExplorePill';
+
+const LOGO_SIZE = 24;
+
+interface CryptoMoversPillItemProps {
+  token: TrendingAsset;
+  index: number;
+  timeOption?: TimeOption;
+  tokenDetailsSource?: TokenDetailsSource;
+  /** Called synchronously before the card's press handler fires. */
+  onCardPress?: () => void;
+}
+
+const CryptoMoversPillItem: React.FC<CryptoMoversPillItemProps> = ({
+  token,
+  index,
+  timeOption = TimeOption.TwentyFourHours,
+  tokenDetailsSource = TokenDetailsSource.ExploreNowMovers,
+  onCardPress,
+}) => {
+  const { onPress: defaultOnPress } = useTrendingTokenPress({
+    token,
+    index,
+    filterContext: CRYPTO_MOVERS_HOME_FILTER_CONTEXT,
+    tokenDetailsSource,
+  });
+
+  const onPress = React.useCallback(async () => {
+    onCardPress?.();
+    await defaultOnPress();
+  }, [onCardPress, defaultOnPress]);
+
+  const networkBadgeImageSource = useMemo(() => {
+    const caipChainId = getCaipChainIdFromAssetId(token.assetId);
+    if (!isCaipChainId(caipChainId)) return undefined;
+    return getNetworkBadgeSrc(caipChainId);
+  }, [token.assetId]);
+
+  const { changeLabel, changeTextColor } = useMemo(() => {
+    const key = getPriceChangeFieldKey(timeOption);
+    return formatPercentChange(token.priceChangePct?.[key]);
+  }, [timeOption, token.priceChangePct]);
+
+  const leading = useMemo(
+    () => (
+      <Box twClassName="mr-2">
+        <BadgeWrapper
+          position={BadgeWrapperPosition.BottomRight}
+          badge={
+            <BadgeNetwork src={networkBadgeImageSource} twClassName="h-4 w-4" />
+          }
+        >
+          <TrendingTokenLogo
+            assetId={token.assetId}
+            symbol={token.symbol}
+            size={LOGO_SIZE}
+            recyclingKey={token.assetId}
+          />
+        </BadgeWrapper>
+      </Box>
+    ),
+    [networkBadgeImageSource, token.assetId, token.symbol],
+  );
+
+  return (
+    <ExplorePill
+      onPress={onPress}
+      testID={`section-pill-${token.assetId}`}
+      leading={leading}
+      title={token.symbol}
+      changeLabel={changeLabel}
+      changeTextColor={changeTextColor}
+    />
+  );
+};
+
+export default React.memo(CryptoMoversPillItem);

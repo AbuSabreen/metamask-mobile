@@ -1,0 +1,99 @@
+import { strings } from '../../../../../locales/i18n';
+
+export type PredictErrorCode =
+  (typeof PREDICT_ERROR_CODES)[keyof typeof PREDICT_ERROR_CODES];
+
+/**
+ * Predict feature constants for error handling and logging
+ */
+export const PREDICT_CONSTANTS = {
+  FEATURE_NAME: 'Predict', // For Sentry error filtering - enables "feature:Predict" queries
+  CONTROLLER_NAME: 'PredictController',
+} as const;
+
+export const PREDICT_ERROR_CODES = {
+  NOT_ELIGIBLE: 'PREDICT_NOT_ELIGIBLE',
+  ORDER_NOT_FULLY_FILLED: 'PREDICT_ORDER_NOT_FULLY_FILLED',
+  PREVIEW_NO_ORDER_BOOK: 'PREDICT_PREVIEW_NO_ORDER_BOOK',
+  PREVIEW_NO_ORDER_MATCH_BUY: 'PREDICT_PREVIEW_NO_ORDER_MATCH_BUY',
+  PREVIEW_NO_ORDER_MATCH_SELL: 'PREDICT_PREVIEW_NO_ORDER_MATCH_SELL',
+  PLACE_ORDER_FAILED: 'PREDICT_PLACE_ORDER_FAILED',
+  PREVIEW_FAILED: 'PREDICT_PREVIEW_FAILED',
+  CLAIM_FAILED: 'PREDICT_CLAIM_FAILED',
+  UNKNOWN_ERROR: 'PREDICT_UNKNOWN_ERROR',
+  MARKETS_FAILED: 'PREDICT_MARKETS_FAILED',
+  MARKET_DETAILS_FAILED: 'PREDICT_MARKET_DETAILS_FAILED',
+  PRICE_HISTORY_FAILED: 'PREDICT_PRICE_HISTORY_FAILED',
+  CRYPTO_PRICE_HISTORY_FAILED: 'PREDICT_CRYPTO_PRICE_HISTORY_FAILED',
+  POSITIONS_FAILED: 'PREDICT_POSITIONS_FAILED',
+  ACTIVITY_NOT_AVAILABLE: 'PREDICT_ACTIVITY_NOT_AVAILABLE',
+  DEPOSIT_FAILED: 'PREDICT_DEPOSIT_FAILED',
+  WITHDRAW_FAILED: 'PREDICT_WITHDRAW_FAILED',
+  BUY_ORDER_NOT_FULLY_FILLED: 'PREDICT_BUY_ORDER_NOT_FULLY_FILLED',
+  SELL_ORDER_NOT_FULLY_FILLED: 'PREDICT_SELL_ORDER_NOT_FULLY_FILLED',
+  PREVIEW_NOT_AVAILABLE: 'PREDICT_PREVIEW_NOT_AVAILABLE',
+  MARKET_PENDING_RESOLUTION: 'PREDICT_MARKET_PENDING_RESOLUTION',
+  MARKET_NOT_ACCEPTING_BETS: 'PREDICT_MARKET_NOT_ACCEPTING_BETS',
+  MARKET_BETTABLE_CHECK_FAILED: 'PREDICT_MARKET_BETTABLE_CHECK_FAILED',
+  /** The Protocol V2 kill switch blocked the action on a v2 market. */
+  MARKET_UNAVAILABLE: 'PREDICT_MARKET_UNAVAILABLE',
+} as const;
+
+export const PREDICT_BUY_CANCELLATION_REASONS = {
+  RETRY_PROMPT_EXPIRED: 'Retry prompt expired after a retryable order failure',
+} as const;
+
+export const getPredictErrorMessages = () =>
+  ({
+    [PREDICT_ERROR_CODES.PREVIEW_NO_ORDER_BOOK]: strings(
+      'predict.error_messages.preview_no_order_book',
+    ),
+    [PREDICT_ERROR_CODES.PREVIEW_NO_ORDER_MATCH_BUY]: strings(
+      'predict.error_messages.preview_no_order_match_buy',
+    ),
+    [PREDICT_ERROR_CODES.PREVIEW_NO_ORDER_MATCH_SELL]: strings(
+      'predict.error_messages.preview_no_order_match_sell',
+    ),
+    [PREDICT_ERROR_CODES.PLACE_ORDER_FAILED]: strings(
+      'predict.error_messages.place_order_failed',
+    ),
+    [PREDICT_ERROR_CODES.NOT_ELIGIBLE]: strings(
+      'predict.error_messages.not_eligible',
+    ),
+    [PREDICT_ERROR_CODES.PREVIEW_FAILED]: strings(
+      'predict.error_messages.preview_failed',
+    ),
+    [PREDICT_ERROR_CODES.CLAIM_FAILED]: strings(
+      'predict.error_messages.claim_failed',
+    ),
+    [PREDICT_ERROR_CODES.UNKNOWN_ERROR]: strings(
+      'predict.error_messages.unknown_error',
+    ),
+    [PREDICT_ERROR_CODES.ORDER_NOT_FULLY_FILLED]: strings(
+      'predict.error_messages.order_not_fully_filled',
+    ),
+    [PREDICT_ERROR_CODES.BUY_ORDER_NOT_FULLY_FILLED]: strings(
+      'predict.error_messages.buy_order_not_fully_filled',
+    ),
+    [PREDICT_ERROR_CODES.SELL_ORDER_NOT_FULLY_FILLED]: strings(
+      'predict.error_messages.sell_order_not_fully_filled',
+    ),
+    [PREDICT_ERROR_CODES.PREVIEW_NOT_AVAILABLE]: strings(
+      'predict.error_messages.preview_not_available',
+    ),
+    [PREDICT_ERROR_CODES.MARKET_PENDING_RESOLUTION]: strings(
+      'predict.error_messages.market_pending_resolution',
+    ),
+    [PREDICT_ERROR_CODES.MARKET_NOT_ACCEPTING_BETS]: strings(
+      'predict.error_messages.market_not_accepting_bets',
+    ),
+    [PREDICT_ERROR_CODES.MARKET_BETTABLE_CHECK_FAILED]: strings(
+      'predict.error_messages.market_bettable_check_failed',
+    ),
+    [PREDICT_ERROR_CODES.DEPOSIT_FAILED]: strings(
+      'predict.error_messages.deposit_failed',
+    ),
+    [PREDICT_ERROR_CODES.WITHDRAW_FAILED]: strings(
+      'predict.error_messages.withdraw_failed',
+    ),
+  }) as const;

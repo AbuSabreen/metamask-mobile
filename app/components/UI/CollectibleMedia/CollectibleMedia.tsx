@@ -4,7 +4,6 @@ import { View } from 'react-native';
 import RemoteImage from '../../Base/RemoteImage';
 import MediaPlayer from '../../Views/MediaPlayer';
 import Text from '../../Base/Text';
-import { useTheme } from '../../../util/theme';
 import { isIPFSUri } from '../../../util/general';
 import { useSelector } from 'react-redux';
 import {
@@ -21,7 +20,11 @@ import {
 import Button from '../../../component-library/components/Buttons/Button/Button';
 import { strings } from '../../../../locales/i18n';
 import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
 import Routes from '../../../constants/navigation/Routes';
+import { useStyles } from '../../../component-library/hooks';
+import { getNftImage } from '../../../util/get-nft-image';
+import RemoteImageBadgeWrapper from '../../Base/RemoteImage/RemoteImageBadgeWrapper';
 
 const CollectibleMedia: React.FC<CollectibleMediaProps> = ({
   collectible,
@@ -33,23 +36,30 @@ const CollectibleMedia: React.FC<CollectibleMediaProps> = ({
   cover,
   onClose,
   onPressColectible,
+  isTokenImage,
+  isFullRatio,
+  onLoad,
 }) => {
   const [sourceUri, setSourceUri] = useState<string | null>(null);
-  const { colors } = useTheme();
   const isIpfsGatewayEnabled = useSelector(selectIsIpfsGatewayEnabled);
   const displayNftMedia = useSelector(selectDisplayNftMedia);
-  const { navigate } = useNavigation();
+  const { navigate } = useNavigation<AppNavigationProp>();
 
-  const styles = createStyles(colors);
+  const { styles } = useStyles(createStyles, {
+    backgroundColor: collectible.backgroundColor,
+  });
 
-  const fallback = useCallback(() => setSourceUri(null), []);
+  const fallback = useCallback(() => {
+    setSourceUri(null);
+    onLoad?.();
+  }, [onLoad]);
 
   useEffect(() => {
     const { image, imageOriginal, imagePreview, address } = collectible;
     if (address) {
       if (small && imagePreview && imagePreview !== '')
         setSourceUri(imagePreview);
-      else setSourceUri((image || imageOriginal) ?? null);
+      else setSourceUri((getNftImage(image) || imageOriginal) ?? null);
     }
   }, [collectible, small, big, setSourceUri]);
 
@@ -99,7 +109,7 @@ const CollectibleMedia: React.FC<CollectibleMediaProps> = ({
           <View style={styles.imageFallBackTextContainer}>
             <Text style={styles.imageFallBackText}>
               {collectible.tokenId
-                ? ` #${formatTokenId(collectible.tokenId)}`
+                ? ` #${formatTokenId(parseInt(collectible.tokenId, 10))}`
                 : ''}
             </Text>
           </View>
@@ -122,27 +132,36 @@ const CollectibleMedia: React.FC<CollectibleMediaProps> = ({
           )}
         </View>
       ) : (
-        <View
-          style={[
-            styles.textContainer,
-            style,
-            tiny && styles.tinyImage,
-            small && styles.smallImage,
-            big && styles.bigImage,
-            cover && styles.cover,
-          ]}
-          testID="fallback-nft-with-token-id"
+        <RemoteImageBadgeWrapper
+          chainId={collectible.chainId}
+          isFullRatio={isFullRatio}
         >
-          <Text
-            big={big}
-            small={tiny ?? small}
-            style={tiny ? styles.textWrapperIcon : styles.textWrapper}
+          <View
+            style={[
+              styles.textContainer,
+              styles.noFlex,
+              style,
+              tiny && styles.tinyImage,
+              small && styles.smallImage,
+              big && styles.bigImage,
+              cover && styles.cover,
+            ]}
+            testID="fallback-nft-with-token-id"
           >
-            {collectible.tokenId
-              ? ` #${formatTokenId(collectible.tokenId)}`
-              : ''}
-          </Text>
-        </View>
+            <Text
+              big={big}
+              small={tiny ?? small}
+              style={{
+                ...styles.textWrapper,
+                ...(tiny ? styles.textWrapperIcon : {}),
+              }}
+            >
+              {collectible.tokenId
+                ? ` #${formatTokenId(parseInt(collectible.tokenId, 10))}`
+                : ''}
+            </Text>
+          </View>
+        </RemoteImageBadgeWrapper>
       ),
     [
       styles,
@@ -152,6 +171,7 @@ const CollectibleMedia: React.FC<CollectibleMediaProps> = ({
       small,
       tiny,
       collectible,
+      isFullRatio,
       onPressColectible,
       pressNft,
     ],
@@ -162,11 +182,7 @@ const CollectibleMedia: React.FC<CollectibleMediaProps> = ({
       displayNftMedia ||
       (!displayNftMedia && isIpfsGatewayEnabled && isIPFSUri(sourceUri))
     ) {
-      if (
-        renderAnimation &&
-        collectible.animation &&
-        collectible.animation.includes('.mp4')
-      ) {
+      if (renderAnimation && collectible?.animation?.includes('.mp4')) {
         return (
           <MediaPlayer
             onClose={onClose}
@@ -182,7 +198,7 @@ const CollectibleMedia: React.FC<CollectibleMediaProps> = ({
         return (
           <RemoteImage
             fadeIn
-            resizeMode={'contain'}
+            contentFit={'contain'}
             source={{ uri: sourceUri }}
             style={[
               styles.image,
@@ -192,43 +208,49 @@ const CollectibleMedia: React.FC<CollectibleMediaProps> = ({
               cover && styles.cover,
               style,
             ]}
+            chainId={collectible.chainId}
             onError={fallback}
+            onLoad={onLoad}
             testID="nft-image"
+            isTokenImage={isTokenImage}
+            isFullRatio={isFullRatio}
           />
         );
       }
     }
 
-    if (
-      !displayNftMedia ||
-      (!isIpfsGatewayEnabled && !collectible.error?.startsWith('Both'))
-    ) {
+    if (!displayNftMedia || !isIpfsGatewayEnabled) {
       return renderFallback(true);
     }
 
     return renderFallback(false);
   }, [
-    collectible,
+    displayNftMedia,
+    isIpfsGatewayEnabled,
     sourceUri,
-    onClose,
+    collectible.animation,
+    renderFallback,
     renderAnimation,
+    onClose,
+    styles.mediaPlayer,
+    styles.cover,
+    styles.image,
+    styles.tinyImage,
+    styles.smallImage,
+    styles.bigImage,
+    cover,
     style,
     tiny,
     small,
     big,
-    cover,
-    styles,
-    isIpfsGatewayEnabled,
-    renderFallback,
     fallback,
-    displayNftMedia,
+    isTokenImage,
+    isFullRatio,
+    collectible.chainId,
+    onLoad,
   ]);
 
-  return (
-    <View style={styles.container(collectible.backgroundColor)}>
-      {renderMedia()}
-    </View>
-  );
+  return <View style={styles.container}>{renderMedia()}</View>;
 };
 
 export default CollectibleMedia;

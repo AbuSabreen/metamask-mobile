@@ -18,12 +18,19 @@ import {
   DEFAULT_BANNERBASE_TITLE_TEXTVARIANT,
   DEFAULT_BANNERBASE_DESCRIPTION_TEXTVARIANT,
   DEFAULT_BANNERBASE_ACTIONBUTTON_SIZE,
-  DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICONVARIANT,
-  DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICONSIZE,
-  DEFAULT_BANNERBASE_CLOSEBUTTON_ICONNAME,
+  DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICON_ICONCOLOR,
+  DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICON_SIZE,
+  DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICON_ICONNAME,
   TESTID_BANNER_CLOSE_BUTTON_ICON,
 } from './BannerBase.constants';
 
+/**
+ * @deprecated Please update your code to use `BannerBase` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/BannerBase/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#bannerbase-component Migration docs}
+ * @since @metamask/design-system-react-native@0.11.0
+ */
 const BannerBase: React.FC<BannerBaseProps> = ({
   style,
   startAccessory,
@@ -69,10 +76,10 @@ const BannerBase: React.FC<BannerBaseProps> = ({
         <View style={styles.endAccessory}>
           <ButtonIcon
             testID={TESTID_BANNER_CLOSE_BUTTON_ICON}
-            variant={DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICONVARIANT}
-            size={DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICONSIZE}
+            iconColor={DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICON_ICONCOLOR}
+            size={DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICON_SIZE}
             onPress={onClose || closeButtonProps?.onPress || noop}
-            iconName={DEFAULT_BANNERBASE_CLOSEBUTTON_ICONNAME}
+            iconName={DEFAULT_BANNERBASE_CLOSEBUTTON_BUTTONICON_ICONNAME}
             {...closeButtonProps}
           />
         </View>

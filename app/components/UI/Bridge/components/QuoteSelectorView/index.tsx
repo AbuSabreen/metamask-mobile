@@ -1,0 +1,151 @@
+import ScreenView from '../../../../Base/ScreenView';
+import {
+  Box,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import React, { useCallback, useEffect, useMemo } from 'react';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { strings } from '../../../../../../locales/i18n';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { useStyles } from '../../../../../component-library/hooks';
+import { createStyles } from './QuoteSelectorView.styles';
+import { useDispatch, useSelector } from 'react-redux';
+import {
+  selectDestToken,
+  selectSelectedQuoteRequestId,
+  setSelectedQuoteRequestId,
+} from '../../../../../core/redux/slices/bridge';
+import { useBridgeQuoteDataContext } from '../../hooks/useBridgeQuoteData/BridgeQuoteDataContext';
+import { BigNumber } from 'bignumber.js';
+import { QuoteList } from './QuoteList';
+import { QuoteRowProps } from './QuoteRow';
+import { isGaslessQuote } from '../../utils/isGaslessQuote';
+import { selectCurrentCurrency } from '../../../../../selectors/currencyRateController';
+import formatFiat from '../../../../../util/formatFiat';
+import { startCase } from 'lodash';
+import { QUOTES_PLACEHOLDER_DATA } from './constants';
+import { useTrackAllQuotesSortedEvent } from '../../hooks/useTrackAllQuotesSortedEvent';
+import { fromTokenMinimalUnitString } from '../../../../../util/number/bigint';
+import { sumAmounts } from '@metamask/bridge-controller';
+import { useBridgeSession } from '../../hooks/useBridgeSession';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+export const QuoteSelectorView = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const { styles } = useStyles(createStyles, {});
+  const navigation = useNavigation<AppNavigationProp>();
+  const dispatch = useDispatch();
+  const selectedQuoteRequestId = useSelector(selectSelectedQuoteRequestId);
+  const currency = useSelector(selectCurrentCurrency);
+  const { validQuotes, bestQuote, isLoading, blockaidError, quoteFetchError } =
+    useBridgeQuoteDataContext();
+  const { latestSourceBalance } = useBridgeSession();
+  const destToken = useSelector(selectDestToken);
+
+  const trackAllQuotesSortedEvent =
+    useTrackAllQuotesSortedEvent(latestSourceBalance);
+
+  const onQuoteSelect = useCallback(
+    (requestId: string) => {
+      const quote = validQuotes.find(
+        ({ quote: _quote }) => _quote.requestId === requestId,
+      );
+
+      if (!quote) {
+        return;
+      }
+
+      trackAllQuotesSortedEvent(quote.quote);
+      dispatch(setSelectedQuoteRequestId(requestId));
+      navigation.goBack();
+    },
+    [dispatch, navigation, trackAllQuotesSortedEvent, validQuotes],
+  );
+
+  const data = useMemo(() => {
+    if (validQuotes.length === 0) {
+      return QUOTES_PLACEHOLDER_DATA;
+    }
+
+    return validQuotes.map(
+      (quote) =>
+        ({
+          formattedTotalCost: formatFiat(
+            quote.quote.priceData?.cost?.valueInCurrency
+              ? new BigNumber(quote.quote.priceData.cost.valueInCurrency)
+              : new BigNumber(quote.quote.src.valueInCurrency ?? '0').plus(
+                  isGaslessQuote(quote.quote)
+                    ? (sumAmounts(quote.quote.feeData?.txFee)
+                        ?.valueInCurrency ?? '0')
+                    : (sumAmounts(
+                        quote.quote.feeData?.network,
+                        quote.quote.feeData?.relayer,
+                      )?.valueInCurrency ?? '0'),
+                ),
+            currency,
+          ),
+          receiveAmount:
+            destToken && quote.quote.dest.amount
+              ? fromTokenMinimalUnitString(
+                  quote.quote.dest.amount,
+                  destToken.decimals,
+                )
+              : undefined,
+          provider: {
+            name: startCase(quote.quote.protocols[0] ?? quote.quote.aggregator),
+          },
+          quoteRequestId: quote.quote.requestId,
+          onPress: onQuoteSelect,
+          loading: isLoading,
+          isLowestCost: quote.quote.requestId === bestQuote?.quote.requestId,
+          selected:
+            !isLoading &&
+            (!selectedQuoteRequestId
+              ? quote.quote.requestId === bestQuote?.quote.requestId
+              : quote.quote.requestId === selectedQuoteRequestId),
+        }) satisfies QuoteRowProps,
+    );
+  }, [
+    validQuotes,
+    onQuoteSelect,
+    bestQuote,
+    isLoading,
+    currency,
+    selectedQuoteRequestId,
+    destToken,
+  ]);
+
+  // Go back to bridge view only if there's an error or quotes are expired
+  useEffect(() => {
+    if (quoteFetchError || blockaidError) {
+      navigation.goBack();
+    }
+  }, [quoteFetchError, blockaidError, navigation]);
+
+  return (
+    <SafeAreaView
+      style={styles.screenWrapper}
+      edges={['bottom', 'left', 'right']}
+    >
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        title={strings('bridge.select_quote')}
+        onBack={() => navigation.goBack()}
+        includesTopInset
+      />
+      <ScreenView safeAreaEdges={[]}>
+        <Box padding={4} paddingTop={0}>
+          <Text variant={TextVariant.BodySm} color={TextColor.TextAlternative}>
+            {strings('bridge.select_quote_info')}
+          </Text>
+        </Box>
+        <QuoteList data={data} />
+      </ScreenView>
+    </SafeAreaView>
+  );
+};

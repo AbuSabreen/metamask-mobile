@@ -1,0 +1,1127 @@
+import {
+  CHAIN_IDS,
+  TransactionMeta,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import {
+  applyMoneyAccountOverride,
+  formatAmountForDisplay,
+  getAvailableTokens,
+  getBlockedTokensForTransactionType,
+  payBalanceUsd,
+  getRequiredBalance,
+  getTokenAddress,
+  getTokenTransferData,
+  isMatchingPayToken,
+  isTokenBlocked,
+  replaceAccountInNestedTransactions,
+  resolvePreferredPayToken,
+} from './transaction-pay';
+import { updateAtomicBatchData } from '../../../../util/transaction-controller';
+import Logger from '../../../../util/Logger';
+import { MUSD_TOKEN_ADDRESS } from '../../../UI/Earn/constants/musd';
+import { PERPS_MINIMUM_DEPOSIT } from '../constants/perps';
+import { PREDICT_MINIMUM_DEPOSIT } from '../constants/predict';
+import { NATIVE_TOKEN_ADDRESS } from '../constants/tokens';
+import { EthAccountType, SolAccountType } from '@metamask/keyring-api';
+import { AssetType, TokenStandard } from '../types/token';
+import {
+  TransactionPayRequiredToken,
+  TransactionPaymentToken,
+  PaymentOverride,
+} from '@metamask/transaction-pay-controller';
+import { Hex } from '@metamask/utils';
+import type {
+  BlockedTokensListConfig,
+  BlockedTokensConfig,
+} from '../../../../selectors/featureFlagController/confirmations';
+import { strings } from '../../../../../locales/i18n';
+import Engine from '../../../../core/Engine';
+
+jest.mock('../../../../util/transaction-controller', () => ({
+  updateAtomicBatchData: jest.fn(),
+}));
+
+jest.mock('../../../../util/Logger', () => ({
+  __esModule: true,
+  default: { error: jest.fn() },
+}));
+
+jest.mock('../../../../core/Engine', () => ({
+  __esModule: true,
+  default: {
+    context: {
+      TransactionPayController: {
+        setTransactionConfig: jest.fn(),
+        updateFiatPayment: jest.fn(),
+      },
+    },
+  },
+}));
+
+const CHAIN_ID_MOCK = '0x1';
+const TO_MOCK = '0x0987654321098765432109876543210987654321';
+
+const TOKEN_TRANSFER_DATA_MOCK =
+  '0xa9059cbb0000000000000000000000007e5f4552091a69125d5dfcb7b8c2659029395bdf000000000000000000000000000000000000000000000000000000000000012c;';
+
+const TOKEN_MOCK = {
+  accountType: EthAccountType.Eoa,
+  address: NATIVE_TOKEN_ADDRESS,
+  balance: '1.23',
+  balanceInSelectedCurrency: '$1.23',
+  chainId: CHAIN_ID_MOCK,
+  decimals: 18,
+  name: 'Native Token 1',
+  standard: TokenStandard.ERC20,
+  symbol: 'NTV1',
+} as AssetType;
+
+const ERC20_TOKEN_MOCK = {
+  ...TOKEN_MOCK,
+  address: '0x1234567890abcdef1234567890abcdef12345678',
+  name: 'Test Token',
+  symbol: 'TST',
+  balance: '2.34',
+} as AssetType;
+
+describe('Transaction Pay Utils', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('getRequiredBalance', () => {
+    it('returns value if transaction type is perps deposit', () => {
+      const transactionMeta = {
+        type: TransactionType.perpsDeposit,
+      } as TransactionMeta;
+
+      expect(getRequiredBalance(transactionMeta)).toBe(PERPS_MINIMUM_DEPOSIT);
+    });
+
+    it('returns value if transaction type is predict deposit', () => {
+      const transactionMeta = {
+        nestedTransactions: [{ type: TransactionType.predictDeposit }],
+      } as TransactionMeta;
+
+      expect(getRequiredBalance(transactionMeta)).toBe(PREDICT_MINIMUM_DEPOSIT);
+    });
+
+    it('returns undefined if unsupported transaction type', () => {
+      const transactionMeta = {
+        type: TransactionType.simpleSend,
+      } as TransactionMeta;
+
+      expect(getRequiredBalance(transactionMeta)).toBeUndefined();
+    });
+  });
+
+  describe('getTokenTransferData', () => {
+    it('returns undefined if no token transfer data', () => {
+      const transactionMeta = {
+        txParams: {
+          data: '0x1234',
+          to: TO_MOCK,
+        },
+      } as TransactionMeta;
+
+      expect(getTokenTransferData(transactionMeta)).toBeUndefined();
+    });
+
+    it('returns data from single transaction token transfer', () => {
+      const transactionMeta = {
+        txParams: {
+          data: TOKEN_TRANSFER_DATA_MOCK,
+          to: TO_MOCK,
+        },
+      } as TransactionMeta;
+
+      expect(getTokenTransferData(transactionMeta)).toStrictEqual({
+        data: TOKEN_TRANSFER_DATA_MOCK,
+        to: TO_MOCK,
+        index: undefined,
+      });
+    });
+
+    it('returns data from nested transaction token transfer', () => {
+      const transactionMeta = {
+        txParams: {
+          data: '0x1234',
+          to: '0x5678',
+        },
+        nestedTransactions: [
+          {
+            data: '0x123456',
+            to: '0x567890',
+          },
+          {
+            data: TOKEN_TRANSFER_DATA_MOCK,
+            to: TO_MOCK,
+          },
+        ],
+      } as unknown as TransactionMeta;
+
+      expect(getTokenTransferData(transactionMeta)).toStrictEqual({
+        data: TOKEN_TRANSFER_DATA_MOCK,
+        to: TO_MOCK,
+        index: 1,
+      });
+    });
+  });
+
+  describe('getTokenAddress', () => {
+    it('returns token address from nested token transfer', () => {
+      const transactionMeta = {
+        txParams: {
+          data: '0x1234',
+          to: '0x5678',
+        },
+        nestedTransactions: [
+          {
+            data: '0x123456',
+            to: '0x567890',
+          },
+          {
+            data: TOKEN_TRANSFER_DATA_MOCK,
+            to: TO_MOCK,
+          },
+        ],
+      } as unknown as TransactionMeta;
+
+      expect(getTokenAddress(transactionMeta)).toBe(TO_MOCK);
+    });
+
+    it('returns to param if no nested transfer', () => {
+      const transactionMeta = {
+        txParams: {
+          data: TOKEN_TRANSFER_DATA_MOCK,
+          to: TO_MOCK,
+        },
+      } as TransactionMeta;
+
+      expect(getTokenAddress(transactionMeta)).toBe(TO_MOCK);
+    });
+
+    it('returns first requiredAsset address if no nested transfer and requiredAssets present', () => {
+      const requiredAssetAddress =
+        '0xrequiredAssetAddress00000000000000000000' as Hex;
+      const transactionMeta = {
+        txParams: {
+          data: '0x1234',
+          to: TO_MOCK,
+        },
+        requiredAssets: [
+          {
+            address: requiredAssetAddress,
+            amount: '0x1' as Hex,
+            standard: 'erc20',
+          },
+        ],
+      } as TransactionMeta;
+
+      expect(getTokenAddress(transactionMeta)).toBe(requiredAssetAddress);
+    });
+
+    it('falls back to txParams.to when requiredAssets is empty', () => {
+      const transactionMeta = {
+        txParams: {
+          data: '0x1234',
+          to: TO_MOCK,
+        },
+        requiredAssets: [],
+      } as unknown as TransactionMeta;
+
+      expect(getTokenAddress(transactionMeta)).toBe(TO_MOCK);
+    });
+  });
+
+  describe('getAvailableTokens', () => {
+    it('returns tokens if balance', () => {
+      const result = getAvailableTokens({
+        tokens: [TOKEN_MOCK] as AssetType[],
+      });
+
+      expect(result).toMatchObject([TOKEN_MOCK]);
+    });
+
+    it('returns token with zero balance if required token', async () => {
+      const tokenWithZeroBalance = {
+        ...TOKEN_MOCK,
+        balance: '0',
+        balanceInSelectedCurrency: '$0.00',
+      } as AssetType;
+
+      const result = getAvailableTokens({
+        tokens: [tokenWithZeroBalance] as AssetType[],
+        requiredTokens: [
+          {
+            address: TOKEN_MOCK.address as Hex,
+            chainId: TOKEN_MOCK.chainId as Hex,
+          } as TransactionPayRequiredToken,
+        ],
+      });
+
+      expect(result).toMatchObject([tokenWithZeroBalance]);
+    });
+
+    it('returns token with zero balance if payment token', async () => {
+      const tokenWithZeroBalance = {
+        ...TOKEN_MOCK,
+        balance: '0',
+        balanceInSelectedCurrency: '$0.00',
+      } as AssetType;
+
+      const result = getAvailableTokens({
+        tokens: [tokenWithZeroBalance] as AssetType[],
+        payToken: {
+          address: TOKEN_MOCK.address as Hex,
+          chainId: TOKEN_MOCK.chainId as Hex,
+        } as TransactionPaymentToken,
+      });
+
+      expect(result).toMatchObject([tokenWithZeroBalance]);
+    });
+
+    it('does not return token if no balance', async () => {
+      const tokenWithZeroBalance = {
+        ...TOKEN_MOCK,
+        balance: '0',
+        balanceInSelectedCurrency: '$0.00',
+      } as AssetType;
+
+      const result = getAvailableTokens({
+        tokens: [tokenWithZeroBalance] as AssetType[],
+      });
+
+      expect(result).toStrictEqual([]);
+    });
+
+    it('does not return token if not ERC-20', async () => {
+      const tokenWithWrongStandard = {
+        ...TOKEN_MOCK,
+        standard: TokenStandard.ERC721,
+      } as AssetType;
+
+      const result = getAvailableTokens({
+        tokens: [tokenWithWrongStandard] as AssetType[],
+      });
+
+      expect(result).toStrictEqual([]);
+    });
+
+    it('does not return token if account type is not EVM', async () => {
+      const tokenWithWrongAccountType = {
+        ...TOKEN_MOCK,
+        accountType: SolAccountType.DataAccount,
+      } as AssetType;
+
+      const result = getAvailableTokens({
+        tokens: [tokenWithWrongAccountType] as AssetType[],
+      });
+
+      expect(result).toStrictEqual([]);
+    });
+
+    it('does not return token if on testnet', async () => {
+      const tokenOnTestNet = {
+        ...TOKEN_MOCK,
+        chainId: CHAIN_IDS.SEPOLIA,
+      } as AssetType;
+
+      const result = getAvailableTokens({
+        tokens: [tokenOnTestNet] as AssetType[],
+      });
+
+      expect(result).toStrictEqual([]);
+    });
+
+    it('does not throw and excludes token with undefined address', () => {
+      const tokenWithoutAddress = {
+        ...TOKEN_MOCK,
+        address: undefined,
+      } as unknown as AssetType;
+
+      expect(() =>
+        getAvailableTokens({
+          tokens: [tokenWithoutAddress],
+        }),
+      ).not.toThrow();
+
+      const result = getAvailableTokens({
+        tokens: [tokenWithoutAddress],
+      });
+
+      expect(result).toStrictEqual([]);
+    });
+
+    it('does not throw when payToken is undefined and a candidate token has undefined address', () => {
+      const tokenWithoutAddress = {
+        ...TOKEN_MOCK,
+        address: undefined,
+        balance: '0',
+      } as unknown as AssetType;
+
+      expect(() =>
+        getAvailableTokens({
+          payToken: undefined,
+          tokens: [tokenWithoutAddress, ERC20_TOKEN_MOCK],
+        }),
+      ).not.toThrow();
+    });
+
+    describe('disabled', () => {
+      it('keeps token enabled when native balance is zero', () => {
+        const result = getAvailableTokens({
+          tokens: [
+            ERC20_TOKEN_MOCK,
+            { ...TOKEN_MOCK, balance: '0' } as AssetType,
+          ],
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].disabled).toBe(false);
+        expect(result[0].disabledMessage).toBeUndefined();
+      });
+
+      it('marks token as enabled when native balance exists', () => {
+        const result = getAvailableTokens({
+          tokens: [ERC20_TOKEN_MOCK, TOKEN_MOCK],
+        });
+
+        expect(result).toHaveLength(2);
+        expect(result[0].disabled).toBe(false);
+        expect(result[0].disabledMessage).toBeUndefined();
+      });
+
+      it('keeps token enabled when native token is not found in tokens list', () => {
+        const result = getAvailableTokens({
+          tokens: [ERC20_TOKEN_MOCK],
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].disabled).toBe(false);
+        expect(result[0].disabledMessage).toBeUndefined();
+      });
+    });
+
+    describe('fiatPayment', () => {
+      it('clears isSelected on all tokens when fiat payment is active', () => {
+        const result = getAvailableTokens({
+          tokens: [TOKEN_MOCK],
+          payToken: {
+            address: TOKEN_MOCK.address as Hex,
+            chainId: TOKEN_MOCK.chainId as Hex,
+          } as TransactionPaymentToken,
+          fiatPayment: { selectedPaymentMethodId: 'pm-card' },
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].isSelected).toBe(false);
+      });
+
+      it('preserves isSelected when fiat payment has no selected method', () => {
+        const result = getAvailableTokens({
+          tokens: [TOKEN_MOCK],
+          payToken: {
+            address: TOKEN_MOCK.address as Hex,
+            chainId: TOKEN_MOCK.chainId as Hex,
+          } as TransactionPaymentToken,
+          fiatPayment: {},
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].isSelected).toBe(true);
+      });
+    });
+
+    describe('blockedTokens', () => {
+      it('marks token as disabled when its chain is in blocklist chainIds', () => {
+        const blockedTokens: BlockedTokensListConfig = {
+          chainIds: [CHAIN_ID_MOCK],
+          tokens: [],
+        };
+
+        const result = getAvailableTokens({
+          tokens: [TOKEN_MOCK, ERC20_TOKEN_MOCK],
+          blockedTokens,
+        });
+
+        expect(result).toHaveLength(2);
+        expect(result[0].disabled).toBe(true);
+        expect(result[0].disabledMessage).toBe(
+          strings('pay_with_modal.not_supported'),
+        );
+        expect(result[1].disabled).toBe(true);
+        expect(result[1].disabledMessage).toBe(
+          strings('pay_with_modal.not_supported'),
+        );
+      });
+
+      it('marks specific token as disabled when address+chainId matches blocklist', () => {
+        const blockedTokens: BlockedTokensListConfig = {
+          chainIds: [],
+          tokens: [
+            {
+              address: ERC20_TOKEN_MOCK.address,
+              chainId: ERC20_TOKEN_MOCK.chainId as string,
+            },
+          ],
+        };
+
+        const result = getAvailableTokens({
+          tokens: [TOKEN_MOCK, ERC20_TOKEN_MOCK],
+          blockedTokens,
+        });
+
+        expect(result).toHaveLength(2);
+        expect(result[0].disabled).toBe(false);
+        expect(result[1].disabled).toBe(true);
+        expect(result[1].disabledMessage).toBe(
+          strings('pay_with_modal.not_supported'),
+        );
+      });
+
+      it('sorts blocked tokens to the bottom of the list', () => {
+        const blockedTokens: BlockedTokensListConfig = {
+          chainIds: [],
+          tokens: [
+            {
+              address: TOKEN_MOCK.address,
+              chainId: TOKEN_MOCK.chainId as string,
+            },
+          ],
+        };
+
+        const result = getAvailableTokens({
+          tokens: [TOKEN_MOCK, ERC20_TOKEN_MOCK],
+          blockedTokens,
+        });
+
+        expect(result).toHaveLength(2);
+        expect(result[0].address).toBe(ERC20_TOKEN_MOCK.address);
+        expect(result[0].disabled).toBe(false);
+        expect(result[1].address).toBe(TOKEN_MOCK.address);
+        expect(result[1].disabled).toBe(true);
+      });
+
+      it('does not disable non-blocked tokens', () => {
+        const blockedTokens: BlockedTokensListConfig = {
+          chainIds: ['0x999'],
+          tokens: [{ address: '0xunrelated', chainId: '0x999' }],
+        };
+
+        const result = getAvailableTokens({
+          tokens: [TOKEN_MOCK, ERC20_TOKEN_MOCK],
+          blockedTokens,
+        });
+
+        expect(result).toHaveLength(2);
+        expect(result[0].disabled).toBe(false);
+        expect(result[1].disabled).toBe(false);
+      });
+
+      it('keeps token enabled when token is not blocked and native balance is zero', () => {
+        const blockedTokens: BlockedTokensListConfig = {
+          chainIds: [],
+          tokens: [],
+        };
+
+        const result = getAvailableTokens({
+          tokens: [
+            ERC20_TOKEN_MOCK,
+            { ...TOKEN_MOCK, balance: '0' } as AssetType,
+          ],
+          blockedTokens,
+        });
+
+        expect(result).toHaveLength(1);
+        expect(result[0].disabled).toBe(false);
+        expect(result[0].disabledMessage).toBeUndefined();
+      });
+    });
+  });
+
+  describe('getBlockedTokensForTransactionType', () => {
+    const defaultBlocked: BlockedTokensListConfig = {
+      chainIds: ['0x1'],
+      tokens: [],
+    };
+
+    const perpsBlocked: BlockedTokensListConfig = {
+      chainIds: ['0xa4b1'],
+      tokens: [{ address: '0xabc', chainId: '0x1' }],
+    };
+
+    const config: BlockedTokensConfig = {
+      default: defaultBlocked,
+      overrides: {
+        perpsDeposit: perpsBlocked,
+      },
+    };
+
+    it('returns override when transaction type has an override', () => {
+      expect(
+        getBlockedTokensForTransactionType(config, 'perpsDeposit'),
+      ).toEqual(perpsBlocked);
+    });
+
+    it('returns default when transaction type has no override', () => {
+      expect(
+        getBlockedTokensForTransactionType(config, 'predictDeposit'),
+      ).toEqual(defaultBlocked);
+    });
+
+    it('returns default when transaction type is undefined', () => {
+      expect(getBlockedTokensForTransactionType(config, undefined)).toEqual(
+        defaultBlocked,
+      );
+    });
+
+    it('returns safe defaults when override has missing chainIds or tokens', () => {
+      const partialConfig = {
+        default: defaultBlocked,
+        overrides: {
+          perpsDeposit: {} as BlockedTokensListConfig,
+        },
+      };
+
+      const result = getBlockedTokensForTransactionType(
+        partialConfig,
+        'perpsDeposit',
+      );
+      expect(result).toEqual({ chainIds: [], tokens: [] });
+    });
+  });
+
+  describe('isTokenBlocked', () => {
+    const blockedConfig: BlockedTokensListConfig = {
+      chainIds: ['0xa4b1'],
+      tokens: [{ address: '0xabc', chainId: '0x1' }],
+    };
+
+    it('returns true when token chain is in blocked chainIds', () => {
+      expect(
+        isTokenBlocked({ address: '0xany', chainId: '0xa4b1' }, blockedConfig),
+      ).toBe(true);
+    });
+
+    it('returns true when token address+chainId matches a blocked token', () => {
+      expect(
+        isTokenBlocked({ address: '0xABC', chainId: '0x1' }, blockedConfig),
+      ).toBe(true);
+    });
+
+    it('returns false when token does not match any blocked entry', () => {
+      expect(
+        isTokenBlocked({ address: '0xdef', chainId: '0x89' }, blockedConfig),
+      ).toBe(false);
+    });
+
+    it('returns false with empty blocked config', () => {
+      expect(
+        isTokenBlocked(
+          { address: '0xabc', chainId: '0x1' },
+          { chainIds: [], tokens: [] },
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe('replaceAccountInNestedTransactions', () => {
+    const TRANSACTION_ID = 'tx-1';
+    const OLD_ADDRESS = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const NEW_ADDRESS = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const OLD_WORD =
+      '000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const NEW_WORD =
+      '000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const SELECTOR = '0x23b872dd';
+
+    const updateAtomicBatchDataMock = jest.mocked(updateAtomicBatchData);
+    const loggerErrorMock = jest.mocked(Logger.error);
+
+    beforeEach(() => {
+      updateAtomicBatchDataMock.mockResolvedValue('0x' as Hex);
+    });
+
+    it('replaces the old address word in nested transaction data', () => {
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: [{ data: `${SELECTOR}${OLD_WORD}` as Hex }],
+        oldAddress: OLD_ADDRESS,
+        newAddress: NEW_ADDRESS,
+      });
+
+      expect(updateAtomicBatchDataMock).toHaveBeenCalledTimes(1);
+      expect(updateAtomicBatchDataMock).toHaveBeenCalledWith({
+        transactionId: TRANSACTION_ID,
+        transactionIndex: 0,
+        transactionData: `${SELECTOR}${NEW_WORD}`,
+      });
+    });
+
+    it('replaces every occurrence within the same nested transaction data', () => {
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: [
+          { data: `${SELECTOR}${OLD_WORD}${OLD_WORD}` as Hex },
+        ],
+        oldAddress: OLD_ADDRESS,
+        newAddress: NEW_ADDRESS,
+      });
+
+      expect(updateAtomicBatchDataMock).toHaveBeenCalledWith({
+        transactionId: TRANSACTION_ID,
+        transactionIndex: 0,
+        transactionData: `${SELECTOR}${NEW_WORD}${NEW_WORD}`,
+      });
+    });
+
+    it('matches address case-insensitively and writes lowercase output', () => {
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: [
+          { data: `${SELECTOR}${OLD_WORD.toUpperCase()}` as Hex },
+        ],
+        oldAddress: OLD_ADDRESS.toUpperCase(),
+        newAddress: NEW_ADDRESS,
+      });
+
+      expect(updateAtomicBatchDataMock).toHaveBeenCalledWith({
+        transactionId: TRANSACTION_ID,
+        transactionIndex: 0,
+        transactionData: `${SELECTOR}${NEW_WORD}`,
+      });
+    });
+
+    it('preserves the original index when only some nested transactions match', () => {
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: [
+          { data: '0xdeadbeef' as Hex },
+          { data: `${SELECTOR}${OLD_WORD}` as Hex },
+          { data: undefined },
+        ],
+        oldAddress: OLD_ADDRESS,
+        newAddress: NEW_ADDRESS,
+      });
+
+      expect(updateAtomicBatchDataMock).toHaveBeenCalledTimes(1);
+      expect(updateAtomicBatchDataMock).toHaveBeenCalledWith({
+        transactionId: TRANSACTION_ID,
+        transactionIndex: 1,
+        transactionData: `${SELECTOR}${NEW_WORD}`,
+      });
+    });
+
+    it('does nothing when oldAddress is undefined', () => {
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: [{ data: `${SELECTOR}${OLD_WORD}` as Hex }],
+        oldAddress: undefined,
+        newAddress: NEW_ADDRESS,
+      });
+
+      expect(updateAtomicBatchDataMock).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when nestedTransactions is undefined or empty', () => {
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: undefined,
+        oldAddress: OLD_ADDRESS,
+        newAddress: NEW_ADDRESS,
+      });
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: [],
+        oldAddress: OLD_ADDRESS,
+        newAddress: NEW_ADDRESS,
+      });
+
+      expect(updateAtomicBatchDataMock).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when old and new addresses are the same', () => {
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: [{ data: `${SELECTOR}${OLD_WORD}` as Hex }],
+        oldAddress: OLD_ADDRESS,
+        newAddress: OLD_ADDRESS.toUpperCase(),
+      });
+
+      expect(updateAtomicBatchDataMock).not.toHaveBeenCalled();
+    });
+
+    it('skips nested transactions whose data does not contain the old word', () => {
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: [{ data: '0xdeadbeef' as Hex }],
+        oldAddress: OLD_ADDRESS,
+        newAddress: NEW_ADDRESS,
+      });
+
+      expect(updateAtomicBatchDataMock).not.toHaveBeenCalled();
+    });
+
+    it('logs an error when updateAtomicBatchData rejects', async () => {
+      const error = new Error('boom');
+      updateAtomicBatchDataMock.mockRejectedValueOnce(error);
+
+      replaceAccountInNestedTransactions({
+        transactionId: TRANSACTION_ID,
+        nestedTransactions: [{ data: `${SELECTOR}${OLD_WORD}` as Hex }],
+        oldAddress: OLD_ADDRESS,
+        newAddress: NEW_ADDRESS,
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(loggerErrorMock).toHaveBeenCalledWith(
+        error,
+        'Failed to update account in nested transaction',
+      );
+    });
+  });
+
+  describe('isMatchingPayToken', () => {
+    it('returns true when address and chainId match (case-insensitive)', () => {
+      expect(
+        isMatchingPayToken(
+          { address: '0xABC', chainId: '0x1' },
+          { address: '0xabc', chainId: '0x1' },
+        ),
+      ).toBe(true);
+    });
+
+    it('returns false when only address matches', () => {
+      expect(
+        isMatchingPayToken(
+          { address: '0xabc', chainId: '0x1' },
+          { address: '0xabc', chainId: '0x89' },
+        ),
+      ).toBe(false);
+    });
+
+    it('returns false when only chainId matches', () => {
+      expect(
+        isMatchingPayToken(
+          { address: '0xabc', chainId: '0x1' },
+          { address: '0xdef', chainId: '0x1' },
+        ),
+      ).toBe(false);
+    });
+
+    it('returns false when the token is undefined', () => {
+      expect(
+        isMatchingPayToken(undefined, { address: '0xabc', chainId: '0x1' }),
+      ).toBe(false);
+    });
+
+    it('returns false when the target is undefined', () => {
+      expect(
+        isMatchingPayToken({ address: '0xabc', chainId: '0x1' }, undefined),
+      ).toBe(false);
+    });
+
+    it('returns false when both arguments are undefined', () => {
+      expect(isMatchingPayToken(undefined, undefined)).toBe(false);
+    });
+
+    it('returns false when the token has missing address or chainId fields', () => {
+      expect(
+        isMatchingPayToken(
+          { chainId: '0x1' },
+          { address: '0xabc', chainId: '0x1' },
+        ),
+      ).toBe(false);
+      expect(
+        isMatchingPayToken(
+          { address: '0xabc' },
+          { address: '0xabc', chainId: '0x1' },
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe('resolvePreferredPayToken', () => {
+    const OVERRIDE = {
+      address: '0xabc' as Hex,
+      chainId: '0x1' as Hex,
+    };
+
+    const withdrawTransactionMeta = {
+      id: 'tx-1',
+      type: TransactionType.moneyAccountWithdraw,
+    } as unknown as TransactionMeta;
+
+    const otherTransactionMeta = {
+      id: 'tx-2',
+      type: TransactionType.simpleSend,
+    } as unknown as TransactionMeta;
+
+    it('returns the explicit override when provided', () => {
+      const result = resolvePreferredPayToken({
+        override: OVERRIDE,
+        transactionMeta: withdrawTransactionMeta,
+      });
+
+      expect(result).toBe(OVERRIDE);
+    });
+
+    it('returns the mUSD Monad fallback for moneyAccountWithdraw transactions when no override is provided', () => {
+      const result = resolvePreferredPayToken({
+        override: undefined,
+        transactionMeta: withdrawTransactionMeta,
+      });
+
+      expect(result).toStrictEqual({
+        address: MUSD_TOKEN_ADDRESS,
+        chainId: CHAIN_IDS.MONAD,
+      });
+    });
+
+    it('returns undefined for non-withdraw transactions when no override is provided', () => {
+      const result = resolvePreferredPayToken({
+        override: undefined,
+        transactionMeta: otherTransactionMeta,
+      });
+
+      expect(result).toBeUndefined();
+    });
+
+    it('returns undefined when transactionMeta is undefined and no override is provided', () => {
+      const result = resolvePreferredPayToken({
+        override: undefined,
+        transactionMeta: undefined,
+      });
+
+      expect(result).toBeUndefined();
+    });
+
+    it('prefers the override over the moneyAccountWithdraw fallback', () => {
+      const result = resolvePreferredPayToken({
+        override: OVERRIDE,
+        transactionMeta: withdrawTransactionMeta,
+      });
+
+      expect(result).toBe(OVERRIDE);
+      expect(result?.address).not.toBe(MUSD_TOKEN_ADDRESS);
+    });
+  });
+
+  describe('applyMoneyAccountOverride', () => {
+    const TRANSACTION_ID = 'tx-override-1';
+    const MONEY_ADDRESS = '0xabc1111111111111111111111111111111111111';
+
+    const setTransactionConfigMock = jest.mocked(
+      Engine.context.TransactionPayController.setTransactionConfig,
+    );
+    const updateFiatPaymentMock = jest.mocked(
+      Engine.context.TransactionPayController.updateFiatPayment,
+    );
+
+    function buildTransactionMeta(
+      type: TransactionType,
+      overrides: Partial<TransactionMeta> = {},
+    ): TransactionMeta {
+      return {
+        id: TRANSACTION_ID,
+        type,
+        ...overrides,
+      } as TransactionMeta;
+    }
+
+    function runConfigCallback(): Record<string, unknown> {
+      const config: Record<string, unknown> = {};
+      setTransactionConfigMock.mock.calls[0][1](config as never);
+      return config;
+    }
+
+    it('sets paymentOverride and atomic:false for perpsWithdraw', () => {
+      applyMoneyAccountOverride(
+        TRANSACTION_ID,
+        MONEY_ADDRESS,
+        buildTransactionMeta(TransactionType.perpsWithdraw),
+      );
+
+      const config = runConfigCallback();
+
+      expect(config.paymentOverride).toBe(PaymentOverride.MoneyAccount);
+      expect(config.atomic).toBe(false);
+      expect(config.refundTo).toBeUndefined();
+    });
+
+    it('sets paymentOverride and atomic:false for predictWithdraw', () => {
+      applyMoneyAccountOverride(
+        TRANSACTION_ID,
+        MONEY_ADDRESS,
+        buildTransactionMeta(TransactionType.predictWithdraw),
+      );
+
+      const config = runConfigCallback();
+
+      expect(config.paymentOverride).toBe(PaymentOverride.MoneyAccount);
+      expect(config.atomic).toBe(false);
+      expect(config.refundTo).toBeUndefined();
+    });
+
+    it('sets paymentOverride and refundTo but leaves atomic unset for moneyAccountDeposit', () => {
+      applyMoneyAccountOverride(
+        TRANSACTION_ID,
+        MONEY_ADDRESS,
+        buildTransactionMeta(TransactionType.moneyAccountDeposit),
+      );
+
+      const config = runConfigCallback();
+
+      expect(config.paymentOverride).toBe(PaymentOverride.MoneyAccount);
+      expect(config.atomic).toBeUndefined();
+      expect(config.refundTo).toBe(MONEY_ADDRESS);
+    });
+
+    it.each([
+      TransactionType.perpsDeposit,
+      TransactionType.perpsDepositAndOrder,
+      TransactionType.predictDeposit,
+      TransactionType.predictDepositAndOrder,
+    ] as const)(
+      'sets refundTo but leaves atomic unset for %s',
+      (transactionType) => {
+        applyMoneyAccountOverride(
+          TRANSACTION_ID,
+          MONEY_ADDRESS,
+          buildTransactionMeta(transactionType),
+        );
+
+        const config = runConfigCallback();
+
+        expect(config.paymentOverride).toBe(PaymentOverride.MoneyAccount);
+        expect(config.atomic).toBeUndefined();
+        expect(config.refundTo).toBe(MONEY_ADDRESS);
+      },
+    );
+
+    it('sets only paymentOverride for moneyAccountWithdraw (no atomic or refundTo)', () => {
+      applyMoneyAccountOverride(
+        TRANSACTION_ID,
+        MONEY_ADDRESS,
+        buildTransactionMeta(TransactionType.moneyAccountWithdraw),
+      );
+
+      const config = runConfigCallback();
+
+      expect(config.paymentOverride).toBe(PaymentOverride.MoneyAccount);
+      expect(config.atomic).toBeUndefined();
+      expect(config.refundTo).toBeUndefined();
+    });
+
+    it('sets atomic:false when moneyAccountAddress is undefined for perps/predict withdraws', () => {
+      applyMoneyAccountOverride(
+        TRANSACTION_ID,
+        undefined,
+        buildTransactionMeta(TransactionType.perpsWithdraw),
+      );
+
+      const config = runConfigCallback();
+
+      expect(config.paymentOverride).toBe(PaymentOverride.MoneyAccount);
+      expect(config.atomic).toBe(false);
+      expect(config.refundTo).toBeUndefined();
+    });
+
+    it('omits refundTo when moneyAccountAddress is undefined for moneyAccountDeposit', () => {
+      applyMoneyAccountOverride(
+        TRANSACTION_ID,
+        undefined,
+        buildTransactionMeta(TransactionType.moneyAccountDeposit),
+      );
+
+      const config = runConfigCallback();
+
+      expect(config.paymentOverride).toBe(PaymentOverride.MoneyAccount);
+      expect(config.refundTo).toBeUndefined();
+    });
+
+    it('sets paymentOverride and refundTo when transactionMeta is undefined', () => {
+      applyMoneyAccountOverride(TRANSACTION_ID, MONEY_ADDRESS, undefined);
+
+      const config = runConfigCallback();
+
+      expect(config.paymentOverride).toBe(PaymentOverride.MoneyAccount);
+      expect(config.atomic).toBeUndefined();
+      expect(config.refundTo).toBe(MONEY_ADDRESS);
+    });
+
+    it('clears selectedPaymentMethodId via updateFiatPayment', () => {
+      applyMoneyAccountOverride(
+        TRANSACTION_ID,
+        MONEY_ADDRESS,
+        buildTransactionMeta(TransactionType.moneyAccountDeposit),
+      );
+
+      expect(updateFiatPaymentMock).toHaveBeenCalledWith({
+        transactionId: TRANSACTION_ID,
+        callback: expect.any(Function),
+      });
+
+      const fp = { selectedPaymentMethodId: 'some-method' } as Record<
+        string,
+        unknown
+      >;
+      updateFiatPaymentMock.mock.calls[0][0].callback(fp as never);
+
+      expect(fp.selectedPaymentMethodId).toBeUndefined();
+    });
+  });
+
+  describe('formatAmountForDisplay', () => {
+    it('returns whole numbers unchanged', () => {
+      expect(formatAmountForDisplay('500')).toBe('500');
+    });
+
+    it.each(['12.', '12.3', '12.34', '0.05'])(
+      'returns %s unchanged when already within two decimals',
+      (amount) => {
+        expect(formatAmountForDisplay(amount)).toBe(amount);
+      },
+    );
+
+    it('truncates rather than rounds so the result never exceeds the balance', () => {
+      // The displayed value is re-typable through the keypad, so rounding up
+      // would let the user enter an amount above their balance.
+      expect(formatAmountForDisplay('50.389')).toBe('50.38');
+    });
+
+    it('never carries into the whole part', () => {
+      expect(formatAmountForDisplay('1.999')).toBe('1.99');
+    });
+
+    it('truncates a long exact balance to cents', () => {
+      expect(formatAmountForDisplay('2160.6159999')).toBe('2160.61');
+    });
+
+    it('truncates an amount using a comma separator', () => {
+      expect(formatAmountForDisplay('50,389')).toBe('50.38');
+    });
+
+    it('returns the input unchanged when it is not a parseable number', () => {
+      expect(formatAmountForDisplay('1.2.3')).toBe('1.2.3');
+    });
+  });
+
+  describe('payBalanceUsd', () => {
+    it('returns the display-currency amount as a string', () => {
+      expect(payBalanceUsd(15)).toBe('15');
+    });
+
+    it('returns 0 when the amount is missing', () => {
+      expect(payBalanceUsd(undefined)).toBe('0');
+    });
+
+    it('returns 0 when the amount is not finite', () => {
+      expect(payBalanceUsd(Number.NaN)).toBe('0');
+    });
+  });
+});

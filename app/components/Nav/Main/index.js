@@ -17,18 +17,13 @@ import NetInfo from '@react-native-community/netinfo';
 import PropTypes from 'prop-types';
 import { connect, useSelector } from 'react-redux';
 import GlobalAlert from '../../UI/GlobalAlert';
-import BackgroundTimer from 'react-native-background-timer';
 import NotificationManager from '../../../core/NotificationManager';
 import Engine from '../../../core/Engine';
 import AppConstants from '../../../core/AppConstants';
-import notifee from '@notifee/react-native';
 import I18n, { strings } from '../../../../locales/i18n';
 import FadeOutOverlay from '../../UI/FadeOutOverlay';
-import BackupAlert from '../../UI/BackupAlert';
 import Notification from '../../UI/Notification';
 import RampOrders from '../../UI/Ramp';
-import Device from '../../../util/device';
-import Routes from '../../../constants/navigation/Routes';
 import {
   showTransactionNotification,
   hideCurrentNotification,
@@ -36,32 +31,34 @@ import {
   removeNotificationById,
   removeNotVisibleNotifications,
 } from '../../../actions/notification';
+
 import ProtectYourWalletModal from '../../UI/ProtectYourWalletModal';
+import PushNotificationOnboardingRoot from '../../Views/Notifications/PushNotificationOnboarding/PushNotificationOnboardingRoot';
+import PendingMoneyReferralInvite from '../../UI/Rewards/components/Money/PendingMoneyReferralInvite';
+import { CliLoginPushNudgeListener } from '../../UI/CliLoginPushNudge';
 import MainNavigator from './MainNavigator';
-import SkipAccountSecurityModal from '../../UI/SkipAccountSecurityModal';
 import { query } from '@metamask/controller-utils';
-import SwapsLiveness from '../../UI/Swaps/SwapsLiveness';
-import useNotificationHandler from '../../../util/notifications/hooks';
+import EarnTransactionMonitor from '../../UI/Earn/components/EarnTransactionMonitor';
+import MoneyTransactionMonitor from '../../UI/Money/components/MoneyTransactionMonitor/MoneyTransactionMonitor';
+import ProSubscriptionPaymentMonitor from '../../Views/ProSubscription/components/ProSubscriptionPaymentMonitor/ProSubscriptionPaymentMonitor';
 
 import {
   setInfuraAvailabilityBlocked,
   setInfuraAvailabilityNotBlocked,
 } from '../../../actions/infuraAvailability';
 
-import { createStackNavigator } from '@react-navigation/stack';
-import ReviewModal from '../../UI/ReviewModal';
 import { useTheme } from '../../../util/theme';
 import RootRPCMethodsUI from './RootRPCMethodsUI';
-import { colors as importedColors } from '../../../styles/common';
 import {
   ToastContext,
   ToastVariants,
 } from '../../../component-library/components/Toast';
-import { useEnableAutomaticSecurityChecks } from '../../hooks/EnableAutomaticSecurityChecks';
 import { useMinimumVersions } from '../../hooks/MinimumVersions';
-import navigateTermsOfUse from '../../../util/termsOfUse/termsOfUse';
 import {
   selectChainId,
+  selectIsAllNetworks,
+  selectNetworkClientId,
+  selectNetworkConfigurations,
   selectProviderConfig,
   selectProviderType,
 } from '../../../selectors/networkController';
@@ -69,23 +66,33 @@ import {
   selectNetworkName,
   selectNetworkImageSource,
 } from '../../../selectors/networkInfos';
-import { selectShowIncomingTransactionNetworks } from '../../../selectors/preferencesController';
+import { selectTokenNetworkFilter } from '../../../selectors/preferencesController';
+
+import useNotificationHandler from '../../../util/notifications/hooks';
 import {
   DEPRECATED_NETWORKS,
   NETWORKS_CHAIN_ID,
 } from '../../../constants/network';
 import WarningAlert from '../../../components/UI/WarningAlert';
 import { GOERLI_DEPRECATED_ARTICLE } from '../../../constants/urls';
+import isNetworkUiRedesignEnabled from '../../../util/networks/isNetworkUiRedesignEnabled';
+import { useConnectionHandler } from '../../../util/navigation/useConnectionHandler';
+import { getGlobalEthQuery } from '../../../util/networks/global-network';
+import { selectIsEvmNetworkSelected } from '../../../selectors/multichainNetworkController';
+import { selectEVMEnabledNetworks } from '../../../selectors/networkEnablementController';
+import { useIdentityEffects } from '../../../util/identity/hooks/useIdentityEffects/useIdentityEffects';
+import ProtectWalletMandatoryModal from '../../Views/ProtectWalletMandatoryModal/ProtectWalletMandatoryModal';
+import { selectIsSeedlessPasswordOutdated } from '../../../selectors/seedlessOnboardingController';
+import { Authentication } from '../../../core';
+import { useCompletedOnboardingEffect } from '../../../util/onboarding/hooks/useCompletedOnboardingEffect';
+import { useBasicFunctionalityConsolidation } from '../../hooks/useBasicFunctionalityConsolidation';
 import {
-  updateIncomingTransactions,
-  startIncomingTransactionPolling,
-  stopIncomingTransactionPolling,
-} from '../../../util/transaction-controller';
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
-import { SnapsExecutionWebView } from '../../../lib/snaps';
-///: END:ONLY_INCLUDE_IF
-
-const Stack = createStackNavigator();
+  useNetworksByNamespace,
+  NetworkType,
+} from '../../hooks/useNetworksByNamespace/useNetworksByNamespace';
+import { useNetworkSelection } from '../../hooks/useNetworkSelection/useNetworkSelection';
+import { useIsOnBridgeRoute } from '../../UI/Bridge/hooks/useIsOnBridgeRoute';
+import { shouldShowNetworkListToast } from './utils';
 
 const createStyles = (colors) =>
   StyleSheet.create({
@@ -101,22 +108,37 @@ const createStyles = (colors) =>
   });
 
 const Main = (props) => {
-  const [connected, setConnected] = useState(true);
   const [forceReload, setForceReload] = useState(false);
-  const [showRemindLaterModal, setShowRemindLaterModal] = useState(false);
-  const [skipCheckbox, setSkipCheckbox] = useState(false);
   const [showDeprecatedAlert, setShowDeprecatedAlert] = useState(true);
   const { colors } = useTheme();
   const styles = createStyles(colors);
-
   const backgroundMode = useRef(false);
   const locale = useRef(I18n.locale);
   const removeConnectionStatusListener = useRef();
 
-  const removeNotVisibleNotifications = props.removeNotVisibleNotifications;
+  const isSeedlessPasswordOutdated = useSelector(
+    selectIsSeedlessPasswordOutdated,
+  );
 
-  useEnableAutomaticSecurityChecks();
+  useEffect(() => {
+    Authentication.checkAndShowSeedlessPasswordOutdatedModal(
+      isSeedlessPasswordOutdated,
+    );
+  }, [isSeedlessPasswordOutdated]);
+
+  const { connectionChangeHandler } = useConnectionHandler(props.navigation);
+
+  const removeNotVisibleNotifications = props.removeNotVisibleNotifications;
+  useCompletedOnboardingEffect();
+  useNotificationHandler();
+  useIdentityEffects();
   useMinimumVersions();
+  // Runs here rather than in App: the keyring unlocks while Login is still on
+  // screen, and Login hands the session over with a root-stack reset that
+  // would throw the migration sheet away with the rest of the stack.
+  useBasicFunctionalityConsolidation();
+
+  const { chainId, networkClientId } = props;
 
   useEffect(() => {
     if (DEPRECATED_NETWORKS.includes(props.chainId)) {
@@ -126,36 +148,14 @@ const Main = (props) => {
     }
   }, [props.chainId]);
 
-  useEffect(() => {
-    const chainId = props.chainId;
-
-    if (props.showIncomingTransactionsNetworks[chainId]) {
-      startIncomingTransactionPolling();
-    } else {
-      stopIncomingTransactionPolling();
-    }
-  }, [props.showIncomingTransactionsNetworks, props.chainId]);
-
-  const connectionChangeHandler = useCallback(
-    (state) => {
-      if (!state) return;
-      const { isConnected } = state;
-      // Show the modal once the status changes to offline
-      if (connected && isConnected === false) {
-        props.navigation.navigate('OfflineModeView');
-      }
-      if (connected !== isConnected && isConnected !== null) {
-        setConnected(isConnected);
-      }
-    },
-    [connected, setConnected, props.navigation],
-  );
-
-  const checkInfuraAvailability = useCallback(async () => {
+  // Plain function (not useCallback): it is only invoked, never used as a
+  // dependency, so letting the React Compiler memoize it avoids the "could not
+  // preserve existing manual memoization" bailout while keeping behavior intact.
+  const checkInfuraAvailability = async () => {
     if (props.providerType !== 'rpc') {
       try {
-        const { TransactionController } = Engine.context;
-        await query(TransactionController.ethQuery, 'blockNumber', []);
+        const ethQuery = getGlobalEthQuery();
+        await query(ethQuery, 'blockNumber', []);
         props.setInfuraAvailabilityNotBlocked();
       } catch (e) {
         if (e.message === AppConstants.ERRORS.INFURA_BLOCKED_MESSAGE) {
@@ -166,34 +166,16 @@ const Main = (props) => {
     } else {
       props.setInfuraAvailabilityNotBlocked();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    props.navigation,
-    props.providerType,
-    props.setInfuraAvailabilityBlocked,
-    props.setInfuraAvailabilityNotBlocked,
-  ]);
+  };
 
   const handleAppStateChange = useCallback(
     (appState) => {
       const newModeIsBackground = appState === 'background';
 
-      // If it was in background and it's not anymore
-      // we need to stop the Background timer
-      if (backgroundMode.current && !newModeIsBackground) {
-        BackgroundTimer.stop();
-      }
-
       backgroundMode.current = newModeIsBackground;
 
-      // If the app is now in background, we need to start
-      // the background timer, which is less intense
       if (backgroundMode.current) {
         removeNotVisibleNotifications();
-
-        BackgroundTimer.runBackgroundTimer(async () => {
-          await updateIncomingTransactions();
-        }, AppConstants.TX_CHECK_BACKGROUND_FREQUENCY);
       }
     },
     [backgroundMode, removeNotVisibleNotifications],
@@ -213,56 +195,135 @@ const Main = (props) => {
     </View>
   );
 
-  const toggleRemindLater = () => {
-    setShowRemindLaterModal(!showRemindLaterModal);
-  };
-
-  const toggleSkipCheckbox = () => {
-    setSkipCheckbox(!skipCheckbox);
-  };
-
-  const skipAccountModalSecureNow = () => {
-    toggleRemindLater();
-    props.navigation.navigate('SetPasswordFlow', {
-      screen: 'AccountBackupStep1B',
-      params: { ...props.route.params },
-    });
-  };
-
-  const skipAccountModalSkip = () => {
-    if (skipCheckbox) toggleRemindLater();
-  };
-
   /**
    * Current network
    */
   const providerConfig = useSelector(selectProviderConfig);
+  const networkConfigurations = useSelector(selectNetworkConfigurations);
   const networkName = useSelector(selectNetworkName);
+  const isEvmSelected = useSelector(selectIsEvmNetworkSelected);
   const previousProviderConfig = useRef(undefined);
+  const previousNetworkConfigurations = useRef(undefined);
   const { toastRef } = useContext(ToastContext);
+  const { networks } = useNetworksByNamespace({
+    networkType: NetworkType.Popular,
+  });
+  const { selectNetwork } = useNetworkSelection({
+    networks,
+  });
+  const enabledEVMNetworks = useSelector(selectEVMEnabledNetworks);
   const networkImage = useSelector(selectNetworkImageSource);
+
+  const isAllNetworks = useSelector(selectIsAllNetworks);
+  const tokenNetworkFilter = useSelector(selectTokenNetworkFilter);
+  const isOnBridgeRoute = useIsOnBridgeRoute();
+
+  const hasNetworkChanged = useCallback(
+    (chainId, previousConfig, isEvmSelected) => {
+      if (!previousConfig) return false;
+
+      return isEvmSelected
+        ? chainId !== previousConfig.chainId ||
+            providerConfig.type !== previousConfig.type
+        : chainId !== previousConfig.chainId;
+    },
+    [providerConfig.type],
+  );
 
   // Show network switch confirmation.
   useEffect(() => {
     if (
-      previousProviderConfig.current &&
-      (providerConfig.chainId !== previousProviderConfig.current.chainId ||
-        providerConfig.type !== previousProviderConfig.current.type)
+      hasNetworkChanged(chainId, previousProviderConfig.current, isEvmSelected)
     ) {
-      toastRef?.current?.showToast({
-        variant: ToastVariants.Network,
-        labelOptions: [
-          {
-            label: `${networkName} `,
-            isBold: true,
-          },
-          { label: strings('toast.now_active') },
-        ],
-        networkImageSource: networkImage,
-      });
+      const { PreferencesController } = Engine.context;
+      if (Object.keys(tokenNetworkFilter).length === 1) {
+        PreferencesController.setTokenNetworkFilter({
+          [chainId]: true,
+        });
+      } else {
+        PreferencesController.setTokenNetworkFilter({
+          ...tokenNetworkFilter,
+          [chainId]: true,
+        });
+      }
+      if (enabledEVMNetworks.length === 0) {
+        selectNetwork(chainId);
+      }
     }
-    previousProviderConfig.current = providerConfig;
-  }, [providerConfig, networkName, networkImage, toastRef]);
+    previousProviderConfig.current = !isEvmSelected
+      ? { chainId }
+      : providerConfig;
+  }, [
+    providerConfig,
+    networkName,
+    networkImage,
+    toastRef,
+    chainId,
+    isEvmSelected,
+    hasNetworkChanged,
+    isAllNetworks,
+    tokenNetworkFilter,
+    selectNetwork,
+    enabledEVMNetworks,
+    isOnBridgeRoute,
+  ]);
+
+  // Show add network confirmation.
+  useEffect(() => {
+    if (!isNetworkUiRedesignEnabled()) return;
+
+    // Memoized values to avoid recalculations
+    const currentNetworkValues = Object.values(networkConfigurations);
+    const previousNetworkValues = Object.values(
+      previousNetworkConfigurations.current ?? {},
+    );
+
+    // Emit network addition/deletion toast if network list changes
+    if (
+      previousNetworkValues.length &&
+      currentNetworkValues.length !== previousNetworkValues.length
+    ) {
+      // Find the newly added network by comparing chainIds
+      const newNetwork = currentNetworkValues.find(
+        (network) =>
+          !previousNetworkValues.some(
+            (prev) => prev.chainId === network.chainId,
+          ),
+      );
+      const deletedNetwork = previousNetworkValues.find(
+        (network) =>
+          !currentNetworkValues.some(
+            (curr) => curr.chainId === network.chainId,
+          ),
+      );
+
+      const shouldShowToast = shouldShowNetworkListToast({
+        newNetworkChainId: newNetwork?.chainId,
+        hasDeletedNetwork: Boolean(deletedNetwork),
+      });
+      if (shouldShowToast) {
+        toastRef?.current?.showToast({
+          variant: ToastVariants.Plain,
+          labelOptions: [
+            {
+              label: `${
+                (deletedNetwork?.name || newNetwork?.name) ??
+                strings('asset_details.network')
+              } `,
+              isBold: true,
+            },
+            {
+              label: deletedNetwork
+                ? strings('toast.network_removed')
+                : strings('toast.network_added'),
+            },
+          ],
+          networkImageSource: networkImage,
+        });
+      }
+    }
+    previousNetworkConfigurations.current = networkConfigurations;
+  }, [networkConfigurations, networkImage, toastRef]);
 
   useEffect(() => {
     if (locale.current !== I18n.locale) {
@@ -271,22 +332,6 @@ const Main = (props) => {
       return;
     }
   });
-
-  const bootstrapAndroidInitialNotification = useCallback(async () => {
-    if (Device.isAndroid()) {
-      const initialNotification = await notifee.getInitialNotification();
-
-      if (
-        initialNotification?.data?.action === 'tx' &&
-        initialNotification.data.id
-      ) {
-        NotificationManager.setTransactionToView(initialNotification.data.id);
-        props.navigation.navigate(Routes.TRANSACTIONS_VIEW);
-      }
-    }
-  }, [props.navigation]);
-
-  useNotificationHandler(bootstrapAndroidInitialNotification, props.navigation);
 
   // Remove all notifications that aren't visible
   useEffect(() => {
@@ -318,21 +363,11 @@ const Main = (props) => {
       removeConnectionStatusListener.current &&
         removeConnectionStatusListener.current();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const termsOfUse = useCallback(async () => {
-    if (props.navigation) {
-      await navigateTermsOfUse(props.navigation.navigate);
-    }
-  }, [props.navigation]);
-
-  useEffect(() => {
-    termsOfUse();
-  }, [termsOfUse]);
+    // (exhaustive-deps disabled for this file via .eslintrc.js override.)
+  }, [connectionChangeHandler]);
 
   const openDeprecatedNetworksArticle = () => {
-    Linking.openURL(GOERLI_DEPRECATED_ARTICLE);
+    Linking.openURL(GOERLI_DEPRECATED_ARTICLE).catch(() => undefined);
   };
 
   const renderDeprecatedNetworkAlert = (chainId, backUpSeedphraseVisible) => {
@@ -365,37 +400,23 @@ const Main = (props) => {
         ) : (
           renderLoader()
         )}
-        {
-          ///: BEGIN:ONLY_INCLUDE_IF(snaps)
-        }
-        <View>
-          <SnapsExecutionWebView />
-        </View>
-        {
-          ///: END:ONLY_INCLUDE_IF
-        }
         <GlobalAlert />
         <FadeOutOverlay />
         <Notification navigation={props.navigation} />
         <RampOrders />
-        <SwapsLiveness />
-        <BackupAlert
-          onDismiss={toggleRemindLater}
-          navigation={props.navigation}
-        />
+        <EarnTransactionMonitor />
+        <MoneyTransactionMonitor />
+        <ProSubscriptionPaymentMonitor />
         {renderDeprecatedNetworkAlert(
           props.chainId,
           props.backUpSeedphraseVisible,
         )}
-        <SkipAccountSecurityModal
-          modalVisible={showRemindLaterModal}
-          onCancel={skipAccountModalSecureNow}
-          onConfirm={skipAccountModalSkip}
-          skipCheckbox={skipCheckbox}
-          toggleSkipCheckbox={toggleSkipCheckbox}
-        />
         <ProtectYourWalletModal navigation={props.navigation} />
         <RootRPCMethodsUI navigation={props.navigation} />
+        <ProtectWalletMandatoryModal />
+        <PendingMoneyReferralInvite />
+        <PushNotificationOnboardingRoot />
+        <CliLoginPushNudgeListener />
       </View>
     </React.Fragment>
   );
@@ -422,10 +443,6 @@ Main.propTypes = {
   hideCurrentNotification: PropTypes.func,
   removeNotificationById: PropTypes.func,
   /**
-   * Indicates whether networks allows incoming transactions
-   */
-  showIncomingTransactionsNetworks: PropTypes.object,
-  /**
    * Network provider type
    */
   providerType: PropTypes.string,
@@ -442,10 +459,6 @@ Main.propTypes = {
    */
   removeNotVisibleNotifications: PropTypes.func,
   /**
-   * Object that represents the current route info like params passed to it
-   */
-  route: PropTypes.object,
-  /**
    * Current chain id
    */
   chainId: PropTypes.string,
@@ -453,13 +466,16 @@ Main.propTypes = {
    * backup seed phrase modal visible
    */
   backUpSeedphraseVisible: PropTypes.bool,
+  /**
+   * ID of the global network client
+   */
+  networkClientId: PropTypes.string,
 };
 
 const mapStateToProps = (state) => ({
-  showIncomingTransactionsNetworks:
-    selectShowIncomingTransactionNetworks(state),
   providerType: selectProviderType(state),
   chainId: selectChainId(state),
+  networkClientId: selectNetworkClientId(state),
   backUpSeedphraseVisible: state.user.backUpSeedphraseVisible,
 });
 
@@ -478,22 +494,4 @@ const mapDispatchToProps = (dispatch) => ({
 
 const ConnectedMain = connect(mapStateToProps, mapDispatchToProps)(Main);
 
-const MainFlow = () => (
-  <Stack.Navigator
-    initialRouteName={'Main'}
-    mode={'modal'}
-    screenOptions={{
-      headerShown: false,
-      cardStyle: { backgroundColor: importedColors.transparent },
-    }}
-  >
-    <Stack.Screen name={'Main'} component={ConnectedMain} />
-    <Stack.Screen
-      name={'ReviewModal'}
-      component={ReviewModal}
-      options={{ animationEnabled: false }}
-    />
-  </Stack.Navigator>
-);
-
-export default MainFlow;
+export default ConnectedMain;

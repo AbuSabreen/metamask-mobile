@@ -1,4 +1,7 @@
-import { NavigationContainerRef } from '@react-navigation/native';
+import {
+  NavigationContainerRef,
+  ParamListBase,
+} from '@react-navigation/native';
 import { Connection } from './Connection';
 import { OriginatorInfo } from '@metamask/sdk-communication-layer';
 import RPCQueueManager from '../RPCQueueManager';
@@ -58,7 +61,7 @@ describe('Connection', () => {
   const mockOrigin = 'testOrigin';
   const mockReconnect = true;
   const mockInitialConnection = true;
-  const mockNavigation = {} as NavigationContainerRef;
+  const mockNavigation = {} as NavigationContainerRef<ParamListBase>;
   const mockOriginatorInfo = {} as OriginatorInfo;
   const mockRpcManager = {} as RPCQueueManager;
   const mockSocketServerUrl = 'testSocketServerUrl';
@@ -123,12 +126,14 @@ describe('Connection', () => {
     it('should initiate connection with or without key exchange', () => {
       connection.connect({
         withKeyExchange: true,
+        authorized: false,
       });
 
       expect(mockConnect).toHaveBeenCalledTimes(1);
       expect(mockConnect).toHaveBeenCalledWith({
         instance: connection,
         withKeyExchange: true,
+        authorized: false,
       });
     });
   });

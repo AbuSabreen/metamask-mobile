@@ -1,0 +1,426 @@
+import React from 'react';
+import { render, fireEvent, act } from '@testing-library/react-native';
+import { useAlerts } from '../../../context/alert-system-context';
+import AlertModal from './alert-modal';
+import { IconName } from '../../../../../../component-library/components/Icons/Icon';
+import { Severity } from '../../../types/alerts';
+import { useConfirmationAlertMetrics } from '../../../hooks/metrics/useConfirmationAlertMetrics';
+import { Text } from '@metamask/design-system-react-native';
+import { AlertModalSelectorsIDs } from '../../../ConfirmationView.testIds';
+
+jest.mock('../../../context/alert-system-context', () => ({
+  useAlerts: jest.fn(),
+}));
+
+jest.mock('../../../hooks/metrics/useConfirmationAlertMetrics', () => ({
+  useConfirmationAlertMetrics: jest.fn(),
+}));
+
+const ALERT_MESSAGE_MOCK = 'This is a test alert message.';
+const ALERT_DETAILS_MOCK = ['Detail 1', 'Detail 2'];
+const ALERT_ACTION_MOCK = { label: 'Action 1', callback: jest.fn() };
+const CHECKBOX_LABEL = 'I have acknowledged the risk and still want to proceed';
+
+const mockAlerts = [
+  {
+    key: 'alert1',
+    title: 'Test Alert',
+    message: ALERT_MESSAGE_MOCK,
+    severity: Severity.Warning,
+    alertDetails: ALERT_DETAILS_MOCK,
+    action: ALERT_ACTION_MOCK,
+    field: 'To',
+  },
+  {
+    key: 'alert2',
+    title: 'Test Alert 2',
+    message: ALERT_MESSAGE_MOCK,
+    severity: Severity.Danger,
+    alertDetails: ALERT_DETAILS_MOCK,
+    action: ALERT_ACTION_MOCK,
+    field: 'From',
+  },
+  {
+    key: 'alert3',
+    title: 'Test Alert 3',
+    message: ALERT_MESSAGE_MOCK,
+    severity: Severity.Info,
+    alertDetails: ALERT_DETAILS_MOCK,
+    field: 'Subject',
+  },
+];
+
+describe('AlertModal', () => {
+  const baseMockUseAlerts = {
+    alertKey: 'alert1',
+    alerts: mockAlerts,
+    fieldAlerts: mockAlerts,
+    hideAlertModal: jest.fn(),
+    alertModalVisible: true,
+    setAlertKey: jest.fn(),
+    isAlertConfirmed: jest.fn().mockReturnValue(false),
+    setAlertConfirmed: jest.fn(),
+    unconfirmedDangerAlerts: [],
+    unconfirmedFieldDangerAlerts: [],
+    hasUnconfirmedDangerAlerts: false,
+    hasUnconfirmedFieldDangerAlerts: false,
+  };
+  const mockTrackAlertRendered = jest.fn();
+
+  beforeEach(() => {
+    (useAlerts as jest.Mock).mockReturnValue(baseMockUseAlerts);
+    (useConfirmationAlertMetrics as jest.Mock).mockReturnValue({
+      trackAlertRendered: mockTrackAlertRendered,
+    });
+    jest.clearAllMocks();
+  });
+
+  it('renders the AlertModal correctly', () => {
+    const { getByText } = render(<AlertModal />);
+    expect(getByText('Test Alert')).toBeDefined();
+    expect(getByText(ALERT_MESSAGE_MOCK)).toBeDefined();
+    expect(getByText('Alert details')).toBeDefined();
+    expect(getByText('• Detail 1')).toBeDefined();
+    expect(getByText('• Detail 2')).toBeDefined();
+  });
+
+  it('renders the correct icon based on severity', () => {
+    const { getByTestId } = render(<AlertModal />);
+    const icon = getByTestId('alert-modal-icon');
+    expect(icon).toBeDefined();
+    expect(icon.props.name).toBe(IconName.Danger);
+
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert3', // Info
+    });
+    const { getByTestId: getByTestIdInfo } = render(<AlertModal />);
+    const iconInfo = getByTestIdInfo('alert-modal-icon');
+    expect(iconInfo.props.name).toBe(IconName.Info);
+  });
+
+  it('handles checkbox click correctly', async () => {
+    const setAlertConfirmed = jest.fn();
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert2',
+      setAlertConfirmed,
+    });
+
+    const { getByTestId } = render(<AlertModal />);
+
+    const checkbox = getByTestId(AlertModalSelectorsIDs.ALERT_MODAL_CHECKBOX);
+
+    await act(async () => {
+      fireEvent.press(checkbox);
+    });
+    expect(setAlertConfirmed).toHaveBeenCalledWith('alert2', true);
+  });
+
+  it('handles action button clicks correctly', async () => {
+    const hideAlertModal = jest.fn();
+    const action1Callback = jest.fn();
+
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      hideAlertModal,
+      fieldAlerts: [
+        {
+          ...mockAlerts[0],
+          action: { ...ALERT_ACTION_MOCK, callback: action1Callback },
+        },
+      ],
+    });
+
+    const { getByTestId } = render(<AlertModal />);
+
+    await act(async () => {
+      fireEvent.press(
+        getByTestId(AlertModalSelectorsIDs.ALERT_MODAL_ACTION_BUTTON),
+      );
+    });
+    expect(action1Callback).toHaveBeenCalled();
+    expect(hideAlertModal).toHaveBeenCalled();
+  });
+
+  it('closes modal when `Got It` button pressed for non-danger alerts', async () => {
+    const hideAlertModal = jest.fn();
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      hideAlertModal,
+    });
+    const { getByTestId } = render(<AlertModal />);
+    await act(async () => {
+      fireEvent.press(
+        getByTestId(AlertModalSelectorsIDs.ALERT_MODAL_ACKNOWLEDGE_BUTTON),
+      );
+    });
+    expect(hideAlertModal).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not render Close button for non-danger alerts', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert1', // Warning severity
+    });
+    const { queryByTestId } = render(<AlertModal />);
+
+    expect(
+      queryByTestId(AlertModalSelectorsIDs.ALERT_MODAL_CLOSE_BUTTON),
+    ).toBeNull();
+    expect(
+      queryByTestId(AlertModalSelectorsIDs.ALERT_MODAL_ACKNOWLEDGE_BUTTON),
+    ).toBeOnTheScreen();
+  });
+
+  it('renders Acknowledge and Close buttons for Danger severity alerts', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert2',
+    });
+    const { getByTestId } = render(<AlertModal />);
+
+    expect(
+      getByTestId(AlertModalSelectorsIDs.ALERT_MODAL_ACKNOWLEDGE_BUTTON),
+    ).toBeOnTheScreen();
+    expect(
+      getByTestId(AlertModalSelectorsIDs.ALERT_MODAL_CLOSE_BUTTON),
+    ).toBeOnTheScreen();
+  });
+
+  it('disables Acknowledge button when checkbox is not checked for Danger alerts', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert2',
+      isAlertConfirmed: jest.fn().mockReturnValue(false),
+    });
+    const { getByTestId } = render(<AlertModal />);
+
+    const acknowledgeButton = getByTestId(
+      AlertModalSelectorsIDs.ALERT_MODAL_ACKNOWLEDGE_BUTTON,
+    );
+    expect(acknowledgeButton).toBeDisabled();
+  });
+
+  it('enables Acknowledge button when checkbox is checked for Danger alerts', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert2',
+      isAlertConfirmed: jest.fn().mockReturnValue(true),
+    });
+    const { getByTestId } = render(<AlertModal />);
+
+    const acknowledgeButton = getByTestId(
+      AlertModalSelectorsIDs.ALERT_MODAL_ACKNOWLEDGE_BUTTON,
+    );
+    expect(acknowledgeButton).not.toBeDisabled();
+  });
+
+  it('closes modal when Close button pressed for Danger alerts', async () => {
+    const hideAlertModal = jest.fn();
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert2',
+      hideAlertModal,
+    });
+    const { getByTestId } = render(<AlertModal />);
+
+    await act(async () => {
+      fireEvent.press(
+        getByTestId(AlertModalSelectorsIDs.ALERT_MODAL_CLOSE_BUTTON),
+      );
+    });
+    expect(hideAlertModal).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the modal when Got it is pressed on a blocking alert', async () => {
+    const hideAlertModal = jest.fn();
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      hideAlertModal,
+      fieldAlerts: [
+        {
+          ...mockAlerts[1],
+          isBlocking: true,
+        },
+      ],
+      alertKey: 'alert2',
+    });
+
+    const { getByTestId } = render(<AlertModal />);
+    const acknowledgeButton = getByTestId(
+      AlertModalSelectorsIDs.ALERT_MODAL_ACKNOWLEDGE_BUTTON,
+    );
+
+    expect(acknowledgeButton).not.toBeDisabled();
+
+    await act(async () => {
+      fireEvent.press(acknowledgeButton);
+    });
+
+    expect(hideAlertModal).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onAcknowledgeClick only for Acknowledge button, not Close button', async () => {
+    const onAcknowledgeClick = jest.fn();
+    const hideAlertModal = jest.fn();
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert2',
+      hideAlertModal,
+      isAlertConfirmed: jest.fn().mockReturnValue(true),
+    });
+    const { getByTestId } = render(
+      <AlertModal onAcknowledgeClick={onAcknowledgeClick} />,
+    );
+
+    await act(async () => {
+      fireEvent.press(
+        getByTestId(AlertModalSelectorsIDs.ALERT_MODAL_CLOSE_BUTTON),
+      );
+    });
+
+    expect(onAcknowledgeClick).not.toHaveBeenCalled();
+    expect(hideAlertModal).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns null if the alert modal is not visible', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertModalVisible: false,
+    });
+
+    const { queryByText } = render(<AlertModal />);
+    expect(queryByText('Test Alert')).toBeNull();
+  });
+
+  it('does not render the checkbox if the severity is not Danger', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert1',
+    });
+    const { queryByText, queryByTestId } = render(<AlertModal />);
+    expect(queryByText(CHECKBOX_LABEL)).toBeNull();
+    expect(
+      queryByTestId(AlertModalSelectorsIDs.ALERT_MODAL_CHECKBOX),
+    ).toBeNull();
+  });
+
+  it('renders checkbox if the severity is Danger', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertKey: 'alert2',
+    });
+    const { queryByText, getByTestId } = render(<AlertModal />);
+    expect(queryByText(CHECKBOX_LABEL)).toBeDefined();
+    expect(
+      getByTestId(AlertModalSelectorsIDs.ALERT_MODAL_CHECKBOX),
+    ).toBeDefined();
+  });
+
+  it('renders content component correctly', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      fieldAlerts: [
+        {
+          ...mockAlerts[0],
+          content: <Text>{'Mock content'}</Text>,
+        },
+      ],
+    });
+    const { getByText } = render(<AlertModal />);
+    expect(getByText('Mock content')).toBeDefined();
+  });
+
+  it('renders message component correctly', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      fieldAlerts: [
+        {
+          ...mockAlerts[0],
+          message: <Text>{'Mock message'}</Text>,
+        },
+      ],
+    });
+    const { getByText } = render(<AlertModal />);
+    expect(getByText('Mock message')).toBeDefined();
+  });
+
+  it('does not render checkbox if is a blocking alert', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      fieldAlerts: [
+        {
+          ...mockAlerts[0],
+          isBlocking: true,
+        },
+      ],
+    });
+    const { queryByText, queryByTestId } = render(<AlertModal />);
+    expect(queryByText(CHECKBOX_LABEL)).toBeNull();
+    expect(
+      queryByTestId(AlertModalSelectorsIDs.ALERT_MODAL_CHECKBOX),
+    ).toBeNull();
+  });
+
+  it('renders header accessory when provided', () => {
+    const headerAccessory = <Text>Header Accessory</Text>;
+    const { getByText } = render(
+      <AlertModal headerAccessory={headerAccessory} />,
+    );
+    expect(getByText('Header Accessory')).toBeDefined();
+  });
+
+  it('calls onAcknowledgeClick when modal is closed', async () => {
+    const onAcknowledgeClick = jest.fn();
+    const { getByTestId } = render(
+      <AlertModal onAcknowledgeClick={onAcknowledgeClick} />,
+    );
+    await act(async () => {
+      fireEvent.press(
+        getByTestId(AlertModalSelectorsIDs.ALERT_MODAL_ACKNOWLEDGE_BUTTON),
+      );
+    });
+    expect(onAcknowledgeClick).toHaveBeenCalled();
+  });
+
+  it('renders default title when alert title is not provided', () => {
+    const alertWithoutTitle = {
+      ...mockAlerts[0],
+      title: undefined,
+    };
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      fieldAlerts: [alertWithoutTitle],
+    });
+    const { getByText } = render(<AlertModal />);
+    expect(getByText('Alert')).toBeDefined();
+  });
+
+  it('handles alert without message correctly', () => {
+    const alertWithoutMessage = {
+      ...mockAlerts[0],
+      message: undefined,
+    };
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      fieldAlerts: [alertWithoutMessage],
+    });
+    const { queryByText } = render(<AlertModal />);
+    expect(queryByText(ALERT_MESSAGE_MOCK)).toBeNull();
+  });
+
+  it('calls trackAlertRendered when modal is rendered', () => {
+    render(<AlertModal />);
+    expect(mockTrackAlertRendered).toHaveBeenCalled();
+  });
+
+  it('does not call trackAlertRendered when modal is not visible', () => {
+    (useAlerts as jest.Mock).mockReturnValue({
+      ...baseMockUseAlerts,
+      alertModalVisible: false,
+    });
+    render(<AlertModal />);
+    expect(mockTrackAlertRendered).not.toHaveBeenCalled();
+  });
+});

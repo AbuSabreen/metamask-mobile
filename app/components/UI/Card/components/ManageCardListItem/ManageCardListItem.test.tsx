@@ -1,0 +1,142 @@
+import React from 'react';
+import { fireEvent } from '@testing-library/react-native';
+import ManageCardListItem from './ManageCardListItem';
+import { renderScreen } from '../../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import { IconName } from '@metamask/design-system-react-native';
+import { View } from 'react-native';
+
+function renderWithProvider(component: React.ComponentType) {
+  return renderScreen(
+    component,
+    {
+      name: 'ManageCardListItem',
+    },
+    {
+      state: {
+        engine: {
+          backgroundState,
+        },
+      },
+    },
+  );
+}
+
+describe('ManageCardListItem Component', () => {
+  const mockOnPress = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders with required props', () => {
+    const { getByText } = renderWithProvider(() => (
+      <ManageCardListItem title="Test Title" description="Test description" />
+    ));
+
+    expect(getByText('Test Title')).toBeOnTheScreen();
+    expect(getByText('Test description')).toBeOnTheScreen();
+  });
+
+  it('renders with all props', () => {
+    const { getByText } = renderWithProvider(() => (
+      <ManageCardListItem
+        title="Custom Title"
+        description="Custom description"
+        rightIcon={IconName.Edit}
+        testID="custom-test-id"
+        onPress={mockOnPress}
+      />
+    ));
+
+    expect(getByText('Custom Title')).toBeOnTheScreen();
+    expect(getByText('Custom description')).toBeOnTheScreen();
+  });
+
+  it('renders with React.ReactNode description', () => {
+    const customDescription = (
+      <React.Fragment>
+        <View>Custom</View>
+      </React.Fragment>
+    );
+
+    const { getByText } = renderWithProvider(() => (
+      <ManageCardListItem
+        title="Title with React Node"
+        description={customDescription}
+      />
+    ));
+
+    expect(getByText('Title with React Node')).toBeOnTheScreen();
+  });
+
+  it('calls onPress when item is pressed', () => {
+    const { getByTestId } = renderWithProvider(() => (
+      <ManageCardListItem
+        title="Test Title"
+        description="Test description"
+        onPress={mockOnPress}
+        testID="pressable-item"
+      />
+    ));
+
+    const item = getByTestId('pressable-item');
+    fireEvent.press(item);
+
+    expect(mockOnPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders without right icon when rightIcon is not provided', () => {
+    const { getByText } = renderWithProvider(() => (
+      <ManageCardListItem
+        title="No Icon Test"
+        description="Should render without any right icon"
+      />
+    ));
+
+    expect(getByText('No Icon Test')).toBeOnTheScreen();
+    expect(getByText('Should render without any right icon')).toBeOnTheScreen();
+  });
+
+  it('renders with custom right icon when rightIcon is provided', () => {
+    const { getByText } = renderWithProvider(() => (
+      <ManageCardListItem
+        title="Custom Icon Test"
+        description="Should use Edit icon"
+        rightIcon={IconName.Edit}
+      />
+    ));
+
+    expect(getByText('Custom Icon Test')).toBeOnTheScreen();
+    expect(getByText('Should use Edit icon')).toBeOnTheScreen();
+  });
+
+  it('uses default testID when testID is not provided', () => {
+    const { getByTestId } = renderWithProvider(() => (
+      <ManageCardListItem
+        title="Default TestID"
+        description="Should use default testID"
+        onPress={mockOnPress}
+      />
+    ));
+
+    const item = getByTestId('manage-card-list-item');
+    fireEvent.press(item);
+
+    expect(mockOnPress).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not crash when onPress is not provided', () => {
+    const { getByTestId } = renderWithProvider(() => (
+      <ManageCardListItem
+        title="No OnPress"
+        description="Should not crash"
+        testID="no-onpress-item"
+      />
+    ));
+
+    const item = getByTestId('no-onpress-item');
+
+    expect(() => fireEvent.press(item)).not.toThrow();
+  });
+});

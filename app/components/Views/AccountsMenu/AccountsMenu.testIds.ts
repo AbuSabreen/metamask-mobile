@@ -1,0 +1,37 @@
+export const AccountsMenuSelectorsText = {
+  // TODO: Add to en.json
+  TITLE: 'Accounts Menu',
+};
+
+export const AccountsMenuSelectorsIDs = {
+  ACCOUNTS_MENU_SCROLL_ID: 'accounts-menu-scroll',
+  BACK_BUTTON: 'accounts-menu-back-button',
+
+  // Quick Actions
+  ACTIVITY_BUTTON: 'accounts-menu-activity-button',
+  BUY_BUTTON: 'buy-button',
+  BATCH_SELL_BUTTON: 'batch-sell-button',
+  EARN_BUTTON: 'earn-button',
+  NOTIFICATIONS_BUTTON: 'notifications-button',
+  METAMASK_ORANGE: 'metamask-orange-menu-item',
+
+  // Manage Card
+  MANAGE_CARD: 'manage-card',
+  MANAGE_CARD_UPDATE_BADGE: 'card-uk-migration-update-badge',
+
+  // Settings Link
+  SETTINGS: 'settings-link',
+
+  // Manage Section
+  CONTACTS: 'contacts-menu-item',
+  PERMISSIONS: 'permissions-menu-item',
+  NETWORKS: 'networks-menu-item',
+
+  // Resources Section
+  ABOUT_METAMASK: 'about-metamask-menu-item',
+  REQUEST_FEATURE: 'request-feature-menu-item',
+  SUPPORT: 'support-menu-item',
+
+  // Log Out
+  LOCK: 'lock-menu-item',
+};

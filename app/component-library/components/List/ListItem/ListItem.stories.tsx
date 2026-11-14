@@ -26,13 +26,43 @@ const ListItemMeta = {
       },
       defaultValue: SAMPLE_LISTITEM_PROPS.verticalAlignment,
     },
+    topAccessory: {
+      control: { type: 'boolean' },
+      defaultValue: false,
+      mapping: {
+        false: null,
+        true: (
+          <Text variant={TextVariant.BodySMMedium}>Sample Top Accessory</Text>
+        ),
+      },
+    },
+    bottomAccessory: {
+      control: { type: 'boolean' },
+      defaultValue: false,
+      mapping: {
+        false: null,
+        true: (
+          <Text variant={TextVariant.BodySMMedium}>
+            Sample Bottom Accessory
+          </Text>
+        ),
+      },
+    },
+    topAccessoryGap: {
+      control: { type: 'number' },
+      defaultValue: SAMPLE_LISTITEM_PROPS.topAccessoryGap,
+    },
+    bottomAccessoryGap: {
+      control: { type: 'number' },
+      defaultValue: SAMPLE_LISTITEM_PROPS.bottomAccessoryGap,
+    },
   },
 };
 export default ListItemMeta;
 
 export const ListItem = {
   render: (
-    args: JSX.IntrinsicAttributes &
+    args: React.JSX.IntrinsicAttributes &
       ListItemProps & { children?: React.ReactNode },
   ) => (
     <ListItemComponent {...args}>
@@ -40,7 +70,7 @@ export const ListItem = {
         <Icon name={IconName.Clock} />
       </ListItemColumn>
       <ListItemColumn widthType={WidthType.Fill}>
-        <Text numberOfLines={1} variant={TextVariant.HeadingSMRegular}>
+        <Text numberOfLines={1} variant={TextVariant.BodyMD}>
           {'Sample Title'}
         </Text>
         <Text variant={TextVariant.BodyMD}>{'Sample Description'}</Text>

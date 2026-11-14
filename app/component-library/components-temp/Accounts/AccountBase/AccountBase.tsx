@@ -1,9 +1,10 @@
 import React from 'react';
 import { View } from 'react-native';
 
-import Badge from '../../../../component-library/components/Badges/Badge';
+import Badge, {
+  BadgeVariant,
+} from '../../../../component-library/components/Badges/Badge';
 import Avatar, { AvatarVariant } from '../../../components/Avatars/Avatar';
-import { AvatarAccountType } from '../../../components/Avatars/Avatar/variants/AvatarAccount';
 import BadgeWrapper from '../../../components/Badges/BadgeWrapper';
 import Text, { TextVariant } from '../../../components/Texts/Text';
 import {
@@ -11,7 +12,6 @@ import {
   ACCOUNT_BASE_TEST_ID,
 } from './AccountBase.constants';
 import styles from './AccountBase.styles';
-import { strings } from '../../../../../locales/i18n';
 import { AccountBaseProps } from './AccountBase.types';
 
 const AccountBase = ({
@@ -24,22 +24,23 @@ const AccountBase = ({
   accountBalanceLabel,
   accountAddress,
   badgeProps,
-  useBlockieIcon,
+  avatarAccountType,
 }: AccountBaseProps) => (
   <View style={styles.body} testID={ACCOUNT_BASE_TEST_ID}>
     <View style={styles.container}>
       <BadgeWrapper
-        badgeElement={<Badge {...badgeProps} />}
+        badgeElement={
+          badgeProps.variant !== BadgeVariant.Network ||
+          badgeProps.imageSource ? (
+            <Badge {...badgeProps} />
+          ) : undefined
+        }
         style={styles.badgeWrapper}
         testID={ACCOUNT_BALANCE_AVATAR_TEST_ID}
       >
         <Avatar
           variant={AvatarVariant.Account}
-          type={
-            useBlockieIcon
-              ? AvatarAccountType.Blockies
-              : AvatarAccountType.JazzIcon
-          }
+          type={avatarAccountType}
           testID={ACCOUNT_BALANCE_AVATAR_TEST_ID}
           accountAddress={accountAddress}
         />
@@ -49,15 +50,17 @@ const AccountBase = ({
 
         <View style={styles.accountNameLabel}>
           <Text variant={TextVariant.BodyMDBold}>{accountName}</Text>
-          {accountTypeLabel && (
+        </View>
+        {accountTypeLabel && (
+          <View style={styles.accountNameLabel}>
             <Text
-              variant={TextVariant.BodySM}
+              variant={TextVariant.BodyMDBold}
               style={styles.accountNameLabelText}
             >
-              {strings(accountTypeLabel)}
+              {accountTypeLabel}
             </Text>
-          )}
-        </View>
+          </View>
+        )}
       </View>
     </View>
     <View>

@@ -2,7 +2,7 @@
 
 // Third party dependencies.
 import React from 'react';
-import { View } from 'react-native';
+import { DimensionValue, View } from 'react-native';
 
 // External dependencies.
 import { useStyles } from '../../../hooks';
@@ -16,9 +16,20 @@ import {
   TESTID_LISTITEM_GAP,
 } from './ListItem.constants';
 
+/**
+ * @deprecated Please update your code to use `ListItem` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/ListItem/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#listitem-component Migration docs}
+ * @since @metamask/design-system-react-native@0.11.0
+ */
 const ListItem: React.FC<ListItemProps> = ({
   style,
   children,
+  topAccessory,
+  bottomAccessory,
+  topAccessoryGap,
+  bottomAccessoryGap,
   gap = DEFAULT_LISTITEM_GAP,
   verticalAlignment = DEFAULT_LISTITEM_VERTICALALIGNMENT,
   ...props
@@ -26,24 +37,32 @@ const ListItem: React.FC<ListItemProps> = ({
   const { styles } = useStyles(styleSheet, {
     style,
     verticalAlignment,
+    topAccessoryGap,
+    bottomAccessoryGap,
   });
 
   return (
     <View style={styles.base} accessible accessibilityRole="none" {...props}>
-      {React.Children.toArray(children)
-        .filter((child) => !!child)
-        .map((child, index) => (
-          <React.Fragment key={index}>
-            {index > 0 && (
-              <View
-                style={{ width: gap }}
-                testID={TESTID_LISTITEM_GAP}
-                accessible={false}
-              />
-            )}
-            {child}
-          </React.Fragment>
-        ))}
+      {topAccessory && <View style={styles.topAccessory}>{topAccessory}</View>}
+      <View style={styles.item}>
+        {React.Children.toArray(children)
+          .filter((child) => !!child)
+          .map((child, index) => (
+            <React.Fragment key={index}>
+              {index > 0 && (
+                <View
+                  style={{ width: gap as DimensionValue }}
+                  testID={TESTID_LISTITEM_GAP}
+                  accessible={false}
+                />
+              )}
+              {child}
+            </React.Fragment>
+          ))}
+      </View>
+      {bottomAccessory && (
+        <View style={styles.bottomAccessory}>{bottomAccessory}</View>
+      )}
     </View>
   );
 };

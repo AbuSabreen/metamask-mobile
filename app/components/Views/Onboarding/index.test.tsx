@@ -1,24 +1,4569 @@
+// Mock Logger
+jest.mock('../../../util/Logger', () => ({
+  error: jest.fn(),
+  log: jest.fn(),
+}));
+
+jest.mock(
+  '../../../util/onboarding/hooks/useOnboardingLoadingStallTracker',
+  () => ({
+    useOnboardingLoadingStallTracker: jest.fn(),
+  }),
+);
+
+// Mock FilesystemStorage
+jest.mock('redux-persist-filesystem-storage', () => ({
+  getItem: jest.fn(() => Promise.resolve(null)),
+  setItem: jest.fn(() => Promise.resolve()),
+  removeItem: jest.fn(() => Promise.resolve()),
+}));
+
+// Mock getVaultFromBackup
+jest.mock('../../../core/BackupVault', () => ({
+  getVaultFromBackup: jest.fn(() =>
+    Promise.resolve({ success: false, vault: null }),
+  ),
+}));
+
+let mockSkipLoadingUnset = false;
+jest.mock('../../../actions/user', () => {
+  const actualUserActions = jest.requireActual('../../../actions/user');
+  return {
+    ...actualUserActions,
+    loadingUnset: jest.fn(() =>
+      mockSkipLoadingUnset
+        ? { type: 'UNIT_TEST_NOOP' }
+        : actualUserActions.loadingUnset(),
+    ),
+  };
+});
+
+// Mock animation components - using existing mocks
+jest.mock('../../UI/FoxAnimation/FoxAnimation');
+jest.mock('../../UI/OnboardingAnimation/OnboardingAnimation');
+jest.mock('../../UI/OnboardingFoxLoader/OnboardingFoxLoader');
+jest.mock('../RevealPrivateCredential', () => ({
+  RevealPrivateCredential: () => null,
+}));
+
+jest.mock('react-native-elevated-view', () => ({
+  __esModule: true,
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  default: jest.requireActual('react-native').View,
+}));
+
+const MOCK_APP_VERSION = '7.0.0';
+const MOCK_BUILD_NUMBER = '1234';
+const MOCK_ONBOARDING_VERSION = `${MOCK_APP_VERSION} (${MOCK_BUILD_NUMBER})`;
+
+jest.mock('react-native-device-info', () => ({
+  getVersion: jest.fn(() => MOCK_APP_VERSION),
+  getBuildNumber: jest.fn(() => MOCK_BUILD_NUMBER),
+  getTotalMemorySync: jest.fn(() => 4 * 1024 ** 3),
+}));
+
+import React from 'react';
+import {
+  InteractionManager,
+  BackHandler,
+  Animated,
+  AppState,
+  Platform,
+  type AppStateStatus,
+} from 'react-native';
+import FilesystemStorage from 'redux-persist-filesystem-storage';
+import { getVaultFromBackup } from '../../../core/BackupVault';
 import { renderScreen } from '../../../util/test/renderWithProvider';
-import Onboarding from './';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
+import Onboarding, { OAUTH_TRACE_ABANDONMENT_GRACE_MS } from './';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import Device from '../../../util/device';
+import { fireEvent, waitFor, act } from '@testing-library/react-native';
+import { OnboardingSelectorIDs } from './Onboarding.testIds';
+import { OnboardingSheetSelectorIDs } from './OnboardingSheet/OnboardingSheet.testIds';
+import { loadingUnset, UserActionType } from '../../../actions/user';
+import FadeOutOverlay from '../../UI/FadeOutOverlay';
+import StorageWrapper from '../../../store/storage-wrapper';
+import { Authentication } from '../../../core';
+import Routes from '../../../constants/navigation/Routes';
+import { ONBOARDING, PREVIOUS_SCREEN } from '../../../constants/navigation';
+import { strings } from '../../../../locales/i18n';
+import { OAuthError, OAuthErrorType } from '../../../core/OAuthService/error';
+import { AuthConnection } from '../../../core/OAuthService/OAuthInterface';
+import { BottomSheet } from '@metamask/design-system-react-native';
+import {
+  getOAuthBackgroundAnalyticsProperties,
+  isOAuthLifecycleInProgress,
+  resetOAuthLifecycleTrackingForTests,
+} from '../../../core/OAuthService/oauthLifecycleTracking';
+import { IconName } from '../../../component-library/components/Icons/Icon';
+import { captureException } from '@sentry/react-native';
+import Logger from '../../../util/Logger';
+import {
+  MIGRATION_ERROR_HAPPENED,
+  OAUTH_IN_PROGRESS,
+} from '../../../constants/storage';
+import { AccountType, OnboardingMethod } from '../../../constants/onboarding';
+import { OnboardingCtaIds } from '../../../hooks/performance/onboardingPerformanceIds';
+import { _resetOnboardingNavigationPerformanceForTesting } from '../../../hooks/performance/onboardingNavigationPerformanceState';
+import { FeatureFlagNames } from '../../../constants/featureFlags';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { ATTRIBUTION_DEFAULT_TTL_MS } from '../../../core/redux/slices/attribution';
+import {
+  annotateTrace,
+  discardBufferedTraces,
+  endTrace,
+  trace,
+  TraceName,
+  updateCachedConsent,
+} from '../../../util/trace';
+import { isSentryEnabled, setupSentry } from '../../../util/sentry/utils';
+
+// Mock netinfo - using existing mock
+jest.mock('@react-native-community/netinfo');
+
+// Create a mutable mock for hasTestOverrides that can be controlled per test
+let mockHasTestOverrides = false;
+jest.mock('../../../util/test/utils', () => ({
+  ...jest.requireActual('../../../util/test/utils'),
+  get hasTestOverrides() {
+    return mockHasTestOverrides;
+  },
+}));
+
+import { fetch as netInfoFetch } from '@react-native-community/netinfo';
+import { useOnboardingLoadingStallTracker } from '../../../util/onboarding/hooks/useOnboardingLoadingStallTracker';
+
+const mockNetInfoFetch = netInfoFetch as jest.Mock;
+const mockUseOnboardingLoadingStallTracker =
+  useOnboardingLoadingStallTracker as jest.MockedFunction<
+    typeof useOnboardingLoadingStallTracker
+  >;
+const mockNavigate = jest.fn();
+const mockReplace = jest.fn();
+const mockGoBack = jest.fn();
+
+const IOS_GOOGLE_WARNING_TITLE = strings('error_sheet.ios_need_update_title');
+const IOS_GOOGLE_WARNING_BUTTON = strings('error_sheet.ios_need_update_button');
+
+const getIosGoogleWarningSheetCall = () =>
+  mockNavigate.mock.calls.find(
+    ([route, params]) =>
+      route === Routes.MODAL.ROOT_MODAL_FLOW &&
+      params?.screen === Routes.SHEET.SUCCESS_ERROR_SHEET &&
+      params?.params?.title === IOS_GOOGLE_WARNING_TITLE,
+  );
+
+const IOS_GOOGLE_BLOCKING_ERROR_TITLE = strings(
+  'error_sheet.ios_google_login_unsupported_blocking_title',
+);
+const IOS_GOOGLE_BLOCKING_ERROR_BUTTON = strings(
+  'error_sheet.ios_google_login_unsupported_blocking_button',
+);
+
+const getIosGoogleBlockingErrorSheetCall = () =>
+  mockNavigate.mock.calls.find(
+    ([route, params]) =>
+      route === Routes.MODAL.ROOT_MODAL_FLOW &&
+      params?.screen === Routes.SHEET.SUCCESS_ERROR_SHEET &&
+      params?.params?.title === IOS_GOOGLE_BLOCKING_ERROR_TITLE,
+  );
+
+const IOS_GOOGLE_BLOCKING_REHYDRATION_TITLE = strings(
+  'error_sheet.ios_google_login_unsupported_blocking_rehydration_title',
+);
+const IOS_GOOGLE_BLOCKING_REHYDRATION_BUTTON = strings(
+  'error_sheet.ios_google_login_unsupported_blocking_rehydration_button',
+);
+
+const getIosGoogleBlockingRehydrationSheetCall = () =>
+  mockNavigate.mock.calls.find(
+    ([route, params]) =>
+      route === Routes.MODAL.ROOT_MODAL_FLOW &&
+      params?.screen === Routes.SHEET.SUCCESS_ERROR_SHEET &&
+      params?.params?.title === IOS_GOOGLE_BLOCKING_REHYDRATION_TITLE,
+  );
 
 const mockInitialState = {
   engine: {
     backgroundState: {
-      ...initialBackgroundState,
+      ...backgroundState,
     },
+  },
+  user: {
+    passwordSet: false,
+    loadingSet: false,
+    loadingMsg: '',
+    existingUser: false,
   },
 };
 
+const mockInitialStateWithExistingUser = {
+  ...mockInitialState,
+  user: {
+    ...mockInitialState.user,
+    existingUser: true,
+  },
+};
+
+const mockInitialStateWithExistingUserAndPassword = {
+  ...mockInitialState,
+  user: {
+    ...mockInitialState.user,
+    existingUser: true,
+    passwordSet: true,
+  },
+};
+
+jest.mock('../../../util/device', () => {
+  const mockDevice = {
+    isLargeDevice: jest.fn(),
+    isIphoneX: jest.fn(),
+    isAndroid: jest.fn(),
+    isIos: jest.fn(),
+    isMediumDevice: jest.fn(),
+    comparePlatformVersionTo: jest.fn().mockReturnValue(1),
+  };
+
+  return {
+    __esModule: true,
+    default: mockDevice,
+    ...mockDevice,
+  };
+});
+
+// expo library are not supported in jest ( unless using jest-expo as preset ), so we need to mock them
+jest.mock('../../../core/OAuthService/OAuthLoginHandlers', () => ({
+  createLoginHandler: jest.fn(),
+}));
+
+jest.mock('../../../core/OAuthService/OAuthService', () => ({
+  __esModule: true,
+  default: {
+    handleOAuthLogin: jest.fn().mockResolvedValue({
+      type: 'success',
+      existingUser: false,
+      accountName: 'test@example.com',
+    }),
+    resetOauthState: jest.fn(),
+    localState: {
+      metricStateBeforeOauth: null,
+      loginInProgress: false,
+      oauthLoginSuccess: false,
+      oauthLoginError: null,
+    },
+  },
+}));
+
+jest.mock('../../../store/storage-wrapper', () => ({
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+}));
+
+jest.mock('../../../core', () => ({
+  Authentication: {
+    resetVault: jest.fn(),
+    lockApp: jest.fn(),
+  },
+}));
+
+jest.mock('../../../util/trace', () => ({
+  ...jest.requireActual('../../../util/trace'),
+  trace: jest
+    .fn()
+    .mockReturnValue({ _buffered: true, _name: 'test', _id: 'test' }),
+  endTrace: jest.fn(),
+  annotateTrace: jest.fn(),
+  updateCachedConsent: jest.fn(),
+  discardBufferedTraces: jest.fn(),
+  applyPendingOnboardingMachineTime: jest.fn(),
+}));
+
+jest.mock('../../../util/sentry/utils', () => ({
+  ...jest.requireActual('../../../util/sentry/utils'),
+  isSentryEnabled: jest.fn().mockReturnValue(false),
+  setupSentry: jest.fn().mockResolvedValue(undefined),
+}));
+
+const mockCreateEventBuilder = jest.fn().mockReturnValue({
+  addProperties: jest.fn().mockReturnThis(),
+  build: jest.fn().mockReturnValue({}),
+});
+
+// Mock analytics module
+jest.mock('../../../util/analytics/analytics', () => ({
+  analytics: {
+    isEnabled: jest.fn(() => false),
+    trackEvent: jest.fn(),
+    optIn: jest.fn().mockResolvedValue(undefined),
+    optOut: jest.fn().mockResolvedValue(undefined),
+    getAnalyticsId: jest.fn().mockResolvedValue('test-analytics-id'),
+    identify: jest.fn(),
+    trackView: jest.fn(),
+    isOptedIn: jest.fn().mockResolvedValue(false),
+  },
+}));
+
+// Import analytics to access mocks
+import { analytics } from '../../../util/analytics/analytics';
+
+const mockAnalytics = analytics as jest.Mocked<typeof analytics>;
+
+// Mock useAnalytics hook to use our mocked analytics
+jest.mock('../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => ({
+    trackEvent: mockAnalytics.trackEvent,
+    enable: async (enable?: boolean) => {
+      if (enable === false) {
+        await mockAnalytics.optOut();
+      } else {
+        await mockAnalytics.optIn();
+      }
+    },
+    identify: mockAnalytics.identify,
+    createDataDeletionTask: jest.fn(),
+    checkDataDeleteStatus: jest.fn(),
+    getDeleteRegulationCreationDate: jest.fn(),
+    getDeleteRegulationId: jest.fn(),
+    isEnabled: mockAnalytics.isEnabled,
+    getAnalyticsId: mockAnalytics.getAnalyticsId,
+    createEventBuilder: mockCreateEventBuilder,
+  }),
+}));
+
+const mockSeedlessOnboardingEnabled = jest.fn();
+jest.mock('../../../core/OAuthService/OAuthLoginHandlers/constants', () => ({
+  get SEEDLESS_ONBOARDING_ENABLED() {
+    return mockSeedlessOnboardingEnabled();
+  },
+}));
+
+const mockNav = {
+  navigate: mockNavigate,
+  replace: mockReplace,
+  reset: jest.fn(),
+  setOptions: jest.fn(),
+  goBack: mockGoBack,
+  setParams: jest.fn(),
+  isFocused: jest.fn(() => true),
+  canGoBack: jest.fn(() => false),
+  dispatch: jest.fn((action) => {
+    if (action.type === 'REPLACE') {
+      mockReplace(action.payload.name, action.payload.params);
+    }
+  }),
+};
+jest.mock('@react-navigation/native-stack', () => ({
+  createNativeStackNavigator: () => ({
+    Navigator: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    Screen: ({
+      component: ScreenComponent,
+      initialParams,
+    }: {
+      component: React.ComponentType<{
+        navigation: Record<string, unknown>;
+        route: { params: Record<string, unknown> };
+      }>;
+      initialParams: Record<string, unknown>;
+    }) => (
+      <ScreenComponent
+        navigation={mockNav}
+        route={{ params: initialParams || {} }}
+      />
+    ),
+  }),
+}));
+
+// trackOnboarding still defers through InteractionManager, and testSetup mocks
+// it as a no-op, so it has to run synchronously here for analytics assertions.
+const mockRunAfterInteractions = jest.fn().mockImplementation((cb) => {
+  cb();
+  return {
+    then: (onfulfilled: () => void) => Promise.resolve(onfulfilled()),
+    done: (onfulfilled: () => void, onrejected: () => void) =>
+      Promise.resolve().then(onfulfilled, onrejected),
+    cancel: jest.fn(),
+  };
+});
+jest
+  .spyOn(InteractionManager, 'runAfterInteractions')
+  .mockImplementation(mockRunAfterInteractions);
+
+const mockRequestIdleCallback = jest.fn((callback: () => void) => {
+  callback();
+  return 0;
+});
+interface IdleCallbackHost {
+  requestIdleCallback?: (callback: () => void) => number;
+}
+const idleHost = globalThis as unknown as IdleCallbackHost;
+const originalRequestIdleCallback = idleHost.requestIdleCallback;
+idleHost.requestIdleCallback = mockRequestIdleCallback;
+
+afterAll(() => {
+  idleHost.requestIdleCallback = originalRequestIdleCallback;
+});
+
+// Mock React Navigation hooks
+const mockRoute = {
+  params: {},
+};
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => mockNav,
+  useRoute: () => mockRoute,
+}));
+
 describe('Onboarding', () => {
-  it('should render correctly', () => {
-    const { toJSON } = renderScreen(
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockHasTestOverrides = false;
+    mockCreateEventBuilder.mockClear();
+    (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(false);
+    (mockAnalytics.trackEvent as jest.Mock).mockClear();
+    (mockAnalytics.optIn as jest.Mock).mockClear();
+    (mockAnalytics.optOut as jest.Mock).mockClear();
+
+    jest.spyOn(BackHandler, 'addEventListener').mockImplementation(() => ({
+      remove: jest.fn(),
+    }));
+
+    (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+
+    Platform.OS = 'ios';
+  });
+
+  it('renders correctly', () => {
+    const { getByTestId } = renderScreen(
       Onboarding,
       { name: 'Onboarding' },
       {
         state: mockInitialState,
       },
     );
-    expect(toJSON()).toMatchSnapshot();
+    expect(getByTestId(OnboardingSelectorIDs.CONTAINER_ID)).toBeOnTheScreen();
+  });
+
+  it('renders correctly with large device and iphoneX', () => {
+    (Device.isLargeDevice as jest.Mock).mockReturnValue(true);
+    (Device.isIphoneX as jest.Mock).mockReturnValue(true);
+    (Device.isAndroid as jest.Mock).mockReturnValue(false);
+    (Device.isIos as jest.Mock).mockReturnValue(true);
+
+    const { getByTestId } = renderScreen(
+      Onboarding,
+      { name: 'Onboarding' },
+      {
+        state: mockInitialState,
+      },
+    );
+    expect(getByTestId(OnboardingSelectorIDs.CONTAINER_ID)).toBeOnTheScreen();
+  });
+
+  it('renders correctly with medium device and android', () => {
+    (Device.isMediumDevice as jest.Mock).mockReturnValue(true);
+    (Device.isIphoneX as jest.Mock).mockReturnValue(false);
+    (Device.isAndroid as jest.Mock).mockReturnValue(true);
+    (Device.isIos as jest.Mock).mockReturnValue(false);
+
+    const { getByTestId } = renderScreen(
+      Onboarding,
+      { name: 'Onboarding' },
+      {
+        state: mockInitialState,
+      },
+    );
+    expect(getByTestId(OnboardingSelectorIDs.CONTAINER_ID)).toBeOnTheScreen();
+  });
+
+  it('renders correctly with android', () => {
+    (Device.isAndroid as jest.Mock).mockReturnValue(true);
+    (Device.isIos as jest.Mock).mockReturnValue(false);
+    (Device.isLargeDevice as jest.Mock).mockReturnValue(false);
+    (Device.isIphoneX as jest.Mock).mockReturnValue(false);
+
+    Platform.OS = 'android';
+
+    const { getByTestId } = renderScreen(
+      Onboarding,
+      { name: 'Onboarding' },
+      {
+        state: mockInitialState,
+      },
+    );
+    expect(getByTestId(OnboardingSelectorIDs.CONTAINER_ID)).toBeOnTheScreen();
+  });
+
+  it('applies compact gap and medium button size on medium device', () => {
+    (Device.isMediumDevice as jest.Mock).mockReturnValue(true);
+
+    const { getByTestId } = renderScreen(
+      Onboarding,
+      { name: 'Onboarding' },
+      {
+        state: mockInitialState,
+      },
+    );
+
+    expect(getByTestId(OnboardingSelectorIDs.CONTAINER_ID)).toBeOnTheScreen();
+  });
+
+  it('applies standard gap and large button size on non-medium device', () => {
+    (Device.isMediumDevice as jest.Mock).mockReturnValue(false);
+
+    const { getByTestId } = renderScreen(
+      Onboarding,
+      { name: 'Onboarding' },
+      {
+        state: mockInitialState,
+      },
+    );
+
+    expect(getByTestId(OnboardingSelectorIDs.CONTAINER_ID)).toBeOnTheScreen();
+  });
+
+  it('renders the onboarding fox loader while social login is loading', async () => {
+    mockSkipLoadingUnset = true;
+    const loadingState = {
+      ...mockInitialState,
+      user: {
+        ...mockInitialState.user,
+        loadingSet: true,
+        loadingMsg: '',
+      },
+    };
+    mockRoute.params = { delete: true };
+
+    try {
+      const { getByTestId, queryByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: loadingState,
+        },
+      );
+
+      await waitFor(() => {
+        expect(getByTestId('fox-rive-loader-animation')).toBeOnTheScreen();
+      });
+      expect(
+        queryByTestId(OnboardingSelectorIDs.NEW_WALLET_BUTTON),
+      ).toBeOnTheScreen();
+    } finally {
+      mockRoute.params = {};
+      mockSkipLoadingUnset = false;
+    }
+  });
+
+  it('keeps the landing content mounted when loading is unset after a failed social login', async () => {
+    mockSkipLoadingUnset = true;
+    const fadeOutOverlayMountSpy = jest.spyOn(
+      FadeOutOverlay.prototype,
+      'componentDidMount',
+    );
+    const loadingState = {
+      ...mockInitialState,
+      user: {
+        ...mockInitialState.user,
+        loadingSet: true,
+        loadingMsg: '',
+      },
+    };
+
+    try {
+      const { getByTestId, queryByTestId, store } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: loadingState,
+        },
+      );
+
+      await waitFor(() => {
+        expect(getByTestId('fox-rive-loader-animation')).toBeOnTheScreen();
+      });
+      expect(fadeOutOverlayMountSpy).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        store.dispatch({ type: UserActionType.LOADING_UNSET });
+      });
+
+      await waitFor(() => {
+        expect(
+          queryByTestId('fox-rive-loader-animation'),
+        ).not.toBeOnTheScreen();
+      });
+      expect(
+        getByTestId(OnboardingSelectorIDs.NEW_WALLET_BUTTON),
+      ).toBeOnTheScreen();
+      expect(fadeOutOverlayMountSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fadeOutOverlayMountSpy.mockRestore();
+      mockSkipLoadingUnset = false;
+    }
+  });
+
+  it('applies iPhoneX notification padding when on iPhoneX', async () => {
+    mockSkipLoadingUnset = true;
+    const loadingState = {
+      ...mockInitialState,
+      user: {
+        ...mockInitialState.user,
+        loadingSet: false,
+        loadingMsg: '',
+      },
+    };
+    mockRoute.params = { delete: true };
+    (Device.isIphoneX as jest.Mock).mockReturnValue(true);
+
+    try {
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: loadingState,
+        },
+      );
+
+      await waitFor(() => {
+        expect(
+          getByTestId(OnboardingSelectorIDs.CONTAINER_ID),
+        ).toBeOnTheScreen();
+      });
+    } finally {
+      mockRoute.params = {};
+      mockSkipLoadingUnset = false;
+    }
+  });
+
+  it('applies standard notification padding when not on iPhoneX', async () => {
+    mockSkipLoadingUnset = true;
+    const loadingState = {
+      ...mockInitialState,
+      user: {
+        ...mockInitialState.user,
+        loadingSet: false,
+        loadingMsg: '',
+      },
+    };
+    mockRoute.params = { delete: true };
+    (Device.isIphoneX as jest.Mock).mockReturnValue(false);
+
+    try {
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: loadingState,
+        },
+      );
+
+      await waitFor(() => {
+        expect(
+          getByTestId(OnboardingSelectorIDs.CONTAINER_ID),
+        ).toBeOnTheScreen();
+      });
+    } finally {
+      mockRoute.params = {};
+      mockSkipLoadingUnset = false;
+    }
+  });
+
+  it('handles click on create wallet button', () => {
+    (Device.isAndroid as jest.Mock).mockReturnValue(true);
+    (Device.isIos as jest.Mock).mockReturnValue(false);
+    (Device.isLargeDevice as jest.Mock).mockReturnValue(false);
+    (Device.isIphoneX as jest.Mock).mockReturnValue(false);
+
+    const { getByTestId } = renderScreen(
+      Onboarding,
+      { name: 'Onboarding' },
+      {
+        state: mockInitialState,
+      },
+    );
+
+    const createWalletButton = getByTestId(
+      OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+    );
+    fireEvent.press(createWalletButton);
+  });
+
+  it('handles click on have an existing wallet button', () => {
+    (Device.isAndroid as jest.Mock).mockReturnValue(true);
+    (Device.isIos as jest.Mock).mockReturnValue(false);
+    (Device.isLargeDevice as jest.Mock).mockReturnValue(false);
+    (Device.isIphoneX as jest.Mock).mockReturnValue(false);
+
+    const { getByTestId } = renderScreen(
+      Onboarding,
+      { name: 'Onboarding' },
+      {
+        state: mockInitialState,
+      },
+    );
+
+    const importSeedButton = getByTestId(
+      OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+    );
+    fireEvent.press(importSeedButton);
+  });
+
+  describe('Create wallet flow', () => {
+    afterEach(() => {
+      mockSeedlessOnboardingEnabled.mockReset();
+      mockNavigate.mockReset();
+      mockNetInfoFetch.mockReset();
+    });
+
+    it('opens the onboarding sheet when create wallet is pressed for new user', async () => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+      (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+
+      const { getByTestId, getByText } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(
+        getByTestId(OnboardingSheetSelectorIDs.CONTAINER_ID),
+      ).toBeOnTheScreen();
+      expect(
+        getByText(strings('onboarding.continue_with_srp')),
+      ).toBeOnTheScreen();
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.IMPORT_SEED_BUTTON),
+        );
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'ChoosePassword',
+        expect.objectContaining({
+          [PREVIOUS_SCREEN]: ONBOARDING,
+        }),
+      );
+      expect(
+        getByTestId(OnboardingSheetSelectorIDs.CONTAINER_ID),
+      ).toBeOnTheScreen();
+    });
+
+    it('navigates to ChoosePassword when create wallet is pressed with seedless disabled', async () => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(false);
+      (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'ChoosePassword',
+        expect.objectContaining({
+          [PREVIOUS_SCREEN]: ONBOARDING,
+        }),
+      );
+      expect(annotateTrace).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          'onboarding.method': OnboardingMethod.Srp,
+          account_type: AccountType.Metamask,
+        }),
+      );
+    });
+
+    it('stores the onboarding version on the first create wallet press', async () => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(false);
+      (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+
+      const { getByTestId, store } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await waitFor(() => {
+        expect(store.getState().onboarding).toEqual(
+          expect.objectContaining({
+            accountType: AccountType.Metamask,
+            onboardingVersion: MOCK_ONBOARDING_VERSION,
+          }),
+        );
+      });
+    });
+
+    it('navigates to offline error sheet when there is no internet', async () => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+      (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+
+      mockNetInfoFetch.mockResolvedValue({
+        type: 'none',
+        isConnected: false,
+        isInternetReachable: false,
+        details: null,
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+          params: expect.objectContaining({
+            title: strings('error_sheet.no_internet_connection_title'),
+            description: strings(
+              'error_sheet.no_internet_connection_description',
+            ),
+            descriptionAlign: 'left',
+            primaryButtonLabel: strings(
+              'error_sheet.no_internet_connection_button',
+            ),
+            closeOnPrimaryButtonPress: true,
+            type: 'error',
+          }),
+        }),
+      );
+    });
+
+    it('hides landing content from assistive technologies while the onboarding sheet is open', async () => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+
+      const { getByTestId, UNSAFE_getByType } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const landingContent = getByTestId(
+        OnboardingSelectorIDs.LANDING_CONTENT_ID,
+      );
+      expect(landingContent).toHaveProp('accessibilityElementsHidden', false);
+      expect(landingContent).toHaveProp('importantForAccessibility', 'auto');
+
+      await act(async () => {
+        fireEvent.press(getByTestId(OnboardingSelectorIDs.NEW_WALLET_BUTTON));
+      });
+
+      const hiddenLandingContent = getByTestId(
+        OnboardingSelectorIDs.LANDING_CONTENT_ID,
+        { includeHiddenElements: true },
+      );
+      expect(hiddenLandingContent).toHaveProp(
+        'accessibilityElementsHidden',
+        true,
+      );
+      expect(hiddenLandingContent).toHaveProp(
+        'importantForAccessibility',
+        'no-hide-descendants',
+      );
+
+      await act(async () => {
+        UNSAFE_getByType(BottomSheet).props.goBack();
+      });
+
+      expect(getByTestId(OnboardingSelectorIDs.LANDING_CONTENT_ID)).toHaveProp(
+        'accessibilityElementsHidden',
+        false,
+      );
+      expect(getByTestId(OnboardingSelectorIDs.LANDING_CONTENT_ID)).toHaveProp(
+        'importantForAccessibility',
+        'auto',
+      );
+    });
+
+    it('closes the onboarding sheet when the sheet goes back', async () => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+
+      const { getByTestId, queryByTestId, UNSAFE_getByType } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        fireEvent.press(getByTestId(OnboardingSelectorIDs.NEW_WALLET_BUTTON));
+      });
+
+      expect(
+        getByTestId(OnboardingSheetSelectorIDs.CONTAINER_ID),
+      ).toBeOnTheScreen();
+
+      await act(async () => {
+        UNSAFE_getByType(BottomSheet).props.goBack();
+      });
+
+      expect(queryByTestId(OnboardingSheetSelectorIDs.CONTAINER_ID)).toBeNull();
+    });
+
+    it('pops an unfocused onboarding screen on Android back while the sheet is open', async () => {
+      Platform.OS = 'android';
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+      const hardwareBackHandlers: (() => boolean | null | undefined)[] = [];
+      jest
+        .spyOn(BackHandler, 'addEventListener')
+        .mockImplementation((event, handler) => {
+          if (event === 'hardwareBackPress') {
+            hardwareBackHandlers.push(
+              handler as () => boolean | null | undefined,
+            );
+          }
+          return { remove: jest.fn() };
+        });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        fireEvent.press(getByTestId(OnboardingSelectorIDs.NEW_WALLET_BUTTON));
+      });
+
+      const onHardwareBackPress =
+        hardwareBackHandlers[hardwareBackHandlers.length - 1];
+
+      try {
+        (mockNav.isFocused as jest.Mock).mockReturnValue(true);
+
+        expect(onHardwareBackPress()).toBe(false);
+        expect(mockGoBack).not.toHaveBeenCalled();
+
+        (mockNav.isFocused as jest.Mock).mockReturnValue(false);
+        (mockNav.canGoBack as jest.Mock).mockReturnValue(true);
+
+        expect(onHardwareBackPress()).toBe(true);
+        expect(mockGoBack).toHaveBeenCalledTimes(1);
+
+        (mockNav.canGoBack as jest.Mock).mockReturnValue(false);
+
+        expect(onHardwareBackPress()).toBe(true);
+        expect(mockGoBack).toHaveBeenCalledTimes(1);
+      } finally {
+        (mockNav.isFocused as jest.Mock).mockReturnValue(true);
+        (mockNav.canGoBack as jest.Mock).mockReturnValue(false);
+      }
+    });
+  });
+
+  describe('Import wallet flow', () => {
+    afterEach(() => {
+      mockSeedlessOnboardingEnabled.mockReset();
+    });
+    it('opens the onboarding sheet when have an existing wallet button is pressed for new user', async () => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+      (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+
+      const { getByTestId, getByText } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(
+        getByTestId(OnboardingSheetSelectorIDs.CONTAINER_ID),
+      ).toBeOnTheScreen();
+      expect(getByText(strings('onboarding.import_srp'))).toBeOnTheScreen();
+    });
+
+    it('navigates to AddDeviceToWallet from the social import sheet', async () => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+      (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+
+      const stateWithAddDeviceSync = {
+        ...mockInitialState,
+        engine: {
+          backgroundState: {
+            ...mockInitialState.engine.backgroundState,
+            RemoteFeatureFlagController: {
+              ...mockInitialState.engine.backgroundState
+                .RemoteFeatureFlagController,
+              remoteFeatureFlags: {
+                ...mockInitialState.engine.backgroundState
+                  .RemoteFeatureFlagController?.remoteFeatureFlags,
+                [FeatureFlagNames.addDeviceSyncEnabled]: true,
+              },
+            },
+          },
+        },
+      };
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: stateWithAddDeviceSync,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      fireEvent.press(
+        getByTestId(OnboardingSheetSelectorIDs.IMPORT_FROM_EXTENSION_BUTTON),
+      );
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.ONBOARDING.ADD_DEVICE_TO_WALLET,
+      );
+    });
+
+    it('navigates to import flow when import wallet is pressed with seedless disabled', async () => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(false);
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith(
+          Routes.ONBOARDING.IMPORT_FROM_SECRET_RECOVERY_PHRASE,
+          expect.objectContaining({
+            [PREVIOUS_SCREEN]: ONBOARDING,
+          }),
+        );
+      });
+
+      expect(annotateTrace).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          'onboarding.method': OnboardingMethod.Srp,
+          account_type: AccountType.Imported,
+        }),
+      );
+
+      await waitFor(() => {
+        expect(mockAnalytics.optOut).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('componentDidMount behavior', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('checks for existing user on mount', async () => {
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialStateWithExistingUser,
+        },
+      );
+
+      await waitFor(() => {
+        // Existing-user is read from Redux, not MMKV. Mount still checks
+        // persisted OAuth-in-progress for Android process-death analytics.
+        expect(StorageWrapper.getItem).toHaveBeenCalledWith(OAUTH_IN_PROGRESS);
+        expect(StorageWrapper.getItem).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('disables back press when component mounts', () => {
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      expect(BackHandler.addEventListener).toHaveBeenCalledWith(
+        'hardwareBackPress',
+        expect.any(Function),
+      );
+    });
+
+    it('triggers animatedTimingStart', async () => {
+      jest.useFakeTimers();
+
+      const animatedTimingSpy = jest.spyOn(Animated, 'timing');
+
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+        { route: { params: { delete: true } } },
+      );
+
+      await waitFor(() => {
+        // Existing-user is read from Redux, not MMKV. Mount still checks
+        // persisted OAuth-in-progress for Android process-death analytics.
+        expect(StorageWrapper.getItem).toHaveBeenCalledWith(OAUTH_IN_PROGRESS);
+        expect(StorageWrapper.getItem).toHaveBeenCalledTimes(1);
+      });
+
+      await act(async () => {
+        jest.advanceTimersByTime(1000);
+      });
+
+      expect(animatedTimingSpy).toHaveBeenCalled();
+
+      await act(async () => {
+        jest.advanceTimersByTime(2000);
+      });
+
+      expect(animatedTimingSpy.mock.calls.length).toBeGreaterThan(0);
+
+      animatedTimingSpy.mockRestore();
+      jest.useRealTimers();
+    });
+  });
+
+  describe('OAuth Login Methods', () => {
+    const mockOAuthService = jest.requireMock(
+      '../../../core/OAuthService/OAuthService',
+    ).default;
+    const mockCreateLoginHandler = jest.requireMock(
+      '../../../core/OAuthService/OAuthLoginHandlers',
+    ).createLoginHandler;
+
+    beforeEach(() => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+      (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+      (Device.isIos as jest.Mock).mockReturnValue(false);
+      (Device.comparePlatformVersionTo as jest.Mock).mockReturnValue(1);
+    });
+
+    afterEach(() => {
+      jest.clearAllMocks();
+      mockNavigate.mockReset();
+      mockSeedlessOnboardingEnabled.mockReset();
+    });
+
+    it('passes wallet_setup_type new to the stall tracker when social create starts', async () => {
+      let resolveLogin: (value: unknown) => void = () => undefined;
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockReturnValue(
+        new Promise((resolve) => {
+          resolveLogin = resolve;
+        }),
+      );
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      let loginPromise: Promise<unknown> | undefined;
+      await act(async () => {
+        loginPromise = fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockUseOnboardingLoadingStallTracker).toHaveBeenCalledWith(
+          expect.objectContaining({
+            isLoading: true,
+            properties: { wallet_setup_type: 'new' },
+          }),
+        );
+      });
+
+      await act(async () => {
+        resolveLogin({
+          type: 'success',
+          existingUser: false,
+          accountName: 'test@example.com',
+        });
+        await loginPromise;
+      });
+    });
+
+    it('passes wallet_setup_type import to the stall tracker when social import starts', async () => {
+      let resolveLogin: (value: unknown) => void = () => undefined;
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockReturnValue(
+        new Promise((resolve) => {
+          resolveLogin = resolve;
+        }),
+      );
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      let loginPromise: Promise<unknown> | undefined;
+      await act(async () => {
+        loginPromise = fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockUseOnboardingLoadingStallTracker).toHaveBeenCalledWith(
+          expect.objectContaining({
+            isLoading: true,
+            properties: { wallet_setup_type: 'import' },
+          }),
+        );
+      });
+
+      await act(async () => {
+        resolveLogin({
+          type: 'success',
+          existingUser: true,
+          accountName: 'test@icloud.com',
+        });
+        await loginPromise;
+      });
+    });
+
+    it('calls Google OAuth login for create wallet flow on iOS and navigates to ChoosePassword', async () => {
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'ios',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledWith(
+        'mockGoogleHandler',
+        false,
+        // Social-login attempt trace context forwarded so auth spans nest under it.
+        expect.anything(),
+      );
+      expect(annotateTrace).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          'onboarding.method': OnboardingMethod.Social,
+          account_type: AccountType.MetamaskGoogle,
+        }),
+      );
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.ONBOARDING.CHOOSE_PASSWORD,
+        expect.objectContaining({
+          [PREVIOUS_SCREEN]: ONBOARDING,
+          oauthLoginSuccess: true,
+        }),
+      );
+    });
+
+    it('calls Google OAuth login for create wallet flow on Android and navigates directly to ChoosePassword', async () => {
+      Platform.OS = 'android'; // Set platform to Android
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledWith(
+        'mockGoogleHandler',
+        false,
+        expect.anything(),
+      );
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.ONBOARDING.CHOOSE_PASSWORD,
+        expect.objectContaining({
+          [PREVIOUS_SCREEN]: ONBOARDING,
+          oauthLoginSuccess: true,
+        }),
+      );
+
+      // Reset Platform.OS back to iOS for other tests
+      Platform.OS = 'ios';
+    });
+
+    it('calls Apple OAuth login for create wallet flow on iOS and navigates to ChoosePassword', async () => {
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@icloud.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'ios',
+        'apple',
+        false,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledWith(
+        'mockAppleHandler',
+        false,
+        expect.anything(),
+      );
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.ONBOARDING.CHOOSE_PASSWORD,
+        expect.objectContaining({
+          [PREVIOUS_SCREEN]: ONBOARDING,
+          oauthLoginSuccess: true,
+        }),
+      );
+    });
+
+    it('attaches persisted attribution to Social Login Completed for Google create wallet when marketing consent is granted', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      const fixedNow = 1_704_116_800_000;
+      const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(fixedNow);
+      const capturedAt = fixedNow - 60_000;
+      const stateWithAttribution = {
+        ...mockInitialState,
+        security: {
+          allowLoginWithRememberMe: false,
+          dataCollectionForMarketing: true,
+          isNFTAutoDetectionModalViewed: false,
+          osAuthEnabled: true,
+        },
+        attribution: {
+          attribution: {
+            utm_source: 'google-ads',
+            utm_campaign: 'spring',
+            attribution_id: 'slc-google-1',
+            capturedAt,
+          },
+        },
+      };
+
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        { state: stateWithAttribution },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'Social Login Completed',
+            properties: expect.objectContaining({
+              account_type: AccountType.MetamaskGoogle,
+              utm_source: 'google-ads',
+              utm_campaign: 'spring',
+              attribution_id: 'slc-google-1',
+            }),
+          }),
+        );
+      });
+
+      dateNowSpy.mockRestore();
+    });
+
+    it('attaches persisted attribution to Social Login Completed for Apple create wallet when marketing consent is granted', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      const fixedNow = 1_704_116_800_000;
+      const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(fixedNow);
+      const capturedAt = fixedNow - 60_000;
+      const stateWithAttribution = {
+        ...mockInitialState,
+        security: {
+          allowLoginWithRememberMe: false,
+          dataCollectionForMarketing: true,
+          isNFTAutoDetectionModalViewed: false,
+          osAuthEnabled: true,
+        },
+        attribution: {
+          attribution: {
+            utm_source: 'newsletter',
+            utm_medium: 'email',
+            attribution_id: 'slc-apple-1',
+            capturedAt,
+          },
+        },
+      };
+
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@icloud.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        { state: stateWithAttribution },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'Social Login Completed',
+            properties: expect.objectContaining({
+              account_type: AccountType.MetamaskApple,
+              utm_source: 'newsletter',
+              utm_medium: 'email',
+              attribution_id: 'slc-apple-1',
+            }),
+          }),
+        );
+      });
+
+      dateNowSpy.mockRestore();
+    });
+
+    it('does not attach UTM to Social Login Completed when marketing consent is false', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      const fixedNow = 1_704_116_800_000;
+      const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(fixedNow);
+      const capturedAt = fixedNow - 60_000;
+      const stateNoMarketingConsent = {
+        ...mockInitialState,
+        security: {
+          allowLoginWithRememberMe: false,
+          dataCollectionForMarketing: false,
+          isNFTAutoDetectionModalViewed: false,
+          osAuthEnabled: true,
+        },
+        attribution: {
+          attribution: {
+            utm_source: 'should-not-appear',
+            capturedAt,
+          },
+        },
+      };
+
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        { state: stateNoMarketingConsent },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        const socialLoginCall = (
+          mockAnalytics.trackEvent as jest.Mock
+        ).mock.calls.find(
+          (args) =>
+            args[0] &&
+            typeof args[0] === 'object' &&
+            'name' in args[0] &&
+            (args[0] as { name: string }).name === 'Social Login Completed',
+        );
+
+        expect(socialLoginCall).toBeDefined();
+        const socialEventPayload = socialLoginCall?.[0] as {
+          properties: Record<string, unknown>;
+        };
+        expect(socialEventPayload.properties).not.toHaveProperty('utm_source');
+      });
+
+      dateNowSpy.mockRestore();
+    });
+
+    it('does not attach UTM to Social Login Completed when persisted attribution is expired', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      const fixedNow = 1_704_116_800_000;
+      const dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(fixedNow);
+      const stateExpiredAttribution = {
+        ...mockInitialState,
+        security: {
+          allowLoginWithRememberMe: false,
+          dataCollectionForMarketing: true,
+          isNFTAutoDetectionModalViewed: false,
+          osAuthEnabled: true,
+        },
+        attribution: {
+          attribution: {
+            utm_source: 'expired-src',
+            capturedAt: fixedNow - ATTRIBUTION_DEFAULT_TTL_MS - 1,
+          },
+        },
+      };
+
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        { state: stateExpiredAttribution },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        const socialLoginCall = (
+          mockAnalytics.trackEvent as jest.Mock
+        ).mock.calls.find(
+          (args) =>
+            args[0] &&
+            typeof args[0] === 'object' &&
+            'name' in args[0] &&
+            (args[0] as { name: string }).name === 'Social Login Completed',
+        );
+
+        expect(socialLoginCall).toBeDefined();
+        const socialEventPayload = socialLoginCall?.[0] as {
+          properties: Record<string, unknown>;
+        };
+        expect(socialEventPayload.properties).not.toHaveProperty('utm_source');
+      });
+
+      dateNowSpy.mockRestore();
+    });
+
+    it('calls Apple OAuth login for import wallet flow', async () => {
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: true,
+        accountName: 'test@icloud.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'ios',
+        'apple',
+        false,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledWith(
+        'mockAppleHandler',
+        true,
+        expect.anything(),
+      );
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.ONBOARDING.ONBOARDING_OAUTH_REHYDRATE,
+        expect.objectContaining({
+          [PREVIOUS_SCREEN]: ONBOARDING,
+          oauthLoginSuccess: true,
+        }),
+      );
+    });
+
+    it('shows error sheet for OAuth user cancellation', async () => {
+      const cancelError = new OAuthError('', OAuthErrorType.UserCancelled);
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockRejectedValue(cancelError);
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+          params: expect.objectContaining({
+            title: strings('error_sheet.user_cancelled_title'),
+            description: strings('error_sheet.user_cancelled_description'),
+            descriptionAlign: 'center',
+            primaryButtonLabel: strings('error_sheet.user_cancelled_button'),
+            type: 'error',
+          }),
+        }),
+      );
+    });
+
+    it('do not show error sheet for OAuth user dismissal', async () => {
+      const dismissError = new OAuthError('', OAuthErrorType.UserDismissed);
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockRejectedValue(dismissError);
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+          params: expect.objectContaining({
+            title: strings('error_sheet.oauth_error_title'),
+            description: strings('error_sheet.oauth_error_description'),
+            descriptionAlign: 'center',
+            primaryButtonLabel: strings('error_sheet.oauth_error_button'),
+            type: 'error',
+          }),
+        }),
+      );
+    });
+
+    it('does not report to Sentry when OAuth login is already in progress', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      const loginInProgressError = new OAuthError(
+        'Login already in progress',
+        OAuthErrorType.LoginInProgress,
+      );
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockRejectedValue(loginInProgressError);
+      (captureException as jest.Mock).mockClear();
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(captureException).not.toHaveBeenCalled();
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+        }),
+      );
+    });
+
+    it('shows iOS version warning sheet before Google login on iOS < 17.4', async () => {
+      Platform.OS = 'ios';
+      (Device.isIos as jest.Mock).mockReturnValue(true);
+      (Device.comparePlatformVersionTo as jest.Mock).mockReturnValue(-1);
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      // Verify the warning sheet was shown with the iOS not-supported message.
+      const warningSheetCall = getIosGoogleWarningSheetCall();
+
+      expect(warningSheetCall).toEqual([
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+          params: expect.objectContaining({
+            type: 'error',
+            icon: IconName.Warning,
+            isInteractable: false,
+            title: IOS_GOOGLE_WARNING_TITLE,
+            description: expect.anything(),
+            primaryButtonLabel: IOS_GOOGLE_WARNING_BUTTON,
+            onPrimaryButtonPress: expect.any(Function),
+            closeOnPrimaryButtonPress: true,
+          }),
+        }),
+      ]);
+      expect(warningSheetCall?.[1].params.onPrimaryButtonPress).toEqual(
+        expect.any(Function),
+      );
+      expect(Device.comparePlatformVersionTo).toHaveBeenCalledWith('17.4');
+
+      await act(async () => {
+        await warningSheetCall?.[1].params.onPrimaryButtonPress?.();
+      });
+
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Wallet Google Ios Warning Viewed',
+          properties: expect.objectContaining({
+            account_type: AccountType.MetamaskGoogle,
+          }),
+        }),
+      );
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'ios',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledWith(
+        'mockGoogleHandler',
+        false,
+        expect.anything(),
+      );
+    });
+
+    it('shows iOS version warning for Google login on iOS < 17.4 during import wallet flow', async () => {
+      Platform.OS = 'ios';
+      (Device.isIos as jest.Mock).mockReturnValue(true);
+      (Device.comparePlatformVersionTo as jest.Mock).mockReturnValue(-1);
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importWalletButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      const warningSheetCall = getIosGoogleWarningSheetCall();
+
+      expect(warningSheetCall).toBeDefined();
+      expect(warningSheetCall?.[1].params).toEqual(
+        expect.objectContaining({
+          type: 'error',
+          icon: IconName.Warning,
+          title: IOS_GOOGLE_WARNING_TITLE,
+          description: expect.anything(),
+          primaryButtonLabel: IOS_GOOGLE_WARNING_BUTTON,
+          onPrimaryButtonPress: expect.any(Function),
+          closeOnPrimaryButtonPress: true,
+          isInteractable: false,
+        }),
+      );
+      expect(warningSheetCall?.[1].params.onPrimaryButtonPress).toEqual(
+        expect.any(Function),
+      );
+      expect(Device.comparePlatformVersionTo).toHaveBeenCalledWith('17.4');
+
+      await act(async () => {
+        await warningSheetCall?.[1].params.onPrimaryButtonPress?.();
+      });
+
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Wallet Google Ios Warning Viewed',
+          properties: expect.objectContaining({
+            account_type: AccountType.ImportedGoogle,
+          }),
+        }),
+      );
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'ios',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledWith(
+        'mockGoogleHandler',
+        true,
+        expect.anything(),
+      );
+    });
+
+    it('blocks Google login on iOS < 17.4 when googleLoginIosUnsupportedBlockingEnabled is true', async () => {
+      Platform.OS = 'ios';
+      (Device.isIos as jest.Mock).mockReturnValue(true);
+      (Device.comparePlatformVersionTo as jest.Mock).mockReturnValue(-1);
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockClear();
+      mockAnalytics.trackEvent.mockClear();
+
+      const stateWithBlockingFlag = {
+        ...mockInitialState,
+        engine: {
+          backgroundState: {
+            ...mockInitialState.engine.backgroundState,
+            RemoteFeatureFlagController: {
+              ...mockInitialState.engine.backgroundState
+                .RemoteFeatureFlagController,
+              remoteFeatureFlags: {
+                [FeatureFlagNames.googleLoginIosUnsupportedBlockingEnabled]: true,
+              },
+            },
+          },
+        },
+      };
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: stateWithBlockingFlag,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      const errorSheetCall = getIosGoogleBlockingErrorSheetCall();
+
+      expect(errorSheetCall).toEqual([
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+          params: expect.objectContaining({
+            type: 'error',
+            title: IOS_GOOGLE_BLOCKING_ERROR_TITLE,
+            description: expect.anything(),
+            primaryButtonLabel: IOS_GOOGLE_BLOCKING_ERROR_BUTTON,
+            isInteractable: false,
+            onPrimaryButtonPress: expect.any(Function),
+            closeOnPrimaryButtonPress: true,
+          }),
+        }),
+      ]);
+
+      await act(async () => {
+        await errorSheetCall?.[1].params.onPrimaryButtonPress?.();
+      });
+
+      expect(mockCreateLoginHandler).not.toHaveBeenCalled();
+      expect(mockOAuthService.handleOAuthLogin).not.toHaveBeenCalled();
+      expect(mockAnalytics.trackEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Wallet Google Ios Warning Viewed',
+        }),
+      );
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.WALLET_GOOGLE_IOS_ERROR_VIEWED.category,
+          properties: expect.objectContaining({
+            account_type: AccountType.MetamaskGoogle,
+          }),
+        }),
+      );
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.SOCIAL_LOGIN_FAILED.category,
+          properties: expect.objectContaining({
+            account_type: AccountType.MetamaskGoogle,
+            is_rehydration: 'false',
+            failure_type: 'error',
+            error_category: 'provider_login',
+          }),
+        }),
+      );
+    });
+
+    it('tracks Social Login Failed when createLoginHandler rejects an invalid provider before OAuthService', async () => {
+      Platform.OS = 'ios';
+      (Device.isIos as jest.Mock).mockReturnValue(true);
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      mockCreateLoginHandler.mockImplementation(() => {
+        throw new OAuthError(
+          'Invalid provider',
+          OAuthErrorType.InvalidProvider,
+        );
+      });
+      mockAnalytics.trackEvent.mockClear();
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockOAuthService.handleOAuthLogin).not.toHaveBeenCalled();
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.SOCIAL_LOGIN_FAILED.category,
+          properties: expect.objectContaining({
+            account_type: AccountType.MetamaskGoogle,
+            is_rehydration: 'false',
+            failure_type: 'error',
+            error_category: 'provider_login',
+          }),
+        }),
+      );
+    });
+
+    it('blocks Google login on iOS < 17.4 import flow with rehydration sheet when googleLoginIosUnsupportedBlockingEnabled is true', async () => {
+      Platform.OS = 'ios';
+      (Device.isIos as jest.Mock).mockReturnValue(true);
+      (Device.comparePlatformVersionTo as jest.Mock).mockReturnValue(-1);
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockClear();
+      mockAnalytics.trackEvent.mockClear();
+
+      const stateWithBlockingFlag = {
+        ...mockInitialState,
+        engine: {
+          backgroundState: {
+            ...mockInitialState.engine.backgroundState,
+            RemoteFeatureFlagController: {
+              ...mockInitialState.engine.backgroundState
+                .RemoteFeatureFlagController,
+              remoteFeatureFlags: {
+                [FeatureFlagNames.googleLoginIosUnsupportedBlockingEnabled]: true,
+              },
+            },
+          },
+        },
+      };
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: stateWithBlockingFlag,
+        },
+      );
+
+      const importWalletButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      const rehydrationSheetCall = getIosGoogleBlockingRehydrationSheetCall();
+
+      expect(rehydrationSheetCall).toEqual([
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+          params: expect.objectContaining({
+            type: 'error',
+            title: IOS_GOOGLE_BLOCKING_REHYDRATION_TITLE,
+            description: expect.anything(),
+            primaryButtonLabel: IOS_GOOGLE_BLOCKING_REHYDRATION_BUTTON,
+            isInteractable: false,
+            onPrimaryButtonPress: expect.any(Function),
+            closeOnPrimaryButtonPress: true,
+          }),
+        }),
+      ]);
+
+      await act(async () => {
+        await rehydrationSheetCall?.[1].params.onPrimaryButtonPress?.();
+      });
+
+      expect(mockCreateLoginHandler).not.toHaveBeenCalled();
+      expect(mockOAuthService.handleOAuthLogin).not.toHaveBeenCalled();
+      expect(mockAnalytics.trackEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Wallet Google Ios Warning Viewed',
+        }),
+      );
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.WALLET_GOOGLE_IOS_ERROR_VIEWED.category,
+          properties: expect.objectContaining({
+            account_type: AccountType.ImportedGoogle,
+          }),
+        }),
+      );
+    });
+
+    it('navigates to AccountAlreadyExists for existing user in create wallet flow', async () => {
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: true,
+        accountName: 'existing@example.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'AccountAlreadyExists',
+        expect.objectContaining({
+          accountName: 'existing@example.com',
+          oauthLoginSuccess: true,
+        }),
+      );
+    });
+
+    it('navigates to AccountNotFound for new user in import wallet flow', async () => {
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'newuser@icloud.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'AccountNotFound',
+        expect.objectContaining({
+          accountName: 'newuser@icloud.com',
+          oauthLoginSuccess: true,
+        }),
+      );
+    });
+
+    it('does not navigate when OAuth login result type is not success', async () => {
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'error',
+        existingUser: false,
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.ONBOARDING.CHOOSE_PASSWORD,
+        expect.anything(),
+      );
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        'AccountAlreadyExists',
+        expect.anything(),
+      );
+    });
+
+    it('attempts browser fallback when no credential is available in Android', async () => {
+      Platform.OS = 'android';
+      const noCredentialError = new OAuthError(
+        '',
+        OAuthErrorType.GoogleLoginNoCredential,
+      );
+      const fallbackError = new OAuthError('', OAuthErrorType.GoogleLoginError);
+
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(noCredentialError)
+        .mockRejectedValueOnce(fallbackError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      // Verify fallback was attempted
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        true,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(2);
+
+      // Verify no error sheet is shown (handled silently)
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+        }),
+      );
+
+      Platform.OS = 'ios';
+    });
+
+    it('attempts browser fallback when no matching credential in Android', async () => {
+      Platform.OS = 'android';
+      const noMatchingCredentialError = new OAuthError(
+        '',
+        OAuthErrorType.GoogleLoginNoMatchingCredential,
+      );
+      const fallbackError = new OAuthError('', OAuthErrorType.GoogleLoginError);
+
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(noMatchingCredentialError)
+        .mockRejectedValueOnce(fallbackError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      // Verify fallback was attempted
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        true,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(2);
+
+      // Verify no error sheet is shown (handled silently)
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+        }),
+      );
+
+      Platform.OS = 'ios';
+    });
+
+    it('successfully authenticates via browser fallback when no credential is available in Android', async () => {
+      Platform.OS = 'android';
+      const noCredentialError = new OAuthError(
+        '',
+        OAuthErrorType.GoogleLoginNoCredential,
+      );
+
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(noCredentialError)
+        .mockResolvedValueOnce({
+          type: 'success',
+          existingUser: false,
+          accountName: 'test@example.com',
+        });
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        true,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(2);
+
+      // Verify successful navigation to ChoosePassword
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'ChoosePassword',
+        expect.objectContaining({
+          oauthLoginSuccess: true,
+          [PREVIOUS_SCREEN]: ONBOARDING,
+          provider: 'google',
+        }),
+      );
+
+      Platform.OS = 'ios';
+    });
+
+    it('attempts browser fallback when user disabled One Tap feature in Android', async () => {
+      Platform.OS = 'android';
+      const userDisabledOneTapError = new OAuthError(
+        '',
+        OAuthErrorType.GoogleLoginUserDisabledOneTapFeature,
+      );
+      const fallbackError = new OAuthError('', OAuthErrorType.GoogleLoginError);
+
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(userDisabledOneTapError)
+        .mockRejectedValueOnce(fallbackError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      // Verify fallback was attempted
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        true,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(2);
+
+      Platform.OS = 'ios';
+    });
+
+    it('attempts browser fallback when One Tap failure occurs in Android', async () => {
+      Platform.OS = 'android';
+      const oneTapFailureError = new OAuthError(
+        '',
+        OAuthErrorType.GoogleLoginOneTapFailure,
+      );
+      const fallbackError = new OAuthError('', OAuthErrorType.GoogleLoginError);
+
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(oneTapFailureError)
+        .mockRejectedValueOnce(fallbackError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      // Verify fallback was attempted
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        true,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(2);
+
+      Platform.OS = 'ios';
+    });
+
+    it('attempts browser fallback when no provider dependencies found in Android', async () => {
+      Platform.OS = 'android';
+      const noProviderDepsError = new OAuthError(
+        '',
+        OAuthErrorType.GoogleLoginNoProviderDependencies,
+      );
+      const fallbackError = new OAuthError('', OAuthErrorType.GoogleLoginError);
+
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(noProviderDepsError)
+        .mockRejectedValueOnce(fallbackError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      // Verify fallback was attempted
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        true,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(2);
+
+      Platform.OS = 'ios';
+    });
+
+    it('attempts browser fallback when UnknownError occurs for Android Google login', async () => {
+      Platform.OS = 'android';
+      const unknownAcmError = new OAuthError(
+        'e1 error N0.j: getCredentialAsync some unexpected ACM message',
+        OAuthErrorType.UnknownError,
+      );
+      const fallbackError = new OAuthError('', OAuthErrorType.GoogleLoginError);
+
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(unknownAcmError)
+        .mockRejectedValueOnce(fallbackError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      // Verify fallback was attempted
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        false,
+        undefined,
+      );
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'android',
+        'google',
+        true,
+        undefined,
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(2);
+
+      // Verify no error sheet is shown (handled silently via fallback)
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        expect.objectContaining({
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+        }),
+      );
+
+      Platform.OS = 'ios';
+    });
+
+    it('does not attempt browser fallback when UnknownError occurs for iOS Google login', async () => {
+      Platform.OS = 'ios';
+      const unknownError = new OAuthError(
+        'Some unknown error',
+        OAuthErrorType.UnknownError,
+      );
+
+      mockCreateLoginHandler.mockReturnValueOnce('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockRejectedValueOnce(unknownError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      // Verify fallback was NOT attempted (only 1 call, no fallback)
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(1);
+      // createLoginHandler should NOT have been called with browser fallback flag
+      expect(mockCreateLoginHandler).not.toHaveBeenCalledWith(
+        'ios',
+        'google',
+        true,
+      );
+    });
+
+    it('wraps non-OAuthError from browser fallback as OAuthError with UnknownError type', async () => {
+      Platform.OS = 'android';
+      // Analytics disabled triggers ErrorBoundary flow with trackEvent
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValueOnce(false);
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: jest.fn().mockReturnThis(),
+        build: jest.fn().mockReturnValue({ name: 'Error Screen Viewed' }),
+      });
+
+      const noCredentialError = new OAuthError(
+        '',
+        OAuthErrorType.GoogleLoginNoCredential,
+      );
+      // Simulate a non-OAuthError being thrown from browser fallback
+      const genericError = new Error('Browser fallback network failure');
+
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(noCredentialError)
+        .mockRejectedValueOnce(genericError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      // Verify fallback was attempted
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(2);
+
+      // Verify error is handled via ErrorBoundary flow (triggers trackEvent with Error Screen Viewed)
+      await waitFor(() => {
+        expect(mockAnalytics.trackEvent).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            name: 'Error Screen Viewed',
+          }),
+        );
+      });
+
+      Platform.OS = 'ios';
+    });
+
+    it('enables social login metrics when OAuth login succeeds', async () => {
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockAnalytics.optIn).toHaveBeenCalled();
+        expect(
+          mockCreateEventBuilder.mock.calls.some(
+            (call) =>
+              (call[0] as { category: string }).category ===
+              MetaMetricsEvents.METRICS_OPT_IN.category,
+          ),
+        ).toBe(true);
+      });
+    });
+
+    it('shows the full-screen loader for fast onboarding Google login and clears it after the success delay', async () => {
+      (Device.isIos as jest.Mock).mockReturnValue(false);
+      (Device.comparePlatformVersionTo as jest.Mock).mockReturnValue(1);
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+      mockNetInfoFetch.mockResolvedValue({
+        isConnected: true,
+        isInternetReachable: true,
+      });
+      mockRoute.params = { onboardingType: 'google' };
+      jest.useFakeTimers();
+
+      try {
+        const { store } = renderScreen(
+          Onboarding,
+          { name: 'Onboarding' },
+          {
+            state: mockInitialState,
+          },
+        );
+
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalled();
+        expect(mockNavigate).toHaveBeenCalledWith('Onboarding');
+        expect(store.getState().user.loadingSet).toBe(true);
+
+        await act(async () => {
+          jest.advanceTimersByTime(1000);
+        });
+
+        expect(store.getState().user.loadingSet).toBe(false);
+      } finally {
+        jest.useRealTimers();
+        mockRoute.params = {};
+      }
+    });
+
+    it('shows the offline error sheet for fast onboarding Google login without starting OAuth', async () => {
+      (Device.isIos as jest.Mock).mockReturnValue(false);
+      mockNetInfoFetch.mockResolvedValue({
+        isConnected: false,
+        isInternetReachable: false,
+      });
+      mockRoute.params = { onboardingType: 'google' };
+
+      try {
+        renderScreen(
+          Onboarding,
+          { name: 'Onboarding' },
+          {
+            state: mockInitialState,
+          },
+        );
+
+        await waitFor(() => {
+          expect(mockNavigate).toHaveBeenCalledWith(
+            Routes.MODAL.ROOT_MODAL_FLOW,
+            expect.objectContaining({
+              screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+              params: expect.objectContaining({
+                title: strings('error_sheet.no_internet_connection_title'),
+              }),
+            }),
+          );
+        });
+
+        expect(mockOAuthService.handleOAuthLogin).not.toHaveBeenCalled();
+        expect(mockNavigate).not.toHaveBeenCalledWith('Onboarding');
+        expect(loadingUnset).toHaveBeenCalled();
+      } finally {
+        mockRoute.params = {};
+      }
+    });
+
+    it('starts Telegram login from the onboarding sheet when Telegram login is enabled', async () => {
+      (Device.isIos as jest.Mock).mockReturnValue(false);
+      (Device.comparePlatformVersionTo as jest.Mock).mockReturnValue(1);
+      mockCreateLoginHandler.mockReturnValue('mockTelegramHandler');
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'telegram-user',
+      });
+      mockNetInfoFetch.mockResolvedValue({
+        isConnected: true,
+        isInternetReachable: true,
+      });
+
+      const stateWithTelegramLogin = {
+        ...mockInitialState,
+        engine: {
+          backgroundState: {
+            ...mockInitialState.engine.backgroundState,
+            RemoteFeatureFlagController: {
+              ...mockInitialState.engine.backgroundState
+                .RemoteFeatureFlagController,
+              remoteFeatureFlags: {
+                [FeatureFlagNames.telegramLoginEnabled]: true,
+              },
+            },
+          },
+        },
+      };
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: stateWithTelegramLogin,
+        },
+      );
+
+      await act(async () => {
+        fireEvent.press(getByTestId(OnboardingSelectorIDs.NEW_WALLET_BUTTON));
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.TELEGRAM_LOGIN_BUTTON),
+        );
+      });
+
+      expect(mockCreateLoginHandler).toHaveBeenCalledWith(
+        'ios',
+        AuthConnection.Telegram,
+        false,
+        { telegramLoginEnabled: true },
+      );
+      expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledWith(
+        'mockTelegramHandler',
+        false,
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('checkForMigrationFailureAndVaultBackup', () => {
+    const mockGetVaultFromBackup = getVaultFromBackup as jest.Mock;
+    const mockFilesystemGetItem = FilesystemStorage.getItem as jest.Mock;
+    const mockNavReset = mockNav.reset as jest.Mock;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockFilesystemGetItem.mockResolvedValue(null);
+      mockGetVaultFromBackup.mockResolvedValue({
+        success: false,
+        vault: null,
+      });
+      mockHasTestOverrides = false;
+    });
+
+    it('returns early when route.params.delete is true', async () => {
+      // Arrange
+      mockGetVaultFromBackup.mockClear();
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+        { route: { params: { delete: true } } },
+      );
+
+      // Act - Component mounts and checkForMigrationFailureAndVaultBackup is called
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      // Assert - When delete param is true, vault backup check is never reached
+      expect(mockGetVaultFromBackup).not.toHaveBeenCalled();
+    });
+
+    it('skips vault backup check when running in E2E test environment', async () => {
+      // Arrange
+      mockHasTestOverrides = true;
+      mockGetVaultFromBackup.mockClear();
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      // Assert - When in E2E mode, vault backup check is never reached
+      expect(mockGetVaultFromBackup).not.toHaveBeenCalled();
+
+      // Cleanup
+      mockHasTestOverrides = false;
+    });
+
+    it('checks migration error flag when not E2E and no delete param', async () => {
+      // Arrange
+      mockFilesystemGetItem.mockClear();
+      mockFilesystemGetItem.mockResolvedValue(null);
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      // Assert
+      await waitFor(() => {
+        expect(mockFilesystemGetItem).toHaveBeenCalledWith(
+          MIGRATION_ERROR_HAPPENED,
+        );
+      });
+    });
+
+    it('does not redirect when migration error flag is not set', async () => {
+      // Arrange
+      mockFilesystemGetItem.mockResolvedValue(null);
+      mockGetVaultFromBackup.mockResolvedValue({
+        success: true,
+        vault: 'mock-vault',
+      });
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      // Assert
+      expect(mockNavReset).not.toHaveBeenCalled();
+    });
+
+    it('does not redirect when migration error flag is set but vault backup does not exist', async () => {
+      // Arrange
+      mockFilesystemGetItem.mockResolvedValue('true');
+      mockGetVaultFromBackup.mockResolvedValue({
+        success: false,
+        vault: null,
+      });
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      // Assert
+      expect(mockGetVaultFromBackup).toHaveBeenCalled();
+      expect(mockNavReset).not.toHaveBeenCalled();
+    });
+
+    it('redirects to vault recovery when migration error flag is set and vault backup exists', async () => {
+      // Arrange
+      mockFilesystemGetItem.mockResolvedValue('true');
+      mockGetVaultFromBackup.mockResolvedValue({
+        success: true,
+        vault: 'mock-vault-data',
+      });
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      // Assert
+      await waitFor(() => {
+        expect(mockNavReset).toHaveBeenCalledWith({
+          routes: [{ name: Routes.VAULT_RECOVERY.RESTORE_WALLET }],
+        });
+      });
+    });
+
+    it('handles errors during vault backup check gracefully', async () => {
+      // Arrange
+      const mockError = new Error('Vault backup check failed');
+      mockFilesystemGetItem.mockResolvedValue('true');
+      mockGetVaultFromBackup.mockRejectedValue(mockError);
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      // Assert
+      expect(Logger.error).toHaveBeenCalledWith(
+        mockError,
+        'Failed to check for migration failure and vault backup',
+      );
+      expect(mockNavReset).not.toHaveBeenCalled();
+    });
+
+    it('handles errors during FilesystemStorage read gracefully', async () => {
+      // Arrange
+      const mockError = new Error('FilesystemStorage read failed');
+      mockFilesystemGetItem.mockRejectedValue(mockError);
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      // Assert
+      expect(Logger.error).toHaveBeenCalledWith(
+        mockError,
+        'Failed to check for migration failure and vault backup',
+      );
+      expect(mockNavReset).not.toHaveBeenCalled();
+    });
+
+    it('accesses existingUser prop from Redux state', async () => {
+      // Arrange
+      const { toJSON } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialStateWithExistingUser,
+        },
+      );
+
+      // Act - Component mounts and reads existingUser from props
+      await waitFor(() => {
+        expect(toJSON()).toBeDefined();
+      });
+
+      // Assert - Component renders without errors when existingUser is true
+      expect(toJSON()).toBeTruthy();
+    });
+
+    it('reads existingUser as false for new users', async () => {
+      // Arrange
+      const { toJSON } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      // Act - Component mounts with existingUser false
+      await waitFor(() => {
+        expect(toJSON()).toBeDefined();
+      });
+
+      // Assert - Component handles new user case without errors
+      expect(toJSON()).toBeTruthy();
+    });
+  });
+
+  describe('showNotification', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.clearAllMocks();
+      jest.spyOn(BackHandler, 'addEventListener').mockImplementation(() => ({
+        remove: jest.fn(),
+      }));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('calls Animated.timing when delete param is present', async () => {
+      // Arrange
+      const animatedTimingSpy = jest.spyOn(Animated, 'timing');
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+        { route: { params: { delete: true } } },
+      );
+
+      // Assert - Animation is triggered
+      await waitFor(() => {
+        expect(animatedTimingSpy).toHaveBeenCalled();
+      });
+
+      animatedTimingSpy.mockRestore();
+    });
+
+    it('calls BackHandler.addEventListener when notification is shown', async () => {
+      // Arrange
+      const backHandlerSpy = jest.spyOn(BackHandler, 'addEventListener');
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+        { route: { params: { delete: true } } },
+      );
+
+      // Assert - Verifies disableBackPress was called
+      await waitFor(() => {
+        expect(backHandlerSpy).toHaveBeenCalledWith(
+          'hardwareBackPress',
+          expect.any(Function),
+        );
+      });
+
+      backHandlerSpy.mockRestore();
+    });
+
+    it('registers event listener with handler function', async () => {
+      // Arrange
+      const backHandlerSpy = jest.spyOn(BackHandler, 'addEventListener');
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+        { route: { params: { delete: true } } },
+      );
+
+      // Assert - BackHandler.addEventListener called with function handler
+      await waitFor(() => {
+        expect(backHandlerSpy).toHaveBeenCalledWith(
+          'hardwareBackPress',
+          expect.any(Function),
+        );
+      });
+
+      backHandlerSpy.mockRestore();
+    });
+
+    it('displays wallet reset notification when delete param is present', async () => {
+      mockRoute.params = { delete: true };
+
+      const { getByText } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      expect(getByText(strings('onboarding.success'))).toBeOnTheScreen();
+      expect(getByText(strings('onboarding.your_wallet'))).toBeOnTheScreen();
+
+      mockRoute.params = {};
+    });
+  });
+
+  describe('disableBackPress', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      jest.spyOn(BackHandler, 'addEventListener').mockImplementation(() => ({
+        remove: jest.fn(),
+      }));
+    });
+
+    it('creates hardwareBackPress handler function', async () => {
+      // Arrange
+      const backHandlerSpy = jest.spyOn(BackHandler, 'addEventListener');
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+        { route: { params: { delete: true } } },
+      );
+
+      // Assert - Verifies handler function is created and registered
+      await waitFor(() => {
+        expect(backHandlerSpy).toHaveBeenCalledWith(
+          'hardwareBackPress',
+          expect.any(Function),
+        );
+      });
+
+      backHandlerSpy.mockRestore();
+    });
+
+    it('registers event listener with hardwareBackPress event name', async () => {
+      // Arrange
+      const backHandlerSpy = jest.spyOn(BackHandler, 'addEventListener');
+
+      // Act
+      renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+        { route: { params: { delete: true } } },
+      );
+
+      // Assert - Event listener registered with correct event name
+      await waitFor(() => {
+        expect(backHandlerSpy).toHaveBeenCalledWith(
+          'hardwareBackPress',
+          expect.any(Function),
+        );
+      });
+
+      const callArgs = backHandlerSpy.mock.calls[0];
+      expect(callArgs[0]).toBe('hardwareBackPress');
+
+      backHandlerSpy.mockRestore();
+    });
+  });
+
+  describe('ErrorBoundary Tests', () => {
+    const mockOAuthService = jest.requireMock(
+      '../../../core/OAuthService/OAuthService',
+    ).default;
+    const mockCreateLoginHandler = jest.requireMock(
+      '../../../core/OAuthService/OAuthLoginHandlers',
+    ).createLoginHandler;
+
+    beforeEach(() => {
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+      (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+    });
+
+    afterEach(() => {
+      jest.clearAllMocks();
+      mockSeedlessOnboardingEnabled.mockReset();
+    });
+
+    it('triggers ErrorBoundary for OAuth login failures when analytics disabled', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValueOnce(false);
+      mockCreateEventBuilder.mockReturnValue({
+        addProperties: jest.fn().mockReturnThis(),
+        build: jest.fn().mockReturnValue({ name: 'Error Screen Viewed' }),
+      });
+      const serverError = new OAuthError('', OAuthErrorType.AuthServerError);
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockRejectedValue(serverError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockAnalytics.trackEvent).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            name: 'Error Screen Viewed',
+          }),
+        );
+      });
+    });
+
+    it('does not trigger ErrorBoundary for OAuth login failures when analytics enabled', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      const dismissError = new OAuthError('', OAuthErrorType.AuthServerError);
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockRejectedValue(dismissError);
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockAnalytics.trackEvent).not.toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            name: 'Error Screen Viewed',
+          }),
+        );
+      });
+    });
+
+    it('reports to Sentry with platform, provider, and error code tags when analytics enabled', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      const serverError = new OAuthError(
+        'Auth server failed',
+        OAuthErrorType.AuthServerError,
+      );
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockRejectedValue(serverError);
+
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(captureException).toHaveBeenCalledWith(
+          serverError,
+          expect.objectContaining({
+            tags: expect.objectContaining({
+              view: 'Onboarding',
+              oauth_platform: 'ios',
+              oauth_provider: 'apple',
+              oauth_error_code: String(OAuthErrorType.AuthServerError),
+              oauth_is_fallback: 'false',
+            }),
+            fingerprint: [
+              'oauth-login-error',
+              'ios',
+              'apple',
+              String(OAuthErrorType.AuthServerError),
+            ],
+          }),
+        );
+      });
+    });
+
+    it('shows error sheet for LoginError (TOPRF/seedless failure) when analytics enabled', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      const toprfError = new OAuthError(
+        'SeedlessOnboardingController - Authentication error',
+        OAuthErrorType.LoginError,
+      );
+      mockCreateLoginHandler.mockReturnValue('mockAppleHandler');
+      mockOAuthService.handleOAuthLogin.mockRejectedValue(toprfError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const importSeedButton = getByTestId(
+        OnboardingSelectorIDs.EXISTING_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(importSeedButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.APPLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith(
+          Routes.MODAL.ROOT_MODAL_FLOW,
+          expect.objectContaining({
+            screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+            params: expect.objectContaining({
+              title: strings('error_sheet.oauth_error_title'),
+              description: strings('error_sheet.oauth_error_description'),
+              descriptionAlign: 'center',
+              primaryButtonLabel: strings('error_sheet.oauth_error_button'),
+              type: 'error',
+            }),
+          }),
+        );
+      });
+    });
+
+    it('reports to Sentry with fallback flag when browser fallback fails with analytics enabled', async () => {
+      Platform.OS = 'android';
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+
+      const noCredentialError = new OAuthError(
+        '',
+        OAuthErrorType.GoogleLoginNoCredential,
+      );
+      const fallbackOAuthError = new OAuthError(
+        'Browser login failed',
+        OAuthErrorType.LoginError,
+      );
+
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(noCredentialError)
+        .mockRejectedValueOnce(fallbackOAuthError);
+
+      mockNavigate.mockClear();
+      const { getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      mockNavigate.mockClear();
+      await act(async () => {
+        await fireEvent.press(
+          getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(captureException).toHaveBeenCalledWith(
+          fallbackOAuthError,
+          expect.objectContaining({
+            tags: expect.objectContaining({
+              oauth_platform: 'android',
+              oauth_provider: 'google',
+              oauth_is_fallback: 'true',
+            }),
+            fingerprint: expect.arrayContaining([
+              'oauth-login-error',
+              'android',
+              'google',
+            ]),
+          }),
+        );
+      });
+
+      Platform.OS = 'ios';
+    });
+  });
+
+  describe('onboarding trace lifecycle', () => {
+    const mockOAuthService = jest.requireMock(
+      '../../../core/OAuthService/OAuthService',
+    ).default;
+    const mockCreateLoginHandler = jest.requireMock(
+      '../../../core/OAuthService/OAuthLoginHandlers',
+    ).createLoginHandler;
+    const mockTrace = trace as jest.Mock;
+    const mockEndTrace = endTrace as jest.Mock;
+
+    let appStateHandlers: ((state: AppStateStatus) => void)[] = [];
+    let appStateRemoveMocks: jest.Mock[] = [];
+
+    const dispatchAppStateChange = (nextState: AppStateStatus) => {
+      act(() => {
+        appStateHandlers.forEach((handler) => handler(nextState));
+      });
+    };
+
+    const openSheetAndGetGoogleLogin = async () => {
+      const { getByTestId, unmount } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        { state: mockInitialState },
+      );
+
+      const createWalletButton = getByTestId(
+        OnboardingSelectorIDs.NEW_WALLET_BUTTON,
+      );
+      await act(async () => {
+        fireEvent.press(createWalletButton);
+      });
+
+      return {
+        googleLogin: (_createWallet?: boolean) =>
+          fireEvent.press(
+            getByTestId(OnboardingSheetSelectorIDs.GOOGLE_LOGIN_BUTTON),
+          ),
+        unmount,
+      };
+    };
+
+    beforeEach(() => {
+      _resetOnboardingNavigationPerformanceForTesting();
+      mockSeedlessOnboardingEnabled.mockReturnValue(true);
+      (StorageWrapper.getItem as jest.Mock).mockResolvedValue(null);
+      (Device.isIos as jest.Mock).mockReturnValue(false);
+      (Device.comparePlatformVersionTo as jest.Mock).mockReturnValue(1);
+      mockCreateLoginHandler.mockReturnValue('mockGoogleHandler');
+      (isSentryEnabled as jest.Mock).mockReturnValue(false);
+
+      appStateHandlers = [];
+      appStateRemoveMocks = [];
+      jest
+        .spyOn(AppState, 'addEventListener')
+        .mockImplementation((event, handler) => {
+          if (event === 'change') {
+            appStateHandlers.push(handler as (state: AppStateStatus) => void);
+          }
+          const remove = jest.fn();
+          appStateRemoveMocks.push(remove);
+          return { remove } as unknown as ReturnType<
+            typeof AppState.addEventListener
+          >;
+        });
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+      jest.clearAllMocks();
+      mockNavigate.mockReset();
+      mockSeedlessOnboardingEnabled.mockReset();
+      resetOAuthLifecycleTrackingForTests();
+    });
+
+    it('reuses the mount journey span for social login instead of ending it as abandoned', async () => {
+      // Mirror __DEV__: Sentry is already force-enabled, so we must not re-init
+      // mid-flow (that would orphan the in-flight mount journey span).
+      (isSentryEnabled as jest.Mock).mockReturnValue(true);
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        await googleLogin(true);
+      });
+
+      await waitFor(() => {
+        // The journey span started on mount is reused: no second start and no
+        // abandonment end while the user is actively continuing.
+        const journeyStartCalls = mockTrace.mock.calls.filter(
+          ([request]) => request?.name === TraceName.OnboardingJourneyOverall,
+        );
+        expect(journeyStartCalls).toHaveLength(1);
+      });
+      expect(mockEndTrace).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: TraceName.OnboardingJourneyOverall,
+        }),
+      );
+    });
+
+    it('starts a journey span for social login when the mount trace was buffered', async () => {
+      // Consent buffered at mount: trace() legitimately returns undefined.
+      mockTrace.mockReturnValueOnce(undefined);
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        await googleLogin(true);
+      });
+
+      await waitFor(() => {
+        const journeyStartCalls = mockTrace.mock.calls.filter(
+          ([request]) => request?.name === TraceName.OnboardingJourneyOverall,
+        );
+        expect(journeyStartCalls).toHaveLength(2);
+      });
+      expect(mockEndTrace).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: TraceName.OnboardingJourneyOverall,
+        }),
+      );
+    });
+
+    it('re-annotates the journey with the account type the login resolved to', async () => {
+      (isSentryEnabled as jest.Mock).mockReturnValue(true);
+      // The user asked to create a wallet, but the account already exists, so the
+      // journey turns out to be an import.
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: true,
+        accountName: 'test@example.com',
+      });
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        await googleLogin(true);
+      });
+
+      await waitFor(() => {
+        expect(annotateTrace).toHaveBeenCalledWith(expect.anything(), {
+          account_type: AccountType.ImportedGoogle,
+        });
+      });
+    });
+
+    it('does not start a social CTA navigation span while OAuth is still in the browser', async () => {
+      mockOAuthService.handleOAuthLogin.mockReturnValue(
+        new Promise(() => {
+          // Never settles: the user is still on the provider's login page.
+        }),
+      );
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+      // Opening Create wallet already starts a sheet CTA span; this case is
+      // about the social CTA that must wait until OAuth resolves.
+      mockTrace.mockClear();
+      mockEndTrace.mockClear();
+
+      await act(async () => {
+        googleLogin(true);
+      });
+
+      // Timing the tap would charge the OAuth round trip to navigation latency.
+      expect(mockTrace).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: TraceName.OnboardingCtaNavigation,
+        }),
+      );
+    });
+
+    it('starts the CTA navigation span once OAuth resolves the destination', async () => {
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: true,
+        accountName: 'test@example.com',
+      });
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+      mockTrace.mockClear();
+      mockEndTrace.mockClear();
+
+      await act(async () => {
+        await googleLogin(false);
+      });
+
+      await waitFor(() => {
+        expect(mockTrace).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: TraceName.OnboardingCtaNavigation,
+            tags: expect.objectContaining({
+              cta_id: OnboardingCtaIds.SOCIAL_LOGIN_GOOGLE,
+            }),
+          }),
+        );
+      });
+      // Sheet create_wallet CTA is superseded when the social CTA starts; the
+      // social span stays open until the destination ends it.
+      expect(mockEndTrace).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: TraceName.OnboardingCtaNavigation,
+          data: expect.objectContaining({
+            success: true,
+            cta_id: OnboardingCtaIds.SOCIAL_LOGIN_GOOGLE,
+          }),
+        }),
+      );
+    });
+
+    it('force-enables Sentry when disabled and syncs consent before recreating social-login journey spans', async () => {
+      (isSentryEnabled as jest.Mock).mockReturnValue(false);
+      mockTrace.mockReturnValueOnce(undefined);
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        await googleLogin(true);
+      });
+
+      await waitFor(() => {
+        expect(mockAnalytics.optIn).toHaveBeenCalled();
+      });
+      expect(updateCachedConsent).toHaveBeenCalledWith(true);
+      expect(setupSentry).toHaveBeenCalledWith(true);
+      expect(discardBufferedTraces).toHaveBeenCalled();
+
+      const updateConsentOrder = (updateCachedConsent as jest.Mock).mock
+        .invocationCallOrder[0];
+      const setupSentryOrder = (setupSentry as jest.Mock).mock
+        .invocationCallOrder[0];
+      const discardOrder = (discardBufferedTraces as jest.Mock).mock
+        .invocationCallOrder[0];
+      expect(updateConsentOrder).toBeLessThan(setupSentryOrder);
+      expect(setupSentryOrder).toBeLessThan(discardOrder);
+    });
+
+    it('does not re-init Sentry mid social-login when it is already enabled', async () => {
+      (isSentryEnabled as jest.Mock).mockReturnValue(true);
+      mockOAuthService.handleOAuthLogin.mockResolvedValue({
+        type: 'success',
+        existingUser: false,
+        accountName: 'test@example.com',
+      });
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        await googleLogin(true);
+      });
+
+      await waitFor(() => {
+        expect(mockAnalytics.optIn).toHaveBeenCalled();
+      });
+      expect(updateCachedConsent).toHaveBeenCalledWith(true);
+      expect(setupSentry).not.toHaveBeenCalled();
+      expect(discardBufferedTraces).toHaveBeenCalled();
+    });
+
+    it('does not end the social login attempt as abandoned when OAuth succeeds before the grace period', async () => {
+      let resolveLogin!: (value: unknown) => void;
+      mockOAuthService.handleOAuthLogin.mockReturnValue(
+        new Promise((resolve) => {
+          resolveLogin = resolve;
+        }),
+      );
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        googleLogin(true);
+      });
+
+      await waitFor(() => {
+        expect(mockTrace).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: TraceName.OnboardingSocialLoginAttempt,
+          }),
+        );
+      });
+
+      jest.useFakeTimers();
+      dispatchAppStateChange('background');
+      dispatchAppStateChange('active');
+
+      // OAuth callback resolves within the grace window.
+      await act(async () => {
+        resolveLogin({
+          type: 'success',
+          existingUser: false,
+          accountName: 'test@example.com',
+        });
+      });
+
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingSocialLoginAttempt,
+        data: { success: true },
+      });
+
+      mockEndTrace.mockClear();
+      act(() => {
+        jest.advanceTimersByTime(30_000);
+      });
+
+      expect(mockEndTrace).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: TraceName.OnboardingSocialLoginAttempt,
+        }),
+      );
+    });
+
+    it('ends the attempt and finalizes OAuth child traces when OAuth remains unresolved after the grace period', async () => {
+      mockOAuthService.handleOAuthLogin.mockReturnValue(
+        new Promise(() => {
+          // Never settles: user abandoned the flow in the external browser.
+        }),
+      );
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        googleLogin(true);
+      });
+
+      await waitFor(() => {
+        expect(mockTrace).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: TraceName.OnboardingSocialLoginAttempt,
+          }),
+        );
+      });
+
+      jest.useFakeTimers();
+      mockEndTrace.mockClear();
+      dispatchAppStateChange('background');
+      dispatchAppStateChange('active');
+
+      act(() => {
+        jest.advanceTimersByTime(30_000);
+      });
+
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingOAuthProviderLogin,
+        data: { success: false, abandoned: true },
+      });
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingOAuthBYOAServerGetAuthTokens,
+        data: { success: false, abandoned: true },
+      });
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingOAuthSeedlessAuthenticate,
+        data: { success: false, abandoned: true },
+      });
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingSocialLoginAttempt,
+        data: { success: false, reason: 'login_abandoned' },
+      });
+    });
+
+    it('does not reset background duration when iOS resumes through inactive', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      mockOAuthService.handleOAuthLogin.mockReturnValue(
+        new Promise(() => {
+          // Never settles while the user is in the provider browser.
+        }),
+      );
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        googleLogin(true);
+      });
+
+      await waitFor(() => {
+        expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: MetaMetricsEvents.SOCIAL_LOGIN_STATUS_UPDATED.category,
+            properties: expect.objectContaining({
+              status: 'started',
+            }),
+          }),
+        );
+      });
+
+      jest.useFakeTimers();
+      mockAnalytics.trackEvent.mockClear();
+      dispatchAppStateChange('background');
+      act(() => {
+        jest.advanceTimersByTime(5_000);
+      });
+      dispatchAppStateChange('inactive');
+      dispatchAppStateChange('active');
+
+      expect(getOAuthBackgroundAnalyticsProperties()).toEqual({
+        had_background_during_oauth: true,
+        background_count: 1,
+        time_in_background_ms: 5_000,
+      });
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.SOCIAL_LOGIN_STATUS_UPDATED.category,
+          properties: expect.objectContaining({
+            status: 'backgrounded',
+            auth_connection: 'google',
+            had_background_during_oauth: false,
+            background_count: 0,
+          }),
+        }),
+      );
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.SOCIAL_LOGIN_STATUS_UPDATED.category,
+          properties: expect.objectContaining({
+            status: 'resumed',
+            auth_connection: 'google',
+            had_background_during_oauth: true,
+            background_count: 1,
+            time_in_background_ms: 5_000,
+          }),
+        }),
+      );
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps OAuth lifecycle tracking during Android Google browser fallback', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      const originalPlatform = Platform.OS;
+      Platform.OS = 'android';
+
+      mockOAuthService.handleOAuthLogin
+        .mockRejectedValueOnce(
+          new OAuthError('', OAuthErrorType.GoogleLoginNoCredential),
+        )
+        .mockReturnValueOnce(
+          new Promise(() => {
+            // Fallback browser login is in flight.
+          }),
+        );
+      mockCreateLoginHandler
+        .mockReturnValueOnce('mockGoogleHandler')
+        .mockReturnValueOnce('mockGoogleFallbackHandler');
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        googleLogin(true);
+      });
+
+      await waitFor(() => {
+        expect(mockOAuthService.handleOAuthLogin).toHaveBeenCalledTimes(2);
+      });
+
+      expect(isOAuthLifecycleInProgress()).toBe(true);
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.SOCIAL_LOGIN_STATUS_UPDATED.category,
+          properties: expect.objectContaining({
+            status: 'started',
+          }),
+        }),
+      );
+
+      jest.useFakeTimers();
+      mockAnalytics.trackEvent.mockClear();
+      dispatchAppStateChange('background');
+      act(() => {
+        jest.advanceTimersByTime(2_000);
+      });
+      dispatchAppStateChange('active');
+
+      expect(getOAuthBackgroundAnalyticsProperties()).toEqual({
+        had_background_during_oauth: true,
+        background_count: 1,
+        time_in_background_ms: 2_000,
+      });
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.SOCIAL_LOGIN_STATUS_UPDATED.category,
+          properties: expect.objectContaining({
+            status: 'backgrounded',
+            had_background_during_oauth: false,
+          }),
+        }),
+      );
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.SOCIAL_LOGIN_STATUS_UPDATED.category,
+          properties: expect.objectContaining({
+            status: 'resumed',
+            had_background_during_oauth: true,
+            time_in_background_ms: 2_000,
+          }),
+        }),
+      );
+
+      Platform.OS = originalPlatform;
+    });
+
+    it('tracks Social Login Status Updated abandoned after the grace period without resetting OAuth UI state', async () => {
+      (mockAnalytics.isEnabled as jest.Mock).mockReturnValue(true);
+      mockOAuthService.handleOAuthLogin.mockReturnValue(
+        new Promise(() => {
+          // Never settles: user abandoned the flow in the external browser.
+        }),
+      );
+
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        googleLogin(true);
+      });
+
+      await waitFor(() => {
+        expect(mockTrace).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: TraceName.OnboardingSocialLoginAttempt,
+          }),
+        );
+      });
+
+      jest.useFakeTimers();
+      mockAnalytics.trackEvent.mockClear();
+      dispatchAppStateChange('background');
+      dispatchAppStateChange('active');
+
+      act(() => {
+        jest.advanceTimersByTime(30_000);
+      });
+
+      expect(mockAnalytics.trackEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: MetaMetricsEvents.SOCIAL_LOGIN_STATUS_UPDATED.category,
+          properties: expect.objectContaining({
+            status: 'abandoned',
+            auth_connection: 'google',
+            resume_outcome: 'abandoned',
+            had_background_during_oauth: true,
+          }),
+        }),
+      );
+      expect(mockOAuthService.resetOauthState).not.toHaveBeenCalled();
+    });
+
+    it('cancels the abandonment countdown when OAuth returns to the background', async () => {
+      mockOAuthService.handleOAuthLogin.mockReturnValue(
+        new Promise(() => {
+          // Never settles while the user continues login in the external browser.
+        }),
+      );
+      const { googleLogin } = await openSheetAndGetGoogleLogin();
+      await act(async () => {
+        googleLogin(true);
+      });
+      await waitFor(() => {
+        expect(mockTrace).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: TraceName.OnboardingSocialLoginAttempt,
+          }),
+        );
+      });
+      jest.useFakeTimers();
+      mockEndTrace.mockClear();
+
+      dispatchAppStateChange('background');
+      dispatchAppStateChange('active');
+      dispatchAppStateChange('background');
+      act(() => {
+        jest.advanceTimersByTime(OAUTH_TRACE_ABANDONMENT_GRACE_MS);
+      });
+
+      expect(mockEndTrace).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: TraceName.OnboardingSocialLoginAttempt,
+        }),
+      );
+      expect(mockEndTrace).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ abandoned: true }),
+        }),
+      );
+    });
+
+    it('clears AppState listeners and timers on unmount and finalizes an in-flight attempt', async () => {
+      mockOAuthService.handleOAuthLogin.mockReturnValue(
+        new Promise(() => {
+          // Never settles.
+        }),
+      );
+
+      const { googleLogin, unmount } = await openSheetAndGetGoogleLogin();
+
+      await act(async () => {
+        googleLogin(true);
+      });
+
+      await waitFor(() => {
+        expect(mockTrace).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: TraceName.OnboardingSocialLoginAttempt,
+          }),
+        );
+      });
+
+      jest.useFakeTimers();
+      dispatchAppStateChange('background');
+      dispatchAppStateChange('active');
+
+      mockEndTrace.mockClear();
+      unmount();
+
+      // The in-flight attempt and its OAuth child traces are finalized once.
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingSocialLoginAttempt,
+        data: { success: false },
+      });
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingOAuthProviderLogin,
+        data: { success: false, abandoned: true },
+      });
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.OnboardingJourneyOverall,
+        data: { success: false },
+      });
+
+      // AppState subscriptions are removed on unmount.
+      expect(
+        appStateRemoveMocks.some((remove) => remove.mock.calls.length > 0),
+      ).toBe(true);
+
+      // The armed abandonment timer is cleared: advancing time produces no
+      // further trace end calls.
+      const callCountAfterUnmount = mockEndTrace.mock.calls.length;
+      act(() => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(mockEndTrace.mock.calls.length).toBe(callCountAfterUnmount);
+    });
+  });
+
+  describe('Error Report Sent Notification', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+      mockRoute.params = { showErrorReportSentToast: true };
+    });
+
+    afterEach(() => {
+      jest.runOnlyPendingTimers();
+      jest.useRealTimers();
+      mockRoute.params = {};
+    });
+
+    it('displays notification when showErrorReportSentToast param is true', async () => {
+      const { getByText } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      expect(getByText('Error report sent')).toBeTruthy();
+    });
+
+    it('displays notification description when showErrorReportSentToast param is true', async () => {
+      const { getByText } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      expect(
+        getByText(
+          "We're investigating this problem. Try creating your wallet again.",
+        ),
+      ).toBeTruthy();
+    });
+
+    it('hides the notification after the dismiss animation completes', async () => {
+      const { getByText, queryByText, getByTestId } = renderScreen(
+        Onboarding,
+        { name: 'Onboarding' },
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(100);
+      });
+
+      expect(getByText('Error report sent')).toBeOnTheScreen();
+
+      fireEvent(getByTestId('base-notification-container'), 'layout', {
+        nativeEvent: { layout: { height: 100, width: 300, x: 0, y: 0 } },
+      });
+
+      await act(async () => {
+        jest.runAllTimers();
+      });
+
+      expect(queryByText('Error report sent')).not.toBeOnTheScreen();
+    });
   });
 });

@@ -1,0 +1,77 @@
+import {
+  Box,
+  Button,
+  ButtonVariant,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import React from 'react';
+import { PredictPosition } from '../../types';
+import { formatPrice } from '../../utils/format';
+import { strings } from '../../../../../../locales/i18n';
+import { Skeleton } from '../../../../../component-library/components-temp/Skeleton';
+import { PREDICT_PICK_ITEM_TEST_IDS } from './PredictPickItem.testIds';
+
+interface PredictPickItemProps {
+  position: PredictPosition;
+  onCashOut: (position: PredictPosition) => void;
+  testID: string;
+}
+
+const PredictPickItem: React.FC<PredictPickItemProps> = ({
+  position,
+  onCashOut,
+  testID,
+}) => {
+  const isOptimistic = position.optimistic ?? false;
+
+  return (
+    <Box
+      testID={testID}
+      twClassName="flex-row justify-between items-center py-3"
+    >
+      <Box>
+        <Text variant={TextVariant.BodyMd} twClassName="font-medium">
+          {strings('predict.position_pick_info', {
+            initialValue: formatPrice(position.initialValue, {
+              maximumDecimals: 2,
+            }),
+            outcome: position.outcome,
+          })}
+        </Text>
+        {isOptimistic ? (
+          <Skeleton width={50} height={16} />
+        ) : (
+          <Text
+            variant={TextVariant.BodyMd}
+            color={
+              position.cashPnl < 0
+                ? TextColor.ErrorDefault
+                : TextColor.SuccessDefault
+            }
+            twClassName="font-medium"
+            testID={`${PREDICT_PICK_ITEM_TEST_IDS.PREDICT_PICKS_PNL}-${position.id}`}
+          >
+            {formatPrice(position.cashPnl, { maximumDecimals: 2 })}
+          </Text>
+        )}
+      </Box>
+      {!position.claimable && (
+        <Button
+          variant={ButtonVariant.Secondary}
+          twClassName="light:bg-muted/5"
+          onPress={() => onCashOut(position)}
+          isDisabled={isOptimistic}
+          testID={`${PREDICT_PICK_ITEM_TEST_IDS.PREDICT_PICKS_CASH_OUT_BUTTON}-${position.id}`}
+        >
+          <Text variant={TextVariant.BodyMd} twClassName="font-medium">
+            {strings('predict.cash_out')}
+          </Text>
+        </Button>
+      )}
+    </Box>
+  );
+};
+
+export default PredictPickItem;

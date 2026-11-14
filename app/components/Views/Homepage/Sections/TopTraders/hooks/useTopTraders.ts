@@ -1,0 +1,233 @@
+import { useMemo, useCallback, useEffect, useRef } from 'react';
+import { useSelector } from 'react-redux';
+import { useQuery } from '@metamask/react-data-query';
+import { keepPreviousData, useQueryClient } from '@tanstack/react-query';
+import type {
+  LeaderboardResponse,
+  FetchLeaderboardOptions,
+} from '@metamask/social-controllers';
+import {
+  useFollowToggleMany,
+  type FollowToggleAnalyticsContext,
+} from '../../../../../hooks/useFollowToggle';
+import { selectIsUnlocked } from '../../../../../../selectors/keyringController';
+import type { TopTrader } from '../types';
+import {
+  formatSocialQueryErrorMessage,
+  reportSocialServiceFailure,
+  useLogSocialQueryError,
+} from '../../../../../../util/social/socialServiceTelemetry';
+import Engine from '../../../../../../core/Engine';
+import { useSocialBlockLists } from '../../../../../UI/SocialFeed/hooks/useSocialBlockLists';
+import { readXHandle } from '../../../../../UI/SocialFeed/utils/xHandle';
+import {
+  measureSocialDataFetch,
+  type SocialDataFetchTab,
+} from '../../../../../../util/social/socialPerformance';
+
+export interface UseTopTradersResult {
+  traders: TopTrader[];
+  isLoading: boolean;
+  isFetching: boolean;
+  hasFetched: boolean;
+  error: string | null;
+  refresh: () => Promise<void>;
+  toggleFollow: (
+    addressOrId: string,
+    analyticsContext?: FollowToggleAnalyticsContext,
+  ) => Promise<void>;
+}
+
+interface UseTopTradersOptions {
+  limit?: number;
+  chains?: string[];
+  /** Ranking metric forwarded to the API. Defaults to the server's own order. */
+  sort?: FetchLeaderboardOptions['sort'];
+  /**
+   * Which trailing window the reported PnL and ROI come from. The API returns
+   * both windows in one response, so switching this remaps the loaded entries
+   * without refetching.
+   */
+  timeframe?: '7d' | '30d';
+  enabled?: boolean;
+  /** Social V1-only tracing for the first real leaderboard request. */
+  performance?: Readonly<{ tab: SocialDataFetchTab }>;
+  /**
+   * Keep the previous ranking on screen while a new chain set loads, so the
+   * rows can slide to their new order instead of remounting from a skeleton.
+   */
+  keepPreviousRanking?: boolean;
+}
+
+export const useTopTraders = (
+  options?: UseTopTradersOptions,
+): UseTopTradersResult => {
+  const isUnlocked = useSelector(selectIsUnlocked);
+  const queryClient = useQueryClient();
+  const initialRequestAccountedForRef = useRef(false);
+
+  const hasLimit = options?.limit !== undefined;
+  const hasChains = options?.chains !== undefined;
+  const hasSort = options?.sort !== undefined;
+  const timeframe = options?.timeframe ?? '7d';
+  const fetchOptions: FetchLeaderboardOptions | null =
+    hasLimit || hasChains || hasSort
+      ? {
+          ...(hasLimit && { limit: options?.limit }),
+          ...(hasChains && { chains: options?.chains }),
+          ...(hasSort && { sort: options?.sort }),
+        }
+      : null;
+
+  const queryKey: [string, FetchLeaderboardOptions | null] = [
+    'SocialService:fetchLeaderboard',
+    fetchOptions,
+  ];
+  const performance = options?.performance;
+  const tracedQueryFn =
+    performance && fetchOptions
+      ? () => {
+          const fetchLeaderboard = () =>
+            Engine.controllerMessenger.call(
+              'SocialService:fetchLeaderboard',
+              fetchOptions,
+            );
+
+          if (initialRequestAccountedForRef.current) {
+            return fetchLeaderboard();
+          }
+
+          initialRequestAccountedForRef.current = true;
+          return measureSocialDataFetch({
+            tab: performance.tab,
+            cacheState:
+              queryClient.getQueryData<LeaderboardResponse>(queryKey) ===
+              undefined
+                ? 'cold'
+                : 'warm',
+            request: fetchLeaderboard,
+          });
+        }
+      : undefined;
+
+  // Pause while locked so queryFn never reaches SocialService.#getAuthHeaders →
+  // AuthenticationController.getBearerToken (throws "wallet is locked").
+  // Also disable automatic focus/reconnect refetches: ReactQueryService wires
+  // AppState → focusManager, and react-data-query uses staleTime: 0, so a
+  // foreground/reconnect can otherwise run queryFn before React commits
+  // enabled:false after background auto-lock. Unlock flips enabled true and fetches.
+  const { data, isLoading, isFetching, isFetched, error, refetch } =
+    useQuery<LeaderboardResponse>({
+      queryKey,
+      ...(tracedQueryFn ? { queryFn: tracedQueryFn } : {}),
+      enabled: (options?.enabled ?? true) && isUnlocked,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      placeholderData: options?.keepPreviousRanking
+        ? keepPreviousData
+        : undefined,
+    });
+
+  useEffect(() => {
+    if (
+      performance &&
+      data !== undefined &&
+      !isFetching &&
+      !initialRequestAccountedForRef.current
+    ) {
+      initialRequestAccountedForRef.current = true;
+    }
+  }, [data, isFetching, performance]);
+
+  const leaderboardQueryParams = useMemo(
+    () => ({
+      limit: options?.limit ?? 0,
+      ...(hasChains && { chains: (options?.chains ?? []).join(',') }),
+      ...(hasSort && { sort: options?.sort }),
+    }),
+    [options?.limit, options?.chains, options?.sort, hasChains, hasSort],
+  );
+
+  useLogSocialQueryError(error, {
+    surface: 'top_traders',
+    operation: 'fetch_leaderboard',
+    extraMessage: 'Top traders leaderboard fetch failed',
+    source: 'useTopTraders',
+    endpoint: 'leaderboard',
+    queryParams: leaderboardQueryParams,
+  });
+
+  const { isFollowing, toggleFollow } = useFollowToggleMany();
+  const { blockedProfileIds } = useSocialBlockLists();
+
+  const traders: TopTrader[] = useMemo(() => {
+    if (!data?.traders) {
+      return [];
+    }
+
+    const is30d = timeframe === '30d';
+    const toWholePercent = (fraction: number | null | undefined) =>
+      fraction == null ? null : fraction * 100;
+
+    // Traders the viewer blocked leave every leaderboard; ranks keep their
+    // server values, so the list can skip a number.
+    return data.traders
+      .filter((entry) => !blockedProfileIds.has(entry.profileId))
+      .map((entry) => ({
+        id: entry.profileId,
+        address: entry.addresses?.[0] ?? '',
+        rank: entry.rank,
+        overallRank: entry.rank,
+        username: entry.name,
+        avatarUri: entry.imageUrl ?? undefined,
+        // `roiPercent*` is already a whole-percent value from the API
+        // (e.g. 20.98 → "20.98%"); do not multiply by 100.
+        percentageChange:
+          (is30d ? entry.roiPercent30d : entry.roiPercent7d) ?? 0,
+        pnlValue: (is30d ? entry.pnl30d : entry.pnl7d) ?? 0,
+        pnl30d: entry.pnl30d ?? null,
+        winRatePercent: toWholePercent(
+          is30d ? entry.winRate30d : entry.winRate7d,
+        ),
+        pnlPerChain: entry.pnlPerChain ?? {},
+        followerCount: entry.followerCount ?? 0,
+        isFollowing: isFollowing(entry.profileId),
+        xHandle: readXHandle(entry.socialHandles),
+      }));
+  }, [blockedProfileIds, data, isFollowing, timeframe]);
+
+  const refresh = useCallback(async () => {
+    try {
+      await refetch();
+    } catch (err) {
+      reportSocialServiceFailure(
+        err,
+        {
+          surface: 'top_traders',
+          operation: 'refresh',
+          extraMessage: 'Top traders leaderboard refresh failed',
+          source: 'useTopTraders',
+          endpoint: 'leaderboard',
+          queryParams: leaderboardQueryParams,
+        },
+        { breadcrumb: false },
+      );
+      throw err;
+    }
+  }, [refetch, leaderboardQueryParams]);
+
+  return useMemo(
+    () => ({
+      traders,
+      isLoading,
+      isFetching,
+      hasFetched: isFetched,
+      error: formatSocialQueryErrorMessage(error),
+      refresh,
+      toggleFollow,
+    }),
+    [traders, isLoading, isFetching, isFetched, error, refresh, toggleFollow],
+  );
+};
+
+export default useTopTraders;

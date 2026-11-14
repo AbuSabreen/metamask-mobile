@@ -1,57 +1,642 @@
 import React from 'react';
-import { shallow } from 'enzyme';
-import Wallet from './';
-import { Provider } from 'react-redux';
-import configureMockStore from 'redux-mock-store';
-import { renderScreen } from '../../../util/test/renderWithProvider';
-import { screen } from '@testing-library/react-native';
-import Engine from '../../../core/Engine';
-import ScrollableTabView from 'react-native-scrollable-tab-view';
+import type { Json } from '@metamask/utils';
+
+let mockSearchPasteTreatment = false;
+
+jest.mock('../TrendingView/search/useHomepageSearchPaste', () => ({
+  useHomepageSearchPaste: jest.fn(() => ({
+    isSearchHeaderEnabled: mockSearchPasteTreatment,
+    showPastePill: false,
+    handlePastePress: jest.fn(),
+  })),
+}));
+
+// Import StorageWrapper mock from global testSetup - this provides StorageWrapper.getItem
+import StorageWrapper from '../../../store/storage-wrapper';
+
+// Local mocks specific to this test file to avoid affecting other tests
+jest.mock('react-native-device-info', () => ({
+  getVersion: jest.fn(() => '7.50.1'),
+  getApplicationName: jest.fn(() => 'MetaMask'),
+  getBuildNumber: jest.fn(() => '1234'),
+  getSystemVersion: jest.fn(() => '17.0'),
+  getTotalMemorySync: jest.fn(() => 4000000000),
+}));
+
+// Mock components BEFORE importing the main component
+jest.mock('../AssetDetails/AssetDetailsActions', () => ({
+  __esModule: true,
+  default: jest.fn((_props) => null),
+}));
+
+// Mock NFT auto detection modal hook to prevent interference with navigation tests
+jest.mock('../../hooks/useCheckNftAutoDetectionModal', () =>
+  jest.fn(() => {
+    // Hook implementation mocked to prevent modal interference
+  }),
+);
+
+jest.mock('../../UI/Assets/components/Balance/AccountGroupBalance', () => ({
+  __esModule: true,
+  default: jest.fn(() => null),
+}));
+
+// Tokens triggers asset selector errors with this file's Redux mock; stub so sibling tab mocks can mount
+jest.mock('../../UI/Tokens', () => {
+  const ReactMock = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  return {
+    __esModule: true,
+    default: ReactMock.forwardRef((_props: unknown, _ref: unknown) =>
+      ReactMock.createElement(View, { testID: 'wallet-tokens-tab-mock' }),
+    ),
+  };
+});
+
+// Mock remoteFeatureFlag util to ensure version check passes
+jest.mock('../../../util/remoteFeatureFlag', () => ({
+  hasMinimumRequiredVersion: jest.fn(() => true),
+  validatedVersionGatedFeatureFlag: jest.fn(() => false),
+}));
+
+// Note: BIP-44 multichain accounts is now the default behavior
+
+// Mock the Perps feature flag selector - will be controlled per test
+let mockPerpsEnabled = true;
+let mockPerpsGTMModalEnabled = false;
+jest.mock('../../UI/Perps/selectors/featureFlags', () => ({
+  selectPerpsEnabledFlag: jest.fn(() => mockPerpsEnabled),
+  selectPerpsMobileChaseEnabledFlag: jest.fn(() => false),
+  selectPerpsServiceInterruptionBannerEnabledFlag: jest.fn(() => false),
+  selectPerpsGtmOnboardingModalEnabledFlag: jest.fn(
+    () => mockPerpsGTMModalEnabled,
+  ),
+  selectPerpsProModeEnabledFlag: jest.fn(() => false),
+}));
+
+jest.mock(
+  '../Settings/NotificationsSettings/hooks/useFeatureNotificationsStatus',
+  () => ({
+    useFeatureNotificationsStatus: () => ({ isPushEnabled: true }),
+  }),
+);
+
+jest.mock('../../UI/Perps/hooks/usePerpsChaseOrders', () => ({
+  usePerpsChaseOrders: () => ({
+    chaseOrders: [],
+    hasLiveChaseOrders: false,
+    isChaseOrderDiscoveryResolved: true,
+    suspendChaseOrders: jest.fn().mockResolvedValue([]),
+  }),
+}));
+
+// Control Money account feature flag per test (default false so existing tests are unaffected)
+let mockMoneyAccountEnabled = false;
+let mockMoneyDepositBrazeCampaignEnabled = false;
+jest.mock('../../UI/Money/selectors/featureFlags', () => ({
+  selectMoneyEnableMoneyAccountFlag: jest.fn(() => mockMoneyAccountEnabled),
+  selectIsMoneyDepositBrazeCampaignEnabledFlag: jest.fn(
+    () => mockMoneyDepositBrazeCampaignEnabled,
+  ),
+}));
+
+let mockMoneyAccountVisible = false;
+jest.mock('../../UI/Money/selectors/visibility', () => ({
+  selectMoneyAccountAccessBlockReason: jest.fn(() => undefined),
+  selectIsMoneyAccountVisible: jest.fn(() => mockMoneyAccountVisible),
+}));
+
+// Mock MoneyBalanceCard so the integration test does not depend on its hooks/contexts.
+jest.mock('../../UI/Money/components/MoneyBalanceCard', () => {
+  const ReactMock = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  return {
+    __esModule: true,
+    default: () =>
+      ReactMock.createElement(View, {
+        testID: 'money-balance-card-mock',
+      }),
+  };
+});
+
+jest.mock(
+  '../../UI/Money/components/MoneyDepositBrazeCampaignObserver/MoneyDepositBrazeCampaignObserver',
+  () => {
+    const ReactMock = jest.requireActual('react');
+    const { View } = jest.requireActual('react-native');
+    return {
+      __esModule: true,
+      default: () =>
+        ReactMock.createElement(View, {
+          testID: 'money-deposit-braze-campaign-observer-mock',
+        }),
+    };
+  },
+);
+
+// Mock NetworkConnectionBanner so the Wallet view's render does not depend on
+// NetworkController / controllerMessenger APIs. Without this, the banner hook
+// throws during render and the ErrorBoundary swallows the failure, making
+// negative-assert tests pass for the wrong reason.
+jest.mock('../../UI/NetworkConnectionBanner', () => ({
+  NetworkConnectionBannerContent: () => null,
+}));
+let mockNetworkConnectionBannerVisible = false;
+jest.mock('../../hooks/useNetworkConnectionBanner', () => ({
+  useNetworkConnectionBanner: () => ({
+    status: mockNetworkConnectionBannerVisible ? 'unavailable' : 'available',
+    network: mockNetworkConnectionBannerVisible
+      ? {
+          networkClientId: 'test-client',
+          name: 'Test Network',
+          rpcUrl: 'https://test.rpc',
+          chainId: '0x1',
+          isInfuraEndpoint: false,
+          switchableInfuraNetworkClientId: null,
+        }
+      : null,
+    updateRpc: jest.fn(),
+    switchToInfura: jest.fn(),
+  }),
+}));
+
+let mockIsGlassEnabled = false;
+jest.mock('../../../component-library/hooks/useLiquidGlass', () => ({
+  useLiquidGlass: () => ({
+    isGlassEnabled: mockIsGlassEnabled,
+    glassColorScheme: 'dark',
+    isBlurEnabled: false,
+    blurTint: 'systemChromeMaterialDark',
+  }),
+}));
+
+const mockUseWalletHeaderNativeHeader = jest.fn(() => false);
+jest.mock('./components/WalletHeader/WalletHeaderProfileAvatar', () => {
+  const { View } = jest.requireActual('react-native');
+  const { WalletViewSelectorsIDs: TestIds } = jest.requireActual(
+    './WalletView.testIds',
+  );
+  return {
+    __esModule: true,
+    default: () => <View testID={TestIds.ACCOUNT_PICKER_AVATAR} />,
+  };
+});
+jest.mock('./components/WalletHeader/useWalletHeaderNativeHeader', () => ({
+  ...jest.requireActual(
+    './components/WalletHeader/useWalletHeaderNativeHeader',
+  ),
+  useWalletHeaderNativeHeader: () => mockUseWalletHeaderNativeHeader(),
+}));
+
+let mockDiscoveryPillsVariantName = 'control';
+let mockActionButtonsGridVariantName = 'control';
+let mockBalanceBreakdownVariantName = 'unresolved';
+let mockHeaderNavBarVariantName = 'control';
+let mockSocialV1VariantName = 'control';
+jest.mock('../../../hooks', () => ({
+  ...jest.requireActual('../../../hooks'),
+  useABTest: jest.fn((flagKey: string) => {
+    if (flagKey === 'socialAiTSA1122AbtestSocialBundleV1') {
+      return {
+        variantName: mockSocialV1VariantName,
+        variant: {
+          useSocialV1: mockSocialV1VariantName === 'treatment',
+        },
+        isActive: true,
+      };
+    }
+
+    if (flagKey === 'homeTMCU1276AbtestHeaderNavBar') {
+      return {
+        variantName: mockHeaderNavBarVariantName,
+        variant: {
+          isCompactHeaderEnabled: mockHeaderNavBarVariantName !== 'control',
+        },
+        isActive: true,
+      };
+    }
+
+    if (flagKey === 'homeTMCU1209AbtestHomepageBalanceBreakdownV2') {
+      return {
+        variantName: mockBalanceBreakdownVariantName,
+        variant: {
+          showBalanceBreakdown: mockBalanceBreakdownVariantName === 'treatment',
+        },
+        isActive: mockBalanceBreakdownVariantName !== 'unresolved',
+      };
+    }
+
+    if (flagKey === 'homeTMCU926AbtestDiscoveryPills') {
+      const isGrayIcons = mockDiscoveryPillsVariantName === 'grayIcons';
+      const isColorIcons = mockDiscoveryPillsVariantName === 'colorIcons';
+      const showPills = isGrayIcons || isColorIcons;
+
+      return {
+        variantName: mockDiscoveryPillsVariantName,
+        variant: {
+          showPills,
+          iconStyle: isGrayIcons ? 'gray' : isColorIcons ? 'color' : null,
+        },
+        isActive: showPills,
+      };
+    }
+
+    if (flagKey === 'homeTMCU1103AbtestActionButtonsGrid') {
+      if (mockActionButtonsGridVariantName === 'row1Top') {
+        return {
+          variantName: 'row1Top',
+          variant: { layout: 'eightCircular', rowOrder: 'row1Top' },
+          isActive: true,
+        };
+      }
+      if (mockActionButtonsGridVariantName === 'row2Top') {
+        return {
+          variantName: 'row2Top',
+          variant: { layout: 'eightCircular', rowOrder: 'row2Top' },
+          isActive: true,
+        };
+      }
+      return {
+        variantName: 'control',
+        variant: { layout: 'fourSquare' },
+        isActive: true,
+      };
+    }
+
+    throw new Error(`Unexpected A/B test flag: ${flagKey}`);
+  }),
+}));
+
+const mockHomepageDiscoveryPills = jest.fn();
+const mockHomepageActionButtonsGrid = jest.fn();
+jest.mock('../Homepage/components/HomepageDiscoveryPills', () => {
+  const React = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  return {
+    HomepageDiscoveryPills: (props: { iconStyle: string }) => {
+      mockHomepageDiscoveryPills(props);
+      return React.createElement(View, {
+        testID: 'homepage-discovery-pills-mock',
+      });
+    },
+  };
+});
+jest.mock('../Homepage/components/HomepageActionButtonsGrid', () => {
+  const React = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  return {
+    HomepageActionButtonsGrid: (props: {
+      rowOrder: string;
+      onSend: () => void;
+      onReceive: () => void;
+    }) => {
+      mockHomepageActionButtonsGrid(props);
+      return React.createElement(View, {
+        testID: 'homepage-action-buttons-grid-mock',
+      });
+    },
+  };
+});
+
+// Control carousel/braze banner flags per test (default off so existing tests are unaffected)
+let mockCarouselBannersEnabled = false;
+const mockBrazeBannerHomeEnabled = false;
+let mockIsAccountGroupFunded = false;
+jest.mock('../../../selectors/assets/balances', () => ({
+  ...jest.requireActual('../../../selectors/assets/balances'),
+  selectIsAccountGroupFunded: () => mockIsAccountGroupFunded,
+}));
+jest.mock('../../UI/Carousel/selectors/featureFlags', () => ({
+  selectCarouselBannersFlag: jest.fn(() => mockCarouselBannersEnabled),
+  selectContentfulCarouselEnabledFlag: jest.fn(() => false),
+}));
+jest.mock('../../../selectors/featureFlagController/brazeBannerHome', () => ({
+  selectBrazeBannerHomeFlag: jest.fn(() => mockBrazeBannerHomeEnabled),
+}));
+
+let mockSocialV1Enabled = false;
+jest.mock('../../../selectors/featureFlagController/socialV1', () => ({
+  selectIsSocialV1Enabled: jest.fn(() => mockSocialV1Enabled),
+}));
+
+const BRAZE_BANNER_TEST_ID = 'braze-banner-mock';
+const CAROUSEL_TEST_ID = 'carousel-mock';
+
+jest.mock('../../UI/BrazeBanner', () => {
+  const { View } = jest.requireActual('react-native');
+  return {
+    __esModule: true,
+    default: () => <View testID={BRAZE_BANNER_TEST_ID} />,
+  };
+});
+
+jest.mock('../../UI/Carousel', () => {
+  const { View } = jest.requireActual('react-native');
+  return {
+    Carousel: () => <View testID={CAROUSEL_TEST_ID} />,
+  };
+});
+
+// Capture the HomepageScrollContext value by rendering a context-aware mock Homepage.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let capturedContext: any = null;
+const mockHomepage = jest.fn();
+jest.mock('../Homepage', () => {
+  const React = jest.requireActual('react');
+  const { HomepageScrollContext: HomepageCtx } = jest.requireActual(
+    '../Homepage/context/HomepageScrollContext',
+  );
+  return {
+    __esModule: true,
+    default: React.forwardRef(
+      (
+        props: {
+          balanceBreakdownSectionProps?: {
+            accountGroupBalanceProps?: object;
+            children?: React.ReactNode;
+            hideRows?: boolean;
+          };
+        },
+        _ref: unknown,
+      ) => {
+        mockHomepage(props);
+        capturedContext = React.useContext(HomepageCtx);
+        const balanceBreakdownProps = props.balanceBreakdownSectionProps;
+        const AccountGroupBalance = jest.requireMock(
+          '../../UI/Assets/components/Balance/AccountGroupBalance',
+        ).default;
+
+        return React.createElement(
+          React.Fragment,
+          null,
+          balanceBreakdownProps?.hideRows
+            ? React.createElement(
+                AccountGroupBalance,
+                balanceBreakdownProps.accountGroupBalanceProps,
+              )
+            : null,
+          balanceBreakdownProps?.children,
+        );
+      },
+    ),
+  };
+});
+
+// Create shared mock reference for TabsList
+let mockTabsListComponent: jest.Mock;
+
+jest.mock('../../../component-library/components-temp/Tabs', () => {
+  const ReactMock = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  const renderFn = jest.fn();
+
+  // Store reference for tests
+  mockTabsListComponent = renderFn;
+
+  const TabsList = ReactMock.forwardRef(
+    (props: TabsListProps, _ref: unknown) => {
+      renderFn(props);
+      return ReactMock.createElement(View, null, props.children);
+    },
+  );
+
+  return {
+    __esModule: true,
+    TabsList,
+    TabsListRef: {},
+  };
+});
+
+import Wallet, { useHomeDeepLinkEffects } from './';
+import renderWithProvider, {
+  renderScreen,
+} from '../../../util/test/renderWithProvider';
+import {
+  act,
+  fireEvent,
+  renderHook,
+  waitFor,
+} from '@testing-library/react-native';
+import { Animated, InteractionManager, StyleSheet } from 'react-native';
+import type { ReactTestInstance } from 'react-test-renderer';
 import Routes from '../../../constants/navigation/Routes';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
-import { MOCK_ACCOUNTS_CONTROLLER_STATE } from '../../../util/test/accountsControllerTestUtils';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import {
+  MOCK_ACCOUNTS_CONTROLLER_STATE,
+  createMockInternalAccount,
+} from '../../../util/test/accountsControllerTestUtils';
+import { WalletViewSelectorsIDs } from './WalletView.testIds';
+import { WalletHomeOnboardingStepsSelectors } from '../../UI/WalletHomeOnboardingSteps/WalletHomeOnboardingSteps.testIds';
+import Engine from '../../../core/Engine';
+import Logger from '../../../util/Logger';
+import { useSelector } from 'react-redux';
+import { mockedPerpsFeatureFlagsEnabledState } from '../../UI/Perps/mocks/remoteFeatureFlagMocks';
+import { initialState as cardInitialState } from '../../../core/redux/slices/card';
+import {
+  NavigationProp,
+  ParamListBase,
+  useFocusEffect,
+  useRoute,
+} from '@react-navigation/native';
+import {
+  IconColor,
+  IconName,
+} from '../../../component-library/components/Icons/Icon';
+import { PERFORMANCE_CONFIG } from '@metamask/perps-controller';
+import { selectInterimHeaderNavBarEnabled } from '../../../selectors/featureFlagController/interimHeaderNavBar';
+import { selectHomeBrandRefreshSurfacesEnabled } from '../../../selectors/featureFlagController/homeBrandRefreshSurfaces';
+import { TabsListProps } from '../../../component-library/components-temp/Tabs';
+import { FLOATING_HEADER_FADE_TEST_ID } from '../../../component-library/components-temp/HeaderGlass';
 
-const mockEngine = Engine;
+const MOCK_ADDRESS = '0xc4955c0d639d99699bfd7ec54d9fafee40e4d272';
 
-jest.mock('../../../core/Engine', () => ({
-  init: () => mockEngine.init({}),
-  getTotalFiatAccountBalance: jest.fn(),
-  context: {
-    PreferencesController: {
-      selectedAddress: '0x',
-      identities: {
-        '0x': { name: 'Account 1', address: '0x' },
+const getAssetDetailsActionsProps = () => {
+  const mockAssetDetailsActions = jest.mocked(
+    jest.requireMock('../AssetDetails/AssetDetailsActions').default,
+  );
+  const props = mockAssetDetailsActions.mock.calls.at(-1)?.[0];
+  if (!props) {
+    throw new Error('Expected AssetDetailsActions to render');
+  }
+  return props as {
+    onReceive: () => void;
+    onSend: () => Promise<void>;
+    goToSwaps: () => void;
+    displayBuyButton: boolean;
+    displaySwapsButton: boolean;
+    isGlass?: boolean;
+    buyButtonActionID: string;
+    swapButtonActionID: string;
+    sendButtonActionID: string;
+    receiveButtonActionID: string;
+    onBuy?: () => void;
+  };
+};
+
+jest.mock('../../../util/address', () => {
+  const actual = jest.requireActual('../../../util/address');
+  return {
+    ...actual,
+    getLabelTextByAddress: jest.fn(),
+  };
+});
+
+jest.mock('../../../util/notifications/constants/config', () => ({
+  isNotificationsFeatureEnabled: jest.fn(() => true),
+}));
+
+jest.mock('../../../core/Engine', () => {
+  const { MOCK_ACCOUNTS_CONTROLLER_STATE: MockAccountsState } =
+    jest.requireActual('../../../util/test/accountsControllerTestUtils');
+  const { KeyringTypes } = jest.requireActual('@metamask/keyring-controller');
+
+  const startPolling = jest.fn();
+  const stopPollingByPollingToken = jest.fn();
+
+  return {
+    getTotalEvmFiatAccountBalance: jest.fn().mockReturnValue({
+      totalNativeTokenBalance: { amount: '1', unit: 'ETH' },
+      totalBalanceFiat: 3200,
+      balances: {
+        '0x0': { amount: '1', unit: 'ETH' },
       },
+    }),
+    controllerMessenger: {
+      subscribe: jest.fn(),
+      unsubscribe: jest.fn(),
     },
-    NftController: {
-      allNfts: { '0x': { '0x1': [] } },
-      allNftContracts: { '0x': { '0x1': [] } },
-    },
-    TokenRatesController: {
-      poll: jest.fn(),
-    },
-    TokenDetectionController: {
-      detectTokens: jest.fn(),
-    },
-    NftDetectionController: {
-      detectNfts: jest.fn(),
-    },
-    AccountTrackerController: {
-      refresh: jest.fn(),
-    },
-    KeyringController: {
-      state: {
-        keyrings: [
-          {
-            accounts: ['0xC4955C0d639D99699Bfd7Ec54d9FaFEe40e4D272'],
+    context: {
+      AuthenticationController: {
+        getBearerToken: jest.fn().mockResolvedValue('bearer-token'),
+      },
+      NftController: {
+        state: {
+          allNfts: {
+            [MOCK_ADDRESS]: {
+              [MOCK_ADDRESS]: [],
+            },
           },
-        ],
+          allNftContracts: {
+            [MOCK_ADDRESS]: {
+              [MOCK_ADDRESS]: [],
+            },
+          },
+        },
+        allNfts: {
+          [MOCK_ADDRESS]: {
+            [MOCK_ADDRESS]: [],
+          },
+        },
+        allNftContracts: {
+          [MOCK_ADDRESS]: {
+            [MOCK_ADDRESS]: [],
+          },
+        },
       },
+      CurrencyRateController: {
+        startPolling,
+        stopPollingByPollingToken,
+      },
+      TokenRatesController: {
+        poll: jest.fn(),
+        startPolling,
+        stopPollingByPollingToken,
+      },
+      TokenDetectionController: {
+        detectTokens: jest.fn(),
+        startPolling,
+        stopPollingByPollingToken,
+      },
+      TokenListController: {
+        startPolling,
+        stopPollingByPollingToken,
+      },
+      TokenBalancesController: {
+        startPolling,
+        stopPollingByPollingToken,
+      },
+      MultichainAssetsRatesController: {
+        startPolling,
+        stopPollingByPollingToken,
+      },
+      NftDetectionController: {
+        detectNfts: jest.fn(),
+      },
+      AccountTrackerController: {
+        refresh: jest.fn(),
+      },
+      KeyringController: {
+        state: {
+          keyrings: [
+            {
+              accounts: ['0xC4955C0d639D99699Bfd7Ec54d9FaFEe40e4D272'],
+              type: KeyringTypes.hd,
+              metadata: {
+                id: '01JNG71B7GTWH0J1TSJY9891S0',
+                name: '',
+              },
+            },
+          ],
+        },
+      },
+      AccountsController: {
+        ...MockAccountsState,
+        state: MockAccountsState,
+      },
+      PreferencesController: {
+        setTokenNetworkFilter: jest.fn(),
+      },
+      NetworkEnablementController: {
+        setEnabledNetwork: jest.fn(),
+        setDisabledNetwork: jest.fn(),
+        isNetworkEnabled: jest.fn(),
+        hasOneEnabledNetwork: jest.fn(),
+        listPopularEvmNetworks: jest.fn(() => ['0x1']),
+        listPopularMultichainNetworks: jest.fn(() => []),
+        listPopularNetworks: jest.fn(() => []),
+      },
+      /** Used by useNetworkConnectionBanner (degraded/unavailable timers under fake timers). */
+      NetworkController: {
+        state: {
+          networksMetadata: {},
+        },
+        findNetworkClientIdByChainId: jest.fn(() => 'mainnet'),
+        getNetworkConfigurationByNetworkClientId: jest.fn(() => null),
+        getNetworkConfigurationByChainId: jest.fn(() => null),
+      },
+      PerpsController: {
+        startMarketDataPreload: jest.fn(),
+        stopMarketDataPreload: jest.fn(),
+      },
+    },
+  };
+});
+
+jest.mock('../../../core/Engine/Engine', () => ({
+  __esModule: true,
+  default: {
+    get context() {
+      return {
+        MultichainNetworkController: {
+          getNetworksWithTransactionActivityByAccounts: jest
+            .fn()
+            .mockResolvedValue(undefined),
+        },
+      };
+    },
+    get controllerMessenger() {
+      return {
+        subscribe: jest.fn(),
+        unsubscribe: jest.fn(),
+      };
     },
   },
 }));
 
 const mockInitialState = {
+  user: {
+    isConnectionRemoved: false,
+  },
   networkOnboarded: {
     networkOnboardedState: {
       '0x1': true,
@@ -60,29 +645,168 @@ const mockInitialState = {
   security: {
     dataCollectionForMarketing: true,
   },
-  swaps: { '0x1': { isLive: true }, hasOnboarded: false, isLive: true },
-  wizard: {
-    step: 0,
+  swaps: {
+    [MOCK_ADDRESS]: { isLive: true },
+    hasOnboarded: false,
+    isLive: true,
   },
+  card: cardInitialState,
   settings: {
     primaryCurrency: 'usd',
+    basicFunctionalityEnabled: true,
+    useTokenDetection: true,
+  },
+  fiatOrders: {
+    networks: [],
+  },
+  browser: {
+    tabs: [],
+  },
+  metamask: {
+    isDataCollectionForMarketingEnabled: true,
+  },
+  rewards: {
+    candidateSubscriptionId: null,
+    hideUnlinkedAccountsBanner: false,
+    seasonStatusError: null,
+  },
+  multichain: {
+    dismissedBanners: [], // Added missing property
+  },
+  onboarding: {
+    completedOnboarding: true,
+  },
+  legalNotices: {
+    isPna25Acknowledged: false,
+    newPrivacyPolicyToastShownDate: null,
+    newPrivacyPolicyToastClickedOrClosed: false,
   },
   engine: {
     backgroundState: {
-      ...initialBackgroundState,
-      PreferencesController: {
-        selectedAddress: '0x',
-        identities: {
-          '0x': { name: 'Account 1', address: '0x' },
+      ...backgroundState,
+      AccountsController: {
+        ...MOCK_ACCOUNTS_CONTROLLER_STATE,
+      },
+      RemoteFeatureFlagController: {
+        remoteFeatureFlags: {
+          bridgeConfigV2: {
+            support: true,
+            chains: {
+              'eip155:1': {
+                isActiveSrc: true,
+                isActiveDest: true,
+                isUnifiedUIEnabled: false,
+              },
+            },
+          },
         },
       },
-      AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE,
+      RewardsController: {
+        activeAccount: null,
+      },
+      PreferencesController: {
+        useTokenDetection: true,
+        isTokenNetworkFilterEqualToAllNetworks: false,
+        tokenNetworkFilter: {
+          '0x1': true, // Ethereum mainnet enabled
+        },
+        tokenSortConfig: {
+          key: 'tokenFiatAmount',
+          order: 'dsc' as const,
+          sortCallback: 'stringNumeric',
+        },
+      },
+      NetworkController: {
+        selectedNetworkClientId: 'mainnet',
+        providerConfig: {
+          chainId: '0x1',
+          type: 'mainnet',
+          nickname: 'Ethereum Mainnet',
+          ticker: 'ETH',
+        },
+        networkConfigurationsByChainId: {
+          '0x1': {
+            chainId: '0x1' as `0x${string}`,
+            name: 'Ethereum Mainnet',
+            nativeCurrency: 'ETH',
+            defaultRpcEndpointIndex: 0,
+            rpcEndpoints: [
+              {
+                networkClientId: 'mainnet',
+              },
+            ],
+            blockExplorerUrls: [],
+          },
+        },
+      },
+      KeyringController: {
+        keyrings: [
+          {
+            type: 'HD Key Tree',
+            accounts: [MOCK_ADDRESS],
+          },
+        ],
+      },
+      NotificationServicesController: {
+        isNotificationServicesEnabled: false,
+        isMetamaskNotificationsEnabled: false,
+        metamaskNotificationsList: [],
+        metamaskNotificationsReadList: [],
+      },
     },
   },
 };
 
-const mockStore = configureMockStore();
-const store = mockStore(mockInitialState);
+/** Keeps AccountsController / PreferencesController from mockInitialState while merging remote flags. */
+function mockInitialStateWithRemoteFeatureFlags(
+  remoteFeatureFlagOverrides: Record<string, Json>,
+) {
+  const remote =
+    mockInitialState.engine.backgroundState.RemoteFeatureFlagController;
+  const baseFlags = remote.remoteFeatureFlags;
+  return {
+    ...mockInitialState,
+    engine: {
+      ...mockInitialState.engine,
+      backgroundState: {
+        ...mockInitialState.engine.backgroundState,
+        RemoteFeatureFlagController: {
+          ...remote,
+          remoteFeatureFlags: {
+            ...baseFlags,
+            ...remoteFeatureFlagOverrides,
+          },
+        },
+      },
+    },
+  };
+}
+
+/** Eligible + not suppressed — AccountGroupBalance and Wallet both show the checklist and hide main actions. */
+const mockStateWalletHomePostOnboardingActive = {
+  ...mockInitialState,
+  onboarding: {
+    ...mockInitialState.onboarding,
+    walletHomeOnboardingStepsEligible: true,
+    walletHomeOnboardingSkipInitialBalanceWait: true,
+    walletHomeOnboardingSteps: {
+      suppressedReason: null,
+      stepIndex: 0,
+    },
+  },
+};
+
+/** Last checklist step (coordinated exit with Wallet `onCoordinatedFlowExit`). */
+const mockStateWalletHomePostOnboardingLastStep = {
+  ...mockStateWalletHomePostOnboardingActive,
+  onboarding: {
+    ...mockStateWalletHomePostOnboardingActive.onboarding,
+    walletHomeOnboardingSteps: {
+      suppressedReason: null,
+      stepIndex: 2,
+    },
+  },
+};
 
 jest.mock('react-redux', () => ({
   ...jest.requireActual('react-redux'),
@@ -91,18 +815,66 @@ jest.mock('react-redux', () => ({
     .mockImplementation((callback) => callback(mockInitialState)),
 }));
 
-jest.mock('react-native-scrollable-tab-view', () => {
-  const ScrollableTabViewMock = jest
-    .fn()
-    .mockImplementation(() => ScrollableTabViewMock);
-  // TODO - Clean up mock.
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  ScrollableTabViewMock.defaultProps = {
-    onChangeTab: jest.fn(),
-    renderTabBar: jest.fn(),
+jest.mock('../../../util/address', () => ({
+  ...jest.requireActual('../../../util/address'),
+  getInternalAccountByAddress: jest.fn().mockReturnValue({
+    address: MOCK_ADDRESS,
+    balance: '0x0',
+    name: 'Account 1',
+    type: 'default',
+    metadata: {
+      keyring: {
+        type: 'HD Key Tree',
+      },
+    },
+  }),
+}));
+
+// Better navigation mock pattern (from WalletActions.test.tsx)
+const mockNavigate = jest.fn();
+const mockSetOptions = jest.fn();
+
+// Mock core first so useIsFocused/useNavigation work when Wallet or children use them
+jest.mock('@react-navigation/core', () => {
+  const actualCore = jest.requireActual('@react-navigation/core');
+  return {
+    ...actualCore,
+    useNavigation: jest.fn(() => ({
+      navigate: mockNavigate,
+      setOptions: mockSetOptions,
+      addListener: jest.fn(() => jest.fn()),
+      isFocused: () => true,
+      dangerouslyGetParent: jest.fn(),
+    })),
+    useIsFocused: jest.fn(() => true),
   };
-  return ScrollableTabViewMock;
+});
+
+jest.mock('@react-navigation/native', () => {
+  const actualReactNavigation = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualReactNavigation,
+    useNavigation: jest.fn(() => ({
+      navigate: mockNavigate,
+      setOptions: mockSetOptions,
+      addListener: jest.fn(() => jest.fn()),
+      isFocused: jest.fn(() => false),
+      dangerouslyGetParent: jest.fn(() => ({
+        dangerouslyGetState: jest.fn(() => ({ type: 'stack' })),
+        addListener: jest.fn(() => jest.fn()),
+        dangerouslyGetParent: jest.fn(() => ({
+          dangerouslyGetState: jest.fn(() => ({ type: 'tab' })),
+          addListener: jest.fn(() => jest.fn()),
+          dangerouslyGetParent: jest.fn(() => undefined),
+        })),
+      })),
+    })),
+    useRoute: jest.fn(() => ({
+      params: {},
+    })),
+    useFocusEffect: jest.fn(),
+    useIsFocused: jest.fn(() => true),
+  };
 });
 
 const render = (Component: React.ComponentType) =>
@@ -116,27 +888,1848 @@ const render = (Component: React.ComponentType) =>
     },
   );
 
+/** Provider preloaded state must match useSelector mock implementation for connected Wallet. */
+const renderWalletWithRootState = (rootState: typeof mockInitialState) =>
+  renderScreen(
+    Wallet,
+    {
+      name: Routes.WALLET_VIEW,
+    },
+    {
+      state: rootState,
+    },
+  );
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockPerpsEnabled = true;
+  mockPerpsGTMModalEnabled = false;
+  mockMoneyAccountEnabled = false;
+  mockMoneyDepositBrazeCampaignEnabled = false;
+  mockMoneyAccountVisible = false;
+  mockDiscoveryPillsVariantName = 'control';
+  mockActionButtonsGridVariantName = 'control';
+  mockBalanceBreakdownVariantName = 'unresolved';
+  mockHeaderNavBarVariantName = 'control';
+  mockSocialV1VariantName = 'control';
+  mockNetworkConnectionBannerVisible = false;
+  mockCarouselBannersEnabled = false;
+  mockIsAccountGroupFunded = false;
+});
+
 describe('Wallet', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  beforeEach(() => {
+    mockNavigate.mockClear();
+    mockSetOptions.mockClear();
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+    jest.mocked(useRoute).mockReturnValue({
+      key: 'route',
+      name: 'route',
+      params: {},
+    });
+  });
+
   it('should render correctly', () => {
-    const wrapper = shallow(
-      <Provider store={store}>
-        <Wallet />
-      </Provider>,
+    render(Wallet);
+    expect(capturedContext).toBeDefined();
+  });
+
+  it('should render homepage scroll context', () => {
+    render(Wallet);
+
+    expect(capturedContext).toBeDefined();
+  });
+
+  it('should render correctly when Solana support is enabled', () => {
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+    render(Wallet);
+    expect(capturedContext).toBeDefined();
+  });
+
+  describe('AssetDetailsActions', () => {
+    const mockAssetDetailsActions = jest.mocked(
+      jest.requireMock('../AssetDetails/AssetDetailsActions').default,
     );
-    expect(wrapper).toMatchSnapshot();
+
+    beforeEach(() => {
+      mockAssetDetailsActions.mockClear();
+      mockNavigate.mockClear();
+    });
+
+    it('passes required props to AssetDetailsActions', () => {
+      render(Wallet);
+
+      expect(getAssetDetailsActionsProps()).toMatchObject({
+        displayBuyButton: expect.any(Boolean),
+        displaySwapsButton: expect.any(Boolean),
+        onReceive: expect.any(Function),
+        onSend: expect.any(Function),
+        buyButtonActionID: 'wallet-buy-button',
+        swapButtonActionID: 'wallet-swap-button',
+        sendButtonActionID: 'wallet-send-button',
+        receiveButtonActionID: 'wallet-receive-button',
+      });
+    });
+
+    it('navigates to the multichain address list when onReceive is invoked', () => {
+      const receiveAccount = createMockInternalAccount(
+        '0x1234567890123456789012345678901234567890',
+        'Receive Test Account',
+      );
+      const mockStateWithReceiveData = {
+        ...mockInitialState,
+        engine: {
+          ...mockInitialState.engine,
+          backgroundState: {
+            ...mockInitialState.engine.backgroundState,
+            AccountsController: {
+              ...mockInitialState.engine.backgroundState.AccountsController,
+              internalAccounts: {
+                accounts: {
+                  [receiveAccount.id]: receiveAccount,
+                },
+                selectedAccount: receiveAccount.id,
+              },
+            },
+            AccountTreeController: {
+              accountTree: { wallets: {} },
+              selectedAccountGroup: 'keyring:wallet-1/ethereum',
+            },
+            NetworkController: {
+              ...mockInitialState.engine.backgroundState.NetworkController,
+              providerConfig: {
+                ...mockInitialState.engine.backgroundState.NetworkController
+                  .providerConfig,
+                nickname: 'Ethereum Mainnet',
+                chainId: '0x1',
+              },
+            },
+          },
+        },
+      };
+
+      jest
+        .mocked(useSelector)
+        .mockImplementation((callback) => callback(mockStateWithReceiveData));
+
+      // @ts-expect-error partial root state intentionally provided for testing
+      renderWalletWithRootState(mockStateWithReceiveData);
+      getAssetDetailsActionsProps().onReceive();
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.MULTICHAIN_ACCOUNTS.ADDRESS_LIST,
+        expect.objectContaining({
+          groupId: expect.any(String),
+          title: expect.any(String),
+          source: 'receive_button',
+        }),
+      );
+    });
+
+    it('navigates via createAddressListNavigationDetails when account group is selected', () => {
+      const mockStateWithMultichainAccounts = {
+        ...mockInitialState,
+        engine: {
+          ...mockInitialState.engine,
+          backgroundState: {
+            ...mockInitialState.engine.backgroundState,
+            AccountTreeController: {
+              accountTree: { wallets: {} },
+              selectedAccountGroup: 'keyring:wallet-1/ethereum',
+            },
+          },
+        },
+      };
+
+      jest
+        .mocked(useSelector)
+        .mockImplementation((callback: (state: unknown) => unknown) =>
+          callback(mockStateWithMultichainAccounts),
+        );
+
+      // @ts-expect-error partial root state intentionally provided for testing
+      renderWalletWithRootState(mockStateWithMultichainAccounts);
+      getAssetDetailsActionsProps().onReceive();
+
+      expect(mockNavigate).toHaveBeenCalled();
+      const [route, params] = mockNavigate.mock.calls[0];
+      expect(route).toBeDefined();
+      expect(params).toBeDefined();
+    });
+
+    it('opens Send flow from onSend when native ticker is set', async () => {
+      render(Wallet);
+
+      await getAssetDetailsActionsProps().onSend();
+
+      const sendNavigationCall = mockNavigate.mock.calls.find(
+        (call) => call[0] === 'Send',
+      );
+      expect(sendNavigationCall).toBeDefined();
+    });
+
+    it('opens Send flow from onSend when native ticker is missing', async () => {
+      const stateWithoutNativeCurrency = {
+        ...mockInitialState,
+        engine: {
+          ...mockInitialState.engine,
+          backgroundState: {
+            ...mockInitialState.engine.backgroundState,
+            NetworkController: {
+              ...mockInitialState.engine.backgroundState.NetworkController,
+              providerConfig: {
+                ...mockInitialState.engine.backgroundState.NetworkController
+                  .providerConfig,
+                ticker: undefined, // Remove native currency
+              },
+            },
+          },
+        },
+      };
+
+      jest
+        .mocked(useSelector)
+        .mockImplementation((callback: (state: unknown) => unknown) =>
+          callback(stateWithoutNativeCurrency),
+        );
+
+      render(Wallet);
+
+      await getAssetDetailsActionsProps().onSend();
+
+      const sendNavigationCall = mockNavigate.mock.calls.find(
+        (call) => call[0] === 'Send',
+      );
+      expect(sendNavigationCall).toBeDefined();
+    });
+
+    it('omits onBuy while still passing buyButtonActionID', () => {
+      render(Wallet);
+
+      const passedProps = getAssetDetailsActionsProps();
+      expect(passedProps.onBuy).toBeUndefined();
+      expect(passedProps.buyButtonActionID).toBeDefined();
+    });
   });
-  it('should render scan qr icon', () => {
-    render(Wallet);
-    const scanButton = screen.getByTestId('wallet-scan-button');
-    expect(scanButton).toBeDefined();
+
+  // Error Handling Tests
+  describe('Error Handling', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+      // Suppress console.error for these tests since we're testing error scenarios
+      jest.spyOn(console, 'error').mockImplementation(jest.fn());
+      jest.spyOn(console, 'warn').mockImplementation(jest.fn());
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('still opens Send when trackActionButtonClick throws', async () => {
+      const actionButtonTracking = jest.requireActual<
+        typeof import('../../../util/analytics/actionButtonTracking')
+      >('../../../util/analytics/actionButtonTracking');
+      const spy = jest
+        .spyOn(actionButtonTracking, 'trackActionButtonClick')
+        .mockImplementation(() => {
+          throw new Error('Transaction initialization failed');
+        });
+      try {
+        render(Wallet);
+        await getAssetDetailsActionsProps().onSend();
+        expect(mockNavigate.mock.calls.some((call) => call[0] === 'Send')).toBe(
+          true,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
-  it('should render ScrollableTabView', () => {
-    render(Wallet);
-    expect(ScrollableTabView).toHaveBeenCalled();
+
+  describe('Connection Removed', () => {
+    it('connection removed modal is not shown when isConnectionRemoved is true', () => {
+      const mockInitialStateWithConnectionRemoved = {
+        ...mockInitialState,
+        user: {
+          isConnectionRemoved: true,
+        },
+        engine: {
+          ...mockInitialState.engine,
+          backgroundState: {
+            ...mockInitialState.engine.backgroundState,
+            PreferencesController: {
+              ...mockInitialState.engine.backgroundState.PreferencesController,
+              useNftDetection: true,
+            },
+          },
+        },
+      };
+
+      jest
+        .mocked(useSelector)
+        .mockImplementation((callback: (state: unknown) => unknown) =>
+          callback(mockInitialStateWithConnectionRemoved),
+        );
+
+      // Create a complete navigation object mock
+      const mockNavigationObject = {
+        navigate: mockNavigate,
+        setOptions: mockSetOptions,
+        addListener: jest.fn(() => jest.fn()),
+        isFocused: jest.fn(() => false),
+        dangerouslyGetParent: jest.fn(() => ({
+          dangerouslyGetState: jest.fn(() => ({ type: 'stack' })),
+          addListener: jest.fn(() => jest.fn()),
+          dangerouslyGetParent: jest.fn(() => ({
+            dangerouslyGetState: jest.fn(() => ({ type: 'tab' })),
+            addListener: jest.fn(() => jest.fn()),
+            dangerouslyGetParent: jest.fn(() => undefined),
+          })),
+        })),
+      } as unknown as NavigationProp<ParamListBase>;
+
+      // Clear previous calls
+      mockNavigate.mockClear();
+
+      renderWithProvider(
+        <Wallet
+          navigation={mockNavigationObject}
+          currentRouteName={Routes.WALLET_VIEW}
+        />,
+        {
+          state: mockInitialStateWithConnectionRemoved,
+        },
+      );
+
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        {
+          screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+          params: expect.objectContaining({
+            title: expect.any(String),
+            description: expect.any(String),
+            primaryButtonLabel: expect.any(String),
+            type: 'error',
+            icon: IconName.Danger,
+            iconColor: IconColor.Warning,
+            isInteractable: false,
+            closeOnPrimaryButtonPress: true,
+            onPrimaryButtonPress: expect.any(Function),
+          }),
+        },
+      );
+
+      jest.clearAllMocks();
+    });
+
+    it('connection removed modal is shown when isConnectionRemoved is true and isSocialLogin is true', () => {
+      const mockInitialStateWithConnectionRemoved = {
+        ...mockInitialState,
+        user: {
+          isConnectionRemoved: true,
+        },
+        engine: {
+          ...mockInitialState.engine,
+          backgroundState: {
+            ...mockInitialState.engine.backgroundState,
+            PreferencesController: {
+              ...mockInitialState.engine.backgroundState.PreferencesController,
+              useNftDetection: true,
+            },
+            SeedlessOnboardingController: {
+              ...mockInitialState.engine.backgroundState
+                .SeedlessOnboardingController,
+              vault: 'encrypted-vault-data',
+              loginFlow: true,
+            },
+          },
+        },
+      };
+
+      jest
+        .mocked(useSelector)
+        .mockImplementation((callback: (state: unknown) => unknown) =>
+          callback(mockInitialStateWithConnectionRemoved),
+        );
+
+      // Create a complete navigation object mock
+      const mockNavigationObject = {
+        navigate: mockNavigate,
+        setOptions: mockSetOptions,
+        addListener: jest.fn(() => jest.fn()),
+        isFocused: jest.fn(() => false),
+        dangerouslyGetParent: jest.fn(() => ({
+          dangerouslyGetState: jest.fn(() => ({ type: 'stack' })),
+          addListener: jest.fn(() => jest.fn()),
+          dangerouslyGetParent: jest.fn(() => ({
+            dangerouslyGetState: jest.fn(() => ({ type: 'tab' })),
+            addListener: jest.fn(() => jest.fn()),
+            dangerouslyGetParent: jest.fn(() => undefined),
+          })),
+        })),
+      } as unknown as NavigationProp<ParamListBase>;
+
+      // Clear previous calls
+      mockNavigate.mockClear();
+
+      renderWithProvider(
+        <Wallet
+          navigation={mockNavigationObject}
+          currentRouteName={Routes.WALLET_VIEW}
+        />,
+        {
+          state: mockInitialStateWithConnectionRemoved,
+        },
+      );
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.MODAL.ROOT_MODAL_FLOW, {
+        screen: Routes.SHEET.SUCCESS_ERROR_SHEET,
+        params: expect.objectContaining({
+          title: expect.any(String),
+          description: expect.any(String),
+          primaryButtonLabel: expect.any(String),
+          type: 'error',
+          icon: IconName.Danger,
+          iconColor: IconColor.Warning,
+          isInteractable: false,
+          closeOnPrimaryButtonPress: true,
+          onPrimaryButtonPress: expect.any(Function),
+        }),
+      });
+
+      jest.clearAllMocks();
+    });
   });
-  it('should render fox icon', () => {
+
+  describe('Perps GTM Modal Navigation', () => {
+    let mockNavigation: NavigationProp<ParamListBase>;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      jest.mocked(StorageWrapper.getItem).mockClear();
+      mockNavigate.mockClear();
+
+      // Setup navigation mock
+      mockNavigation = {
+        navigate: mockNavigate,
+        setOptions: mockSetOptions,
+        addListener: jest.fn(() => jest.fn()),
+        isFocused: jest.fn(() => false),
+        dangerouslyGetParent: jest.fn(() => ({
+          dangerouslyGetState: jest.fn(() => ({ type: 'stack' })),
+          addListener: jest.fn(() => jest.fn()),
+          dangerouslyGetParent: jest.fn(() => ({
+            dangerouslyGetState: jest.fn(() => ({ type: 'tab' })),
+            addListener: jest.fn(() => jest.fn()),
+            dangerouslyGetParent: jest.fn(() => undefined),
+          })),
+        })),
+      } as unknown as NavigationProp<ParamListBase>;
+
+      // Reset flags to default state
+      mockPerpsEnabled = true;
+      mockPerpsGTMModalEnabled = false;
+    });
+
+    afterEach(() => {
+      // Reset mocks and flags
+      mockPerpsEnabled = true;
+      mockPerpsGTMModalEnabled = false;
+      jest.clearAllMocks();
+    });
+
+    it('should navigate to GTM modal when both flags are enabled and modal not shown', async () => {
+      // Arrange
+      mockPerpsEnabled = true;
+      mockPerpsGTMModalEnabled = true;
+      jest.mocked(StorageWrapper.getItem).mockResolvedValue(null); // Modal not shown yet
+
+      const state = mockInitialStateWithRemoteFeatureFlags({
+        ...(mockedPerpsFeatureFlagsEnabledState as unknown as Record<
+          string,
+          Json
+        >),
+        perpsPerpTradingGTMModalEnabled: {
+          enabled: true,
+          minimumVersion: '1.0.0',
+        },
+      });
+
+      // Act
+      renderWithProvider(
+        <Wallet navigation={mockNavigation} currentRouteName="Wallet" />,
+        { state },
+      );
+
+      // Wait for useEffect to complete
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // Assert
+      expect(StorageWrapper.getItem).toHaveBeenCalledWith(
+        '@MetaMask:perpsGTMModalShown',
+      );
+      expect(mockNavigate).toHaveBeenCalledWith('PerpsModals', {
+        screen: 'PerpsGTMModal',
+      });
+    });
+
+    it('should not navigate to GTM modal when already shown', async () => {
+      // Arrange
+      mockPerpsEnabled = true;
+      mockPerpsGTMModalEnabled = true;
+      jest.mocked(StorageWrapper.getItem).mockResolvedValue('true'); // Modal already shown
+
+      const state = mockInitialStateWithRemoteFeatureFlags({
+        ...(mockedPerpsFeatureFlagsEnabledState as unknown as Record<
+          string,
+          Json
+        >),
+        perpsPerpTradingGTMModalEnabled: {
+          enabled: true,
+          minimumVersion: '1.0.0',
+        },
+      });
+
+      // Act
+      renderWithProvider(
+        <Wallet navigation={mockNavigation} currentRouteName="Wallet" />,
+        { state },
+      );
+
+      // Wait for useEffect to complete
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // Assert
+      expect(StorageWrapper.getItem).toHaveBeenCalledWith(
+        '@MetaMask:perpsGTMModalShown',
+      );
+      expect(mockNavigate).not.toHaveBeenCalledWith('PerpsModals', {
+        screen: 'PerpsGTMModal',
+      });
+    });
+
+    it('should not navigate to GTM modal when Perps feature is disabled', async () => {
+      // Arrange
+      mockPerpsEnabled = false;
+      mockPerpsGTMModalEnabled = true;
+      jest.mocked(StorageWrapper.getItem).mockResolvedValue(null);
+
+      const state = mockInitialStateWithRemoteFeatureFlags({
+        perpsPerpTradingEnabled: {
+          enabled: false,
+          minimumVersion: '1.0.0',
+        },
+        perpsPerpTradingGTMModalEnabled: {
+          enabled: true,
+          minimumVersion: '1.0.0',
+        },
+      });
+
+      // Act
+      renderWithProvider(
+        <Wallet navigation={mockNavigation} currentRouteName="Wallet" />,
+        { state },
+      );
+
+      // Wait for useEffect to complete
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // Assert
+      expect(StorageWrapper.getItem).not.toHaveBeenCalledWith(
+        '@MetaMask:perpsGTMModalShown',
+      );
+      expect(mockNavigate).not.toHaveBeenCalledWith('PerpsModals', {
+        screen: 'PerpsGTMModal',
+      });
+    });
+
+    it('should not navigate to GTM modal when GTM modal feature is disabled', async () => {
+      // Arrange
+      mockPerpsEnabled = true;
+      mockPerpsGTMModalEnabled = false;
+      jest.mocked(StorageWrapper.getItem).mockResolvedValue(null);
+
+      const state = mockInitialStateWithRemoteFeatureFlags({
+        ...(mockedPerpsFeatureFlagsEnabledState as unknown as Record<
+          string,
+          Json
+        >),
+        perpsPerpTradingGTMModalEnabled: {
+          enabled: false,
+          minimumVersion: '1.0.0',
+        },
+      });
+
+      // Act
+      renderWithProvider(
+        <Wallet navigation={mockNavigation} currentRouteName="Wallet" />,
+        { state },
+      );
+
+      // Wait for useEffect to complete
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // Assert
+      expect(StorageWrapper.getItem).not.toHaveBeenCalledWith(
+        '@MetaMask:perpsGTMModalShown',
+      );
+      expect(mockNavigate).not.toHaveBeenCalledWith('PerpsModals', {
+        screen: 'PerpsGTMModal',
+      });
+    });
+  });
+});
+
+describe('Wallet post-onboarding checklist coordination', () => {
+  const mockAssetDetailsActions = jest.mocked(
+    jest.requireMock('../AssetDetails/AssetDetailsActions').default,
+  );
+  const accountGroupBalanceMock = jest.requireMock(
+    '../../UI/Assets/components/Balance/AccountGroupBalance',
+  ).default as jest.Mock;
+  const RealAccountGroupBalance = jest.requireActual(
+    '../../UI/Assets/components/Balance/AccountGroupBalance',
+  ).default;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    accountGroupBalanceMock.mockImplementation(
+      RealAccountGroupBalance as (...args: unknown[]) => unknown,
+    );
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+  });
+
+  afterEach(() => {
+    accountGroupBalanceMock.mockImplementation(() => null);
+  });
+
+  it('does not mount main action buttons while wallet-home post-onboarding is active', () => {
+    const state = mockStateWalletHomePostOnboardingActive;
+    jest.mocked(useSelector).mockImplementation((callback) => callback(state));
+    renderWalletWithRootState(state);
+    expect(mockAssetDetailsActions).not.toHaveBeenCalled();
+  });
+
+  it('dispatches flow_completed when coordinated exit completes', async () => {
+    // `requestAnimationFrame` is used inside runWalletHomePostOnboardingComplete.
+    const rafSpy = jest
+      .spyOn(global, 'requestAnimationFrame')
+      .mockImplementation((cb: FrameRequestCallback) => {
+        setTimeout(() => cb(0), 0);
+        return 0;
+      });
+
+    try {
+      const state = mockStateWalletHomePostOnboardingLastStep;
+      jest
+        .mocked(useSelector)
+        .mockImplementation((callback) => callback(state));
+
+      // Capture onCoordinatedFlowExit that Wallet passes to AccountGroupBalance.
+      // Testing this callback directly keeps the assertion focused on Wallet's own
+      // responsibility; the deferred-nav advance path inside WalletHomeOnboardingSteps
+      // is covered by WalletHomeOnboardingSteps.test.tsx.
+      let capturedOnCoordinatedFlowExit: (() => Promise<void>) | undefined;
+      accountGroupBalanceMock.mockImplementation(
+        (props: { onCoordinatedFlowExit?: () => Promise<void> }) => {
+          capturedOnCoordinatedFlowExit = props.onCoordinatedFlowExit;
+          return null;
+        },
+      );
+
+      const { store } = renderWalletWithRootState(state);
+
+      expect(capturedOnCoordinatedFlowExit).toBeDefined();
+
+      await act(async () => {
+        await capturedOnCoordinatedFlowExit?.();
+        await new Promise<void>((r) => setTimeout(r, 0));
+      });
+
+      expect(
+        store.getState().onboarding.walletHomeOnboardingSteps?.suppressedReason,
+      ).toBe('flow_completed');
+    } finally {
+      rafSpy.mockRestore();
+    }
+  });
+});
+
+describe('HomepageScrollContext callbacks', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    capturedContext = null;
+  });
+
+  const renderWalletWithSections = () => render(Wallet);
+
+  it('getVisitMaxDepth returns -1 before any section is viewed', () => {
+    renderWalletWithSections();
+    expect(capturedContext.getVisitMaxDepth()).toBe(-1);
+  });
+
+  it('notifySectionViewed with recordDepth=true updates max depth', () => {
+    renderWalletWithSections();
+    capturedContext.notifySectionViewed('tokens', 2, true);
+    expect(capturedContext.getVisitMaxDepth()).toBe(2);
+  });
+
+  it('notifySectionViewed with recordDepth=false does not update max depth', () => {
+    renderWalletWithSections();
+    capturedContext.notifySectionViewed('defi', 3, false);
+    expect(capturedContext.getVisitMaxDepth()).toBe(-1);
+  });
+
+  it('does not decrease depth when a lower index is viewed after a higher one', () => {
+    renderWalletWithSections();
+    capturedContext.notifySectionViewed('tokens', 5, true);
+    capturedContext.notifySectionViewed('defi', 2, true);
+    expect(capturedContext.getVisitMaxDepth()).toBe(5);
+  });
+
+  it('appSessionId is a non-empty string', () => {
+    renderWalletWithSections();
+    expect(typeof capturedContext.appSessionId).toBe('string');
+    expect(capturedContext.appSessionId.length).toBeGreaterThan(0);
+  });
+
+  it('useFocusEffect reset callback clears maxDepth back to -1', () => {
+    renderWalletWithSections();
+    capturedContext.notifySectionViewed('tokens', 5, true);
+    expect(capturedContext.getVisitMaxDepth()).toBe(5);
+
+    // Search through all registered useFocusEffect callbacks to find the one
+    // that resets depth. We do this instead of assuming a fixed index because
+    // the count of calls can vary depending on which other hooks inside Wallet
+    // also use useFocusEffect (e.g. useHomepageEntryPoint, modal hooks, etc.).
+    const mockUseFocusEffectFn = jest.mocked(useFocusEffect);
+    let resetFound = false;
+    for (const call of mockUseFocusEffectFn.mock.calls) {
+      const callback = call[0] as (() => void) | undefined;
+      if (!callback) continue;
+      callback();
+      if (capturedContext.getVisitMaxDepth() === -1) {
+        resetFound = true;
+        break;
+      }
+      // Restore depth so we can keep searching
+      capturedContext.notifySectionViewed('tokens', 5, true);
+    }
+
+    expect(resetFound).toBe(true);
+    expect(capturedContext.getVisitMaxDepth()).toBe(-1);
+  });
+});
+
+describe('Homepage deep links', () => {
+  let mockNavigation: NavigationProp<ParamListBase>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+
+    mockNavigation = {
+      navigate: mockNavigate,
+      setOptions: mockSetOptions,
+      addListener: jest.fn(() => jest.fn()),
+      isFocused: jest.fn(() => false),
+      dangerouslyGetParent: jest.fn(() => ({
+        dangerouslyGetState: jest.fn(() => ({ type: 'stack' })),
+        addListener: jest.fn(() => jest.fn()),
+        dangerouslyGetParent: jest.fn(() => ({
+          dangerouslyGetState: jest.fn(() => ({ type: 'tab' })),
+          addListener: jest.fn(() => jest.fn()),
+          dangerouslyGetParent: jest.fn(() => undefined),
+        })),
+      })),
+    } as unknown as NavigationProp<ParamListBase>;
+
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+  });
+
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  it('navigates to Perps screen for Perps deeplinks', () => {
+    jest.mocked(useRoute).mockReturnValue({
+      key: 'route',
+      name: 'route',
+      params: { initialTab: 'perps' },
+    });
+
+    renderWithProvider(
+      <Wallet
+        navigation={mockNavigation}
+        currentRouteName={Routes.WALLET_VIEW}
+      />,
+      { state: mockInitialState },
+    );
+
+    const focusCallbacks = jest.mocked(useFocusEffect).mock.calls;
+    focusCallbacks.forEach(([callback]) => callback?.());
+    jest.advanceTimersByTime(PERFORMANCE_CONFIG.NavigationParamsDelayMs);
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.PERPS.ROOT, {
+      screen: Routes.PERPS.PERPS_HOME,
+      params: { source: 'deeplink' },
+    });
+  });
+
+  it('navigates to network selector from deeplink params', () => {
+    jest.mocked(useRoute).mockReturnValue({
+      key: 'route',
+      name: 'route',
+      params: { openNetworkSelector: true },
+    });
+
+    renderWithProvider(
+      <Wallet
+        navigation={mockNavigation}
+        currentRouteName={Routes.WALLET_VIEW}
+      />,
+      { state: mockInitialState },
+    );
+
+    const focusCallbacks = jest.mocked(useFocusEffect).mock.calls;
+    focusCallbacks.forEach(([callback]) => callback?.());
+    jest.advanceTimersByTime(PERFORMANCE_CONFIG.NavigationParamsDelayMs);
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.SHEET.NETWORK_SELECTOR,
+    });
+  });
+});
+
+describe('HomepageDiscoveryPills AB test', () => {
+  let mockNavigation: NavigationProp<ParamListBase>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockDiscoveryPillsVariantName = 'control';
+    mockHomepageDiscoveryPills.mockClear();
+
+    mockNavigation = {
+      navigate: mockNavigate,
+      setOptions: mockSetOptions,
+      addListener: jest.fn(() => jest.fn()),
+      isFocused: jest.fn(() => false),
+      dangerouslyGetParent: jest.fn(() => ({
+        dangerouslyGetState: jest.fn(() => ({ type: 'stack' })),
+        addListener: jest.fn(() => jest.fn()),
+        dangerouslyGetParent: jest.fn(() => ({
+          dangerouslyGetState: jest.fn(() => ({ type: 'tab' })),
+          addListener: jest.fn(() => jest.fn()),
+          dangerouslyGetParent: jest.fn(() => undefined),
+        })),
+      })),
+    } as unknown as NavigationProp<ParamListBase>;
+
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+  });
+
+  afterEach(() => {
+    mockDiscoveryPillsVariantName = 'control';
+    mockActionButtonsGridVariantName = 'control';
+    jest.clearAllMocks();
+  });
+
+  it('renders discovery pills on legacy homepage when grayIcons variant is active', () => {
+    mockDiscoveryPillsVariantName = 'grayIcons';
+
+    renderWithProvider(
+      <Wallet
+        navigation={mockNavigation}
+        currentRouteName={Routes.WALLET_VIEW}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(mockHomepageDiscoveryPills).toHaveBeenCalledWith(
+      expect.objectContaining({ iconStyle: 'gray' }),
+    );
+  });
+
+  it('does not render discovery pills when control variant is active', () => {
+    mockDiscoveryPillsVariantName = 'control';
+
+    renderWithProvider(
+      <Wallet
+        navigation={mockNavigation}
+        currentRouteName={Routes.WALLET_VIEW}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(mockHomepageDiscoveryPills).not.toHaveBeenCalled();
+  });
+});
+
+describe('HomepageActionButtonsGrid AB test', () => {
+  let mockNavigation: NavigationProp<ParamListBase>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockDiscoveryPillsVariantName = 'control';
+    mockActionButtonsGridVariantName = 'control';
+    mockHomepageActionButtonsGrid.mockClear();
+
+    mockNavigation = {
+      navigate: mockNavigate,
+      setOptions: mockSetOptions,
+      addListener: jest.fn(() => jest.fn()),
+      isFocused: jest.fn(() => false),
+      dangerouslyGetParent: jest.fn(() => ({
+        dangerouslyGetState: jest.fn(() => ({ type: 'stack' })),
+        addListener: jest.fn(() => jest.fn()),
+        dangerouslyGetParent: jest.fn(() => ({
+          dangerouslyGetState: jest.fn(() => ({ type: 'tab' })),
+          addListener: jest.fn(() => jest.fn()),
+          dangerouslyGetParent: jest.fn(() => undefined),
+        })),
+      })),
+    } as unknown as NavigationProp<ParamListBase>;
+
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+  });
+
+  afterEach(() => {
+    mockActionButtonsGridVariantName = 'control';
+    jest.clearAllMocks();
+  });
+
+  it('renders action buttons grid when row1Top variant is active', () => {
+    mockActionButtonsGridVariantName = 'row1Top';
+
+    renderWithProvider(
+      <Wallet
+        navigation={mockNavigation}
+        currentRouteName={Routes.WALLET_VIEW}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(mockHomepageActionButtonsGrid).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rowOrder: 'row1Top',
+        onSend: expect.any(Function),
+        onReceive: expect.any(Function),
+      }),
+    );
+  });
+
+  it('renders action buttons grid when row2Top variant is active', () => {
+    mockActionButtonsGridVariantName = 'row2Top';
+
+    renderWithProvider(
+      <Wallet
+        navigation={mockNavigation}
+        currentRouteName={Routes.WALLET_VIEW}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(mockHomepageActionButtonsGrid).toHaveBeenCalledWith(
+      expect.objectContaining({ rowOrder: 'row2Top' }),
+    );
+  });
+
+  it('does not render action buttons grid when control variant is active', () => {
+    mockActionButtonsGridVariantName = 'control';
+
+    renderWithProvider(
+      <Wallet
+        navigation={mockNavigation}
+        currentRouteName={Routes.WALLET_VIEW}
+      />,
+      { state: mockInitialState },
+    );
+
+    expect(mockHomepageActionButtonsGrid).not.toHaveBeenCalled();
+  });
+});
+
+describe('useHomeDeepLinkEffects', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  const arrangeMocks = () => {
+    const mockSetParams = jest.fn();
+    const mockOnPerpsTabsSelected = jest.fn();
+    const mockOnNetworkSelectorSelected = jest.fn();
+    const mockUseRoute = jest
+      .mocked(useRoute)
+      .mockReturnValue({ key: 'route', name: 'route', params: {} });
+    return {
+      mockNavigate,
+      mockSetParams,
+      navigation: {
+        setParams: mockSetParams,
+      } as unknown as NavigationProp<ParamListBase>,
+      mockUseRoute,
+      mockOnPerpsTabsSelected,
+      mockOnNetworkSelectorSelected,
+    };
+  };
+
+  interface DeepLinkTestCase {
+    testName: string;
+    params: Record<string, unknown>;
+    isPerpsEnabled: boolean;
+    assertCase: (mocks: ReturnType<typeof arrangeMocks>) => void;
+  }
+
+  const testCases: DeepLinkTestCase[] = [
+    {
+      testName: 'navigates to perps tab when shouldSelectPerpsTab is true',
+      params: { shouldSelectPerpsTab: true },
+      isPerpsEnabled: true,
+      assertCase: (mocks) => {
+        expect(mocks.mockOnPerpsTabsSelected).toHaveBeenCalled();
+        expect(mocks.mockSetParams).toHaveBeenCalledWith({
+          shouldSelectPerpsTab: null,
+        });
+      },
+    },
+    {
+      testName: 'navigates to perps tab when initialTab is perps',
+      params: { initialTab: 'perps' },
+      isPerpsEnabled: true,
+      assertCase: (mocks) => {
+        expect(mocks.mockOnPerpsTabsSelected).toHaveBeenCalled();
+        expect(mocks.mockSetParams).toHaveBeenCalledWith({ initialTab: null });
+      },
+    },
+    {
+      testName:
+        'navigates to network selector when openNetworkSelector is true',
+      params: { openNetworkSelector: true },
+      isPerpsEnabled: false,
+      assertCase: (mocks) => {
+        expect(mocks.mockOnNetworkSelectorSelected).toHaveBeenCalled();
+        expect(mocks.mockSetParams).toHaveBeenCalledWith({
+          openNetworkSelector: null,
+        });
+      },
+    },
+    {
+      testName:
+        'performs no deeplink action when no deeplink params are provided',
+      params: {}, // no deeplink params
+      isPerpsEnabled: true,
+      assertCase: (mocks) => {
+        expect(mocks.mockOnPerpsTabsSelected).not.toHaveBeenCalled();
+        expect(mocks.mockOnNetworkSelectorSelected).not.toHaveBeenCalled();
+        expect(mocks.mockSetParams).not.toHaveBeenCalled();
+      },
+    },
+  ];
+
+  it.each(testCases)('$testName', ({ params, isPerpsEnabled, assertCase }) => {
+    const mocks = arrangeMocks();
+
+    // Setup the mocked useRoute to return the provided params.
+    mocks.mockUseRoute.mockReturnValue({
+      key: 'route',
+      name: 'route',
+      params,
+    });
+    const mockUseFocusEffect = jest.mocked(useFocusEffect);
+
+    renderHook(() =>
+      useHomeDeepLinkEffects({
+        isPerpsEnabled,
+        onPerpsTabSelected: mocks.mockOnPerpsTabsSelected,
+        onNetworkSelectorSelected: mocks.mockOnNetworkSelectorSelected,
+        navigation: mocks.navigation,
+      }),
+    );
+
+    const focusCallback = mockUseFocusEffect.mock.calls[0][0];
+    focusCallback();
+
+    jest.advanceTimersByTime(PERFORMANCE_CONFIG.NavigationParamsDelayMs);
+    assertCase(mocks);
+  });
+});
+
+describe('MoneyBalanceCard slot', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockBalanceBreakdownVariantName = 'unresolved';
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+  });
+
+  afterEach(() => {
+    mockMoneyAccountEnabled = false;
+    mockBalanceBreakdownVariantName = 'unresolved';
+  });
+
+  it('shows the standalone MoneyBalanceCard when breakdown is disabled', () => {
+    mockMoneyAccountEnabled = true;
+    mockMoneyDepositBrazeCampaignEnabled = true;
+    mockMoneyAccountVisible = true;
+
+    const { getByTestId } = render(Wallet);
+
+    expect(getByTestId('money-balance-card-mock')).toBeOnTheScreen();
+    expect(
+      getByTestId('money-deposit-braze-campaign-observer-mock'),
+    ).toBeOnTheScreen();
+  });
+
+  it('does not mount the campaign observer when its feature flag is disabled', () => {
+    mockMoneyAccountEnabled = true;
+    mockMoneyAccountVisible = true;
+
+    const { queryByTestId } = render(Wallet);
+
+    expect(
+      queryByTestId('money-deposit-braze-campaign-observer-mock'),
+    ).not.toBeOnTheScreen();
+  });
+
+  it('shows the standalone MoneyBalanceCard when breakdown is disabled and Money is geo-ineligible', () => {
+    mockMoneyAccountEnabled = true;
+    mockMoneyAccountVisible = false;
+
+    const { getByTestId, queryByTestId } = render(Wallet);
+
+    expect(getByTestId('money-balance-card-mock')).toBeOnTheScreen();
+    expect(
+      queryByTestId('money-deposit-braze-campaign-observer-mock'),
+    ).not.toBeOnTheScreen();
+  });
+
+  it('suppresses the standalone MoneyBalanceCard in breakdown treatment', () => {
+    mockMoneyAccountEnabled = true;
+    mockMoneyAccountVisible = true;
+    mockBalanceBreakdownVariantName = 'treatment';
+
+    const { queryByTestId } = render(Wallet);
+
+    expect(mockHomepage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        balanceBreakdownSectionProps: expect.objectContaining({
+          hideRows: false,
+        }),
+      }),
+    );
+    expect(queryByTestId('money-balance-card-mock')).not.toBeOnTheScreen();
+  });
+});
+
+describe('Home growth banner during the onboarding checklist', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockCarouselBannersEnabled = true;
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+  });
+
+  const renderWithChecklistAtStep = (stepIndex: number) => {
+    const state = {
+      ...mockStateWalletHomePostOnboardingActive,
+      onboarding: {
+        ...mockStateWalletHomePostOnboardingActive.onboarding,
+        walletHomeOnboardingSteps: { suppressedReason: null, stepIndex },
+      },
+    };
+    jest.mocked(useSelector).mockImplementation((callback) => callback(state));
+    return renderWalletWithRootState(state);
+  };
+
+  it('shows the growth banner on an unfunded account when the checklist is not showing', () => {
+    const { getByTestId } = render(Wallet);
+
+    expect(getByTestId(CAROUSEL_TEST_ID)).toBeOnTheScreen();
+  });
+
+  it.each([
+    { stepIndex: 0, isFunded: false },
+    { stepIndex: 1, isFunded: false },
+    // Funds arrived after the fund step stopped watching the balance.
+    { stepIndex: 0, isFunded: true },
+  ])(
+    'hides the growth banner while the checklist shows step $stepIndex (funded: $isFunded)',
+    ({ stepIndex, isFunded }) => {
+      mockIsAccountGroupFunded = isFunded;
+
+      const { queryByTestId } = renderWithChecklistAtStep(stepIndex);
+
+      expect(queryByTestId(CAROUSEL_TEST_ID)).not.toBeOnTheScreen();
+    },
+  );
+
+  it('shows the growth banner on a funded account once the checklist is past the fund step', () => {
+    mockIsAccountGroupFunded = true;
+
+    const { getByTestId } = renderWithChecklistAtStep(1);
+
+    expect(getByTestId(CAROUSEL_TEST_ID)).toBeOnTheScreen();
+  });
+
+  it('passes no growth banner to the balance breakdown while the checklist shows the fund step', () => {
+    mockBalanceBreakdownVariantName = 'treatment';
+
+    renderWithChecklistAtStep(0);
+
+    expect(mockHomepage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        balanceBreakdownSectionProps: expect.objectContaining({
+          children: null,
+        }),
+      }),
+    );
+  });
+});
+
+describe('Header and Nav Bar refresh AB test', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockIsGlassEnabled = false;
+    mockUseWalletHeaderNativeHeader.mockReturnValue(false);
+    mockMoneyAccountEnabled = true;
+    mockMoneyAccountVisible = true;
+    mockHeaderNavBarVariantName = 'control';
+    mockSocialV1Enabled = false;
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+  });
+
+  afterEach(() => {
+    mockMoneyAccountEnabled = false;
+    mockMoneyAccountVisible = false;
+    mockHeaderNavBarVariantName = 'control';
+    mockSearchPasteTreatment = false;
+    mockSocialV1Enabled = false;
+    mockUseWalletHeaderNativeHeader.mockReturnValue(false);
+  });
+
+  it('leaves the control header untouched', () => {
+    const { getByTestId, queryByTestId } = render(Wallet);
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_SEARCH_BUTTON),
+    ).toBeOnTheScreen();
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_ACTIVITY_BUTTON),
+    ).toBeOnTheScreen();
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_HAMBURGER_MENU_BUTTON),
+    ).toBeOnTheScreen();
+    expect(getByTestId(WalletViewSelectorsIDs.ACCOUNT_ICON)).toBeOnTheScreen();
+    expect(
+      queryByTestId(WalletViewSelectorsIDs.WALLET_REWARDS_BUTTON),
+    ).not.toBeOnTheScreen();
+    expect(
+      queryByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_HUB_BUTTON),
+    ).not.toBeOnTheScreen();
+    expect(
+      queryByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_HEADING),
+    ).not.toBeOnTheScreen();
+  });
+
+  it('moves the account name above the balance in treatment', () => {
+    mockHeaderNavBarVariantName = 'searchFocused';
+
+    const { getByTestId } = render(Wallet);
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_HEADING),
+    ).toBeOnTheScreen();
+  });
+
+  it('renders the account name when the balance breakdown treatment is also active', () => {
+    mockHeaderNavBarVariantName = 'searchFocused';
+    mockBalanceBreakdownVariantName = 'treatment';
+
+    const { getByTestId } = render(Wallet);
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_HEADING),
+    ).toBeOnTheScreen();
+  });
+
+  it('renders only the avatar and rewards entry points in treatment', () => {
+    mockHeaderNavBarVariantName = 'searchFocused';
+
+    const { getByTestId, queryByTestId } = render(Wallet);
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_HUB_BUTTON),
+    ).toBeOnTheScreen();
+    expect(getByTestId(WalletViewSelectorsIDs.ACCOUNT_ICON)).toBeOnTheScreen();
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_REWARDS_BUTTON),
+    ).toBeOnTheScreen();
+
+    for (const removed of [
+      WalletViewSelectorsIDs.WALLET_SEARCH_BUTTON,
+      WalletViewSelectorsIDs.WALLET_ACTIVITY_BUTTON,
+      WalletViewSelectorsIDs.WALLET_HAMBURGER_MENU_BUTTON,
+      WalletViewSelectorsIDs.NAVBAR_ADDRESS_COPY_BUTTON,
+    ]) {
+      expect(queryByTestId(removed)).not.toBeOnTheScreen();
+    }
+  });
+
+  it('renders the interim header over a treatment arm when the interim flag is on', () => {
+    mockHeaderNavBarVariantName = 'searchFocused';
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback === selectInterimHeaderNavBarEnabled
+          ? true
+          : callback(mockInitialState),
+      );
+
+    const { getByTestId, queryByTestId } = render(Wallet);
+
+    expect(getByTestId(WalletViewSelectorsIDs.ACCOUNT_ICON)).toBeOnTheScreen();
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_HAMBURGER_MENU_BUTTON),
+    ).toBeOnTheScreen();
+    for (const removed of [
+      WalletViewSelectorsIDs.WALLET_ACCOUNT_HUB_BUTTON,
+      WalletViewSelectorsIDs.WALLET_REWARDS_BUTTON,
+      WalletViewSelectorsIDs.NAVBAR_ADDRESS_COPY_BUTTON,
+      WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_HEADING,
+    ]) {
+      expect(queryByTestId(removed)).not.toBeOnTheScreen();
+    }
+  });
+
+  it.each([
+    [false, false, false],
+    [true, false, false],
+    [false, true, false],
+    [true, true, true],
+  ])(
+    'with the surfaces flag %s and glass available %s, glass buttons are %s',
+    (isSurfacesFlagOn, isGlassAvailable, expected) => {
+      mockIsGlassEnabled = isGlassAvailable;
+      jest
+        .mocked(useSelector)
+        .mockImplementation((callback: (state: unknown) => unknown) =>
+          callback === selectHomeBrandRefreshSurfacesEnabled
+            ? isSurfacesFlagOn
+            : callback(mockInitialState),
+        );
+
+      render(Wallet);
+
+      expect(getAssetDetailsActionsProps().isGlass).toBe(expected);
+    },
+  );
+
+  it('keeps the surfaces opaque when only the interim flag is on', () => {
+    mockIsGlassEnabled = true;
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback === selectInterimHeaderNavBarEnabled
+          ? true
+          : callback(mockInitialState),
+      );
+
     render(Wallet);
-    const foxIcon = screen.getByTestId('fox-icon');
-    expect(foxIcon).toBeDefined();
+
+    expect(getAssetDetailsActionsProps().isGlass).toBe(false);
+  });
+
+  it('hands the header to the native bar on iOS 26 when the interim flag is on', () => {
+    mockUseWalletHeaderNativeHeader.mockReturnValue(true);
+
+    const { getByTestId, queryByTestId } = render(Wallet);
+
+    expect(
+      queryByTestId(WalletViewSelectorsIDs.WALLET_HEADER_ROOT),
+    ).not.toBeOnTheScreen();
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_SCROLL_VIEW).props
+        .contentInsetAdjustmentBehavior,
+    ).toBe('automatic');
+  });
+
+  describe('floating JS header', () => {
+    const HEADER_MIN_HEIGHT = 56;
+
+    let insetsSpy: jest.SpyInstance | undefined;
+
+    afterEach(() => {
+      jest.useRealTimers();
+      insetsSpy?.mockRestore();
+      insetsSpy = undefined;
+    });
+
+    beforeEach(() => {
+      jest
+        .mocked(useSelector)
+        .mockImplementation((callback: (state: unknown) => unknown) =>
+          callback === selectInterimHeaderNavBarEnabled
+            ? true
+            : callback(mockInitialState),
+        );
+    });
+
+    it('mounts the header before the content so assistive tech reads it first', () => {
+      const { getByTestId } = render(Wallet);
+
+      const [firstChild] = getByTestId(
+        WalletViewSelectorsIDs.WALLET_CONTAINER,
+      ).children;
+      expect(typeof firstChild).not.toBe('string');
+      expect((firstChild as ReactTestInstance).props.testID).toBe(
+        WalletViewSelectorsIDs.WALLET_FLOATING_HEADER,
+      );
+      expect(
+        getByTestId(WalletViewSelectorsIDs.WALLET_HEADER_ROOT),
+      ).toBeOnTheScreen();
+    });
+
+    it('clears the header from the first frame using its min height', () => {
+      const { getByTestId } = render(Wallet);
+
+      const scrollView = getByTestId(WalletViewSelectorsIDs.WALLET_SCROLL_VIEW);
+      expect(
+        StyleSheet.flatten(scrollView.props.contentContainerStyle),
+      ).toEqual(
+        expect.objectContaining({ paddingTop: HEADER_MIN_HEIGHT + 16 }),
+      );
+      expect(scrollView.props.refreshControl.props.progressViewOffset).toBe(
+        HEADER_MIN_HEIGHT,
+      );
+      expect(capturedContext.containerScreenY).toBe(HEADER_MIN_HEIGHT);
+    });
+
+    it('tracks the measured header height for content and section visibility', () => {
+      const { getByTestId } = render(Wallet);
+
+      act(() => {
+        fireEvent(
+          getByTestId(WalletViewSelectorsIDs.WALLET_FLOATING_HEADER),
+          'layout',
+          { nativeEvent: { layout: { height: 72 } } },
+        );
+      });
+
+      const scrollView = getByTestId(WalletViewSelectorsIDs.WALLET_SCROLL_VIEW);
+      expect(
+        StyleSheet.flatten(scrollView.props.contentContainerStyle),
+      ).toEqual(expect.objectContaining({ paddingTop: 72 + 16 }));
+      expect(scrollView.props.refreshControl.props.progressViewOffset).toBe(72);
+      expect(capturedContext.containerScreenY).toBe(72);
+    });
+
+    it('lets the content scroll under the status bar, which the header pads', () => {
+      insetsSpy = jest
+        .spyOn(
+          jest.requireMock<typeof import('react-native-safe-area-context')>(
+            'react-native-safe-area-context',
+          ),
+          'useSafeAreaInsets',
+        )
+        .mockReturnValue({ top: 47, right: 0, bottom: 0, left: 0 });
+
+      const { getByTestId } = render(Wallet);
+
+      expect(
+        getByTestId(WalletViewSelectorsIDs.WALLET_SAFE_AREA).props.edges,
+      ).toEqual([]);
+      expect(
+        getByTestId(WalletViewSelectorsIDs.WALLET_FLOATING_HEADER),
+      ).toHaveStyle({ paddingTop: 47 });
+      expect(
+        StyleSheet.flatten(
+          getByTestId(WalletViewSelectorsIDs.WALLET_SCROLL_VIEW).props
+            .contentContainerStyle,
+        ),
+      ).toEqual(
+        expect.objectContaining({
+          paddingTop: 47 + HEADER_MIN_HEIGHT + 16,
+        }),
+      );
+    });
+
+    it('fades the header backdrop in as the content scrolls under it', () => {
+      jest.useFakeTimers();
+      const { getByTestId } = render(Wallet);
+      // The fade sits a few views above the gradient.
+      const backdropFade = () => {
+        let node = getByTestId(FLOATING_HEADER_FADE_TEST_ID).parent;
+        while (node && !node.props.jestAnimatedStyle) {
+          node = node.parent;
+        }
+        if (!node) {
+          throw new Error('Expected an animated backdrop fade');
+        }
+        return node;
+      };
+
+      expect(backdropFade()).toHaveAnimatedStyle({ opacity: 0 });
+
+      act(() => {
+        fireEvent.scroll(
+          getByTestId(WalletViewSelectorsIDs.WALLET_SCROLL_VIEW),
+          { nativeEvent: { contentOffset: { x: 0, y: 128 } } },
+        );
+        jest.advanceTimersByTime(16);
+      });
+
+      expect(backdropFade()).toHaveAnimatedStyle({ opacity: 1 });
+    });
+
+    it('does not float the header when the native bar owns it', () => {
+      mockUseWalletHeaderNativeHeader.mockReturnValue(true);
+
+      const { getByTestId, queryByTestId } = render(Wallet);
+
+      expect(
+        queryByTestId(WalletViewSelectorsIDs.WALLET_FLOATING_HEADER),
+      ).not.toBeOnTheScreen();
+      expect(
+        StyleSheet.flatten(
+          getByTestId(WalletViewSelectorsIDs.WALLET_SCROLL_VIEW).props
+            .contentContainerStyle,
+        ),
+      ).toEqual(expect.objectContaining({ paddingTop: 16 }));
+    });
+
+    it('does not stack a second balance inset under the floating header', () => {
+      const { getByTestId } = render(Wallet);
+
+      expect(
+        StyleSheet.flatten(
+          getByTestId(WalletViewSelectorsIDs.WALLET_PORTFOLIO_HEADER_CLUSTER)
+            .props.style,
+        ).paddingTop,
+      ).toBe(0);
+    });
+
+    it('does not add a balance inset when Social V1 is enabled', () => {
+      mockSocialV1Enabled = true;
+
+      const { getByTestId } = render(Wallet);
+
+      expect(
+        StyleSheet.flatten(
+          getByTestId(WalletViewSelectorsIDs.WALLET_PORTFOLIO_HEADER_CLUSTER)
+            .props.style,
+        ).paddingTop,
+      ).toBe(0);
+    });
+
+    it('leaves the balance inset to the native bar when it owns the header', () => {
+      mockUseWalletHeaderNativeHeader.mockReturnValue(true);
+
+      const { getByTestId } = render(Wallet);
+
+      expect(
+        StyleSheet.flatten(
+          getByTestId(WalletViewSelectorsIDs.WALLET_PORTFOLIO_HEADER_CLUSTER)
+            .props.style,
+        ).paddingTop,
+      ).toBe(0);
+    });
+  });
+
+  const renderWithNavigationProp = () => {
+    const navigationProp = {
+      navigate: mockNavigate,
+      setOptions: mockSetOptions,
+      addListener: jest.fn(() => jest.fn()),
+      isFocused: jest.fn(() => false),
+    } as unknown as NavigationProp<ParamListBase>;
+
+    return renderWithProvider(
+      <Wallet
+        navigation={navigationProp}
+        currentRouteName={Routes.WALLET_VIEW}
+      />,
+      { state: mockInitialState },
+    );
+  };
+
+  const enableSocialLayout = () => {
+    mockSocialV1VariantName = 'treatment';
+  };
+
+  it('opens the account hub from the treatment avatar', () => {
+    mockHeaderNavBarVariantName = 'searchFocused';
+
+    const { getByTestId } = renderWithNavigationProp();
+    fireEvent.press(
+      getByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_HUB_BUTTON),
+    );
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.ACCOUNT_HUB_VIEW);
+  });
+
+  it('opens the account hub from the treatment avatar when Social V1 is enabled', () => {
+    mockHeaderNavBarVariantName = 'searchFocused';
+    mockSocialV1Enabled = true;
+
+    const { getByTestId } = renderWithNavigationProp();
+    fireEvent.press(
+      getByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_HUB_BUTTON),
+    );
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.ACCOUNT_HUB_VIEW);
+  });
+
+  it('opens rewards from the treatment gift icon', () => {
+    mockHeaderNavBarVariantName = 'searchFocused';
+
+    const { getByTestId } = renderWithNavigationProp();
+    fireEvent.press(getByTestId(WalletViewSelectorsIDs.WALLET_REWARDS_BUTTON));
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.REWARDS_VIEW);
+  });
+
+  it('opens the account hub from the account name above the balance', () => {
+    mockHeaderNavBarVariantName = 'searchFocused';
+
+    const { getByTestId } = renderWithNavigationProp();
+    fireEvent.press(
+      getByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_BUTTON),
+    );
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.ACCOUNT_HUB_VIEW);
+  });
+
+  it('opens the account hub from the account name above the balance when Social V1 is enabled', () => {
+    mockHeaderNavBarVariantName = 'searchFocused';
+    mockSocialV1Enabled = true;
+
+    const { getByTestId } = renderWithNavigationProp();
+    fireEvent.press(
+      getByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_NAME_BUTTON),
+    );
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.ACCOUNT_HUB_VIEW);
+  });
+
+  it('does not render a profile button in the Social header', () => {
+    enableSocialLayout();
+
+    const { queryByTestId } = renderWithNavigationProp();
+
+    expect(
+      queryByTestId(WalletViewSelectorsIDs.PROFILE_BUTTON),
+    ).not.toBeOnTheScreen();
+  });
+
+  it('opens the account selector from the Social header account name', () => {
+    enableSocialLayout();
+
+    const { getByTestId } = renderWithNavigationProp();
+    fireEvent.press(getByTestId(WalletViewSelectorsIDs.ACCOUNT_ICON));
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR,
+      {},
+    );
+  });
+
+  it('renders the settings menu in the Social header', () => {
+    enableSocialLayout();
+
+    const { getByTestId } = renderWithNavigationProp();
+    expect(
+      getByTestId(WalletViewSelectorsIDs.WALLET_HAMBURGER_MENU_BUTTON),
+    ).toBeOnTheScreen();
+  });
+
+  it('opens the settings menu from the Social header hamburger', () => {
+    enableSocialLayout();
+
+    const { getByTestId } = renderWithNavigationProp();
+    fireEvent.press(
+      getByTestId(WalletViewSelectorsIDs.WALLET_HAMBURGER_MENU_BUTTON),
+    );
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.SETTINGS_VIEW);
+  });
+
+  describe('Social V1 account picker row', () => {
+    beforeEach(() => {
+      mockHeaderNavBarVariantName = 'control';
+      mockSocialV1Enabled = true;
+    });
+
+    it('renders the named account picker under the native bar', () => {
+      mockUseWalletHeaderNativeHeader.mockReturnValue(true);
+
+      const { getByTestId } = renderWithNavigationProp();
+
+      expect(
+        getByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_PICKER_ROW),
+      ).toBeOnTheScreen();
+    });
+
+    it('opens the account selector from the row', () => {
+      mockUseWalletHeaderNativeHeader.mockReturnValue(true);
+
+      const { getByTestId } = renderWithNavigationProp();
+
+      fireEvent.press(
+        getByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_PICKER_ROW_PICKER),
+      );
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR,
+        {},
+      );
+    });
+
+    it('does not render the row when Social V1 is disabled', () => {
+      mockUseWalletHeaderNativeHeader.mockReturnValue(true);
+      mockSocialV1Enabled = false;
+
+      const { queryByTestId } = renderWithNavigationProp();
+
+      expect(
+        queryByTestId(WalletViewSelectorsIDs.WALLET_ACCOUNT_PICKER_ROW),
+      ).not.toBeOnTheScreen();
+    });
+  });
+});
+
+describe('Homepage balance breakdown A/B test', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockBalanceBreakdownVariantName = 'unresolved';
+    jest
+      .mocked(useSelector)
+      .mockImplementation((callback: (state: unknown) => unknown) =>
+        callback(mockInitialState),
+      );
+  });
+
+  afterEach(() => {
+    mockBalanceBreakdownVariantName = 'unresolved';
+  });
+
+  it('does not enable the balance breakdown for the control variant', () => {
+    mockBalanceBreakdownVariantName = 'control';
+
+    render(Wallet);
+
+    expect(mockHomepage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        balanceBreakdownSectionProps: undefined,
+      }),
+    );
+  });
+
+  it('mounts the single balance breakdown design for treatment', () => {
+    mockBalanceBreakdownVariantName = 'treatment';
+
+    render(Wallet);
+
+    expect(mockHomepage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        balanceBreakdownSectionProps: expect.objectContaining({
+          children: expect.anything(),
+          hideRows: false,
+          transactionActiveAbTests: [
+            {
+              key: 'homeTMCU1209AbtestHomepageBalanceBreakdownV2',
+              value: 'treatment',
+              key_value_pair:
+                'homeTMCU1209AbtestHomepageBalanceBreakdownV2=treatment',
+            },
+          ],
+        }),
+      }),
+    );
+  });
+
+  it('does not reserve banner spacing when treatment banners are hidden', () => {
+    mockBalanceBreakdownVariantName = 'treatment';
+
+    const { queryByTestId } = render(Wallet);
+
+    expect(
+      queryByTestId(WalletViewSelectorsIDs.HOMEPAGE_BANNER_CONTAINER),
+    ).not.toBeOnTheScreen();
+    expect(
+      queryByTestId(WalletViewSelectorsIDs.HOMEPAGE_BANNER_CONTENT),
+    ).not.toBeOnTheScreen();
+  });
+
+  it('keeps treatment banner spacing when the network banner is visible', () => {
+    mockBalanceBreakdownVariantName = 'treatment';
+    mockNetworkConnectionBannerVisible = true;
+
+    const { getByTestId } = render(Wallet);
+
+    expect(
+      getByTestId(WalletViewSelectorsIDs.HOMEPAGE_BANNER_CONTAINER),
+    ).toHaveStyle({ paddingBottom: 16 });
+  });
+
+  it('hides breakdown rows during wallet-home post-onboarding', () => {
+    mockBalanceBreakdownVariantName = 'treatment';
+    const state = mockStateWalletHomePostOnboardingActive;
+    jest.mocked(useSelector).mockImplementation((callback) => callback(state));
+
+    renderWalletWithRootState(state);
+
+    expect(mockHomepage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        balanceBreakdownSectionProps: expect.objectContaining({
+          children: null,
+          hideRows: true,
+        }),
+      }),
+    );
   });
 });

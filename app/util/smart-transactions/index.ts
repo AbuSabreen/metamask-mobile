@@ -1,98 +1,126 @@
 import { TransactionMeta } from '@metamask/transaction-controller';
-import { Hex } from './smart-publish-hook';
-import TransactionTypes from '../../core/TransactionTypes';
 import {
-  getIsSwapApproveTransaction,
-  getIsSwapApproveOrSwapTransaction,
-  getIsSwapTransaction,
-  getIsNativeTokenTransferred,
-} from '../transactions';
-import SmartTransactionsController from '@metamask/smart-transactions-controller';
+  SmartTransactionsController,
+  type SmartTransaction,
+  type Fees,
+} from '@metamask/smart-transactions-controller';
+import Engine, { type RootExtendedMessenger } from '../../core/Engine';
+import { isProduction } from '../environment';
 
-export const getTransactionType = (
-  transactionMeta: TransactionMeta,
-  chainId: Hex,
-) => {
-  // Determine tx type
-  // If it isn't a dapp tx, check if it's MM Swaps or Send
-  // process.env.MM_FOX_CODE is from MM Swaps
-  const isDapp =
-    transactionMeta?.origin !== TransactionTypes.MMM &&
-    transactionMeta?.origin !== process.env.MM_FOX_CODE;
+const TIMEOUT_FOR_SMART_TRANSACTION_CONFIRMATION_DONE_EVENT = 10000;
 
-  const to = transactionMeta.txParams.to?.toLowerCase();
-  const data = transactionMeta.txParams.data; // undefined for send txs of gas tokens
+const waitForSmartTransactionConfirmationDone = (
+  controllerMessenger: RootExtendedMessenger,
+): Promise<SmartTransaction | undefined> =>
+  new Promise((resolve) => {
+    controllerMessenger.subscribe(
+      'SmartTransactionsController:smartTransactionConfirmationDone',
+      async (smartTransaction: SmartTransaction) => {
+        resolve(smartTransaction);
+      },
+    );
+    setTimeout(() => {
+      resolve(undefined); // In a rare case we don't get the "smartTransactionConfirmationDone" event within 10 seconds, we resolve with undefined to continue.
+    }, TIMEOUT_FOR_SMART_TRANSACTION_CONFIRMATION_DONE_EVENT);
+  });
 
-  const isSwapApproveOrSwapTransaction = getIsSwapApproveOrSwapTransaction(
-    data,
-    transactionMeta.origin,
-    to,
-    chainId,
-  );
-  const isSwapApproveTx = getIsSwapApproveTransaction(
-    data,
-    transactionMeta.origin,
-    to,
-    chainId,
-  );
-  const isSwapTransaction = getIsSwapTransaction(
-    data,
-    transactionMeta.origin,
-    to,
-    chainId,
-  );
-
-  const isNativeTokenTransferred = getIsNativeTokenTransferred(
-    transactionMeta.txParams,
-  );
-
-  const isSend = !isDapp && !isSwapApproveOrSwapTransaction;
-
-  return {
-    isDapp,
-    isSend,
-    isInSwapFlow: isSwapApproveOrSwapTransaction,
-    isSwapApproveTx,
-    isSwapTransaction,
-    isNativeTokenTransferred,
-  };
-};
-
-// Status modal start, update, and close conditions
-// If ERC20 if from token in swap and requires additional allowance, Swap txs are the 2nd in the swap flow, so we don't want to show another status page for that
-export const getShouldStartApprovalRequest = (
-  isDapp: boolean,
-  isSend: boolean,
-  isSwapApproveTx: boolean,
-  hasPendingApprovalForSwapApproveTx: boolean,
-): boolean =>
-  isDapp || isSend || isSwapApproveTx || !hasPendingApprovalForSwapApproveTx;
-
-export const getShouldUpdateApprovalRequest = (
-  isDapp: boolean,
-  isSend: boolean,
-  isSwapTransaction: boolean,
-): boolean => isDapp || isSend || isSwapTransaction;
-
-export const getSmartTransactionMetricsProperties = (
+export const getSmartTransactionMetricsProperties = async (
   smartTransactionsController: SmartTransactionsController,
   transactionMeta: TransactionMeta | undefined,
+  waitForSmartTransaction: boolean,
+  controllerMessenger?: RootExtendedMessenger,
+  isSmartTransactionsUserOptIn?: boolean,
+  isSmartTransactionsAvailable?: boolean,
+  shouldUseSmartTransaction?: boolean,
 ) => {
-  if (!transactionMeta) return {};
+  const baseProperties = {
+    is_smart_transactions_user_opt_in: isSmartTransactionsUserOptIn ?? false,
+    is_smart_transactions_available: isSmartTransactionsAvailable ?? false,
+    is_smart_transaction: shouldUseSmartTransaction ?? false,
+  };
 
-  const smartTransaction =
+  if (!transactionMeta || !baseProperties.is_smart_transaction) {
+    return baseProperties;
+  }
+
+  let smartTransaction =
     smartTransactionsController.getSmartTransactionByMinedTxHash(
       transactionMeta.hash,
     );
+  const shouldWaitForSmartTransactionConfirmationDoneEvent =
+    waitForSmartTransaction &&
+    !smartTransaction?.statusMetadata && // We get this after polling for a status for a Smart Transaction.
+    controllerMessenger;
+  if (shouldWaitForSmartTransactionConfirmationDoneEvent) {
+    smartTransaction =
+      await waitForSmartTransactionConfirmationDone(controllerMessenger);
+  }
+  if (!smartTransaction?.statusMetadata) {
+    // Still mark as smart transaction since this function is only called when
+    // smart transactions are enabled for the chain. Cancelled/dropped smart
+    // transactions won't have a mined tx hash, so the lookup above returns
+    // nothing, but the transaction still went through the smart transaction flow.
+    return baseProperties;
+  }
+  return {
+    ...baseProperties,
+    stx_original_transaction_status:
+      smartTransaction.statusMetadata.originalTransactionStatus,
+  };
+};
 
-  if (smartTransaction?.statusMetadata) {
-    const { duplicated, timedOut, proxied } = smartTransaction.statusMetadata;
-    return {
-      duplicated,
-      timedOut,
-      proxied,
+export type GasIncludedQuote = Fees & { isGasIncludedTrade?: boolean };
+
+// Currently, we take the first token for gas fee payment, but later, a user can choose which token to use for gas payment.
+export const getTradeTxTokenFee = (quote: GasIncludedQuote) =>
+  // @ts-expect-error Property 'tokenFees' does not exist on type 'Fee'. Need to update the type.
+  quote?.tradeTxFees?.fees?.[0]?.tokenFees?.[0];
+
+// We get gas included fees from a swap quote now. In a future iteration we will have a universal
+// implementation that works for non-swaps transactions as well.
+export const getGasIncludedTransactionFees = (quote: GasIncludedQuote) => {
+  const tradeTxTokenFee = getTradeTxTokenFee(quote);
+  let transactionFees;
+  if (tradeTxTokenFee && quote?.isGasIncludedTrade) {
+    transactionFees = {
+      approvalTxFees: quote?.approvalTxFees,
+      tradeTxFees: quote?.tradeTxFees,
     };
   }
-
-  return {};
+  return transactionFees;
 };
+
+export const getIsAllowedRpcUrlForSmartTransactions = (
+  allowedHosts: string[],
+  rpcUrl?: string,
+) => {
+  // Allow in non-production environments.
+  if (!isProduction()) {
+    return true;
+  }
+
+  const hostname = rpcUrl && new URL(rpcUrl).hostname;
+
+  return Boolean(
+    hostname &&
+      allowedHosts.some((host) =>
+        // A leading dot denotes a suffix/subdomain match (e.g. `.infura.io`
+        // matches `mainnet.infura.io`); otherwise require an exact host match
+        // so `mainnet.base.org` does not match `developer-access-mainnet.base.org`.
+        host.startsWith('.') ? hostname.endsWith(host) : hostname === host,
+      ),
+  );
+};
+
+/**
+ * Wipes smart transactions from the SmartTransactionsController state.
+ * This should be called when resetting an account to clear smart transaction history for a specific address.
+ * @param address - The address whose smart transactions should be wiped
+ */
+export function wipeSmartTransactions(address: string) {
+  const { SmartTransactionsController: controller } = Engine.context;
+  controller.wipeSmartTransactions({
+    address,
+    ignoreNetwork: true,
+  });
+}

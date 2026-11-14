@@ -5,84 +5,155 @@ import privacyReducer from './privacy';
 import modalsReducer from './modals';
 import settingsReducer from './settings';
 import alertReducer from './alert';
-import transactionReducer from './transaction';
-import legalNoticesReducer from './legalNotices';
-import userReducer from './user';
-import wizardReducer from './wizard';
-import onboardingReducer from './onboarding';
+import securityAlertsReducer, { SecurityAlertsState } from './security-alerts';
+import legalNoticesReducer, { LegalNoticesState } from './legalNotices';
+import userReducer, { UserState } from './user';
+import onboardingReducer, { OnboardingState } from './onboarding';
 import fiatOrders from './fiatOrders';
 import swapsReducer from './swaps';
-import signatureRequestReducer from './signatureRequest';
 import notificationReducer from './notification';
 import infuraAvailabilityReducer from './infuraAvailability';
 import collectiblesReducer from './collectibles';
-import navigationReducer from './navigation';
+import navigationReducer, { NavigationState } from './navigation';
 import networkOnboardReducer from './networkSelector';
-import securityReducer from './security';
+import securityReducer, { SecurityState } from './security';
+import accountsReducer, { iAccountEvent as AccountsState } from './accounts';
 import { combineReducers, Reducer } from 'redux';
 import experimentalSettingsReducer from './experimentalSettings';
 import { EngineState } from '../core/Engine';
 import rpcEventReducer from './rpcEvents';
-import accountsReducer from './accounts';
 import sdkReducer from './sdk';
 import inpageProviderReducer from '../core/redux/slices/inpageProvider';
-import smartTransactionsReducer from '../core/redux/slices/smartTransactions';
-import transactionMetricsReducer from '../core/redux/slices/transactionMetrics';
+import qrKeyringScannerReducer from '../core/redux/slices/qrKeyringScanner';
+import confirmationMetricsReducer from '../core/redux/slices/confirmationMetrics';
+import originThrottlingReducer from '../core/redux/slices/originThrottling';
+import notificationsAccountsProvider from '../core/redux/slices/notifications';
+import cronjobControllerReducer from '../core/redux/slices/cronjobController';
+import bannersReducer, { BannersState } from './banners';
+import bridgeReducer from '../core/redux/slices/bridge';
+import performanceReducer, {
+  PerformanceState,
+} from '../core/redux/slices/performance';
+import type { SampleCounterState } from '../features/SampleFeature/reducers/sample-counter';
+import cardReducer from '../core/redux/slices/card';
+import moneyBalanceReducer from '../core/redux/slices/moneyBalance';
+import rewardsReducer, { RewardsState } from './rewards';
+import rewardsMoneyReducer, { RewardsMoneyState } from './rewardsMoney';
+import { isTestEnvironment } from '../util/test/utils';
+import attributionReducer from '../core/redux/slices/attribution';
+import headlessOrderContextsReducer from '../core/redux/slices/headlessOrderContexts';
+import terminalOrderAnalyticsReducer from '../core/redux/slices/terminalOrderAnalytics';
 
 /**
  * Infer state from a reducer
  *
  * @template reducer A reducer function
  */
-export type StateFromReducer<reducer> = reducer extends Reducer<
-  infer State,
-  any
->
-  ? State
-  : never;
+export type StateFromReducer<reducer> =
+  reducer extends Reducer<
+    infer State,
+    // TODO: Replace "any" with type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    any
+  >
+    ? State
+    : never;
 
 // TODO: Convert all reducers to valid TypeScript Redux reducers, and add them
 // to this type. Once that is complete, we can automatically generate this type
 // using the `StateFromReducersMapObject` type from redux.
 export interface RootState {
-  legalNotices: any;
+  legalNotices: LegalNoticesState;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   collectibles: any;
-  engine: { backgroundState: EngineState | Record<string, never> };
+  engine: { backgroundState: EngineState };
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   privacy: any;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   bookmarks: any;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   browser: any;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   modals: any;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   settings: any;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   alert: any;
-  transaction: any;
-  smartTransactions: StateFromReducer<typeof smartTransactionsReducer>;
-  user: any;
-  wizard: any;
-  onboarding: any;
+  securityAlerts: SecurityAlertsState;
+  user: UserState;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onboarding: OnboardingState;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   notification: any;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   swaps: any;
   fiatOrders: StateFromReducer<typeof fiatOrders>;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   infuraAvailability: any;
-  // The navigation reducer is TypeScript but not yet a valid reducer
-  navigation: any;
+  navigation: NavigationState;
   // The networkOnboarded reducer is TypeScript but not yet a valid reducer
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   networkOnboarded: any;
-  security: StateFromReducer<typeof securityReducer>;
+  security: SecurityState;
   sdk: StateFromReducer<typeof sdkReducer>;
   // The experimentalSettings reducer is TypeScript but not yet a valid reducer
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   experimentalSettings: any;
-  signatureRequest: any;
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   rpcEvents: any;
-  accounts: any;
+  accounts: AccountsState;
   inpageProvider: StateFromReducer<typeof inpageProviderReducer>;
-  transactionMetrics: StateFromReducer<typeof transactionMetricsReducer>;
+  confirmationMetrics: StateFromReducer<typeof confirmationMetricsReducer>;
+  originThrottling: StateFromReducer<typeof originThrottlingReducer>;
+  notifications: StateFromReducer<typeof notificationsAccountsProvider>;
+  bridge: StateFromReducer<typeof bridgeReducer>;
+  qrKeyringScanner: StateFromReducer<typeof qrKeyringScannerReducer>;
+  banners: BannersState;
+  card: StateFromReducer<typeof cardReducer>;
+  moneyBalance: StateFromReducer<typeof moneyBalanceReducer>;
+  performance?: PerformanceState;
+  // Only registered when INCLUDE_SAMPLE_FEATURE=true.
+  sampleCounter?: SampleCounterState;
+  cronjobController: StateFromReducer<typeof cronjobControllerReducer>;
+  rewards: RewardsState;
+  rewardsMoney: RewardsMoneyState;
+  attribution: StateFromReducer<typeof attributionReducer>;
+  headlessOrderContexts: StateFromReducer<typeof headlessOrderContextsReducer>;
+  terminalOrderAnalytics: StateFromReducer<
+    typeof terminalOrderAnalyticsReducer
+  >;
 }
 
-// TODO: Fix the Action type. It's set to `any` now because some of the
-// TypeScript reducers have invalid actions
-const rootReducer = combineReducers<RootState, any>({
+// Only enabled when bundled with `INCLUDE_SAMPLE_FEATURE=true` (a local opt-in;
+// no build in builds.yml sets it); otherwise the reducer is dead-code-eliminated
+// and never added to persisted state.
+const sampleCounterReducer:
+  | Reducer<SampleCounterState | undefined>
+  | undefined =
+  process.env.INCLUDE_SAMPLE_FEATURE === 'true'
+    ? // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require -- intentional dead-code-eliminated lazy load; keeps the sample feature out of prod bundles
+      require('../features/SampleFeature/reducers/sample-counter').default
+    : undefined;
+
+const baseReducers = {
   legalNotices: legalNoticesReducer,
   collectibles: collectiblesReducer,
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   engine: engineReducer as any,
   privacy: privacyReducer,
   bookmarks: bookmarksReducer,
@@ -90,13 +161,10 @@ const rootReducer = combineReducers<RootState, any>({
   modals: modalsReducer,
   settings: settingsReducer,
   alert: alertReducer,
-  transaction: transactionReducer,
-  smartTransactions: smartTransactionsReducer,
+  securityAlerts: securityAlertsReducer,
   user: userReducer,
-  wizard: wizardReducer,
   onboarding: onboardingReducer,
   notification: notificationReducer,
-  signatureRequest: signatureRequestReducer,
   swaps: swapsReducer,
   fiatOrders,
   infuraAvailability: infuraAvailabilityReducer,
@@ -108,7 +176,34 @@ const rootReducer = combineReducers<RootState, any>({
   rpcEvents: rpcEventReducer,
   accounts: accountsReducer,
   inpageProvider: inpageProviderReducer,
-  transactionMetrics: transactionMetricsReducer,
+  originThrottling: originThrottlingReducer,
+  notifications: notificationsAccountsProvider,
+  bridge: bridgeReducer,
+  banners: bannersReducer,
+  card: cardReducer,
+  moneyBalance: moneyBalanceReducer,
+  confirmationMetrics: confirmationMetricsReducer,
+  ...(sampleCounterReducer && { sampleCounter: sampleCounterReducer }),
+  qrKeyringScanner: qrKeyringScannerReducer,
+  cronjobController: cronjobControllerReducer,
+  rewards: rewardsReducer,
+  rewardsMoney: rewardsMoneyReducer,
+};
+
+if (isTestEnvironment) {
+  // @ts-expect-error - it's expected to not exist, it should only exist in not production environments
+  baseReducers.performance = performanceReducer;
+}
+
+// TODO: Fix the Action type. It's set to `any` now because some of the
+// TypeScript reducers have invalid actions
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const rootReducer = combineReducers<RootState, any>({
+  ...baseReducers,
+  attribution: attributionReducer,
+  headlessOrderContexts: headlessOrderContextsReducer,
+  terminalOrderAnalytics: terminalOrderAnalyticsReducer,
 });
 
 export default rootReducer;

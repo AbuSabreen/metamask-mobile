@@ -1,0 +1,1267 @@
+import { RootState } from '../../../../../reducers';
+import {
+  InitializationState,
+  PerpsMode,
+  DEFAULT_PERPS_MODE,
+  DEFAULT_PRO_LAYOUT_PREFERENCES,
+  DEFAULT_ORDER_BOOK_PREFERENCES,
+  type AccountState,
+} from '@metamask/perps-controller';
+import { MOBILE_PRO_LAYOUT_DEFAULTS } from '../../constants/perpsConfig';
+import {
+  selectPerpsProvider,
+  selectPerpsAccountState,
+  selectPerpsDepositState,
+  selectPerpsEligibility,
+  selectPerpsNetwork,
+  selectIsFirstTimePerpsUser,
+  selectPerpsInitializationState,
+  selectPerpsPayWithToken,
+  selectIsPerpsBalanceSelected,
+  selectPerpsRecentlyViewedMarkets,
+  selectPerpsLastViewedMarketSymbol,
+  selectPerpsVisibleCandleCount,
+  selectPerpsMode,
+  selectPerpsProLayoutPreferences,
+  selectPerpsProChartExpanded,
+  selectPerpsProOrderBookExpanded,
+  selectPerpsProOrderBookPosition,
+  selectPerpsOrderBookPreferences,
+  selectPerpsProPositionsSideFilter,
+  selectPerpsProPositionsSortConfig,
+  selectPerpsProOrdersSideFilter,
+  selectPerpsProOrdersSortConfig,
+} from './index';
+
+describe('PerpsController Selectors', () => {
+  // Helper function to create a mock state with optional PerpsController properties
+  const createMockState = (
+    perpsController?: Record<string, unknown>,
+  ): RootState =>
+    ({
+      engine: {
+        backgroundState: {
+          PerpsController: perpsController ?? {
+            activeProvider: 'defaultProvider',
+          },
+        },
+      },
+    }) as unknown as RootState;
+
+  describe('selectPerpsProvider', () => {
+    it('returns the active provider from PerpsController state', () => {
+      // Arrange
+      const expectedProvider = 'testProvider';
+      const mockState = createMockState({
+        activeProvider: expectedProvider,
+      });
+
+      // Act
+      const result = selectPerpsProvider(mockState);
+
+      // Assert
+      expect(result).toBe(expectedProvider);
+    });
+
+    it('returns undefined when activeProvider is not set', () => {
+      // Arrange
+      const mockState = createMockState({
+        // activeProvider is not defined
+      });
+
+      // Act
+      const result = selectPerpsProvider(mockState);
+
+      // Assert
+      expect(result).toBeUndefined();
+    });
+
+    it('memoizes the result when called with the same state', () => {
+      // Arrange
+      const mockState = createMockState({
+        activeProvider: 'memoizedProvider',
+      });
+
+      // Act
+      const result1 = selectPerpsProvider(mockState);
+      const result2 = selectPerpsProvider(mockState);
+
+      // Assert
+      expect(result1).toBe(result2);
+      expect(result1).toBe('memoizedProvider');
+    });
+
+    it('returns new value when activeProvider changes', () => {
+      // Arrange
+      const mockState1 = createMockState({ activeProvider: 'provider1' });
+      const mockState2 = createMockState({ activeProvider: 'provider2' });
+
+      // Act
+      const result1 = selectPerpsProvider(mockState1);
+      const result2 = selectPerpsProvider(mockState2);
+
+      // Assert
+      expect(result1).toBe('provider1');
+      expect(result2).toBe('provider2');
+      expect(result1).not.toBe(result2);
+    });
+  });
+
+  describe('selectPerpsAccountState', () => {
+    it('returns account state from PerpsController', () => {
+      // Arrange
+      const mockAccountState: AccountState = {
+        spendableBalance: '3000',
+        withdrawableBalance: '3000',
+        marginUsed: '1000',
+        unrealizedPnl: '50',
+        returnOnEquity: '10.0',
+        totalBalance: '5500',
+      };
+
+      const mockState = createMockState({
+        accountState: mockAccountState,
+      });
+
+      // Act
+      const result = selectPerpsAccountState(mockState);
+
+      // Assert
+      expect(result).toEqual(mockAccountState);
+    });
+
+    it('returns null when accountState is undefined', () => {
+      // Arrange
+      const mockState = createMockState({
+        accountState: undefined,
+      });
+
+      // Act
+      const result = selectPerpsAccountState(mockState);
+
+      // Assert
+      expect(result).toBeNull();
+    });
+
+    it('returns null when PerpsController is undefined', () => {
+      // Arrange
+      const mockState = createMockState();
+
+      // Act
+      const result = selectPerpsAccountState(mockState);
+
+      // Assert
+      expect(result).toBeNull();
+    });
+
+    it('handles zero balance account state', () => {
+      // Arrange
+      const mockAccountState: AccountState = {
+        spendableBalance: '0',
+        withdrawableBalance: '0',
+        marginUsed: '0',
+        unrealizedPnl: '0',
+        returnOnEquity: '0',
+        totalBalance: '0',
+      };
+
+      const mockState = createMockState({
+        accountState: mockAccountState,
+      });
+
+      // Act
+      const result = selectPerpsAccountState(mockState);
+
+      // Assert
+      expect(result).toEqual(mockAccountState);
+      expect(result?.spendableBalance).toBe('0');
+      expect(result?.totalBalance).toBe('0');
+    });
+
+    it('handles account with positive PnL', () => {
+      // Arrange
+      const positivePnlState: AccountState = {
+        spendableBalance: '5000',
+        withdrawableBalance: '5000',
+        marginUsed: '1000',
+        unrealizedPnl: '500',
+        returnOnEquity: '100.0',
+        totalBalance: '6000',
+      };
+
+      const mockState = createMockState({
+        accountState: positivePnlState,
+      });
+
+      // Act
+      const result = selectPerpsAccountState(mockState);
+
+      // Assert
+      expect(result?.unrealizedPnl).toBe('500');
+      expect(Number(result?.unrealizedPnl)).toBeGreaterThan(0);
+    });
+
+    it('handles account with negative PnL', () => {
+      // Arrange
+      const negativePnlState: AccountState = {
+        spendableBalance: '3000',
+        withdrawableBalance: '3000',
+        marginUsed: '2000',
+        unrealizedPnl: '-500',
+        returnOnEquity: '-25.0',
+        totalBalance: '4000',
+      };
+
+      const mockState = createMockState({
+        accountState: negativePnlState,
+      });
+
+      // Act
+      const result = selectPerpsAccountState(mockState);
+
+      // Assert
+      expect(result?.unrealizedPnl).toBe('-500');
+      expect(Number(result?.unrealizedPnl)).toBeLessThan(0);
+    });
+  });
+
+  describe('selectPerpsDepositState', () => {
+    it('returns default state when PerpsController is undefined', () => {
+      // Arrange
+      const mockState = createMockState();
+
+      // Act
+      const result = selectPerpsDepositState(mockState);
+
+      // Assert
+      expect(result).toEqual({
+        inProgress: false,
+        lastResult: null,
+      });
+    });
+
+    it('returns deposit state from PerpsController', () => {
+      // Arrange
+      const mockState = createMockState({
+        depositInProgress: true,
+        lastDepositResult: null,
+      });
+
+      // Act
+      const result = selectPerpsDepositState(mockState);
+
+      // Assert
+      expect(result).toEqual({
+        inProgress: true,
+        lastResult: null,
+      });
+    });
+
+    it('handles error state', () => {
+      // Arrange
+      const mockState = createMockState({
+        depositInProgress: false,
+        lastDepositResult: {
+          success: false,
+          error: 'Transaction failed',
+        },
+      });
+
+      // Act
+      const result = selectPerpsDepositState(mockState);
+
+      // Assert
+      expect(result.inProgress).toBe(false);
+      expect(result.lastResult).toEqual({
+        success: false,
+        error: 'Transaction failed',
+      });
+    });
+
+    it('handles success state', () => {
+      // Arrange
+      const mockState = createMockState({
+        depositInProgress: false,
+        lastDepositResult: {
+          success: true,
+          txHash: '0x456',
+        },
+      });
+
+      // Act
+      const result = selectPerpsDepositState(mockState);
+
+      // Assert
+      expect(result.inProgress).toBe(false);
+      expect(result.lastResult).toEqual({
+        success: true,
+        txHash: '0x456',
+      });
+    });
+
+    it('handles missing optional fields with defaults', () => {
+      // Arrange
+      const mockState = createMockState({
+        depositInProgress: true,
+        // Missing lastDepositResult
+      });
+
+      // Act
+      const result = selectPerpsDepositState(mockState);
+
+      // Assert
+      expect(result).toEqual({
+        inProgress: true,
+        lastResult: null,
+      });
+    });
+
+    it('uses defaults when deposit state is undefined', () => {
+      // Arrange
+      const mockState = createMockState({
+        // depositInProgress and lastDepositResult not defined
+      });
+
+      // Act
+      const result = selectPerpsDepositState(mockState);
+
+      // Assert
+      expect(result).toEqual({
+        inProgress: false,
+        lastResult: null,
+      });
+    });
+
+    it('handles all deposit state combinations', () => {
+      // Test in progress state
+      let mockState = createMockState({
+        depositInProgress: true,
+        lastDepositResult: null,
+      });
+
+      let result = selectPerpsDepositState(mockState);
+      expect(result.inProgress).toBe(true);
+      expect(result.lastResult).toBeNull();
+
+      // Test success state
+      mockState = createMockState({
+        depositInProgress: false,
+        lastDepositResult: {
+          success: true,
+          txHash: '0xabc',
+        },
+      });
+
+      result = selectPerpsDepositState(mockState);
+      expect(result.inProgress).toBe(false);
+      expect(result.lastResult?.success).toBe(true);
+      expect(result.lastResult?.txHash).toBe('0xabc');
+
+      // Test error state
+      mockState = createMockState({
+        depositInProgress: false,
+        lastDepositResult: {
+          success: false,
+          error: 'Error message',
+        },
+      });
+
+      result = selectPerpsDepositState(mockState);
+      expect(result.inProgress).toBe(false);
+      expect(result.lastResult?.success).toBe(false);
+      expect(result.lastResult?.error).toBe('Error message');
+    });
+  });
+
+  describe('selectPerpsEligibility', () => {
+    it('returns true when isEligible is true', () => {
+      // Arrange
+      const mockState = createMockState({
+        isEligible: true,
+      });
+
+      // Act
+      const result = selectPerpsEligibility(mockState);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('returns false when isEligible is false', () => {
+      // Arrange
+      const mockState = createMockState({
+        isEligible: false,
+      });
+
+      // Act
+      const result = selectPerpsEligibility(mockState);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('returns false when isEligible is undefined', () => {
+      // Arrange
+      const mockState = createMockState({
+        // isEligible is not defined
+      });
+
+      // Act
+      const result = selectPerpsEligibility(mockState);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('returns false when PerpsController is undefined', () => {
+      // Arrange
+      const mockState = createMockState();
+
+      // Act
+      const result = selectPerpsEligibility(mockState);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('handles truthy values correctly', () => {
+      // Test various truthy values - selector returns the actual value, not boolean
+      const truthyValues = [true, 1, 'true', {}, []];
+
+      truthyValues.forEach((value) => {
+        const mockState = createMockState({
+          isEligible: value,
+        });
+
+        const result = selectPerpsEligibility(mockState);
+
+        // The selector returns the actual truthy value, not converted to boolean
+        expect(result).toBe(value);
+      });
+    });
+
+    it('handles falsy values correctly', () => {
+      // Test various falsy values
+      const falsyValues = [false, 0, '', null, undefined];
+
+      falsyValues.forEach((value) => {
+        const mockState = createMockState({
+          isEligible: value,
+        });
+
+        const result = selectPerpsEligibility(mockState);
+
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('selectPerpsNetwork', () => {
+    it('returns testnet when isTestnet is true', () => {
+      // Arrange
+      const mockState = createMockState({
+        isTestnet: true,
+      });
+
+      // Act
+      const result = selectPerpsNetwork(mockState);
+
+      // Assert
+      expect(result).toBe('testnet');
+    });
+
+    it('returns mainnet when isTestnet is false', () => {
+      // Arrange
+      const mockState = createMockState({
+        isTestnet: false,
+      });
+
+      // Act
+      const result = selectPerpsNetwork(mockState);
+
+      // Assert
+      expect(result).toBe('mainnet');
+    });
+
+    it('returns mainnet when isTestnet is undefined', () => {
+      // Arrange
+      const mockState = createMockState({
+        // isTestnet is not defined
+      });
+
+      // Act
+      const result = selectPerpsNetwork(mockState);
+
+      // Assert
+      expect(result).toBe('mainnet');
+    });
+
+    it('returns mainnet when PerpsController is undefined', () => {
+      // Arrange
+      const mockState = createMockState();
+
+      // Act
+      const result = selectPerpsNetwork(mockState);
+
+      // Assert
+      expect(result).toBe('mainnet');
+    });
+
+    it('handles truthy values as testnet', () => {
+      // Test truthy values that should result in testnet
+      const truthyValues = [true, 1, 'true', {}, []];
+
+      truthyValues.forEach((value) => {
+        const mockState = createMockState({
+          isTestnet: value,
+        });
+
+        const result = selectPerpsNetwork(mockState);
+
+        expect(result).toBe('testnet');
+      });
+    });
+
+    it('handles falsy values as mainnet', () => {
+      // Test falsy values that should result in mainnet
+      const falsyValues = [false, 0, '', null, undefined];
+
+      falsyValues.forEach((value) => {
+        const mockState = createMockState({
+          isTestnet: value,
+        });
+
+        const result = selectPerpsNetwork(mockState);
+
+        expect(result).toBe('mainnet');
+      });
+    });
+
+    it('properly handles network switching', () => {
+      // Test mainnet state
+      const mainnetState = createMockState({
+        isTestnet: false,
+      });
+
+      const mainnetResult = selectPerpsNetwork(mainnetState);
+      expect(mainnetResult).toBe('mainnet');
+
+      // Test testnet state
+      const testnetState = createMockState({
+        isTestnet: true,
+      });
+
+      const testnetResult = selectPerpsNetwork(testnetState);
+      expect(testnetResult).toBe('testnet');
+    });
+  });
+
+  describe('selector memoization and composition', () => {
+    it('all selectors use createSelector for memoization', () => {
+      // Given - a state that will be used multiple times
+      const mockState = createMockState({
+        activeProvider: 'testProvider',
+        accountState: {
+          spendableBalance: '1000',
+          withdrawableBalance: '1000',
+          totalBalance: '1000',
+          marginUsed: '0',
+          unrealizedPnl: '0',
+        },
+        depositInProgress: false,
+        lastDepositResult: null,
+        isEligible: true,
+        isTestnet: false,
+      });
+
+      // When - calling selectors multiple times with same state
+      const provider1 = selectPerpsProvider(mockState);
+      const provider2 = selectPerpsProvider(mockState);
+
+      const account1 = selectPerpsAccountState(mockState);
+      const account2 = selectPerpsAccountState(mockState);
+
+      const deposit1 = selectPerpsDepositState(mockState);
+      const deposit2 = selectPerpsDepositState(mockState);
+
+      const eligibility1 = selectPerpsEligibility(mockState);
+      const eligibility2 = selectPerpsEligibility(mockState);
+
+      const network1 = selectPerpsNetwork(mockState);
+      const network2 = selectPerpsNetwork(mockState);
+
+      // Then - primitive values should be equal
+      expect(provider1).toBe(provider2);
+      expect(eligibility1).toBe(eligibility2);
+      expect(network1).toBe(network2);
+
+      // Object references should be the same due to memoization
+      expect(account1).toBe(account2);
+      expect(deposit1).toBe(deposit2);
+    });
+
+    it('selectors correctly extract nested state paths', () => {
+      // Given - a complex state structure
+      const complexState = createMockState({
+        activeProvider: 'nestedProvider',
+        accountState: {
+          spendableBalance: '5000',
+          withdrawableBalance: '5000',
+          totalBalance: '6000',
+          marginUsed: '1000',
+          unrealizedPnl: '100',
+        },
+        depositInProgress: false,
+        lastDepositResult: {
+          success: true,
+          txHash: '0xnested',
+        },
+        isEligible: true,
+        isTestnet: true,
+        // Other properties that should be ignored
+        someOtherProperty: 'ignored',
+        anotherProperty: { nested: 'also ignored' },
+      });
+
+      // When - using selectors
+      const provider = selectPerpsProvider(complexState);
+      const account = selectPerpsAccountState(complexState);
+      const deposit = selectPerpsDepositState(complexState);
+      const eligibility = selectPerpsEligibility(complexState);
+      const network = selectPerpsNetwork(complexState);
+
+      // Then - they extract only the relevant data
+      expect(provider).toBe('nestedProvider');
+      expect(account).toEqual({
+        spendableBalance: '5000',
+        withdrawableBalance: '5000',
+        totalBalance: '6000',
+        marginUsed: '1000',
+        unrealizedPnl: '100',
+      });
+      expect(deposit).toEqual({
+        inProgress: false,
+        lastResult: {
+          success: true,
+          txHash: '0xnested',
+        },
+      });
+      expect(eligibility).toBe(true);
+      expect(network).toBe('testnet');
+    });
+  });
+
+  describe('selectIsFirstTimePerpsUser', () => {
+    it('returns true when isFirstTimeUser is true for testnet', () => {
+      // Arrange
+      const mockState = createMockState({
+        isFirstTimeUser: {
+          testnet: true,
+          mainnet: false,
+        },
+        isTestnet: true,
+      });
+
+      // Act
+      const result = selectIsFirstTimePerpsUser(mockState);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('returns false when isFirstTimeUser is false for testnet', () => {
+      // Arrange
+      const mockState = createMockState({
+        isFirstTimeUser: {
+          testnet: false,
+          mainnet: true,
+        },
+        isTestnet: true,
+      });
+
+      // Act
+      const result = selectIsFirstTimePerpsUser(mockState);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('returns true when isFirstTimeUser is true for mainnet', () => {
+      // Arrange
+      const mockState = createMockState({
+        isFirstTimeUser: {
+          testnet: false,
+          mainnet: true,
+        },
+        isTestnet: false,
+      });
+
+      // Act
+      const result = selectIsFirstTimePerpsUser(mockState);
+
+      // Assert
+      expect(result).toBe(true);
+    });
+
+    it('returns false when isFirstTimeUser is false for mainnet', () => {
+      // Arrange
+      const mockState = createMockState({
+        isFirstTimeUser: {
+          testnet: true,
+          mainnet: false,
+        },
+        isTestnet: false,
+      });
+
+      // Act
+      const result = selectIsFirstTimePerpsUser(mockState);
+
+      // Assert
+      expect(result).toBe(false);
+    });
+
+    it('returns true when isFirstTimeUser is undefined (default state)', () => {
+      // Arrange
+      const mockState = createMockState({
+        isTestnet: true,
+        // isFirstTimeUser is undefined
+      });
+
+      // Act
+      const result = selectIsFirstTimePerpsUser(mockState);
+
+      // Assert
+      // Should return true for undefined state (first time user)
+      expect(result).toBe(true);
+    });
+
+    it('returns true when PerpsController state is undefined', () => {
+      // Arrange
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PerpsController: undefined,
+          },
+        },
+      } as unknown as RootState;
+
+      // Act
+      const result = selectIsFirstTimePerpsUser(mockState);
+
+      // Assert
+      // Should return true when no state exists (first time user)
+      expect(result).toBe(true);
+    });
+
+    it('handles missing network state gracefully for testnet', () => {
+      // Arrange
+      const mockState = createMockState({
+        isFirstTimeUser: {
+          mainnet: false,
+          // testnet is undefined
+        },
+        isTestnet: true,
+      });
+
+      // Act
+      const result = selectIsFirstTimePerpsUser(mockState);
+
+      // Assert
+      // Should return true for undefined testnet state
+      expect(result).toBe(true);
+    });
+
+    it('handles missing network state gracefully for mainnet', () => {
+      // Arrange
+      const mockState = createMockState({
+        isFirstTimeUser: {
+          testnet: false,
+          // mainnet is undefined
+        },
+        isTestnet: false,
+      });
+
+      // Act
+      const result = selectIsFirstTimePerpsUser(mockState);
+
+      // Assert
+      // Should return true for undefined mainnet state
+      expect(result).toBe(true);
+    });
+  });
+
+  describe('selectPerpsInitializationState', () => {
+    it('returns UNINITIALIZED when perpsControllerState is undefined', () => {
+      // Arrange
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PerpsController: undefined,
+          },
+        },
+      } as unknown as RootState;
+
+      // Act
+      const result = selectPerpsInitializationState(mockState);
+
+      // Assert
+      expect(result).toBe(InitializationState.Uninitialized);
+    });
+  });
+
+  describe('selectIsPerpsBalanceSelected', () => {
+    it('returns true when selectedPaymentToken is null', () => {
+      const mockState = createMockState({
+        selectedPaymentToken: null,
+      });
+
+      const result = selectIsPerpsBalanceSelected(mockState);
+
+      expect(result).toBe(true);
+    });
+
+    it('returns false when selectedPaymentToken is set', () => {
+      const mockState = createMockState({
+        selectedPaymentToken: {
+          address: '0xusdc',
+          chainId: '0xa4b1',
+        },
+      });
+
+      const result = selectIsPerpsBalanceSelected(mockState);
+
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('selectPerpsRecentlyViewedMarkets', () => {
+    it('returns recently viewed symbols for the current network', () => {
+      const mockState = createMockState({
+        isTestnet: false,
+        recentlyViewedMarkets: {
+          mainnet: [
+            { symbol: 'BTC', viewedAt: Date.now() },
+            { symbol: 'ETH', viewedAt: Date.now() - 1000 },
+          ],
+          testnet: [],
+        },
+      });
+
+      const result = selectPerpsRecentlyViewedMarkets(mockState);
+
+      expect(result).toEqual(['BTC', 'ETH']);
+    });
+
+    it('excludes entries older than the TTL', () => {
+      const dayMs = 24 * 60 * 60 * 1000;
+      const mockState = createMockState({
+        isTestnet: false,
+        recentlyViewedMarkets: {
+          mainnet: [
+            { symbol: 'BTC', viewedAt: Date.now() },
+            { symbol: 'STALE', viewedAt: Date.now() - dayMs - 1000 },
+          ],
+          testnet: [],
+        },
+      });
+
+      const result = selectPerpsRecentlyViewedMarkets(mockState);
+
+      expect(result).toEqual(['BTC']);
+    });
+
+    it('returns an empty array when there is no recently viewed history', () => {
+      const mockState = createMockState({
+        isTestnet: false,
+        recentlyViewedMarkets: {
+          mainnet: [],
+          testnet: [],
+        },
+      });
+
+      const result = selectPerpsRecentlyViewedMarkets(mockState);
+
+      expect(result).toEqual([]);
+    });
+
+    it('returns an empty array when PerpsController state is undefined', () => {
+      const mockState = {
+        engine: {
+          backgroundState: {
+            PerpsController: undefined,
+          },
+        },
+      } as unknown as RootState;
+
+      const result = selectPerpsRecentlyViewedMarkets(mockState);
+
+      expect(result).toEqual([]);
+    });
+
+    it('returns an empty array when recentlyViewedMarkets is missing entirely', () => {
+      const mockState = createMockState({
+        isTestnet: false,
+      });
+
+      const result = selectPerpsRecentlyViewedMarkets(mockState);
+
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('selectPerpsLastViewedMarketSymbol', () => {
+    it('returns the most recently viewed market symbol', () => {
+      const mockState = createMockState({
+        isTestnet: false,
+        recentlyViewedMarkets: {
+          mainnet: [
+            { symbol: 'ETH', viewedAt: Date.now() },
+            { symbol: 'BTC', viewedAt: Date.now() - 1000 },
+          ],
+          testnet: [],
+        },
+      });
+
+      const result = selectPerpsLastViewedMarketSymbol(mockState);
+
+      expect(result).toBe('ETH');
+    });
+
+    it('falls back to BTC when no markets have been viewed', () => {
+      const mockState = createMockState({
+        isTestnet: false,
+        recentlyViewedMarkets: { mainnet: [], testnet: [] },
+      });
+
+      const result = selectPerpsLastViewedMarketSymbol(mockState);
+
+      expect(result).toBe('BTC');
+    });
+  });
+
+  describe('selectPerpsVisibleCandleCount', () => {
+    it('returns the persisted visible candle count', () => {
+      const mockState = createMockState({
+        visibleCandleCount: 80,
+      });
+
+      const result = selectPerpsVisibleCandleCount(mockState);
+
+      expect(result).toBe(80);
+    });
+
+    it('falls back to the default when visibleCandleCount is missing', () => {
+      const mockState = createMockState();
+
+      const result = selectPerpsVisibleCandleCount(mockState);
+
+      expect(result).toBe(30);
+    });
+  });
+
+  describe('selectPerpsPayWithToken', () => {
+    it('returns selectedPaymentToken from PerpsController state', () => {
+      const token = {
+        description: 'USDC',
+        address: '0xusdc',
+        chainId: '0xa4b1',
+      };
+      const mockState = createMockState({
+        selectedPaymentToken: token,
+      });
+
+      const result = selectPerpsPayWithToken(mockState);
+
+      expect(result).toEqual(token);
+    });
+
+    it('returns undefined when selectedPaymentToken is not set', () => {
+      const mockState = createMockState({});
+
+      const result = selectPerpsPayWithToken(mockState);
+
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('selectPerpsMode', () => {
+    it('returns the Pro mode from PerpsController state', () => {
+      const mockState = createMockState({ mode: PerpsMode.Pro });
+
+      const result = selectPerpsMode(mockState);
+
+      expect(result).toBe(PerpsMode.Pro);
+    });
+
+    it('returns the Lite mode from PerpsController state', () => {
+      const mockState = createMockState({ mode: PerpsMode.Lite });
+
+      const result = selectPerpsMode(mockState);
+
+      expect(result).toBe(PerpsMode.Lite);
+    });
+
+    it('falls back to the default mode when PerpsController state is missing', () => {
+      const mockState = {
+        engine: { backgroundState: { PerpsController: undefined } },
+      } as unknown as RootState;
+
+      const result = selectPerpsMode(mockState);
+
+      expect(result).toBe(DEFAULT_PERPS_MODE);
+    });
+  });
+
+  describe('selectPerpsProLayoutPreferences', () => {
+    it('returns the persisted Pro layout preferences merged over defaults', () => {
+      const mockState = createMockState({
+        proLayoutPreferences: { chartExpanded: true },
+      });
+
+      const result = selectPerpsProLayoutPreferences(mockState);
+
+      expect(result).toEqual({
+        ...DEFAULT_PRO_LAYOUT_PREFERENCES,
+        ...MOBILE_PRO_LAYOUT_DEFAULTS,
+        chartExpanded: true,
+      });
+    });
+
+    it('keeps a persisted choice over the mobile defaults', () => {
+      const mockState = createMockState({
+        proLayoutPreferences: {
+          orderBookExpanded: false,
+          orderBookPosition: 'left',
+        },
+      });
+
+      const result = selectPerpsProLayoutPreferences(mockState);
+
+      expect(result.orderBookExpanded).toBe(false);
+      expect(result.orderBookPosition).toBe('left');
+    });
+
+    it('falls back to the mobile defaults when PerpsController state is missing', () => {
+      const mockState = {
+        engine: { backgroundState: { PerpsController: undefined } },
+      } as unknown as RootState;
+
+      const result = selectPerpsProLayoutPreferences(mockState);
+
+      expect(result).toEqual({
+        ...DEFAULT_PRO_LAYOUT_PREFERENCES,
+        ...MOBILE_PRO_LAYOUT_DEFAULTS,
+      });
+    });
+
+    it('keeps a stable reference when unrelated controller state changes', () => {
+      // Children that build objects from this (the sort configs) re-render
+      // their panels on every new identity, so live ticks must not invalidate.
+      const proLayoutPreferences = { orderBookPosition: 'left' };
+
+      const first = selectPerpsProLayoutPreferences(
+        createMockState({ proLayoutPreferences, lastUpdateTimestamp: 1 }),
+      );
+      const second = selectPerpsProLayoutPreferences(
+        createMockState({ proLayoutPreferences, lastUpdateTimestamp: 2 }),
+      );
+
+      expect(second).toBe(first);
+    });
+  });
+
+  describe('selectPerpsProChartExpanded', () => {
+    it('returns true when the chart is expanded', () => {
+      const mockState = createMockState({
+        proLayoutPreferences: { chartExpanded: true },
+      });
+
+      expect(selectPerpsProChartExpanded(mockState)).toBe(true);
+    });
+
+    it('returns the controller default when the preference is unset', () => {
+      const mockState = createMockState({});
+
+      expect(selectPerpsProChartExpanded(mockState)).toBe(true);
+    });
+
+    it('falls back to the default when PerpsController state is missing', () => {
+      const mockState = {
+        engine: { backgroundState: { PerpsController: undefined } },
+      } as unknown as RootState;
+
+      expect(selectPerpsProChartExpanded(mockState)).toBe(
+        DEFAULT_PRO_LAYOUT_PREFERENCES.chartExpanded,
+      );
+    });
+  });
+
+  describe('selectPerpsProOrderBookExpanded', () => {
+    it('returns the persisted visibility', () => {
+      // `false` is the non-default, so this fails if the selector ignores
+      // stored state and always answers with the mobile default.
+      const mockState = createMockState({
+        proLayoutPreferences: { orderBookExpanded: false },
+      });
+
+      expect(selectPerpsProOrderBookExpanded(mockState)).toBe(false);
+    });
+
+    it('returns the mobile default when the preference is unset', () => {
+      const mockState = createMockState({});
+
+      expect(selectPerpsProOrderBookExpanded(mockState)).toBe(
+        MOBILE_PRO_LAYOUT_DEFAULTS.orderBookExpanded,
+      );
+    });
+
+    it('falls back to the mobile default when PerpsController state is missing', () => {
+      const mockState = {
+        engine: { backgroundState: { PerpsController: undefined } },
+      } as unknown as RootState;
+
+      expect(selectPerpsProOrderBookExpanded(mockState)).toBe(
+        MOBILE_PRO_LAYOUT_DEFAULTS.orderBookExpanded,
+      );
+    });
+  });
+
+  describe('selectPerpsProOrderBookPosition', () => {
+    it('returns the persisted order book side', () => {
+      // 'left' is the non-default side, so this fails if the selector ignores
+      // stored state and always answers with the mobile default.
+      const mockState = createMockState({
+        proLayoutPreferences: { orderBookPosition: 'left' },
+      });
+
+      expect(selectPerpsProOrderBookPosition(mockState)).toBe('left');
+    });
+
+    it('returns the mobile default when the preference is unset', () => {
+      const mockState = createMockState({});
+
+      expect(selectPerpsProOrderBookPosition(mockState)).toBe(
+        MOBILE_PRO_LAYOUT_DEFAULTS.orderBookPosition,
+      );
+    });
+
+    it('falls back to the mobile default when PerpsController state is missing', () => {
+      const mockState = {
+        engine: { backgroundState: { PerpsController: undefined } },
+      } as unknown as RootState;
+
+      expect(selectPerpsProOrderBookPosition(mockState)).toBe(
+        MOBILE_PRO_LAYOUT_DEFAULTS.orderBookPosition,
+      );
+    });
+  });
+
+  describe('selectPerpsProPositionsSideFilter', () => {
+    it('returns the persisted positions side filter', () => {
+      const mockState = createMockState({
+        proLayoutPreferences: { positionsSideFilter: 'long' },
+      });
+
+      expect(selectPerpsProPositionsSideFilter(mockState)).toBe('long');
+    });
+
+    it('returns the controller default when the preference is unset', () => {
+      const mockState = createMockState({});
+
+      expect(selectPerpsProPositionsSideFilter(mockState)).toBe(
+        DEFAULT_PRO_LAYOUT_PREFERENCES.positionsSideFilter,
+      );
+    });
+  });
+
+  describe('selectPerpsProPositionsSortConfig', () => {
+    it('composes nested sort config from flat persisted fields', () => {
+      const mockState = createMockState({
+        proLayoutPreferences: {
+          positionsSortField: 'fundingRate',
+          positionsSortDirection: 'asc',
+        },
+      });
+
+      expect(selectPerpsProPositionsSortConfig(mockState)).toEqual({
+        field: 'fundingRate',
+        direction: 'asc',
+      });
+    });
+
+    it('returns the controller defaults when the preference is unset', () => {
+      const mockState = createMockState({});
+
+      expect(selectPerpsProPositionsSortConfig(mockState)).toEqual({
+        field: DEFAULT_PRO_LAYOUT_PREFERENCES.positionsSortField,
+        direction: DEFAULT_PRO_LAYOUT_PREFERENCES.positionsSortDirection,
+      });
+    });
+  });
+
+  describe('selectPerpsProOrdersSideFilter', () => {
+    it('returns the persisted orders side filter', () => {
+      const mockState = createMockState({
+        proLayoutPreferences: { ordersSideFilter: 'short' },
+      });
+
+      expect(selectPerpsProOrdersSideFilter(mockState)).toBe('short');
+    });
+
+    it('returns the controller default when the preference is unset', () => {
+      const mockState = createMockState({});
+
+      expect(selectPerpsProOrdersSideFilter(mockState)).toBe(
+        DEFAULT_PRO_LAYOUT_PREFERENCES.ordersSideFilter,
+      );
+    });
+  });
+
+  describe('selectPerpsProOrdersSortConfig', () => {
+    it('composes nested sort config from flat persisted fields', () => {
+      const mockState = createMockState({
+        proLayoutPreferences: {
+          ordersSortField: 'price',
+          ordersSortDirection: 'asc',
+        },
+      });
+
+      expect(selectPerpsProOrdersSortConfig(mockState)).toEqual({
+        field: 'price',
+        direction: 'asc',
+      });
+    });
+
+    it('returns the controller defaults when the preference is unset', () => {
+      const mockState = createMockState({});
+
+      expect(selectPerpsProOrdersSortConfig(mockState)).toEqual({
+        field: DEFAULT_PRO_LAYOUT_PREFERENCES.ordersSortField,
+        direction: DEFAULT_PRO_LAYOUT_PREFERENCES.ordersSortDirection,
+      });
+    });
+  });
+
+  describe('selectPerpsOrderBookPreferences', () => {
+    it('returns persisted listed-by preferences merged over defaults', () => {
+      const mockState = createMockState({
+        orderBookPreferences: { currency: 'base', metric: 'size' },
+      });
+
+      expect(selectPerpsOrderBookPreferences(mockState)).toEqual({
+        currency: 'base',
+        metric: 'size',
+      });
+    });
+
+    it('falls back to the defaults when PerpsController state is missing', () => {
+      const mockState = {
+        engine: { backgroundState: { PerpsController: undefined } },
+      } as unknown as RootState;
+
+      expect(selectPerpsOrderBookPreferences(mockState)).toEqual(
+        DEFAULT_ORDER_BOOK_PREFERENCES,
+      );
+    });
+  });
+});

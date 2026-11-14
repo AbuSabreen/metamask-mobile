@@ -1,0 +1,481 @@
+import { toHex } from '@metamask/controller-utils';
+import {
+  createMockAccountsControllerStateWithSnap,
+  MOCK_SOLANA_ACCOUNT,
+} from '../../../../../util/test/accountsControllerTestUtils';
+import { renderHookWithProvider } from '../../../../../util/test/renderWithProvider';
+
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import useBalance from './useBalance';
+import { NATIVE_ADDRESS } from '../../../../../constants/on-ramp';
+import { hexToBigInt } from '../../../../../util/number/bigint';
+import { selectSelectedInternalAccountByScope } from '../../../../../selectors/multichainAccounts/accounts';
+import { selectMultichainBalances } from '../../../../../selectors/multichain';
+
+jest.mock('../../../../../selectors/accountsController', () => ({
+  ...jest.requireActual('../../../../../selectors/accountsController'),
+}));
+
+jest.mock('../../../../../selectors/multichainAccounts/accounts', () => ({
+  selectSelectedInternalAccountByScope: jest.fn(),
+}));
+
+jest.mock('../../../../../selectors/multichain', () => ({
+  selectMultichainBalances: jest.fn(),
+}));
+
+const MOCK_ADDRESS_1 = '0x0';
+
+const MOCK_ACCOUNTS_CONTROLLER_STATE =
+  createMockAccountsControllerStateWithSnap([MOCK_ADDRESS_1]);
+const MOCK_ACCOUNT_ID_1 =
+  MOCK_ACCOUNTS_CONTROLLER_STATE.internalAccounts.selectedAccount;
+const MAINNET_NATIVE_ASSET_ID = 'eip155:1/slip44:60';
+const USDC_ASSET_ID =
+  'eip155:1/erc20:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+const BNB_NATIVE_ASSET_ID = 'eip155:56/slip44:60';
+const POLYGON_NATIVE_ASSET_ID = 'eip155:137/slip44:966';
+const POLYGON_USDC_ASSET_ID =
+  'eip155:137/erc20:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+
+const mockSelectSelectedInternalAccountByScope =
+  selectSelectedInternalAccountByScope as jest.MockedFunction<
+    typeof selectSelectedInternalAccountByScope
+  >;
+const mockSelectMultichainBalances =
+  selectMultichainBalances as jest.MockedFunction<
+    typeof selectMultichainBalances
+  >;
+
+const initialState = {
+  engine: {
+    backgroundState: {
+      ...backgroundState,
+      AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE,
+      MultichainNetworkController: {
+        isEvmSelected: true,
+        selectedMultichainNetowrkChainId:
+          'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+      },
+      MultichainBalancesController: {
+        balances: {
+          [MOCK_SOLANA_ACCOUNT.id]: {
+            'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501': {
+              amount: '5.5',
+              unit: 'SOL',
+            },
+          },
+        },
+      },
+      AssetsController: {
+        selectedCurrency: 'usd' as const,
+        assetsInfo: {
+          [MAINNET_NATIVE_ASSET_ID]: {
+            type: 'native' as const,
+            symbol: 'ETH',
+            name: 'Ethereum',
+            decimals: 18,
+          },
+          [USDC_ASSET_ID]: {
+            type: 'erc20' as const,
+            symbol: 'USDC',
+            name: 'USD Coin',
+            decimals: 6,
+          },
+          [BNB_NATIVE_ASSET_ID]: {
+            type: 'native' as const,
+            symbol: 'BNB',
+            name: 'BNB',
+            decimals: 18,
+          },
+          [POLYGON_USDC_ASSET_ID]: {
+            type: 'erc20' as const,
+            symbol: 'USDC',
+            name: 'USD Coin',
+            decimals: 6,
+          },
+          [POLYGON_NATIVE_ASSET_ID]: {
+            type: 'native' as const,
+            symbol: 'POL',
+            name: 'POL',
+            decimals: 18,
+          },
+        },
+        assetsBalance: {
+          [MOCK_ACCOUNT_ID_1]: {
+            [MAINNET_NATIVE_ASSET_ID]: { amount: '12.345' },
+            [USDC_ASSET_ID]: { amount: '22' },
+            // BNB Smart Chain native balance: 2 BNB
+            [BNB_NATIVE_ASSET_ID]: { amount: '2' },
+            // Same token address, held on Polygon
+            [POLYGON_USDC_ASSET_ID]: { amount: '22' },
+          },
+        },
+        assetsPrice: {
+          [MAINNET_NATIVE_ASSET_ID]: {
+            assetPriceType: 'fungible' as const,
+            price: 2000,
+            usdPrice: 2000,
+            lastUpdated: 1717334400000,
+          },
+          [USDC_ASSET_ID]: {
+            assetPriceType: 'fungible' as const,
+            price: 1,
+            usdPrice: 1,
+            lastUpdated: 1717334400000,
+          },
+          [BNB_NATIVE_ASSET_ID]: {
+            assetPriceType: 'fungible' as const,
+            price: 600,
+            usdPrice: 600,
+            lastUpdated: 1717334400000,
+          },
+          // Priced (in fiat) such that dividing by the POL native rate (10)
+          // reproduces the native-denominated exchange rate of 0.002 used by
+          // the assertion below (regression test for TRAM-3464).
+          [POLYGON_USDC_ASSET_ID]: {
+            assetPriceType: 'fungible' as const,
+            price: 0.02,
+            usdPrice: 0.02,
+            lastUpdated: 1717334400000,
+          },
+          [POLYGON_NATIVE_ASSET_ID]: {
+            assetPriceType: 'fungible' as const,
+            price: 10,
+            usdPrice: 10,
+            lastUpdated: 1717334400000,
+          },
+        },
+      },
+    },
+  },
+};
+
+describe('useBalance', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSelectSelectedInternalAccountByScope.mockReset();
+    mockSelectMultichainBalances.mockReset();
+  });
+
+  it('returns default if not asset is provided', async () => {
+    const { result } = renderHookWithProvider(() => useBalance(), {
+      state: initialState,
+    });
+
+    expect(result.current.balance).toBe(null);
+    expect(result.current.balanceFiat).toBe(null);
+    expect(result.current.balanceBN).toBe(null);
+  });
+
+  it('returns native address balances', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useBalance({
+          address: NATIVE_ADDRESS,
+          decimals: 18,
+          chainId: '0x1',
+        }),
+      {
+        state: initialState,
+      },
+    );
+
+    expect(result.current.balance).toBe('12.345');
+    expect(result.current.balanceFiat).toBe('$24690.00');
+    expect(result.current.balanceBN).toStrictEqual(
+      hexToBigInt(toHex('12345000000000000000')),
+    );
+  });
+
+  it('returns token address balances', async () => {
+    const { result } = renderHookWithProvider(
+      () =>
+        useBalance({
+          address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+          decimals: 6,
+          chainId: '0x1',
+        }),
+      {
+        state: initialState,
+      },
+    );
+
+    expect(result.current.balance).toBe('22');
+    expect(result.current.balanceFiat).toBe('$22.00');
+    expect(result.current.balanceBN).toStrictEqual(
+      hexToBigInt(toHex('22000000')),
+    );
+  });
+
+  it('uses the asset chain native rate, not the globally selected network rate', async () => {
+    // Regression test for TRAM-3464: selling a token on a chain other than the
+    // globally selected network (mainnet/ETH @ 2000) must convert the balance
+    // with the asset chain's native rate (BNB @ 600), not the global ETH rate.
+    const { result } = renderHookWithProvider(
+      () =>
+        useBalance({
+          address: NATIVE_ADDRESS,
+          decimals: 18,
+          chainId: '0x38',
+        }),
+      {
+        state: initialState,
+      },
+    );
+
+    // 2 BNB * 600 = $1200 (the bug would have produced 2 * 2000 = $4000)
+    expect(result.current.balance).toBe('2');
+    expect(result.current.balanceFiat).toBe('$1200.00');
+    expect(result.current.balanceBN).toStrictEqual(
+      hexToBigInt(toHex('2000000000000000000')),
+    );
+  });
+
+  it('uses the asset chain token exchange rate for ERC20 balances', async () => {
+    // Regression test for TRAM-3464: the token exchange rate and native
+    // conversion rate must both be read from the asset's chain (Polygon),
+    // not from the globally selected network.
+    const { result } = renderHookWithProvider(
+      () =>
+        useBalance({
+          address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+          decimals: 6,
+          chainId: '0x89',
+        }),
+      {
+        state: initialState,
+      },
+    );
+
+    // 22 tokens * POL rate 10 * exchange rate 0.002 = $0.44
+    // (the bug would have used ETH 2000 * mainnet price 0.0005 = $22)
+    expect(result.current.balance).toBe('22');
+    expect(result.current.balanceFiat).toBe('$0.44');
+  });
+
+  it('returns non-evm token balances', async () => {
+    mockSelectSelectedInternalAccountByScope.mockReturnValue((scope) => {
+      if (scope === 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp') {
+        return {
+          ...MOCK_SOLANA_ACCOUNT,
+          scopes: ['solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
+        };
+      }
+      return undefined;
+    });
+
+    mockSelectMultichainBalances.mockReturnValue({
+      [MOCK_SOLANA_ACCOUNT.id]: {
+        'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501': {
+          amount: '5.5',
+          unit: 'SOL',
+        },
+      },
+    });
+
+    const { result } = renderHookWithProvider(
+      () =>
+        useBalance({
+          chainId: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+          assetId: 'slip44:501',
+          decimals: 8,
+        }),
+      {
+        state: {
+          ...initialState,
+          engine: {
+            backgroundState: {
+              ...initialState.engine.backgroundState,
+              AccountsController: {
+                ...initialState.engine.backgroundState.AccountsController,
+                internalAccounts: {
+                  selectedAccount: MOCK_SOLANA_ACCOUNT.id,
+                  accounts: {
+                    [MOCK_SOLANA_ACCOUNT.id]: {
+                      ...MOCK_SOLANA_ACCOUNT,
+                      scopes: ['solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
+                    },
+                  },
+                },
+              },
+              AccountTreeController: {
+                accountTree: {
+                  wallets: {
+                    'entropy:test-wallet': {
+                      id: 'entropy:test-wallet',
+                      metadata: { name: 'Test Wallet' },
+                      groups: {
+                        'entropy:test-wallet/0': {
+                          id: 'entropy:test-wallet/0',
+                          accounts: [MOCK_SOLANA_ACCOUNT.id],
+                          metadata: { name: 'Test Group' },
+                        },
+                      },
+                    },
+                  },
+                },
+                selectedAccountGroup: 'entropy:test-wallet/0',
+              },
+            },
+          },
+        },
+      },
+    );
+
+    expect(result.current.balance).toBe('5.5 SOL');
+    expect(result.current.balanceFiat).toBe(undefined);
+    // 5.5 * 10^8 (decimals) in minimal units, so it can be compared against the
+    // entered amount which is also converted via toTokenMinimalUnit.
+    expect(result.current.balanceBN?.toString()).toBe('550000000');
+  });
+
+  it.each([
+    ['decimals are missing', undefined],
+    ['the amount has more decimals than the asset', 0],
+  ])('returns a null minimal balance when %s', async (_scenario, decimals) => {
+    mockSelectSelectedInternalAccountByScope.mockReturnValue((scope) => {
+      if (scope === 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp') {
+        return {
+          ...MOCK_SOLANA_ACCOUNT,
+          scopes: ['solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
+        };
+      }
+      return undefined;
+    });
+
+    mockSelectMultichainBalances.mockReturnValue({
+      [MOCK_SOLANA_ACCOUNT.id]: {
+        'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501': {
+          amount: '1.5',
+          unit: 'SOL',
+        },
+      },
+    });
+
+    const { result } = renderHookWithProvider(
+      () =>
+        useBalance({
+          chainId: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+          assetId: 'slip44:501',
+          decimals,
+        }),
+      {
+        state: {
+          ...initialState,
+          engine: {
+            backgroundState: {
+              ...initialState.engine.backgroundState,
+              AccountsController: {
+                ...initialState.engine.backgroundState.AccountsController,
+                internalAccounts: {
+                  selectedAccount: MOCK_SOLANA_ACCOUNT.id,
+                  accounts: {
+                    [MOCK_SOLANA_ACCOUNT.id]: {
+                      ...MOCK_SOLANA_ACCOUNT,
+                      scopes: ['solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp'],
+                    },
+                  },
+                },
+              },
+              AccountTreeController: {
+                accountTree: {
+                  wallets: {
+                    'entropy:test-wallet': {
+                      id: 'entropy:test-wallet',
+                      metadata: { name: 'Test Wallet' },
+                      groups: {
+                        'entropy:test-wallet/0': {
+                          id: 'entropy:test-wallet/0',
+                          accounts: [MOCK_SOLANA_ACCOUNT.id],
+                          metadata: { name: 'Test Group' },
+                        },
+                      },
+                    },
+                  },
+                },
+                selectedAccountGroup: 'entropy:test-wallet/0',
+              },
+            },
+          },
+        },
+      },
+    );
+
+    expect(result.current.balance).toBe('1.5 SOL');
+    expect(result.current.balanceBN).toBeNull();
+  });
+
+  describe('when the selected account is a non-EVM sibling', () => {
+    const evmAccount =
+      MOCK_ACCOUNTS_CONTROLLER_STATE.internalAccounts.accounts[
+        MOCK_ACCOUNT_ID_1
+      ];
+
+    const stateWithSolanaSelected = {
+      ...initialState,
+      engine: {
+        backgroundState: {
+          ...initialState.engine.backgroundState,
+          AccountsController: {
+            ...initialState.engine.backgroundState.AccountsController,
+            internalAccounts: {
+              selectedAccount: MOCK_SOLANA_ACCOUNT.id,
+              accounts: {
+                ...initialState.engine.backgroundState.AccountsController
+                  .internalAccounts.accounts,
+                [MOCK_SOLANA_ACCOUNT.id]: MOCK_SOLANA_ACCOUNT,
+              },
+            },
+          },
+        },
+      },
+    };
+
+    function mockEvmAccountInGroup() {
+      mockSelectSelectedInternalAccountByScope.mockReturnValue((scope) =>
+        scope.startsWith('eip155:') ? evmAccount : undefined,
+      );
+    }
+
+    it('returns the native balance held by the EVM account in the group', () => {
+      mockEvmAccountInGroup();
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useBalance({
+            address: NATIVE_ADDRESS,
+            decimals: 18,
+            chainId: '1',
+            assetId: 'slip44:60',
+          }),
+        { state: stateWithSolanaSelected },
+      );
+
+      expect(result.current.balance).toBe('12.345');
+      expect(result.current.balanceBN).toStrictEqual(
+        hexToBigInt(toHex('12345000000000000000')),
+      );
+    });
+
+    it('returns the ERC20 balance held by the EVM account in the group', () => {
+      mockEvmAccountInGroup();
+
+      const { result } = renderHookWithProvider(
+        () =>
+          useBalance({
+            address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+            decimals: 6,
+            chainId: '1',
+            assetId: 'erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+          }),
+        { state: stateWithSolanaSelected },
+      );
+
+      expect(result.current.balance).toBe('22');
+      expect(result.current.balanceBN).toStrictEqual(
+        hexToBigInt(toHex('22000000')),
+      );
+    });
+  });
+});

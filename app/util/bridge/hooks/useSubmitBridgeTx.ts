@@ -1,0 +1,199 @@
+import {
+  getQuotesReceivedProperties,
+  SwapFeatureTag,
+  type MetaMetricsSwapsEventSource,
+  type QuoteResponse,
+} from '@metamask/bridge-controller';
+import Engine from '../../../core/Engine';
+import { useSelector } from 'react-redux';
+import { selectSourceWalletAddress } from '../../../selectors/bridge';
+import {
+  selectAbTestContext,
+  selectBridgeControllerState,
+  selectDestToken,
+  selectIsSlippageUserOverride,
+  selectIsGasIncludedSTXSendBundleSupported,
+  selectSlippage,
+} from '../../../core/redux/slices/bridge';
+import { useABTest } from '../../../hooks';
+import {
+  AMBIENT_PRICE_COLOR_AB_KEY,
+  AMBIENT_PRICE_COLOR_VARIANTS,
+} from '../../../components/UI/TokenDetails/components/abTestConfig';
+import {
+  CHAIN_VALUE_ORDER_AB_KEY,
+  CHAIN_VALUE_ORDER_VARIANTS,
+} from '../../../components/UI/Bridge/components/BridgeTokenSelector/abTestConfig';
+import { useMemo } from 'react';
+
+import {
+  type TransactionActiveAbTestEntry,
+  withPendingTransactionActiveAbTests,
+} from '../../transactions/transaction-active-ab-test-attribution-registry';
+import {
+  createActiveABTestAssignment,
+  normalizeActiveABTestAssignments,
+} from '../../analytics/activeABTestAssignments';
+import { BRIDGE_QUOTE_RESPONSE_MIGRATION_PHASE } from '../../../constants/bridge';
+import { useUnifiedSwapBridgeContext } from '../../../components/UI/Bridge/hooks/useUnifiedSwapBridgeContext';
+import {
+  isSocialTradeSource,
+  recordSocialTrade,
+} from '../../social/socialActivityStorage';
+import { captureException } from '@sentry/react-native';
+
+function mergeTransactionActiveAbTests(
+  ...groups: (TransactionActiveAbTestEntry[] | undefined)[]
+): TransactionActiveAbTestEntry[] | undefined {
+  const merged: TransactionActiveAbTestEntry[] = [];
+  for (const group of groups) {
+    if (group?.length) {
+      merged.push(...group);
+    }
+  }
+  const normalizedTests = normalizeActiveABTestAssignments(merged);
+  return normalizedTests.length > 0 ? normalizedTests : undefined;
+}
+
+export default function useSubmitBridgeTx() {
+  const stxEnabled = useSelector(selectIsGasIncludedSTXSendBundleSupported);
+  const walletAddress = useSelector(selectSourceWalletAddress);
+  const destToken = useSelector(selectDestToken);
+  const slippage = useSelector(selectSlippage);
+  const isSlippageUserOverride =
+    useSelector(selectIsSlippageUserOverride) ?? false;
+  const bridgeControllerState = useSelector(selectBridgeControllerState);
+  const unifiedSwapBridgeContext = useUnifiedSwapBridgeContext();
+  const abTestContext = useSelector(selectAbTestContext);
+  const {
+    variantName: ambientColorVariantName,
+    isActive: isAmbientColorAbActive,
+  } = useABTest(AMBIENT_PRICE_COLOR_AB_KEY, AMBIENT_PRICE_COLOR_VARIANTS);
+  const {
+    variantName: chainValueOrderVariantName,
+    isActive: isChainValueOrderAbActive,
+  } = useABTest(CHAIN_VALUE_ORDER_AB_KEY, CHAIN_VALUE_ORDER_VARIANTS);
+
+  const abTests = abTestContext?.assetsASSETS2493AbtestTokenDetailsLayout
+    ? {
+        assetsASSETS2493AbtestTokenDetailsLayout:
+          abTestContext.assetsASSETS2493AbtestTokenDetailsLayout,
+      }
+    : undefined;
+  const activeAbTests = useMemo(() => {
+    const tests: TransactionActiveAbTestEntry[] = [];
+
+    if (isAmbientColorAbActive) {
+      tests.push(
+        createActiveABTestAssignment(
+          AMBIENT_PRICE_COLOR_AB_KEY,
+          ambientColorVariantName,
+        ),
+      );
+    }
+
+    if (isChainValueOrderAbActive) {
+      tests.push(
+        createActiveABTestAssignment(
+          CHAIN_VALUE_ORDER_AB_KEY,
+          chainValueOrderVariantName,
+        ),
+      );
+    }
+
+    return tests.length > 0 ? tests : undefined;
+  }, [
+    isAmbientColorAbActive,
+    ambientColorVariantName,
+    isChainValueOrderAbActive,
+    chainValueOrderVariantName,
+  ]);
+
+  const submitBridgeTx = async ({
+    quoteResponse,
+    location,
+    transactionActiveAbTests: transactionActiveAbTestsFromRoute,
+  }: {
+    quoteResponse: QuoteResponse;
+    /** The entry point from which the user initiated the swap or bridge */
+    location?: MetaMetricsSwapsEventSource;
+    /** Route-carried A/B assignments merged at submit time. */
+    transactionActiveAbTests?: TransactionActiveAbTestEntry[];
+  }) => {
+    if (!walletAddress) {
+      throw new Error('Wallet address is not set');
+    }
+
+    const mergedActiveAbTests = mergeTransactionActiveAbTests(
+      activeAbTests,
+      transactionActiveAbTestsFromRoute,
+    );
+    const tokenSecurityTypeDestination = destToken?.securityData?.type ?? null;
+    const inputPrimaryDenomination =
+      bridgeControllerState?.inputPrimaryDenomination ?? 'token_amount';
+    const quotesReceivedContext = getQuotesReceivedProperties(
+      quoteResponse,
+      [],
+      true,
+      undefined,
+      undefined,
+      undefined,
+      {
+        custom_slippage: isSlippageUserOverride,
+        slippage_limit: slippage === undefined ? undefined : Number(slippage),
+        usd_amount_source:
+          unifiedSwapBridgeContext.usd_amount_source || undefined,
+        token_symbol_source:
+          unifiedSwapBridgeContext.token_symbol_source || undefined,
+        token_symbol_destination:
+          unifiedSwapBridgeContext.token_symbol_destination || undefined,
+      },
+    );
+    return await withPendingTransactionActiveAbTests(
+      mergedActiveAbTests,
+      async () => {
+        try {
+          const submittedTransaction = quoteResponse.quote.intent
+            ? await Engine.context.BridgeStatusController.submitIntent({
+                quoteResponse,
+                accountAddress: walletAddress,
+                location,
+                abTests,
+                activeAbTests: mergedActiveAbTests,
+                tokenSecurityTypeDestination,
+                inputPrimaryDenomination,
+                quotesReceivedContext,
+                migrationPhase: BRIDGE_QUOTE_RESPONSE_MIGRATION_PHASE,
+              })
+            : await Engine.context.BridgeStatusController.submitTx({
+                accountAddress: walletAddress,
+                quoteResponses: [quoteResponse],
+                isStxEnabled: stxEnabled,
+                quotesReceivedContext,
+                location,
+                abTests,
+                activeAbTests: mergedActiveAbTests,
+                tokenSecurityTypeDestination,
+                inputPrimaryDenomination,
+                migrationPhase: BRIDGE_QUOTE_RESPONSE_MIGRATION_PHASE,
+              });
+
+          if (isSocialTradeSource(location)) {
+            recordSocialTrade();
+          }
+
+          return submittedTransaction;
+        } catch (error) {
+          captureException(error as Error, {
+            tags: {
+              feature: SwapFeatureTag.SWAP,
+            },
+          });
+          throw error;
+        }
+      },
+    );
+  };
+
+  return { submitBridgeTx };
+}

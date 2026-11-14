@@ -1,0 +1,559 @@
+import React from 'react';
+import { renderHook } from '@testing-library/react-hooks';
+import { Provider } from 'react-redux';
+import { legacy_createStore as createStore, Store } from 'redux';
+
+import { BridgeToken } from '../../types';
+import { BigNumber } from 'ethers';
+import { BigNumber as BigNumberJS } from 'bignumber.js';
+import { CHAIN_IDS } from '@metamask/transaction-controller';
+import {
+  ChainId,
+  formatChainIdToCaip,
+  getNativeAssetForChainId,
+  mergeQuoteMetadata,
+  toBridgeAssetV2,
+  type QuoteResponse,
+} from '@metamask/bridge-controller';
+import { initialState } from '../../_mocks_/initialState';
+import { useInsufficientNativeReserveError } from './index';
+import { ZERO_ADDRESS } from '../../../../Views/confirmations/constants/address';
+import { getGasFeesSponsoredNetworkEnabled } from '../../../../../selectors/featureFlagController/gasFeesSponsored';
+import { mockQuoteWithMetadata } from '../../_mocks_/bridgeQuoteWithMetadata';
+
+jest.mock('../../../../../selectors/featureFlagController/gasFeesSponsored');
+jest.mock('../../../../../util/address', () => ({
+  ...jest.requireActual('../../../../../util/address'),
+  isHardwareAccount: jest.fn(),
+}));
+import { isHardwareAccount } from '../../../../../util/address';
+
+const mockGetGasFeesSponsoredNetworkEnabled = jest.mocked(
+  getGasFeesSponsoredNetworkEnabled,
+);
+const mockIsHardwareAccount = jest.mocked(isHardwareAccount);
+
+// Helper to create a mock store with proper state structure
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const createMockStore = (): Store => {
+  const rootReducer = (state = initialState) => state;
+  return createStore(rootReducer as never);
+};
+
+// Helper to wrap hook with provider
+const wrapper =
+  (store: Store) =>
+  ({ children }: { children: React.ReactNode }) => (
+    <Provider store={store}>{children}</Provider>
+  );
+
+const wmonTokenOnMonad: BridgeToken = {
+  address: '0x3bd359c1119da7da1d913d1c4d2b7c461115433a', // USDC
+  symbol: 'WMON',
+  decimals: 18,
+  chainId: CHAIN_IDS.MONAD as `0x${string}`,
+};
+
+const monTokenOnMonad: BridgeToken = {
+  address: ZERO_ADDRESS,
+  symbol: 'MON',
+  decimals: 18,
+  chainId: CHAIN_IDS.MONAD as `0x${string}`,
+};
+
+const ethTokenOnMainnet: BridgeToken = {
+  address: ZERO_ADDRESS,
+  symbol: 'ETH',
+  decimals: 18,
+  chainId: CHAIN_IDS.MAINNET as `0x${string}`,
+};
+
+const btcTokenOnBitcoin: BridgeToken = {
+  address: 'bip122:000000000019d6689c085ae165831e93/slip44:0',
+  symbol: 'BTC',
+  decimals: 8,
+  chainId: 'bip122:000000000019d6689c085ae165831e93',
+};
+
+const xlmTokenOnStellar: BridgeToken = {
+  address: 'stellar:pubnet/slip44:148',
+  symbol: 'XLM',
+  decimals: 7,
+  chainId: 'stellar:pubnet',
+};
+
+const nonEvmNativeTokens: BridgeToken[] = [
+  {
+    address: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501',
+    symbol: 'SOL',
+    decimals: 9,
+    chainId: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+  },
+  {
+    address: 'tron:728126428/slip44:195',
+    symbol: 'TRX',
+    decimals: 6,
+    chainId: 'tron:728126428',
+  },
+];
+
+type RenderHookCallback<TProps, TResult> = (props: TProps) => TResult;
+
+function renderHookWithWrapper<
+  TProps extends { children: React.ReactNode },
+  TResult,
+>(callback: RenderHookCallback<TProps, TResult>) {
+  return renderHook(callback, { wrapper: wrapper(createMockStore()) });
+}
+
+const createBtcQuote = ({
+  networkFeeAmount = '0.00000001',
+  sentAmount = '0.99997',
+  gasSponsored = false,
+}: {
+  networkFeeAmount?: string;
+  sentAmount?: string;
+  gasSponsored?: boolean;
+} = {}): QuoteResponse =>
+  mergeQuoteMetadata(
+    {
+      ...mockQuoteWithMetadata,
+      chainId: formatChainIdToCaip(ChainId.BTC),
+      quote: {
+        ...mockQuoteWithMetadata.quote,
+        gasSponsored,
+      },
+    },
+    {
+      sentAmount: {
+        ...mockQuoteWithMetadata.sentAmount,
+        amount: sentAmount,
+      },
+      totalNetworkFee: {
+        ...mockQuoteWithMetadata.totalNetworkFee,
+        amount: networkFeeAmount,
+      },
+    },
+  );
+
+const createStellarQuote = ({
+  reserveAmount = '1.5',
+  networkFeeAmount = '0.00001',
+  sentAmount = '9',
+  gasIncluded = false,
+  gasIncluded7702 = false,
+  gasSponsored = false,
+}: {
+  reserveAmount?: string;
+  networkFeeAmount?: string | null;
+  sentAmount?: string;
+  gasIncluded?: boolean;
+  gasIncluded7702?: boolean;
+  gasSponsored?: boolean;
+} = {}) => {
+  const nativeAsset = toBridgeAssetV2(
+    getNativeAssetForChainId(ChainId.STELLAR),
+  );
+  return {
+    chainId: formatChainIdToCaip(ChainId.STELLAR),
+    quote: {
+      gasIncluded,
+      gasIncluded7702,
+      gasSponsored,
+      src: {
+        amount: BigNumberJS(sentAmount)
+          .times(10 ** 7)
+          .toFixed(0),
+        normalizedAmount: sentAmount,
+        asset: nativeAsset,
+      },
+      feeData: {
+        network:
+          networkFeeAmount === null
+            ? []
+            : [
+                {
+                  amount: BigNumberJS(networkFeeAmount)
+                    .times(10 ** 7)
+                    .toFixed(0),
+                  normalizedAmount: networkFeeAmount,
+                  asset: nativeAsset,
+                },
+              ],
+        reserve: [
+          {
+            amount: BigNumberJS(reserveAmount)
+              .times(10 ** 7)
+              .toFixed(0),
+            normalizedAmount: reserveAmount,
+            asset: nativeAsset,
+          },
+        ],
+      },
+    },
+  } as QuoteResponse;
+};
+
+describe('useInsufficientNativeReserveError', () => {
+  beforeEach(() => {
+    mockGetGasFeesSponsoredNetworkEnabled.mockReturnValue(() => true);
+    mockIsHardwareAccount.mockReturnValue(false);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns a insufficientNativeReserveError when amount goes beyond reserve', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '45',
+        token: monTokenOnMonad,
+        latestAtomicBalance: BigNumber.from('50000000000000000000'), // 50
+        walletAddress: '0x13b7e6EBcd40777099E4c45d407745aB2de1D1F8',
+      }),
+    );
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '40',
+      minimumNativeBalanceToBeKeptInAccount: '10',
+    });
+  });
+
+  it('returns a insufficientNativeReserveError when amount goes beyond reserve with bigger amounts', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '499999999995',
+        token: monTokenOnMonad,
+        latestAtomicBalance: BigNumber.from('500000000000000000000000000000'), // 500000000000
+        walletAddress: '0x13b7e6EBcd40777099E4c45d407745aB2de1D1F8',
+      }),
+    );
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '499999999990',
+      minimumNativeBalanceToBeKeptInAccount: '10',
+    });
+  });
+
+  it('returns a insufficientNativeReserveError even when amount goes beyond balance', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '55',
+        token: monTokenOnMonad,
+        latestAtomicBalance: BigNumber.from('50000000000000000000'), // 50
+        walletAddress: '0x13b7e6EBcd40777099E4c45d407745aB2de1D1F8',
+      }),
+    );
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '40',
+      minimumNativeBalanceToBeKeptInAccount: '10',
+    });
+  });
+
+  it('returns insufficientNativeReserveError=undefined when amount goes beyond reserve but account is hardware wallet', () => {
+    mockIsHardwareAccount.mockReturnValue(true);
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '45',
+        token: monTokenOnMonad,
+        latestAtomicBalance: BigNumber.from('50000000000000000000'), // 50
+        walletAddress: '0x13b7e6EBcd40777099E4c45d407745aB2de1D1F8',
+      }),
+    );
+    expect(result.current).toStrictEqual(undefined);
+  });
+
+  it('returns insufficientNativeReserveError=undefined when amount goes beyond reserve but no sponsorship', () => {
+    mockGetGasFeesSponsoredNetworkEnabled.mockReturnValue(() => false);
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '45',
+        token: monTokenOnMonad,
+        latestAtomicBalance: BigNumber.from('50000000000000000000'), // 50
+        walletAddress: '0x13b7e6EBcd40777099E4c45d407745aB2de1D1F8',
+      }),
+    );
+    expect(result.current).toStrictEqual(undefined);
+  });
+
+  it('returns insufficientNativeReserveError=undefined when amount covers exactly the reserve', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '40',
+        token: monTokenOnMonad,
+        latestAtomicBalance: BigNumber.from('50000000000000000000'), // 50
+        walletAddress: '0x13b7e6EBcd40777099E4c45d407745aB2de1D1F8',
+      }),
+    );
+    expect(result.current).toStrictEqual(undefined);
+  });
+
+  it('returns a insufficientNativeReserveError when BTC amount goes beyond reserve', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '0.999995',
+        token: btcTokenOnBitcoin,
+        latestAtomicBalance: BigNumber.from('100000000'), // 1 BTC
+        walletAddress: 'bc1q7m7cq86p5fnz29s3e0nl8g5ep3p5d4rz2f3duz',
+      }),
+    );
+
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '0.99997',
+      minimumNativeBalanceToBeKeptInAccount: '0.00003',
+    });
+  });
+
+  it('returns insufficientNativeReserveError=undefined when BTC amount covers exactly the reserve', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '0.99997',
+        token: btcTokenOnBitcoin,
+        latestAtomicBalance: BigNumber.from('100000000'), // 1 BTC
+        walletAddress: 'bc1q7m7cq86p5fnz29s3e0nl8g5ep3p5d4rz2f3duz',
+      }),
+    );
+
+    expect(result.current).toStrictEqual(undefined);
+  });
+
+  it('returns a quote-aware insufficientNativeReserveError for BTC when quote fees consume the reserve', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '0.99997',
+        token: btcTokenOnBitcoin,
+        latestAtomicBalance: BigNumber.from('100000000'), // 1 BTC
+        walletAddress: 'bc1q7m7cq86p5fnz29s3e0nl8g5ep3p5d4rz2f3duz',
+        activeQuote: createBtcQuote({
+          networkFeeAmount: '0.00000001',
+          sentAmount: '0.99997',
+        }),
+      }),
+    );
+
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '0.99996999',
+      minimumNativeBalanceToBeKeptInAccount: '0.00003',
+    });
+  });
+
+  it('truncates BTC quote amounts to token decimals before parsing', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '0.999970009',
+        token: btcTokenOnBitcoin,
+        latestAtomicBalance: BigNumber.from('100000000'), // 1 BTC
+        walletAddress: 'bc1q7m7cq86p5fnz29s3e0nl8g5ep3p5d4rz2f3duz',
+        activeQuote: createBtcQuote({
+          networkFeeAmount: '0.000000019',
+          sentAmount: '0.999970009',
+        }),
+      }),
+    );
+
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '0.99996999',
+      minimumNativeBalanceToBeKeptInAccount: '0.00003',
+    });
+  });
+
+  it('includes BTC source-side quote overhead in the max swappable amount', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '0.99997',
+        token: btcTokenOnBitcoin,
+        latestAtomicBalance: BigNumber.from('100000000'), // 1 BTC
+        walletAddress: 'bc1q7m7cq86p5fnz29s3e0nl8g5ep3p5d4rz2f3duz',
+        activeQuote: createBtcQuote({
+          networkFeeAmount: '0.00000001',
+          sentAmount: '0.999971',
+        }),
+      }),
+    );
+
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '0.99996899',
+      minimumNativeBalanceToBeKeptInAccount: '0.00003',
+    });
+  });
+
+  it('returns insufficientNativeReserveError=undefined for BTC when gas validation should own the failure', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '0.99997',
+        token: btcTokenOnBitcoin,
+        latestAtomicBalance: BigNumber.from('100000000'), // 1 BTC
+        walletAddress: 'bc1q7m7cq86p5fnz29s3e0nl8g5ep3p5d4rz2f3duz',
+        activeQuote: createBtcQuote({
+          networkFeeAmount: '0.000031',
+          sentAmount: '0.99997',
+        }),
+      }),
+    );
+
+    expect(result.current).toStrictEqual(undefined);
+  });
+
+  it('enforces the static BTC reserve without deducting network fee when gasSponsored is true', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '0.99998',
+        token: btcTokenOnBitcoin,
+        latestAtomicBalance: BigNumber.from('100000000'), // 1 BTC
+        walletAddress: 'bc1q7m7cq86p5fnz29s3e0nl8g5ep3p5d4rz2f3duz',
+        activeQuote: createBtcQuote({
+          networkFeeAmount: '0.00001',
+          sentAmount: '0.99998',
+          gasSponsored: true,
+        }),
+      }),
+    );
+
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '0.99997',
+      minimumNativeBalanceToBeKeptInAccount: '0.00003',
+    });
+  });
+
+  it('uses the quote reserve for a Stellar native source', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '9',
+        token: xlmTokenOnStellar,
+        latestAtomicBalance: BigNumber.from('100000000'), // 10 XLM
+        walletAddress:
+          'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NYMPL5AFHTDXUDT7JOZZYNQLEI',
+        activeQuote: createStellarQuote(),
+      }),
+    );
+
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '8.49999',
+      minimumNativeBalanceToBeKeptInAccount: '1.5',
+    });
+  });
+
+  it('uses the quote reserve when the quote has no network fee', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '9',
+        token: xlmTokenOnStellar,
+        latestAtomicBalance: BigNumber.from('100000000'), // 10 XLM
+        walletAddress:
+          'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NYMPL5AFHTDXUDT7JOZZYNQLEI',
+        activeQuote: createStellarQuote({ networkFeeAmount: null }),
+      }),
+    );
+
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '8.5',
+      minimumNativeBalanceToBeKeptInAccount: '1.5',
+    });
+  });
+
+  it('returns a quote reserve error when the Stellar balance cannot cover the reserve', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '0.2',
+        token: xlmTokenOnStellar,
+        latestAtomicBalance: BigNumber.from('10000000'), // 1 XLM
+        walletAddress:
+          'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NYMPL5AFHTDXUDT7JOZZYNQLEI',
+        activeQuote: createStellarQuote({ sentAmount: '0.2' }),
+      }),
+    );
+
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '0',
+      minimumNativeBalanceToBeKeptInAccount: '1.5',
+    });
+  });
+
+  it('returns a quote reserve error when sentAmount plus network fee equals the full Stellar balance', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '9.99999',
+        token: xlmTokenOnStellar,
+        latestAtomicBalance: BigNumber.from('100000000'), // 10 XLM
+        walletAddress:
+          'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NYMPL5AFHTDXUDT7JOZZYNQLEI',
+        activeQuote: createStellarQuote({
+          sentAmount: '9.99999',
+          networkFeeAmount: '0.00001',
+        }),
+      }),
+    );
+
+    expect(result.current).toStrictEqual({
+      maxSwappableNativeBalance: '8.49999',
+      minimumNativeBalanceToBeKeptInAccount: '1.5',
+    });
+  });
+
+  it.each([
+    { flag: 'gasIncluded', overrides: { gasIncluded: true } },
+    { flag: 'gasIncluded7702', overrides: { gasIncluded7702: true } },
+    { flag: 'gasSponsored', overrides: { gasSponsored: true } },
+  ])(
+    'does not deduct network fee from max swappable balance when $flag is true',
+    ({ overrides }) => {
+      const { result } = renderHookWithWrapper(() =>
+        useInsufficientNativeReserveError({
+          amount: '9',
+          token: xlmTokenOnStellar,
+          latestAtomicBalance: BigNumber.from('100000000'), // 10 XLM
+          walletAddress:
+            'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NYMPL5AFHTDXUDT7JOZZYNQLEI',
+          activeQuote: createStellarQuote({
+            networkFeeAmount: '0.1',
+            ...overrides,
+          }),
+        }),
+      );
+
+      expect(result.current).toStrictEqual({
+        maxSwappableNativeBalance: '8.5',
+        minimumNativeBalanceToBeKeptInAccount: '1.5',
+      });
+    },
+  );
+
+  it('returns insufficientNativeReserveError=undefined when token is not the native one', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '45',
+        token: wmonTokenOnMonad,
+        latestAtomicBalance: BigNumber.from('50000000000000000000'), // 50
+        walletAddress: '0x13b7e6EBcd40777099E4c45d407745aB2de1D1F8',
+      }),
+    );
+    expect(result.current).toStrictEqual(undefined);
+  });
+
+  it.each(nonEvmNativeTokens)(
+    'returns insufficientNativeReserveError=undefined for non-EVM native token $symbol',
+    (token) => {
+      const { result } = renderHookWithWrapper(() =>
+        useInsufficientNativeReserveError({
+          amount: '45',
+          token,
+          latestAtomicBalance: BigNumber.from('50000000000000000000'), // 50
+          walletAddress: '0x13b7e6EBcd40777099E4c45d407745aB2de1D1F8',
+        }),
+      );
+
+      expect(result.current).toStrictEqual(undefined);
+    },
+  );
+
+  it('returns insufficientNativeReserveError=undefined when token is the native one but on a chain not concered with reserve', () => {
+    const { result } = renderHookWithWrapper(() =>
+      useInsufficientNativeReserveError({
+        amount: '45',
+        token: ethTokenOnMainnet,
+        latestAtomicBalance: BigNumber.from('50000000000000000000'), // 50
+        walletAddress: '0x13b7e6EBcd40777099E4c45d407745aB2de1D1F8',
+      }),
+    );
+    expect(result.current).toStrictEqual(undefined);
+  });
+});

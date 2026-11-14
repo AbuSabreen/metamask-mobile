@@ -1,0 +1,465 @@
+import React from 'react';
+import { fireEvent, act, waitFor } from '@testing-library/react-native';
+import renderWithProvider from '../../../util/test/renderWithProvider';
+import { strings } from '../../../../locales/i18n';
+import SitesFullView from './SitesFullView';
+import { useSitesData } from '../../UI/Sites/hooks/useSiteData/useSitesData';
+import type { SiteData } from '../../UI/Sites/components/SiteRowItem/SiteRowItem';
+
+// Mock dependencies
+jest.mock('../../UI/Sites/hooks/useSiteData/useSitesData');
+jest.mock(
+  '../../UI/Sites/hooks/useBrowserFavoritesSites/useBrowserFavoritesSites',
+  () => ({
+    useBrowserFavoritesSites: jest.fn(() => ({ sites: [], isLoading: false })),
+  }),
+);
+
+const mockGoBack = jest.fn();
+const mockNavigate = jest.fn();
+
+jest.mock('@react-navigation/native', () => {
+  const actualNav = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualNav,
+    useNavigation: () => ({
+      navigate: mockNavigate,
+      goBack: mockGoBack,
+    }),
+    useRoute: () => ({ params: {} }),
+  };
+});
+
+jest.mock('../../../util/theme', () => {
+  const { mockTheme } = jest.requireActual('../../../util/theme');
+  return {
+    useAppThemeFromContext: () => mockTheme,
+  };
+});
+
+jest.mock('@metamask/design-system-twrnc-preset', () => {
+  const { Theme } = jest.requireActual('@metamask/design-system-twrnc-preset');
+  const tw = Object.assign((..._args: unknown[]) => ({}), {
+    style: (..._args: unknown[]) => ({}),
+  });
+
+  return {
+    Theme,
+    useTailwind: () => tw,
+    useTheme: () => Theme.Light,
+  };
+});
+
+jest.mock('../../UI/Sites/components/SitesList/SitesList', () => {
+  const ReactNative = jest.requireActual('react-native');
+  return jest.fn(({ sites, refreshControl, ListFooterComponent }) => (
+    <ReactNative.View testID="sites-list">
+      {sites.map((site: SiteData) => (
+        <ReactNative.View key={site.id} testID={`site-item-${site.id}`}>
+          <ReactNative.Text>{site.name}</ReactNative.Text>
+        </ReactNative.View>
+      ))}
+      {refreshControl && (
+        <ReactNative.View testID="refresh-control">
+          {refreshControl}
+        </ReactNative.View>
+      )}
+      {ListFooterComponent}
+    </ReactNative.View>
+  ));
+});
+
+jest.mock('../../UI/Sites/components/SiteSkeleton/SiteSkeleton', () =>
+  jest.fn(() => {
+    const ReactNative = jest.requireActual('react-native');
+    return (
+      <ReactNative.View testID="site-skeleton">
+        <ReactNative.Text>Loading...</ReactNative.Text>
+      </ReactNative.View>
+    );
+  }),
+);
+
+jest.mock(
+  '../../UI/Sites/components/SitesSearchFooter/SitesSearchFooter',
+  () => {
+    const ReactNative = jest.requireActual('react-native');
+    return jest.fn(({ searchQuery }) =>
+      searchQuery ? (
+        <ReactNative.View testID="sites-search-footer">
+          <ReactNative.Text>{searchQuery}</ReactNative.Text>
+        </ReactNative.View>
+      ) : null,
+    );
+  },
+);
+
+const mockUseSitesData = useSitesData as jest.Mock;
+const mockRefetch = jest.fn();
+
+describe('SitesFullView', () => {
+  const mockSites: SiteData[] = [
+    {
+      id: '1',
+      name: 'MetaMask',
+      url: 'https://metamask.io',
+      displayUrl: 'metamask.io',
+      logoUrl: 'https://example.com/metamask.png',
+      featured: true,
+    },
+    {
+      id: '2',
+      name: 'OpenSea',
+      url: 'https://opensea.io',
+      displayUrl: 'opensea.io',
+      logoUrl: 'https://example.com/opensea.png',
+      featured: false,
+    },
+    {
+      id: '3',
+      name: 'Uniswap',
+      url: 'https://uniswap.org',
+      displayUrl: 'uniswap.org',
+      logoUrl: 'https://example.com/uniswap.png',
+      featured: true,
+    },
+  ];
+
+  const setupMockWithSearchFilter = () => {
+    mockUseSitesData.mockImplementation((searchQuery: string) => {
+      let filteredSites = mockSites;
+
+      if (searchQuery?.trim()) {
+        const query = searchQuery.toLowerCase().trim();
+        filteredSites = mockSites.filter(
+          (site) =>
+            site.name.toLowerCase().includes(query) ||
+            site.displayUrl.toLowerCase().includes(query) ||
+            site.url.toLowerCase().includes(query),
+        );
+      }
+
+      return {
+        sites: filteredSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      };
+    });
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRefetch.mockClear();
+  });
+
+  describe('Rendering', () => {
+    it('renders header with back button and title', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: mockSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      const { getByTestId, getByText } = renderWithProvider(<SitesFullView />);
+
+      expect(getByTestId('sites-full-view-header')).toBeOnTheScreen();
+      expect(
+        getByTestId('sites-full-view-header-back-button'),
+      ).toBeOnTheScreen();
+      expect(getByText(strings('trending.popular_sites'))).toBeOnTheScreen();
+      expect(
+        getByTestId('sites-full-view-header-search-toggle'),
+      ).toBeOnTheScreen();
+    });
+
+    it('renders SitesList component with all site items', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: mockSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      const { getByTestId } = renderWithProvider(<SitesFullView />);
+
+      expect(getByTestId('sites-list')).toBeOnTheScreen();
+      expect(getByTestId('site-item-1')).toBeOnTheScreen();
+      expect(getByTestId('site-item-2')).toBeOnTheScreen();
+      expect(getByTestId('site-item-3')).toBeOnTheScreen();
+    });
+
+    it('renders skeletons when loading', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: [],
+        isLoading: true,
+        refetch: mockRefetch,
+      });
+
+      const { getAllByTestId } = renderWithProvider(<SitesFullView />);
+
+      const skeletons = getAllByTestId('site-skeleton');
+      expect(skeletons.length).toBe(15);
+    });
+
+    it('renders RefreshControl', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: mockSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      const { getByTestId } = renderWithProvider(<SitesFullView />);
+
+      expect(getByTestId('refresh-control')).toBeOnTheScreen();
+    });
+  });
+
+  describe('Navigation', () => {
+    it('navigates back when back button is pressed', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: mockSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      const { getByTestId } = renderWithProvider(<SitesFullView />);
+      const backButton = getByTestId('sites-full-view-header-back-button');
+
+      fireEvent.press(backButton);
+
+      expect(mockGoBack).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Search Functionality', () => {
+    it('filters sites by name, URL, and display URL', () => {
+      setupMockWithSearchFilter();
+
+      const { getByTestId, getByPlaceholderText, queryByTestId } =
+        renderWithProvider(<SitesFullView />);
+
+      // Activate search
+      fireEvent.press(getByTestId('sites-full-view-header-search-toggle'));
+      const searchInput = getByPlaceholderText(
+        strings('trending.search_sites'),
+      );
+
+      // Search by name
+      fireEvent.changeText(searchInput, 'Meta');
+      expect(getByTestId('site-item-1')).toBeOnTheScreen();
+      expect(queryByTestId('site-item-2')).toBeNull();
+
+      // Search by URL
+      fireEvent.changeText(searchInput, 'opensea');
+      expect(queryByTestId('site-item-1')).toBeNull();
+      expect(getByTestId('site-item-2')).toBeOnTheScreen();
+
+      // Search by display URL
+      fireEvent.changeText(searchInput, 'uniswap.org');
+      expect(queryByTestId('site-item-2')).toBeNull();
+      expect(getByTestId('site-item-3')).toBeOnTheScreen();
+    });
+
+    it('shows all sites when search query is empty', () => {
+      setupMockWithSearchFilter();
+
+      const { getByTestId, getByPlaceholderText } = renderWithProvider(
+        <SitesFullView />,
+      );
+
+      // Activate search
+      fireEvent.press(getByTestId('sites-full-view-header-search-toggle'));
+      const searchInput = getByPlaceholderText(
+        strings('trending.search_sites'),
+      );
+
+      // Empty search
+      fireEvent.changeText(searchInput, '');
+
+      // All sites should be visible
+      expect(getByTestId('site-item-1')).toBeOnTheScreen();
+      expect(getByTestId('site-item-2')).toBeOnTheScreen();
+      expect(getByTestId('site-item-3')).toBeOnTheScreen();
+    });
+
+    it('clears search query when search is closed', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: mockSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      const { getByTestId, getByPlaceholderText } = renderWithProvider(
+        <SitesFullView />,
+      );
+
+      // Activate search
+      fireEvent.press(getByTestId('sites-full-view-header-search-toggle'));
+      const searchInput = getByPlaceholderText(
+        strings('trending.search_sites'),
+      );
+
+      // Type search query
+      fireEvent.changeText(searchInput, 'test');
+
+      // Close search
+      fireEvent.press(getByTestId('sites-full-view-header-search-close'));
+
+      // Reopen search
+      fireEvent.press(getByTestId('sites-full-view-header-search-toggle'));
+
+      // Search input should be empty
+      const newSearchInput = getByPlaceholderText(
+        strings('trending.search_sites'),
+      );
+      expect(newSearchInput.props.value).toBe('');
+    });
+
+    it('displays SitesSearchFooter when search is active', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: mockSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      const { getByTestId, getByPlaceholderText, queryByTestId } =
+        renderWithProvider(<SitesFullView />);
+
+      // Initially no footer
+      expect(queryByTestId('sites-search-footer')).toBeNull();
+
+      // Activate search
+      fireEvent.press(getByTestId('sites-full-view-header-search-toggle'));
+      const searchInput = getByPlaceholderText(
+        strings('trending.search_sites'),
+      );
+
+      // Type search query
+      fireEvent.changeText(searchInput, 'test');
+
+      // Footer should appear
+      expect(getByTestId('sites-search-footer')).toBeOnTheScreen();
+    });
+
+    it('hides SitesSearchFooter when search query is empty or search is inactive', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: mockSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      const { getByTestId, queryByTestId } = renderWithProvider(
+        <SitesFullView />,
+      );
+
+      // Footer should not appear when search is inactive
+      expect(queryByTestId('sites-search-footer')).toBeNull();
+
+      // Activate search
+      fireEvent.press(getByTestId('sites-full-view-header-search-toggle'));
+
+      // Footer should not appear with empty query
+      expect(queryByTestId('sites-search-footer')).toBeNull();
+    });
+  });
+
+  describe('Data Fetching', () => {
+    it('fetches sites on mount', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: mockSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      renderWithProvider(<SitesFullView />);
+
+      expect(mockUseSitesData).toHaveBeenCalledWith('');
+    });
+
+    it('calls refetch when refresh is triggered', async () => {
+      mockUseSitesData.mockReturnValue({
+        sites: mockSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      renderWithProvider(<SitesFullView />);
+
+      const SitesListMock = jest.requireMock(
+        '../../UI/Sites/components/SitesList/SitesList',
+      );
+
+      // Get the refreshControl prop passed to SitesList
+      const sitesListProps = SitesListMock.mock.calls[0][0];
+      const refreshControl = sitesListProps.refreshControl;
+
+      expect(refreshControl).toBeDefined();
+
+      // Simulate refresh by calling onRefresh directly
+      await act(async () => {
+        refreshControl.props.onRefresh();
+      });
+
+      await waitFor(() => {
+        expect(mockRefetch).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('handles sites with missing optional fields', () => {
+      const minimalSites: SiteData[] = [
+        {
+          id: '1',
+          name: 'Test',
+          url: 'https://test.com',
+          displayUrl: 'test.com',
+        },
+      ];
+
+      mockUseSitesData.mockReturnValue({
+        sites: minimalSites,
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      const { getByTestId } = renderWithProvider(<SitesFullView />);
+
+      expect(getByTestId('site-item-1')).toBeOnTheScreen();
+    });
+
+    it('handles empty sites array', () => {
+      mockUseSitesData.mockReturnValue({
+        sites: [],
+        isLoading: false,
+        refetch: mockRefetch,
+      });
+
+      const { getByTestId, queryByTestId } = renderWithProvider(
+        <SitesFullView />,
+      );
+
+      expect(getByTestId('sites-list')).toBeOnTheScreen();
+      expect(queryByTestId('site-item-1')).toBeNull();
+    });
+
+    it('performs case-insensitive search', () => {
+      setupMockWithSearchFilter();
+
+      const { getByTestId, getByPlaceholderText, queryByTestId } =
+        renderWithProvider(<SitesFullView />);
+
+      // Activate search
+      fireEvent.press(getByTestId('sites-full-view-header-search-toggle'));
+      const searchInput = getByPlaceholderText(
+        strings('trending.search_sites'),
+      );
+
+      // Search with different case
+      fireEvent.changeText(searchInput, 'METAMASK');
+
+      // MetaMask should still be found
+      expect(getByTestId('site-item-1')).toBeOnTheScreen();
+      expect(queryByTestId('site-item-2')).toBeNull();
+    });
+  });
+});

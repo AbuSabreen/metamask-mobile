@@ -1,0 +1,113 @@
+import ExtendedKeyringTypes, {
+  MONEY_KEYRING_TYPES,
+} from '../../constants/keyringTypes';
+import {
+  KeyringControllerState,
+  KeyringObject,
+} from '@metamask/keyring-controller';
+import { RootState } from '../../reducers';
+import { createDeepEqualSelector } from '../util';
+
+/**
+ * Selects the KeyringController state from the root Redux state.
+ * @param state - Root Redux state
+ * @returns - KeyringController state
+ */
+const selectKeyringControllerState = (state: RootState) =>
+  state.engine.backgroundState.KeyringController;
+
+/**
+ * A memoized selector that retrieves keyrings from the KeyringController
+ */
+export const selectKeyrings = createDeepEqualSelector(
+  selectKeyringControllerState,
+  (keyringControllerState: KeyringControllerState) =>
+    keyringControllerState.keyrings,
+);
+
+/**
+ * Selects all HD keyrings from the state
+ * @param state - The Redux state
+ * @returns Array of HD keyrings
+ */
+export const selectHDKeyrings = createDeepEqualSelector(
+  selectKeyrings,
+  (keyrings) => keyrings.filter((kr) => kr.type === ExtendedKeyringTypes.hd),
+);
+
+/**
+ * Selects the primary (first) HD keyring from the state
+ * @param state - The Redux state
+ * @returns The primary HD keyring, or undefined if none exist
+ */
+export const selectPrimaryHDKeyring = createDeepEqualSelector(
+  selectHDKeyrings,
+  (keyrings): KeyringObject | undefined => keyrings[0],
+);
+
+/**
+ * Checks if there are multiple HD keyrings in the state
+ * @param state - The Redux state
+ * @returns True if there is more than one HD keyring
+ */
+export const hasMultipleHDKeyrings = createDeepEqualSelector(
+  selectKeyrings,
+  (keyrings) =>
+    keyrings.filter((kr) => kr.type === ExtendedKeyringTypes.hd).length > 1,
+);
+
+/**
+ * A memoized selector that returns the lowercased addresses of every account
+ * held by a Money keyring.
+ *
+ * Money Accounts are not internal accounts, so `metadata.keyring` lookups on
+ * `AccountsController` do not apply; the keyring list is the source of truth.
+ */
+export const selectMoneyKeyringAddresses = createDeepEqualSelector(
+  selectKeyrings,
+  (keyrings): string[] =>
+    keyrings
+      .filter((keyring) => MONEY_KEYRING_TYPES.includes(keyring.type))
+      .flatMap((keyring) =>
+        keyring.accounts.map((account) => account.toLowerCase()),
+      ),
+);
+
+/**
+ * Whether the given address belongs to a Money keyring.
+ *
+ * Money keyrings cannot sign transactions, so their transactions must stay
+ * externally signed and publish through the EIP-7702 sponsored relay.
+ *
+ * @param state - The Redux state.
+ * @param address - The account address to check.
+ * @returns True when the address is held by a Money keyring.
+ */
+export const selectIsMoneyKeyringAddress = (
+  state: RootState,
+  address: string | undefined,
+): boolean =>
+  address !== undefined &&
+  selectMoneyKeyringAddresses(state).includes(address.toLowerCase());
+
+/**
+ * A memoized selector that returns the list of accounts from all keyrings in the form of a flattened array of strings.
+ */
+export const selectFlattenedKeyringAccounts = createDeepEqualSelector(
+  selectKeyrings,
+  (keyrings: KeyringControllerState['keyrings']) => {
+    const flattenedKeyringAccounts = keyrings.flatMap(
+      (keyring) => keyring.accounts,
+    );
+    return flattenedKeyringAccounts;
+  },
+);
+
+/**
+ * A memoized selector that returns if the KeyringController is unlocked.
+ */
+export const selectIsUnlocked = createDeepEqualSelector(
+  selectKeyringControllerState,
+  (keyringControllerState: KeyringControllerState) =>
+    keyringControllerState.isUnlocked,
+);

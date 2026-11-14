@@ -1,0 +1,117 @@
+import React from 'react';
+import { renderScreen } from '../../../../../util/test/renderWithProvider';
+import EligibilityFailedModal from './EligibilityFailedModal';
+import Routes from '../../../../../constants/navigation/Routes';
+import initialRootState from '../../../../../util/test/initial-root-state';
+import { fireEvent } from '@testing-library/react-native';
+import { Linking } from 'react-native';
+import { METAMASK_SUPPORT_URL } from '../../../../../constants/urls';
+
+const mockOnCloseBottomSheet = jest.fn();
+const mockOpenSupportWithConsent = jest.fn();
+
+jest.mock('../../../../hooks/useSupportConsent', () => ({
+  useSupportConsent: () => ({
+    openSupportWithConsent: mockOpenSupportWithConsent,
+  }),
+}));
+
+jest.mock('react-native/Libraries/Linking/Linking', () => ({
+  openURL: jest.fn().mockResolvedValue(undefined),
+  addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+  removeEventListener: jest.fn(),
+  canOpenURL: jest.fn().mockResolvedValue(true),
+}));
+
+jest.mock('@metamask/design-system-react-native', () => {
+  const ReactActual = jest.requireActual('react');
+  const actual = jest.requireActual('@metamask/design-system-react-native');
+  return {
+    ...actual,
+    BottomSheet: ReactActual.forwardRef(
+      (
+        {
+          children,
+        }: {
+          children: React.ReactNode;
+        },
+        ref: React.Ref<{ onCloseBottomSheet: () => void }>,
+      ) => {
+        ReactActual.useImperativeHandle(ref, () => ({
+          onCloseBottomSheet: mockOnCloseBottomSheet,
+        }));
+        return <>{children}</>;
+      },
+    ),
+  };
+});
+
+function render(component: React.ComponentType) {
+  return renderScreen(
+    component,
+    {
+      name: Routes.SHEET.ELIGIBILITY_FAILED_MODAL,
+    },
+    {
+      state: initialRootState,
+    },
+  );
+}
+
+describe('EligibilityFailedModal', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders modal with title and description', () => {
+    const { getByText } = render(EligibilityFailedModal);
+
+    expect(getByText('Eligibility check failed')).toBeOnTheScreen();
+    expect(getByText('Contact support')).toBeOnTheScreen();
+    expect(getByText('Got it')).toBeOnTheScreen();
+  });
+  it('opens the support consent modal when the contact support button is pressed', () => {
+    const { getByText } = render(EligibilityFailedModal);
+    const contactSupportButton = getByText('Contact support');
+
+    fireEvent.press(contactSupportButton);
+
+    expect(mockOpenSupportWithConsent).toHaveBeenCalledWith(
+      expect.any(Function),
+      METAMASK_SUPPORT_URL,
+    );
+  });
+
+  // Covers only the call-site opener glue: invoking the opener passed to
+  // openSupportWithConsent opens the URL. Modal internals are covered by core.
+  it('opens the support URL when the provided opener is invoked', () => {
+    const { getByText } = render(EligibilityFailedModal);
+    const contactSupportButton = getByText('Contact support');
+
+    fireEvent.press(contactSupportButton);
+    const opener = mockOpenSupportWithConsent.mock.calls[0][0] as (
+      url: string,
+    ) => void;
+    opener(METAMASK_SUPPORT_URL);
+
+    expect(Linking.openURL).toHaveBeenCalledWith(METAMASK_SUPPORT_URL);
+  });
+
+  it('closes the modal when the close button is pressed', () => {
+    const { getByTestId } = render(EligibilityFailedModal);
+    const closeButton = getByTestId('bottomsheetheader-close-button');
+
+    fireEvent.press(closeButton);
+
+    expect(mockOnCloseBottomSheet).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the modal when the got it button is pressed', () => {
+    const { getByText } = render(EligibilityFailedModal);
+    const gotItButton = getByText('Got it');
+
+    fireEvent.press(gotItButton);
+
+    expect(mockOnCloseBottomSheet).toHaveBeenCalledTimes(1);
+  });
+});

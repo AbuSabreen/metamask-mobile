@@ -1,0 +1,168 @@
+import React from 'react';
+import {
+  AvatarTokenSize,
+  Box,
+  FontWeight,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { strings } from '../../../../../locales/i18n';
+import type {
+  ActivityListItem,
+  TokenAmount,
+} from '../../../../util/activity-adapters';
+import { useActivityListItemRowContent } from '../../../UI/ActivityListItemRow/useActivityListItemRowContent';
+import { useNftActivityImage } from '../../../UI/ActivityListItemRow/useNftActivityImage';
+// eslint-disable-next-line import-x/no-restricted-paths
+import {
+  useBridgeHistoryItemBySrcTxHash,
+  findBridgeHistoryItemBySrcTxHash,
+} from '../../../UI/Bridge/hooks/useBridgeHistoryItemBySrcTxHash';
+import { ActivityDetailsSelectorsIDs } from '../ActivityDetails.testIds';
+import { ActivityDetailsAvatar } from './ActivityDetailsAvatar';
+import { useFormatActivityTokenAmount } from './activityTokenFormat';
+
+/**
+ * Single amount header: token avatar(s) above a large primary amount with an
+ * optional secondary (fiat/source) amount beneath. Reuses the redesigned row's
+ * content resolver so the amounts match what the list row showed.
+ */
+export function ActivityDetailsAmountHeader({
+  item,
+}: {
+  item: ActivityListItem;
+}) {
+  const { bridgeHistoryItemsBySrcTxHash } = useBridgeHistoryItemBySrcTxHash();
+  const bridgeHistoryItem = findBridgeHistoryItemBySrcTxHash(
+    bridgeHistoryItemsBySrcTxHash,
+    item.hash,
+  );
+  const content = useActivityListItemRowContent(
+    item,
+    item.chainId,
+    bridgeHistoryItem,
+  );
+  const nftImageUrl = useNftActivityImage(item);
+
+  return (
+    <Box
+      twClassName="flex-row items-center gap-3"
+      testID={ActivityDetailsSelectorsIDs.AMOUNT_HEADER}
+    >
+      <ActivityDetailsAvatar
+        tokens={content.avatarTokens}
+        chainId={item.chainId}
+        showNetworkBadge
+        iconUrl={content.avatarIconUrl ?? nftImageUrl}
+      />
+      <Box twClassName="shrink">
+        {content.primaryAmount ? (
+          <Text
+            variant={TextVariant.DisplayMd}
+            color={
+              content.primaryToken?.direction === 'in'
+                ? TextColor.SuccessDefault
+                : TextColor.TextDefault
+            }
+          >
+            {content.primaryAmount}
+          </Text>
+        ) : null}
+      </Box>
+    </Box>
+  );
+}
+
+function AssetLine({
+  label,
+  token,
+  signZero,
+  useSubscriptNotation,
+}: {
+  label: string;
+  token: TokenAmount;
+  signZero: boolean;
+  useSubscriptNotation: boolean;
+}) {
+  const formatActivityTokenAmount = useFormatActivityTokenAmount();
+  const amount = formatActivityTokenAmount(token, {
+    signZero,
+    useSubscriptNotation,
+  });
+
+  return (
+    <Box twClassName="gap-1">
+      <Text
+        variant={TextVariant.BodyMd}
+        fontWeight={FontWeight.Medium}
+        color={TextColor.TextAlternative}
+      >
+        {label}
+      </Text>
+      <Box twClassName="flex-row items-center gap-3">
+        <ActivityDetailsAvatar tokens={[token]} size={AvatarTokenSize.Lg} />
+        {amount ? (
+          <Text
+            variant={TextVariant.HeadingMd}
+            color={
+              token.direction === 'in'
+                ? TextColor.SuccessDefault
+                : TextColor.TextDefault
+            }
+          >
+            {amount}
+          </Text>
+        ) : null}
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * Dual amount header: stacked "You sent" / "You received" asset lines, for
+ * swap/bridge-style transactions. Either side is optional. Pass
+ * `signZeroAmounts={false}` to show a zero amount unsigned (`0 ETH` rather
+ * than `-0 ETH`), and `useSubscriptNotation` to condense the leading zeros of
+ * a tiny amount (`0.0₇1234 ETH` rather than `<0.00001 ETH`).
+ */
+export function ActivityDetailsDualAmountHeader({
+  sentToken,
+  receivedToken,
+  sentLabel = strings('activity_details.you_sent'),
+  receivedLabel = strings('activity_details.you_received'),
+  signZeroAmounts = true,
+  useSubscriptNotation = false,
+}: {
+  sentToken?: TokenAmount;
+  receivedToken?: TokenAmount;
+  sentLabel?: string;
+  receivedLabel?: string;
+  signZeroAmounts?: boolean;
+  useSubscriptNotation?: boolean;
+}) {
+  if (!sentToken && !receivedToken) {
+    return null;
+  }
+
+  return (
+    <Box twClassName="gap-4" testID={ActivityDetailsSelectorsIDs.AMOUNT_HEADER}>
+      {sentToken ? (
+        <AssetLine
+          label={sentLabel}
+          token={sentToken}
+          signZero={signZeroAmounts}
+          useSubscriptNotation={useSubscriptNotation}
+        />
+      ) : null}
+      {receivedToken ? (
+        <AssetLine
+          label={receivedLabel}
+          token={receivedToken}
+          signZero={signZeroAmounts}
+          useSubscriptNotation={useSubscriptNotation}
+        />
+      ) : null}
+    </Box>
+  );
+}

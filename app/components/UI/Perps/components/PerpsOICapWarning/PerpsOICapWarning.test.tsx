@@ -1,0 +1,139 @@
+import React from 'react';
+import { render } from '@testing-library/react-native';
+import PerpsOICapWarning from './PerpsOICapWarning';
+import { usePerpsOICap } from '../../hooks/usePerpsOICap';
+import { strings } from '../../../../../../locales/i18n';
+import { TextVariant } from '@metamask/design-system-react-native';
+
+jest.mock('../../hooks/usePerpsOICap');
+
+describe('PerpsOICapWarning', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('rendering', () => {
+    it('should not render when not at cap', () => {
+      (usePerpsOICap as jest.Mock).mockReturnValue({
+        isAtCap: false,
+        isLoading: false,
+      });
+
+      const { queryByTestId } = render(
+        <PerpsOICapWarning symbol="BTC" variant="inline" />,
+      );
+
+      expect(queryByTestId('perps-oi-cap-warning')).toBeNull();
+    });
+
+    it('should not render when loading', () => {
+      (usePerpsOICap as jest.Mock).mockReturnValue({
+        isAtCap: false,
+        isLoading: true,
+      });
+
+      const { queryByTestId } = render(
+        <PerpsOICapWarning symbol="BTC" variant="inline" />,
+      );
+
+      expect(queryByTestId('perps-oi-cap-warning')).toBeNull();
+    });
+
+    it('should render when at cap', () => {
+      (usePerpsOICap as jest.Mock).mockReturnValue({
+        isAtCap: true,
+        isLoading: false,
+      });
+
+      const { getByTestId, getByText } = render(
+        <PerpsOICapWarning symbol="BTC" variant="inline" />,
+      );
+
+      expect(getByTestId('perps-oi-cap-warning')).toBeOnTheScreen();
+      expect(
+        getByText(strings('perps.order.validation.oi_cap_reached')),
+      ).toBeOnTheScreen();
+    });
+
+    it('should use custom testID when provided', () => {
+      (usePerpsOICap as jest.Mock).mockReturnValue({
+        isAtCap: true,
+        isLoading: false,
+      });
+
+      const { getByTestId } = render(
+        <PerpsOICapWarning
+          symbol="BTC"
+          variant="inline"
+          testID="custom-test-id"
+        />,
+      );
+
+      expect(getByTestId('custom-test-id')).toBeOnTheScreen();
+    });
+  });
+
+  describe('variants', () => {
+    beforeEach(() => {
+      (usePerpsOICap as jest.Mock).mockReturnValue({
+        isAtCap: true,
+        isLoading: false,
+      });
+    });
+
+    it('should render inline variant by default', () => {
+      const { UNSAFE_getByProps, UNSAFE_queryByProps } = render(
+        <PerpsOICapWarning symbol="BTC" />,
+      );
+
+      UNSAFE_getByProps({ variant: TextVariant.BodySm });
+      expect(UNSAFE_queryByProps({ variant: TextVariant.BodyMd })).toBeNull();
+    });
+
+    it('should render banner variant when specified', () => {
+      const { getByTestId, getByText } = render(
+        <PerpsOICapWarning symbol="BTC" variant="banner" />,
+      );
+
+      expect(getByTestId('perps-oi-cap-warning')).toBeOnTheScreen();
+      expect(
+        getByText(strings('perps.order.validation.oi_cap_reached')),
+      ).toBeOnTheScreen();
+    });
+
+    it('should render inline variant when specified', () => {
+      const { UNSAFE_getByProps, UNSAFE_queryByProps } = render(
+        <PerpsOICapWarning symbol="BTC" variant="inline" />,
+      );
+
+      UNSAFE_getByProps({ variant: TextVariant.BodySm });
+      expect(UNSAFE_queryByProps({ variant: TextVariant.BodyMd })).toBeNull();
+    });
+  });
+
+  describe('symbol handling', () => {
+    it('should work with standard symbols', () => {
+      (usePerpsOICap as jest.Mock).mockReturnValue({
+        isAtCap: true,
+        isLoading: false,
+      });
+
+      const { getByTestId } = render(<PerpsOICapWarning symbol="BTC" />);
+
+      expect(getByTestId('perps-oi-cap-warning')).toBeOnTheScreen();
+      expect(usePerpsOICap).toHaveBeenCalledWith('BTC');
+    });
+
+    it('should work with HIP-3 symbols', () => {
+      (usePerpsOICap as jest.Mock).mockReturnValue({
+        isAtCap: true,
+        isLoading: false,
+      });
+
+      const { getByTestId } = render(<PerpsOICapWarning symbol="xyz:TSLA" />);
+
+      expect(getByTestId('perps-oi-cap-warning')).toBeOnTheScreen();
+      expect(usePerpsOICap).toHaveBeenCalledWith('xyz:TSLA');
+    });
+  });
+});

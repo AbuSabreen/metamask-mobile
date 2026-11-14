@@ -1,4 +1,4 @@
-/* eslint-disable import/prefer-default-export */
+/* eslint-disable import-x/prefer-default-export */
 
 // External dependencies.
 import { AnimationDuration } from '../../../../../constants/animation.constants';
@@ -8,7 +8,7 @@ import { AnimationDuration } from '../../../../../constants/animation.constants'
  * The animation duration used for initial render.
  */
 export const DEFAULT_BOTTOMSHEETDIALOG_DISPLAY_DURATION =
-  AnimationDuration.Regularly;
+  AnimationDuration.Fast;
 /**
  * This number represents the swipe speed to meet the velocity threshold.
  */

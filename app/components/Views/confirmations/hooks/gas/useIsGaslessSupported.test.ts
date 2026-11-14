@@ -1,0 +1,418 @@
+import { TransactionMeta } from '@metamask/transaction-controller';
+import { waitFor } from '@testing-library/react-native';
+import { merge } from 'lodash';
+import { transferConfirmationState } from '../../../../../util/test/confirm-data-helpers';
+import { renderHookWithProvider } from '../../../../../util/test/renderWithProvider';
+import { isRelaySupported } from '../../../../../util/transactions/transaction-relay';
+import { transferTransactionStateMock } from '../../__mocks__/transfer-transaction-mock';
+import { useTransactionMetadataRequest } from '../transactions/useTransactionMetadataRequest';
+import { useIsGaslessSupported } from './useIsGaslessSupported';
+import { useGaslessSupportedSmartTransactions } from './useGaslessSupportedSmartTransactions';
+import { isHardwareAccount } from '../../../../../util/address';
+import { isAtomicBatchSupported } from '../../../../../util/transaction-controller';
+import { useTransactionPayingAccount } from '../transactions/useTransactionPayingAccount';
+
+jest.mock('../../../../../util/transactions/sentinel-api');
+jest.mock('../../../../../util/transaction-controller');
+jest.mock('../../../../../util/transactions/transaction-relay');
+jest.mock('../transactions/useTransactionMetadataRequest');
+jest.mock('../transactions/useTransactionPayingAccount');
+jest.mock('./useGaslessSupportedSmartTransactions');
+jest.mock('../../../../../util/address', () => ({
+  ...jest.requireActual('../../../../../util/address'),
+  isHardwareAccount: jest.fn(),
+}));
+
+const SMART_TRANSACTIONS_ENABLED_STATE = {
+  swaps: {
+    featureFlags: {
+      smart_transactions: {
+        mobile_active: true,
+        extension_active: true,
+      },
+      smartTransactions: {
+        mobileActive: true,
+        extensionActive: true,
+        mobileActiveIOS: true,
+        mobileActiveAndroid: true,
+      },
+    },
+    '0x1': {
+      isLive: true,
+      featureFlags: {
+        smartTransactions: {
+          expectedDeadline: 45,
+          maxDeadline: 160,
+          mobileReturnTxHashAsap: false,
+          mobileActive: true,
+          extensionActive: true,
+          mobileActiveIOS: true,
+          mobileActiveAndroid: true,
+        },
+      },
+    },
+  },
+};
+
+describe('useIsGaslessSupported', () => {
+  const mockUseTransactionMetadataRequest = jest.mocked(
+    useTransactionMetadataRequest,
+  );
+  const isRelaySupportedMock = jest.mocked(isRelaySupported);
+  const useGaslessSupportedSmartTransactionsMock = jest.mocked(
+    useGaslessSupportedSmartTransactions,
+  );
+  const isHardwareAccountMock = jest.mocked(isHardwareAccount);
+  const isAtomicBatchSupportedMock = jest.mocked(isAtomicBatchSupported);
+  const useTransactionPayingAccountMock = jest.mocked(
+    useTransactionPayingAccount,
+  );
+
+  beforeEach(() => {
+    mockUseTransactionMetadataRequest.mockReturnValue({
+      chainId: '0x1',
+      txParams: { from: '0x123', to: '0xabc' },
+    } as unknown as TransactionMeta);
+    isRelaySupportedMock.mockResolvedValue(false);
+    useGaslessSupportedSmartTransactionsMock.mockReturnValue({
+      isSmartTransaction: false,
+      isSupported: false,
+      pending: false,
+    });
+    isHardwareAccountMock.mockReturnValue(false);
+    useTransactionPayingAccountMock.mockReturnValue('0x123');
+  });
+
+  describe('Gasless Smart Transactions', () => {
+    it('returns isSupported and isSmartTransaction as true', async () => {
+      const stateWithSmartTransactionEnabled = merge(
+        {},
+        transferConfirmationState,
+        SMART_TRANSACTIONS_ENABLED_STATE,
+      );
+      useGaslessSupportedSmartTransactionsMock.mockReturnValue({
+        isSmartTransaction: true,
+        isSupported: true,
+        pending: false,
+      });
+
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state: stateWithSmartTransactionEnabled,
+      });
+
+      await waitFor(() =>
+        expect(result.current).toEqual({
+          isSupported: true,
+          isSmartTransaction: true,
+          pending: false,
+        }),
+      );
+    });
+
+    it('returns isSupported true when smart transactions are enabled but sender is a hardware wallet', async () => {
+      const stateWithSmartTransactionEnabled = merge(
+        {},
+        transferConfirmationState,
+        SMART_TRANSACTIONS_ENABLED_STATE,
+      );
+      useGaslessSupportedSmartTransactionsMock.mockReturnValue({
+        isSmartTransaction: true,
+        isSupported: true,
+        pending: false,
+      });
+      isHardwareAccountMock.mockReturnValue(true);
+
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state: stateWithSmartTransactionEnabled,
+      });
+
+      await waitFor(() =>
+        expect(result.current).toEqual({
+          isSupported: true,
+          isSmartTransaction: true,
+          pending: false,
+        }),
+      );
+    });
+
+    it('returns isSupported and isSmartTransaction as false when smart transactions are disabled', async () => {
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state: transferTransactionStateMock,
+      });
+
+      await waitFor(() =>
+        expect(result.current).toEqual({
+          isSupported: false,
+          isSmartTransaction: false,
+          pending: false,
+        }),
+      );
+    });
+
+    it('returns false if smart transaction is enabled but sendBundle is not supported', async () => {
+      useGaslessSupportedSmartTransactionsMock.mockReturnValue({
+        isSmartTransaction: true,
+        isSupported: false,
+        pending: false,
+      });
+
+      const stateWithSmartTransactionEnabled = merge(
+        {},
+        transferConfirmationState,
+        SMART_TRANSACTIONS_ENABLED_STATE,
+      );
+
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state: stateWithSmartTransactionEnabled,
+      });
+
+      await waitFor(() =>
+        expect(result.current).toEqual({
+          isSupported: false,
+          isSmartTransaction: true,
+          pending: false,
+        }),
+      );
+    });
+  });
+
+  describe('Gasless EIP-7702', () => {
+    it('returns isSupported true and isSmartTransaction: false when EIP-7702 conditions met', async () => {
+      isRelaySupportedMock.mockResolvedValue(true);
+
+      const state = merge({}, transferTransactionStateMock);
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state,
+      });
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          isSupported: true,
+          isSmartTransaction: false,
+          pending: false,
+        });
+      });
+    });
+
+    it('returns isSupported false when the sender is a hardware wallet even if relay is supported', async () => {
+      isRelaySupportedMock.mockResolvedValue(true);
+      isHardwareAccountMock.mockReturnValue(true);
+
+      const state = merge({}, transferTransactionStateMock);
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state,
+      });
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          isSupported: false,
+          isSmartTransaction: false,
+          pending: false,
+        });
+      });
+    });
+
+    it('returns isSupported true when only the paying account is a hardware wallet', async () => {
+      mockUseTransactionMetadataRequest.mockReturnValue({
+        chainId: '0x1',
+        txParams: { from: '0xMoneyAccount', to: '0xabc' },
+      } as unknown as TransactionMeta);
+      useTransactionPayingAccountMock.mockReturnValue('0xLedgerPayer');
+      isRelaySupportedMock.mockResolvedValue(true);
+      isHardwareAccountMock.mockImplementation(
+        (address) => address === '0xLedgerPayer',
+      );
+
+      const state = merge({}, transferTransactionStateMock);
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state,
+      });
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          isSupported: true,
+          isSmartTransaction: false,
+          pending: false,
+        });
+      });
+      expect(isHardwareAccountMock).toHaveBeenCalledWith('0xMoneyAccount');
+    });
+
+    it('returns isSupported false and isSmartTransaction: false when relay not supported', async () => {
+      isRelaySupportedMock.mockResolvedValue(false);
+
+      const state = merge({}, transferTransactionStateMock);
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state,
+      });
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          isSupported: false,
+          isSmartTransaction: false,
+          pending: false,
+        });
+      });
+    });
+
+    it('returns isSupported false for Monad when the paying account has no atomic batch support', async () => {
+      mockUseTransactionMetadataRequest.mockReturnValue({
+        chainId: '0x8f',
+        txParams: { from: '0xMoneyAccount', to: '0xabc' },
+      } as unknown as TransactionMeta);
+      useTransactionPayingAccountMock.mockReturnValue('0xPayingAccount');
+      isRelaySupportedMock.mockResolvedValue(true);
+      isAtomicBatchSupportedMock.mockResolvedValue([]);
+
+      const state = merge({}, transferTransactionStateMock);
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state,
+      });
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          isSupported: false,
+          isSmartTransaction: false,
+          pending: false,
+        });
+      });
+      expect(isAtomicBatchSupportedMock).toHaveBeenCalledWith({
+        address: '0xPayingAccount',
+        chainIds: ['0x8f'],
+      });
+    });
+
+    it('returns isSupported true for Monad when the paying account has a non-MetaMask delegation', async () => {
+      mockUseTransactionMetadataRequest.mockReturnValue({
+        chainId: '0x8f',
+        txParams: { from: '0xMoneyAccount', to: '0xabc' },
+      } as unknown as TransactionMeta);
+      useTransactionPayingAccountMock.mockReturnValue('0xPayingAccount');
+      isRelaySupportedMock.mockResolvedValue(true);
+      isAtomicBatchSupportedMock.mockResolvedValue([
+        {
+          chainId: '0x8f',
+          isSupported: false,
+          delegationAddress: '0xOtherDelegation',
+          upgradeContractAddress: '0xUpgrade',
+        },
+      ]);
+
+      const state = merge({}, transferTransactionStateMock);
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state,
+      });
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          isSupported: true,
+          isSmartTransaction: false,
+          pending: false,
+        });
+      });
+    });
+
+    it('returns isSupported true for Monad when the paying account supports atomic batches', async () => {
+      mockUseTransactionMetadataRequest.mockReturnValue({
+        chainId: '0x8f',
+        txParams: { from: '0xMoneyAccount', to: '0xabc' },
+      } as unknown as TransactionMeta);
+      useTransactionPayingAccountMock.mockReturnValue('0xPayingAccount');
+      isRelaySupportedMock.mockResolvedValue(true);
+      isAtomicBatchSupportedMock.mockResolvedValue([
+        {
+          chainId: '0x8f',
+          isSupported: true,
+          delegationAddress: '0xDelegation',
+        },
+      ]);
+
+      const state = merge({}, transferTransactionStateMock);
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state,
+      });
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          isSupported: true,
+          isSmartTransaction: false,
+          pending: false,
+        });
+      });
+    });
+
+    it('returns isSupported false if the transaction is contract deployment (no "to" param)', async () => {
+      mockUseTransactionMetadataRequest.mockReturnValue({
+        chainId: '0x1',
+        txParams: { from: '0x123' }, // no "to"
+      } as unknown as TransactionMeta);
+      isRelaySupportedMock.mockResolvedValue(true);
+
+      const state = merge({}, transferTransactionStateMock);
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state,
+      });
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          isSupported: false,
+          isSmartTransaction: false,
+          pending: false,
+        });
+      });
+    });
+
+    it('returns isSupported false and isSmartTransaction: false if isRelaySupported returns undefined', async () => {
+      isRelaySupportedMock.mockResolvedValue(
+        undefined as unknown as ReturnType<typeof isRelaySupported>,
+      );
+
+      const state = merge({}, transferTransactionStateMock);
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state,
+      });
+
+      await waitFor(() => {
+        expect(result.current).toEqual({
+          isSupported: false,
+          isSmartTransaction: false,
+          pending: false,
+        });
+      });
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('returns isSupported and isSmartTransaction as false when chainId is undefined', async () => {
+      mockUseTransactionMetadataRequest.mockReturnValue(undefined);
+
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state: transferTransactionStateMock,
+      });
+
+      await waitFor(() =>
+        expect(result.current).toEqual({
+          isSupported: false,
+          isSmartTransaction: false,
+          pending: false,
+        }),
+      );
+    });
+
+    it('returns isSupported and isSmartTransaction as false when transactionMeta is null', async () => {
+      mockUseTransactionMetadataRequest.mockReturnValue(undefined);
+
+      const { result } = renderHookWithProvider(() => useIsGaslessSupported(), {
+        state: transferTransactionStateMock,
+      });
+
+      await waitFor(() =>
+        expect(result.current).toEqual({
+          isSupported: false,
+          isSmartTransaction: false,
+          pending: false,
+        }),
+      );
+    });
+  });
+});

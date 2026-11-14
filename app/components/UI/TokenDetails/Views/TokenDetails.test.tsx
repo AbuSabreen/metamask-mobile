@@ -1,0 +1,2136 @@
+import React from 'react';
+import { ActivityIndicator, AppState, type AppStateStatus } from 'react-native';
+import {
+  act,
+  fireEvent,
+  render,
+  waitFor,
+  within,
+} from '@testing-library/react-native';
+import {
+  TokenDetails as TokenDetailsRoute,
+  TokenDetailsLegacyRouteWrapper as TokenDetails,
+} from './TokenDetails';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { createMockUseAnalyticsHook } from '../../../../util/test/analyticsMock';
+import {
+  selectNetworkConfigurationByChainId,
+  selectNetworkConfigurations,
+} from '../../../../selectors/networkController';
+import { selectCurrencyRates } from '../../../../selectors/currencyRateController';
+import { getRampNetworks } from '../../../../reducers/fiatOrders';
+import {
+  selectDepositActiveFlag,
+  selectDepositMinimumVersionFlag,
+} from '../../../../selectors/featureFlagController/deposit';
+import Routes from '../../../../constants/navigation/Routes';
+import { AMBIENT_PRICE_COLOR_AB_KEY } from '../components/abTestConfig';
+
+import { TokenOverviewSelectorsIDs } from '../../AssetOverview/TokenOverview.testIds';
+import { useAddNetworkIfMissingQuery } from '../../../hooks/useAddNetworkIfMissing/useAddNetworkIfMissing';
+import { TraceName } from '../../../../util/trace';
+import { selectSelectedInternalAccountByScope } from '../../../../selectors/multichainAccounts/accounts';
+import { strings } from '../../../../../locales/i18n';
+import {
+  selectBridgeLimitOrderFeatureFlags,
+  selectBridgeRecurringBuyFeatureFlags,
+} from '../../../../selectors/bridge/featureFlags';
+import { selectTokenDetailsBrandRefreshEnabled } from '../../../../selectors/featureFlagController/tokenDetailsBrandRefresh';
+import { TokenDetailsTestIds } from './TokenDetails.testIds';
+import {
+  selectAssetsMemecoinTdpV1Enabled,
+  selectMemecoinTdpV1PriceApiBaseUrl,
+} from '../../../../selectors/featureFlagController/assetsMemecoinTdpV1';
+import { PRICE_API_BASE_URL } from '../../../../constants/urls';
+import { usePriceApiHost } from '../context/PriceApiHostContext';
+
+const mockUseSelector = jest.fn();
+const mockUseMoneyAssetOverviewCtas = jest.fn();
+const mockUseMostRecentOrder = jest.fn();
+const getSelectedAccountByScopeStub = (scope: string) =>
+  scope.startsWith('eip155:')
+    ? { address: '0x1234567890123456789012345678901234567890' }
+    : { address: 'pXwSggYaFeUryz86UoCs9ugZ4VWoZ7R1U5CVhxYjL61' };
+
+// Shared default useSelector implementation used by the beforeEach and reused by
+// helpers that only need to override a single flag. Keeping a single source of
+// truth guarantees factory selectors (e.g. selectSelectedInternalAccountByScope
+// returns a function) and the bridge/deposit selectors stay handled everywhere.
+const defaultSelectorImpl = (selector: unknown): unknown => {
+  if (selector === selectNetworkConfigurationByChainId)
+    return { name: 'Ethereum' };
+  if (selector === selectNetworkConfigurations)
+    return { '0x1': { nativeCurrency: 'ETH' } };
+  if (selector === selectCurrencyRates)
+    // conversionRate === usdConversionRate → 1:1 ratio, fiat value = USD value
+    return { ETH: { conversionRate: 1, usdConversionRate: 1 } };
+  if (selector === getRampNetworks) return [];
+  if (selector === selectDepositActiveFlag) return false;
+  if (selector === selectDepositMinimumVersionFlag) return null;
+  if (selector === selectSelectedInternalAccountByScope)
+    return getSelectedAccountByScopeStub;
+  if (selector === selectBridgeLimitOrderFeatureFlags)
+    return { enabled: true, enabledChainIds: ['eip155:1'] };
+  if (selector === selectBridgeRecurringBuyFeatureFlags)
+    return { enabled: true, enabledChainIds: ['eip155:1'] };
+  return undefined;
+};
+
+jest.mock('../../../../util/deviceCapability', () => ({
+  getHardwareTier: () => 'HIGH',
+}));
+
+jest.mock('../../../../hooks/useNetworkTier', () => ({
+  useNetworkTier: () => 'WIFI',
+}));
+
+jest.mock('../../Bridge/hooks/useMostRecentOrder', () => ({
+  useMostRecentOrder: (params: unknown) => mockUseMostRecentOrder(params),
+}));
+
+jest.mock('../../Money/hooks/useMoneyAssetOverviewCtas', () => ({
+  useMoneyAssetOverviewCtas: () => mockUseMoneyAssetOverviewCtas(),
+}));
+
+jest.mock('../../Money/components/MoneyAssetOverviewBalanceCta', () => ({
+  MoneyAssetOverviewBalanceCta: () => null,
+  MoneyAssetOverviewBalanceCtaSkeleton: () => null,
+}));
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: (selector: (state: unknown) => unknown) =>
+    mockUseSelector(selector),
+}));
+
+jest.mock('../../AssetOverview/Price/hooks/useTokenChartPreferences', () => ({
+  useTokenChartPreferences: () => ({
+    chartType: 'line',
+    chartInterval: '15m',
+    indicators: [],
+    setChartType: jest.fn(),
+    setChartInterval: jest.fn(),
+    setIndicators: jest.fn(),
+  }),
+}));
+
+const mockNavigate = jest.fn();
+const mockGoBack = jest.fn();
+let mockBeforeRemoveListener: (() => void) | undefined;
+const mockAddListener = jest.fn(
+  (event: string, cb: () => void): (() => void) => {
+    if (event === 'beforeRemove') mockBeforeRemoveListener = cb;
+    return jest.fn();
+  },
+);
+const mockRouteParams = jest.fn().mockReturnValue({
+  address: '0x6b175474e89094c44da98b954eedeac495271d0f',
+  chainId: '0x1',
+  symbol: 'DAI',
+  decimals: 18,
+  name: 'Dai Stablecoin',
+  image: 'https://example.com/dai.png',
+  isETH: false,
+  isNative: false,
+  balance: '10.5',
+});
+const defaultRouteParams = {
+  address: '0x6b175474e89094c44da98b954eedeac495271d0f',
+  chainId: '0x1',
+  symbol: 'DAI',
+  decimals: 18,
+  name: 'Dai Stablecoin',
+  image: 'https://example.com/dai.png',
+  isETH: false,
+  isNative: false,
+  balance: '10.5',
+};
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    navigate: mockNavigate,
+    goBack: mockGoBack,
+    addListener: mockAddListener,
+  }),
+  useRoute: () => ({ params: mockRouteParams() }),
+  useFocusEffect: jest.fn((cb: () => () => void) => {
+    cb();
+  }),
+}));
+
+const defaultUseTokenPriceReturn = {
+  currentPrice: 100,
+  priceDiff: 5,
+  comparePrice: 95,
+  prices: [],
+  isLoading: false,
+  setTimePeriod: jest.fn(),
+  chartNavigationButtons: ['1d', '1w', '1m'],
+  currentCurrency: 'USD',
+  hasInsufficientCoverage: false,
+  historicalPricesApiMs: undefined as number | undefined,
+  exchangeRateApiMs: undefined as number | undefined,
+};
+const mockUseTokenPrice = jest.fn(() => defaultUseTokenPriceReturn);
+jest.mock('../hooks/useTokenPrice', () => ({
+  useTokenPrice: (...args: unknown[]) => mockUseTokenPrice(...(args as [])),
+}));
+
+const mockUseTokenBalance = jest.fn();
+jest.mock('../hooks/useTokenBalance', () => ({
+  useTokenBalance: () => mockUseTokenBalance(),
+}));
+
+const mockUseTraderPositionPnl = jest.fn(
+  (
+    _args?: unknown,
+  ): {
+    traderPositionPnl: Record<string, unknown> | undefined;
+  } => ({
+    traderPositionPnl: undefined,
+  }),
+);
+jest.mock('../TraderPositionPnl/useTraderPositionPnl', () => ({
+  useTraderPositionPnl: (args: unknown) => mockUseTraderPositionPnl(args),
+}));
+
+jest.mock('../../Assets/watchlist/components/WatchlistStarButton', () => {
+  const MockedStarButton = () => null;
+  MockedStarButton.displayName = 'WatchlistStarButton';
+  return { __esModule: true, default: MockedStarButton };
+});
+
+const mockUseTokenBuyability = jest.fn();
+jest.mock('../../Ramp/hooks/useTokenBuyability', () => ({
+  __esModule: true,
+  default: (...args: unknown[]) => mockUseTokenBuyability(...args),
+}));
+
+const mockHandleStickySwapPress = jest.fn();
+const mockOnBuy = jest.fn();
+const mockOnSend = jest.fn();
+const mockOnReceive = jest.fn();
+const mockUseTokenActions = jest.fn();
+jest.mock('../hooks/useTokenActions', () => ({
+  useTokenActions: (args: unknown) => mockUseTokenActions(args),
+}));
+
+const mockUseStickyTokenActions = jest.fn();
+jest.mock('../hooks/useStickyTokenActions', () => ({
+  useStickyTokenActions: () => mockUseStickyTokenActions(),
+}));
+
+jest.mock(
+  '../../../hooks/useAddNetworkIfMissing/useAddNetworkIfMissing',
+  () => ({
+    useAddNetworkIfMissingQuery: jest.fn(),
+  }),
+);
+const mockUseAddNetworkIfMissingQuery = jest.mocked(
+  useAddNetworkIfMissingQuery,
+);
+
+const defaultUseTokenTransactionsReturn = {
+  transactions: [],
+  submittedTxs: [],
+  confirmedTxs: [],
+  loading: false,
+  transactionsUpdated: true,
+  selectedAddress: '0x1234',
+  conversionRate: 1,
+  currentCurrency: 'USD',
+  isNonEvmAsset: false,
+};
+
+const mockUseTokenTransactions = jest.fn();
+jest.mock('../hooks/useTokenTransactions', () => ({
+  useTokenTransactions: (...args: unknown[]) =>
+    mockUseTokenTransactions(...args),
+}));
+
+jest.mock('../queries/prefetchTokenDetailsQueries', () => ({
+  usePrefetchTokenDetails: () => undefined,
+}));
+
+const mockUseIsMemeToken = jest.fn((_opts: Record<string, unknown>) => ({
+  isMeme: false,
+  isLoading: false,
+  isError: false,
+  query: {},
+}));
+jest.mock('../hooks/useIsMemeToken', () => ({
+  useIsMemeToken: (opts: Record<string, unknown>) => mockUseIsMemeToken(opts),
+}));
+
+const mockTokenDetailsV1 = jest.fn((_props: Record<string, unknown>) => null);
+jest.mock('./TokenDetailsV1', () => ({
+  TokenDetailsV1: (props: Record<string, unknown>) => mockTokenDetailsV1(props),
+}));
+
+const mockTokenDetailsInlineHeader = jest.fn(
+  (_props: Record<string, unknown>) => null,
+);
+jest.mock('../components/TokenDetailsInlineHeader', () => ({
+  TokenDetailsInlineHeader: (props: Record<string, unknown>) =>
+    mockTokenDetailsInlineHeader(props),
+}));
+
+const mockShareTokenBottomSheet = jest.fn(
+  (_props: Record<string, unknown>) => null,
+);
+jest.mock('../components/ShareTokenBottomSheet', () => {
+  const ReactLib = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  return {
+    __esModule: true,
+    default: (props: Record<string, unknown>) => {
+      mockShareTokenBottomSheet(props);
+      return ReactLib.createElement(View, { testID: 'share-token-sheet' });
+    },
+  };
+});
+
+let mockLastUseAmbientColorProp: boolean | undefined;
+let mockLatestPriceDirectionChange: ((isPositive: boolean) => void) | undefined;
+let mockLatestOnBuy: (() => void) | undefined;
+let mockLatestOnSend: (() => Promise<void> | void) | undefined;
+let mockLatestOnMarketInsightsDisclaimerPress: (() => void) | undefined;
+let mockAutoResolveMarketInsights = true;
+let mockLatestMarketInsightsResolver:
+  | ((params: { isDisplayed: boolean; severity: string | undefined }) => void)
+  | undefined;
+let mockAutoResolvePerps = true;
+let mockLatestPerpsResolver:
+  | ((result: { hasPerpsMarket: boolean; isLoading: boolean }) => void)
+  | undefined;
+
+const triggerMarketInsightsResolved = (params: {
+  isDisplayed: boolean;
+  severity: string | undefined;
+}) => {
+  act(() => {
+    mockLatestMarketInsightsResolver?.(params);
+  });
+};
+
+const triggerPerpsResolved = (result: {
+  hasPerpsMarket: boolean;
+  isLoading: boolean;
+}) => {
+  act(() => {
+    mockLatestPerpsResolver?.(result);
+  });
+};
+
+jest.mock('../components/AssetOverviewContent', () => {
+  const ReactLib = jest.requireActual('react');
+  const AssetOverviewContentMock = ({
+    onMarketInsightsDisplayResolved,
+    onPerpsMarketResolved,
+    onPriceDirectionChange,
+    onBuy,
+    onSend,
+    onMarketInsightsDisclaimerPress,
+    token,
+    useAmbientColor,
+  }: {
+    onMarketInsightsDisplayResolved?: (params: {
+      isDisplayed: boolean;
+      severity: string | undefined;
+    }) => void;
+    onPerpsMarketResolved?: (result: {
+      hasPerpsMarket: boolean;
+      isLoading: boolean;
+    }) => void;
+    onPriceDirectionChange?: (isPositive: boolean) => void;
+    onBuy?: () => void;
+    onSend?: () => Promise<void> | void;
+    onMarketInsightsDisclaimerPress?: () => void;
+    token?: { address?: string; chainId?: string; symbol?: string };
+    useAmbientColor?: boolean;
+  }) => {
+    const insightsTokenKey = `${token?.address ?? ''}:${token?.chainId ?? ''}:${token?.symbol ?? ''}`;
+    // Capture the latest handlers in a deps-less effect (runs every render, no
+    // state updates → no loop). This avoids depending on the unstable inline
+    // `onMarketInsightsDisclaimerPress` arrow in the auto-resolve effect below.
+    ReactLib.useEffect(() => {
+      mockLatestOnBuy = onBuy;
+      mockLatestOnSend = onSend;
+      mockLatestOnMarketInsightsDisclaimerPress =
+        onMarketInsightsDisclaimerPress;
+    });
+    ReactLib.useEffect(() => {
+      mockLastUseAmbientColorProp = useAmbientColor;
+      mockLatestPriceDirectionChange = onPriceDirectionChange;
+      mockLatestMarketInsightsResolver = onMarketInsightsDisplayResolved;
+      mockLatestPerpsResolver = onPerpsMarketResolved;
+      if (mockAutoResolvePerps) {
+        onPerpsMarketResolved?.({ hasPerpsMarket: false, isLoading: false });
+      }
+      if (!mockAutoResolveMarketInsights) {
+        return;
+      }
+      onMarketInsightsDisplayResolved?.({
+        isDisplayed: true,
+        severity: undefined,
+      });
+    }, [
+      onMarketInsightsDisplayResolved,
+      onPerpsMarketResolved,
+      onPriceDirectionChange,
+      useAmbientColor,
+      insightsTokenKey,
+    ]);
+
+    return null;
+  };
+
+  return {
+    __esModule: true,
+    default: AssetOverviewContentMock,
+  };
+});
+
+jest.mock('../../../Views/Asset/ActivityHeader', () => ({
+  __esModule: true,
+  default: () => null,
+}));
+
+const mockTransactions = jest.fn((_props: Record<string, unknown>) => null);
+jest.mock('../../Transactions', () => ({
+  __esModule: true,
+  default: (props: { header?: React.ReactNode; loading?: boolean }) => {
+    mockTransactions(props);
+    // Mirrors Transactions, which shows only its loader while loading.
+    return props.loading ? null : (props.header ?? null);
+  },
+}));
+
+jest.mock(
+  '../../../Views/MultichainTransactionsView/MultichainTransactionsView',
+  () => ({
+    __esModule: true,
+    default: () => null,
+  }),
+);
+
+jest.mock('../../../../selectors/networkController', () => ({
+  selectNetworkConfigurationByChainId: jest.fn(() => ({ name: 'Ethereum' })),
+  selectNetworkConfigurations: jest.fn(() => ({
+    '0x1': { nativeCurrency: 'ETH' },
+  })),
+  selectNetworkConfigurationsByCaipChainId: jest.fn(() => ({})),
+}));
+
+jest.mock('../../../../selectors/currencyRateController', () => ({
+  selectCurrencyRates: jest.fn(() => ({
+    ETH: { conversionRate: 1, usdConversionRate: 1 },
+  })),
+}));
+
+jest.mock('../../../../reducers/fiatOrders', () => ({
+  getRampNetworks: jest.fn(() => []),
+}));
+
+jest.mock('../../../../selectors/featureFlagController/deposit', () => ({
+  selectDepositActiveFlag: jest.fn(() => false),
+  selectDepositMinimumVersionFlag: jest.fn(() => null),
+}));
+
+const mockUseIsPriceAlertsChainSupported = jest.fn<
+  boolean,
+  [string | null | undefined, { enabled?: boolean }?]
+>(() => true);
+jest.mock(
+  '../../Assets/PriceAlerts/hooks/useIsPriceAlertsChainSupported',
+  () => ({
+    useIsPriceAlertsChainSupported: (
+      assetId: string | null | undefined,
+      options?: { enabled?: boolean },
+    ) => mockUseIsPriceAlertsChainSupported(assetId, options),
+  }),
+);
+
+jest.mock('../../Ramp/Aggregator/utils', () => ({
+  isNetworkRampNativeTokenSupported: jest.fn(() => true),
+  isNetworkRampSupported: jest.fn(() => true),
+}));
+
+const mockTrackEvent = jest.fn();
+const mockAddProperties = jest.fn();
+const mockBuild = jest.fn();
+const mockCreateEventBuilder = jest.fn();
+jest.mock('../../../hooks/useAnalytics/useAnalytics');
+
+const mockShowToast = jest.fn();
+jest.mock('../../../../core/ToastService/ToastService', () => ({
+  __esModule: true,
+  default: {
+    showToast: (...args: unknown[]) => mockShowToast(...args),
+  },
+}));
+
+const mockIsTokenTradable = jest.fn().mockReturnValue(true);
+jest.mock('../../Bridge/hooks/useRWAToken', () => ({
+  useRWAToken: () => ({
+    isTokenTradable: mockIsTokenTradable,
+    isStockToken: jest.fn(() => false),
+  }),
+}));
+
+const defaultUseABTestImpl = (key: string) => {
+  if (key === AMBIENT_PRICE_COLOR_AB_KEY) {
+    return {
+      variant: { useAmbientPriceColor: false },
+      variantName: 'control',
+      isActive: false,
+    };
+  }
+  return {
+    variant: { swapLabelKey: 'asset_overview.swap' },
+    variantName: 'control',
+    isActive: false,
+  };
+};
+const mockUseABTest = jest.fn(defaultUseABTestImpl);
+jest.mock('../../../../hooks/useABTest', () => ({
+  useABTest: (...args: unknown[]) => mockUseABTest(...(args as [string])),
+}));
+
+jest.mock('../hooks/useStickyFooterTracking', () => ({
+  useStickyFooterTracking: jest.fn(() => jest.fn()),
+}));
+
+const mockAssetDetailsQuickBuy = jest.fn(
+  (_props: Record<string, unknown>) => null,
+);
+jest.mock('../components/AssetDetailsQuickBuy', () => {
+  const ReactLib = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  return {
+    __esModule: true,
+    default: (props: Record<string, unknown>) => {
+      mockAssetDetailsQuickBuy(props);
+      return ReactLib.createElement(View, {
+        testID: 'asset-details-quick-buy',
+      });
+    },
+  };
+});
+
+jest.mock('../../../../util/haptics', () => ({
+  playImpact: jest.fn(),
+  ImpactMoment: { PrimaryCTA: 'primaryCta' },
+}));
+
+const DEV_HOST = 'https://price.dev-api.cx.metamask.io';
+
+const mockEndTrace = jest.fn();
+const mockTrace = jest.fn();
+jest.mock('../../../../util/trace', () => ({
+  ...jest.requireActual('../../../../util/trace'),
+  endTrace: (...args: unknown[]) => mockEndTrace(...args),
+  trace: (...args: unknown[]) => mockTrace(...args),
+}));
+
+describe('TokenDetails', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseMoneyAssetOverviewCtas.mockReturnValue({
+      apyPercent: undefined,
+      footerLabelLocalized: undefined,
+      isBalanceCtaLoading: false,
+      isBalanceCtaVisible: false,
+      isFooterCtaEligible: false,
+      isFooterCtaLoading: false,
+      isFooterCtaVisible: false,
+      onBalancePress: jest.fn(),
+      onFooterPress: jest.fn(),
+      projectedEarningsFormatted: undefined,
+    });
+    mockUseMostRecentOrder.mockReturnValue({
+      mostRecentOrder: undefined,
+      isLoading: false,
+      isError: false,
+    });
+    mockBeforeRemoveListener = undefined;
+    // clearAllMocks keeps mockReturnValue, so reset the default each test to
+    // stop a per-test position from leaking into later suites.
+    mockUseTraderPositionPnl.mockReturnValue({
+      traderPositionPnl: undefined,
+    });
+    mockUseABTest.mockImplementation(defaultUseABTestImpl);
+    mockRouteParams.mockReturnValue(defaultRouteParams);
+    mockAutoResolveMarketInsights = true;
+    mockAutoResolvePerps = true;
+    mockLatestMarketInsightsResolver = undefined;
+    mockLatestPerpsResolver = undefined;
+    mockLastUseAmbientColorProp = undefined;
+    mockLatestPriceDirectionChange = undefined;
+    mockLatestOnBuy = undefined;
+    mockLatestOnSend = undefined;
+    mockLatestOnMarketInsightsDisclaimerPress = undefined;
+    mockUseTokenPrice.mockReturnValue(defaultUseTokenPriceReturn);
+    mockBuild.mockReturnValue({ category: 'token-details-opened' });
+    mockAddProperties.mockReturnValue({ build: mockBuild });
+    mockCreateEventBuilder.mockReturnValue({
+      addProperties: mockAddProperties,
+    });
+    jest.mocked(useAnalytics).mockReturnValue(
+      createMockUseAnalyticsHook({
+        trackEvent: mockTrackEvent,
+        createEventBuilder: mockCreateEventBuilder,
+      }),
+    );
+    mockIsTokenTradable.mockReturnValue(true);
+    mockUseTokenTransactions.mockReturnValue(defaultUseTokenTransactionsReturn);
+    mockUseTokenBuyability.mockReturnValue({
+      isBuyable: true,
+      isLoading: false,
+    });
+    mockUseTokenActions.mockReturnValue({
+      onBuy: mockOnBuy,
+      onSend: mockOnSend,
+      onReceive: mockOnReceive,
+    });
+    mockUseStickyTokenActions.mockReturnValue({
+      onBuy: mockOnBuy,
+      onSwap: mockHandleStickySwapPress,
+      hasEligibleSwapTokens: true,
+      networkModal: null,
+    });
+    mockUseIsPriceAlertsChainSupported.mockReturnValue(true);
+
+    mockUseTokenBalance.mockReturnValue({
+      balance: '1.5',
+      fiatBalance: '$150.00',
+      balanceFiatUsd: 150,
+      tokenFormattedBalance: '1.5 ETH',
+    });
+
+    mockUseSelector.mockImplementation(defaultSelectorImpl);
+  });
+
+  it('loads the most recent order for the current asset', () => {
+    render(<TokenDetails />);
+
+    expect(mockUseMostRecentOrder).toHaveBeenCalledWith({
+      walletAddress: '0x1234567890123456789012345678901234567890',
+      assetId: 'eip155:1/erc20:0x6B175474E89094C44Da98b954EedeAC495271d0F',
+      isLimitOrderEnabled: true,
+      isRecurringOrderEnabled: true,
+    });
+  });
+
+  it('passes tdpVersion="v2" to useTokenActions so legacy below-chart events are tagged', () => {
+    // The hook only adds `tdp_version` when the argument is set; without this
+    // the legacy Buy/Send/Receive events would drop it.
+    render(<TokenDetails />);
+
+    expect(mockUseTokenActions).toHaveBeenCalledWith(
+      expect.objectContaining({ tdpVersion: 'v2' }),
+    );
+  });
+
+  describe('trader position P&L footer', () => {
+    const applySelectorsWithMemeFlag = (flagEnabled: boolean) => {
+      // Delegate to the default selector impl so factory selectors (e.g.
+      // selectSelectedInternalAccountByScope returns a function) and the
+      // bridge/deposit selectors stay handled; only override the meme flag.
+      mockUseSelector.mockImplementation((selector) =>
+        selector === selectAssetsMemecoinTdpV1Enabled
+          ? flagEnabled
+          : defaultSelectorImpl(selector),
+      );
+    };
+
+    it('never mounts the position hook when the flag is off', () => {
+      applySelectorsWithMemeFlag(false);
+
+      const { queryByTestId } = render(<TokenDetails />);
+
+      // Flag off renders the plain footer, so the trader-position machinery
+      // (open position, profile, share-to-feed) is never mounted.
+      expect(mockUseTraderPositionPnl).not.toHaveBeenCalled();
+      expect(queryByTestId('token-details-trader-position-pnl')).toBeNull();
+    });
+
+    it('mounts the position hook and shows the line when the flag is on', () => {
+      applySelectorsWithMemeFlag(true);
+      mockUseTraderPositionPnl.mockReturnValue({
+        traderPositionPnl: {
+          positionValue: '$103.31',
+          pnl: { amount: '+$15.01', percentage: '+16.99%', isProfit: true },
+        },
+      });
+
+      const { getByTestId } = render(<TokenDetails />);
+
+      expect(mockUseTraderPositionPnl).toHaveBeenCalledWith(
+        expect.objectContaining({ tokenKey: expect.any(String) }),
+      );
+      expect(
+        getByTestId('token-details-trader-position-pnl'),
+      ).toBeOnTheScreen();
+    });
+
+    it('still shows the footer buttons and omits the line until the position resolves', () => {
+      applySelectorsWithMemeFlag(true);
+      mockUseTraderPositionPnl.mockReturnValue({
+        traderPositionPnl: undefined,
+      });
+
+      const { queryByTestId } = render(<TokenDetails />);
+
+      // Append-when-loaded: the footer buttons render immediately, only the
+      // position line waits for the position to resolve.
+      expect(queryByTestId('bottomsheetfooter')).toBeOnTheScreen();
+      expect(queryByTestId('token-details-trader-position-pnl')).toBeNull();
+    });
+  });
+
+  it('does not render a full-page loader when txLoading is true', () => {
+    mockUseTokenTransactions.mockReturnValue({
+      ...defaultUseTokenTransactionsReturn,
+      loading: true,
+    });
+
+    const { UNSAFE_queryAllByType } = render(<TokenDetails />);
+
+    // Content (and its own skeletons) mounts immediately instead of being
+    // blocked behind a full-page spinner while transactions load.
+    expect(UNSAFE_queryAllByType(ActivityIndicator)).toHaveLength(0);
+  });
+
+  it('requests the auto-add of the network for the token chain', () => {
+    mockRouteParams.mockReturnValue({
+      ...defaultRouteParams,
+      chainId: '0x1237',
+    });
+
+    render(<TokenDetails />);
+
+    expect(mockUseAddNetworkIfMissingQuery).toHaveBeenCalledWith({
+      chainId: '0x1237',
+    });
+  });
+
+  describe('Asset Details performance trace', () => {
+    it('ends the AssetDetails trace once price finishes loading, with asset id and API timings', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        isLoading: false,
+        historicalPricesApiMs: 120,
+        exchangeRateApiMs: 80,
+      });
+
+      render(<TokenDetails />);
+
+      expect(mockTrace).not.toHaveBeenCalled();
+      expect(mockEndTrace).toHaveBeenCalledTimes(1);
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.AssetDetails,
+        data: {
+          asset_id: expect.any(String),
+          historical_prices_api_ms: 120,
+          exchange_rate_api_ms: 80,
+        },
+      });
+    });
+
+    it('does not end the trace while price is still loading', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        isLoading: true,
+      });
+
+      render(<TokenDetails />);
+
+      expect(mockEndTrace).not.toHaveBeenCalled();
+    });
+
+    it('only ends the trace once, even if isLoading toggles again later (e.g. chart time period change)', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        isLoading: false,
+      });
+
+      const { rerender } = render(<TokenDetails />);
+      expect(mockEndTrace).toHaveBeenCalledTimes(1);
+
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        isLoading: true,
+      });
+      rerender(<TokenDetails />);
+
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        isLoading: false,
+      });
+      rerender(<TokenDetails />);
+
+      expect(mockEndTrace).toHaveBeenCalledTimes(1);
+    });
+
+    it('ends the trace on unmount if the screen unmounts before price finishes loading, so it is not left pending', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        isLoading: true,
+      });
+
+      const { unmount } = render(<TokenDetails />);
+      expect(mockEndTrace).not.toHaveBeenCalled();
+
+      unmount();
+
+      expect(mockEndTrace).toHaveBeenCalledTimes(1);
+      expect(mockEndTrace).toHaveBeenCalledWith({
+        name: TraceName.AssetDetails,
+      });
+    });
+
+    it('does not end the trace a second time if it unmounts after already ending successfully', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        isLoading: false,
+      });
+
+      const { unmount } = render(<TokenDetails />);
+      expect(mockEndTrace).toHaveBeenCalledTimes(1);
+
+      unmount();
+
+      expect(mockEndTrace).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('Money deposit footer CTA', () => {
+    it('renders with the localized APY label when visible', () => {
+      mockUseMoneyAssetOverviewCtas.mockReturnValue({
+        apyPercent: 4,
+        footerLabelLocalized: strings('money.asset_overview.cta.earn_apy', {
+          apy: 4,
+        }),
+        isBalanceCtaLoading: false,
+        isBalanceCtaVisible: false,
+        isFooterCtaEligible: true,
+        isFooterCtaLoading: false,
+        isFooterCtaVisible: true,
+        onBalancePress: jest.fn(),
+        onFooterPress: jest.fn(),
+        projectedEarningsFormatted: '$4.00',
+      });
+
+      const { getByTestId, getByText } = render(<TokenDetails />);
+
+      expect(getByTestId('money-asset-overview-footer-cta')).toBeOnTheScreen();
+      expect(
+        getByText(strings('money.asset_overview.cta.earn_apy', { apy: 4 })),
+      ).toBeOnTheScreen();
+    });
+  });
+
+  describe('Swap/Buy sticky buttons', () => {
+    it('shows sticky buttons when token is loaded', () => {
+      const { getByTestId, getByText, queryByTestId } = render(
+        <TokenDetails />,
+      );
+
+      expect(getByTestId('bottomsheetfooter')).toBeOnTheScreen();
+      expect(getByText('Swap')).toBeOnTheScreen();
+      expect(getByText('Buy')).toBeOnTheScreen();
+      expect(queryByTestId('token-details-trader-position-pnl')).toBeNull();
+    });
+
+    it('does not show sticky buttons when RWA token is not tradable', () => {
+      mockIsTokenTradable.mockReturnValue(false);
+
+      const { queryByTestId } = render(<TokenDetails />);
+
+      expect(queryByTestId('bottomsheetfooter')).toBeNull();
+    });
+
+    it('shows both Swap and Buy when user has eligible tokens and token is buyable', () => {
+      const { getByText } = render(<TokenDetails />);
+
+      expect(getByText('Swap')).toBeOnTheScreen();
+      expect(getByText('Buy')).toBeOnTheScreen();
+    });
+
+    it('passes scrollToTopOnNav when sticky Swap is pressed', () => {
+      const { getByText } = render(<TokenDetails />);
+
+      fireEvent.press(getByText('Swap'));
+
+      expect(mockHandleStickySwapPress).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows only Swap when user has eligible tokens but token is not buyable', () => {
+      mockUseTokenBuyability.mockReturnValue({
+        isBuyable: false,
+        isLoading: false,
+      });
+
+      const { getByText, queryByText } = render(<TokenDetails />);
+
+      expect(getByText('Swap')).toBeOnTheScreen();
+      expect(queryByText('Buy')).toBeNull();
+    });
+
+    it('shows only Buy when user has no eligible swap tokens', () => {
+      mockUseStickyTokenActions.mockReturnValue({
+        onBuy: mockOnBuy,
+        onSwap: mockHandleStickySwapPress,
+        hasEligibleSwapTokens: false,
+        networkModal: null,
+      });
+
+      const { getByText, queryByText } = render(<TokenDetails />);
+
+      expect(getByText('Buy')).toBeOnTheScreen();
+      expect(queryByText('Swap')).toBeNull();
+    });
+  });
+
+  describe('Quick Buy', () => {
+    const getLastQuickBuyProps = () =>
+      mockAssetDetailsQuickBuy.mock.calls[
+        mockAssetDetailsQuickBuy.mock.calls.length - 1
+      ][0];
+
+    it('mounts AssetDetailsQuickBuy hidden by default with the current token', () => {
+      render(<TokenDetails />);
+
+      expect(mockAssetDetailsQuickBuy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isVisible: false,
+          token: expect.objectContaining({ symbol: 'DAI', chainId: '0x1' }),
+        }),
+      );
+    });
+
+    it('opens AssetDetailsQuickBuy when the sticky lightning button is pressed', () => {
+      const { getByTestId } = render(<TokenDetails />);
+
+      expect(getLastQuickBuyProps()).toEqual(
+        expect.objectContaining({ isVisible: false }),
+      );
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.QUICK_BUY_BUTTON));
+
+      expect(getLastQuickBuyProps()).toEqual(
+        expect.objectContaining({ isVisible: true }),
+      );
+    });
+
+    it('opens AssetDetailsQuickBuy when an eligible token has unresolved APY', () => {
+      mockUseMoneyAssetOverviewCtas.mockReturnValue({
+        apyPercent: undefined,
+        footerLabelLocalized: undefined,
+        isBalanceCtaLoading: false,
+        isBalanceCtaVisible: false,
+        isFooterCtaEligible: true,
+        isFooterCtaLoading: false,
+        isFooterCtaVisible: false,
+        onBalancePress: jest.fn(),
+        onFooterPress: jest.fn(),
+        projectedEarningsFormatted: undefined,
+      });
+      const { getByTestId } = render(<TokenDetails />);
+
+      fireEvent.press(getByTestId(TokenOverviewSelectorsIDs.QUICK_BUY_BUTTON));
+
+      expect(getLastQuickBuyProps()).toEqual(
+        expect.objectContaining({ isVisible: true }),
+      );
+    });
+  });
+
+  it('tracks token details opened for each token when route params change', async () => {
+    const { rerender } = render(<TokenDetails />);
+
+    await waitFor(() => {
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token_address: '0x6b175474e89094c44da98b954eedeac495271d0f',
+          token_symbol: 'DAI',
+          market_insights_displayed: true,
+          has_perps_market: false,
+          sticky_buttons_shown: expect.stringMatching(/^(both|buy|swap)$/),
+        }),
+      );
+    });
+
+    mockRouteParams.mockReturnValue({
+      address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      chainId: '0x1',
+      symbol: 'USDC',
+      decimals: 18,
+      name: 'USD Coin',
+      image: 'https://example.com/usdc.png',
+      isETH: false,
+      isNative: false,
+    });
+
+    rerender(<TokenDetails />);
+
+    await waitFor(() => {
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token_address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+          token_symbol: 'USDC',
+          market_insights_displayed: true,
+          has_perps_market: false,
+        }),
+      );
+    });
+  });
+
+  it('does not track token details opened more than once for the same token', async () => {
+    const { rerender } = render(<TokenDetails />);
+
+    await waitFor(() => {
+      expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+    });
+
+    rerender(<TokenDetails />);
+
+    await waitFor(() => {
+      expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('does not flush stale pending insights after token navigation', async () => {
+    mockAutoResolveMarketInsights = false;
+    mockAutoResolvePerps = false;
+    mockUseSelector.mockImplementation((selector) => {
+      if (selector === selectNetworkConfigurationByChainId)
+        return { name: 'Ethereum' };
+      if (selector === selectNetworkConfigurations)
+        return { '0x1': { nativeCurrency: 'ETH' } };
+      if (selector === selectCurrencyRates)
+        return { ETH: { conversionRate: 1, usdConversionRate: 1 } };
+      if (selector === getRampNetworks) return [];
+      if (selector === selectDepositActiveFlag) return false;
+      if (selector === selectDepositMinimumVersionFlag) return null;
+      if (selector === selectSelectedInternalAccountByScope)
+        return getSelectedAccountByScopeStub;
+      return undefined;
+    });
+
+    const { rerender } = render(<TokenDetails />);
+
+    // DAI: market insights resolved but perps still loading → event must not fire
+    triggerMarketInsightsResolved({
+      isDisplayed: false,
+      severity: 'warning',
+    });
+
+    await waitFor(() => {
+      expect(mockTrackEvent).not.toHaveBeenCalled();
+    });
+
+    // Navigate to USDC before perps resolves for DAI
+    mockRouteParams.mockReturnValue({
+      address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      chainId: '0x1',
+      symbol: 'USDC',
+      decimals: 18,
+      name: 'USD Coin',
+      image: 'https://example.com/usdc.png',
+      isETH: false,
+      isNative: false,
+    });
+
+    rerender(<TokenDetails />);
+
+    // Stale DAI insights must be discarded
+    await waitFor(() => {
+      expect(mockTrackEvent).not.toHaveBeenCalled();
+    });
+
+    // USDC: perps resolves first (hasPerpsMarket: true), then market insights
+    triggerPerpsResolved({ hasPerpsMarket: true, isLoading: false });
+    triggerMarketInsightsResolved({
+      isDisplayed: true,
+      severity: undefined,
+    });
+
+    await waitFor(() => {
+      expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token_symbol: 'USDC',
+          market_insights_displayed: true,
+          has_perps_market: true,
+        }),
+      );
+    });
+  });
+
+  it('does not report the previous perps market on the next token', async () => {
+    mockAutoResolveMarketInsights = false;
+    mockAutoResolvePerps = false;
+
+    const { getByText, rerender } = render(<TokenDetails />);
+
+    expect(getByText('Buy')).toBeOnTheScreen();
+
+    triggerPerpsResolved({ hasPerpsMarket: true, isLoading: false });
+
+    expect(mockTrackEvent).not.toHaveBeenCalled();
+
+    mockRouteParams.mockReturnValue({
+      address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      chainId: '0x1',
+      symbol: 'USDC',
+      decimals: 18,
+      name: 'USD Coin',
+      image: 'https://example.com/usdc.png',
+      isETH: false,
+      isNative: false,
+    });
+
+    rerender(<TokenDetails />);
+
+    triggerMarketInsightsResolved({
+      isDisplayed: true,
+      severity: undefined,
+    });
+
+    expect(mockTrackEvent).not.toHaveBeenCalled();
+
+    triggerPerpsResolved({ hasPerpsMarket: false, isLoading: false });
+
+    await waitFor(() => {
+      expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token_symbol: 'USDC',
+          has_perps_market: false,
+        }),
+      );
+    });
+  });
+
+  describe('Ambient price color A/B test', () => {
+    const enableAmbientColor = () => {
+      mockUseABTest.mockImplementation((key: string) => {
+        if (key === AMBIENT_PRICE_COLOR_AB_KEY) {
+          return {
+            variant: { useAmbientPriceColor: true },
+            variantName: 'treatment',
+            isActive: true,
+          };
+        }
+        return {
+          variant: { swapLabelKey: 'asset_overview.swap' },
+          variantName: 'control',
+          isActive: false,
+        };
+      });
+    };
+
+    it('does not pass useAmbientColor in control variant', () => {
+      render(<TokenDetails />);
+
+      expect(mockLastUseAmbientColorProp).toBeFalsy();
+    });
+
+    it('passes useAmbientColor=true in treatment variant', () => {
+      enableAmbientColor();
+
+      render(<TokenDetails />);
+
+      expect(mockLastUseAmbientColorProp).toBe(true);
+    });
+
+    it('does not pass iconColor or useAmbientColor to the inline header', () => {
+      enableAmbientColor();
+
+      render(<TokenDetails />);
+
+      const headerProps = mockTokenDetailsInlineHeader.mock.calls.at(-1)?.[0];
+      expect(headerProps).not.toHaveProperty('iconColor');
+      expect(headerProps).not.toHaveProperty('useAmbientColor');
+    });
+
+    it('always shows sticky footer regardless of chart direction', () => {
+      enableAmbientColor();
+
+      const { queryByTestId } = render(<TokenDetails />);
+
+      expect(queryByTestId('bottomsheetfooter')).toBeTruthy();
+    });
+  });
+
+  describe('price alert button', () => {
+    it('passes onPriceAlertPress to the header when currentPrice > 0', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 100,
+      });
+
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          onPriceAlertPress: expect.any(Function),
+        }),
+      );
+    });
+
+    it('passes undefined onPriceAlertPress when currentPrice is 0', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 0,
+      });
+
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({ onPriceAlertPress: undefined }),
+      );
+    });
+
+    it('passes undefined onPriceAlertPress when CAIP-19 asset id cannot be resolved', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 100,
+      });
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        chainId: undefined,
+      });
+
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({ onPriceAlertPress: undefined }),
+      );
+    });
+
+    it('passes undefined onPriceAlertPress when the chain is not supported for price alerts', () => {
+      mockUseIsPriceAlertsChainSupported.mockReturnValue(false);
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 100,
+      });
+
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({ onPriceAlertPress: undefined }),
+      );
+    });
+
+    it('passes undefined onPriceAlertPress when USD conversion rates are unavailable', () => {
+      // Override to return no currency rates — calcUsdAmountFromFiat returns undefined → null
+      mockUseSelector.mockImplementation((selector) => {
+        if (selector === selectNetworkConfigurationByChainId)
+          return { name: 'Ethereum' };
+        if (selector === selectNetworkConfigurations)
+          return { '0x1': { nativeCurrency: 'ETH' } };
+        if (selector === selectCurrencyRates) return {};
+        if (selector === getRampNetworks) return [];
+        if (selector === selectDepositActiveFlag) return false;
+        if (selector === selectDepositMinimumVersionFlag) return null;
+        if (selector === selectSelectedInternalAccountByScope)
+          return getSelectedAccountByScopeStub;
+        return undefined;
+      });
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 100,
+      });
+
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({ onPriceAlertPress: undefined }),
+      );
+    });
+
+    it('shows the price alert button for a Solana token when the chain is supported', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 150,
+      });
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        address: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501',
+        chainId: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+        symbol: 'SOL',
+      });
+
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          onPriceAlertPress: expect.any(Function),
+        }),
+      );
+    });
+
+    it('shows the price alert button for a Bitcoin token using the native currency CAIP-19 fallback', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 60000,
+      });
+      // Bitcoin's address is "native" — formatAddressToAssetId cannot resolve it,
+      // so caip19AssetId falls back to AVAILABLE_MULTICHAIN_NETWORK_CONFIGURATIONS
+      // nativeCurrency = "bip122:000000000019d6689c085ae165831e93/slip44:0"
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        address: 'native',
+        chainId: 'bip122:000000000019d6689c085ae165831e93',
+        symbol: 'BTC',
+      });
+
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          onPriceAlertPress: expect.any(Function),
+        }),
+      );
+    });
+
+    it('navigates with the Bitcoin native CAIP-19 asset id when the price alert button is pressed', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 60000,
+      });
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        address: 'native',
+        chainId: 'bip122:000000000019d6689c085ae165831e93',
+        symbol: 'BTC',
+      });
+
+      render(<TokenDetails />);
+
+      const lastCall = mockTokenDetailsInlineHeader.mock.calls.at(-1)?.[0] as {
+        onPriceAlertPress?: () => void;
+      };
+      act(() => {
+        lastCall.onPriceAlertPress?.();
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.MANAGE_PRICE_ALERTS,
+        expect.objectContaining({
+          symbol: 'BTC',
+          currentPrice: 60000,
+          currentCurrency: 'usd',
+          assetId: 'bip122:000000000019d6689c085ae165831e93/slip44:0',
+        }),
+      );
+    });
+
+    it('always navigates to MANAGE_PRICE_ALERTS with currentCurrency usd regardless of user fiat setting', () => {
+      // 2800 EUR × (3000 USD/ETH ÷ 2800 EUR/ETH) = 3000 USD
+      mockUseSelector.mockImplementation((selector) => {
+        if (selector === selectNetworkConfigurationByChainId)
+          return { name: 'Ethereum' };
+        if (selector === selectNetworkConfigurations)
+          return { '0x1': { nativeCurrency: 'ETH' } };
+        if (selector === selectCurrencyRates)
+          return { ETH: { conversionRate: 2800, usdConversionRate: 3000 } };
+        if (selector === getRampNetworks) return [];
+        if (selector === selectDepositActiveFlag) return false;
+        if (selector === selectDepositMinimumVersionFlag) return null;
+        if (selector === selectSelectedInternalAccountByScope)
+          return getSelectedAccountByScopeStub;
+        return undefined;
+      });
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 2800,
+        currentCurrency: 'eur',
+      });
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        address: '0x6b175474e89094c44da98b954eedeac495271d0f',
+        chainId: '0x1',
+        symbol: 'DAI',
+      });
+
+      render(<TokenDetails />);
+
+      const lastCall = mockTokenDetailsInlineHeader.mock.calls.at(-1)?.[0] as {
+        onPriceAlertPress?: () => void;
+      };
+      act(() => {
+        lastCall.onPriceAlertPress?.();
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.MANAGE_PRICE_ALERTS,
+        expect.objectContaining({
+          currentPrice: 3000,
+          currentCurrency: 'usd',
+        }),
+      );
+    });
+
+    it('navigates to MANAGE_PRICE_ALERTS with the correct params when the price alert button is pressed', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 2500,
+        currentCurrency: 'USD',
+      });
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        address: '0x6b175474e89094c44da98b954eedeac495271d0f',
+        chainId: '0x1',
+        symbol: 'DAI',
+      });
+
+      render(<TokenDetails />);
+
+      // Retrieve the handler passed to the mocked header component and invoke it
+      const lastCall = mockTokenDetailsInlineHeader.mock.calls.at(-1)?.[0] as {
+        onPriceAlertPress?: () => void;
+      };
+      act(() => {
+        lastCall.onPriceAlertPress?.();
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.MANAGE_PRICE_ALERTS,
+        expect.objectContaining({
+          symbol: 'DAI',
+          currentPrice: 2500,
+          currentCurrency: 'usd',
+          assetId: expect.stringMatching(/^eip155:1\//),
+        }),
+      );
+    });
+  });
+
+  describe('share button', () => {
+    const invokeSharePress = async () => {
+      const lastCall = mockTokenDetailsInlineHeader.mock.calls.at(-1);
+      const { onSharePress } = (lastCall?.[0] ?? {}) as {
+        onSharePress: () => void;
+      };
+      await act(async () => {
+        onSharePress();
+      });
+    };
+
+    it('always passes onSharePress to the header', () => {
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({ onSharePress: expect.any(Function) }),
+      );
+    });
+
+    it('opens ShareTokenBottomSheet with the share URL when onSharePress is invoked', async () => {
+      render(<TokenDetails />);
+      expect(mockShareTokenBottomSheet).not.toHaveBeenCalled();
+
+      await invokeSharePress();
+
+      expect(mockShareTokenBottomSheet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          shareUrl: expect.stringMatching(
+            /^https:\/\/link\.metamask\.io\/asset\?assetId=eip155/,
+          ),
+          onClose: expect.any(Function),
+        }),
+      );
+    });
+
+    it('fires TOKEN_DETAILS_SHARED with chain_id, token_symbol and token_address', async () => {
+      render(<TokenDetails />);
+      await invokeSharePress();
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.TOKEN_DETAILS_SHARED,
+      );
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chain_id: '0x1',
+          token_symbol: 'DAI',
+          token_address: '0x6b175474e89094c44da98b954eedeac495271d0f',
+        }),
+      );
+      expect(mockTrackEvent).toHaveBeenCalled();
+    });
+
+    it('does not open the share sheet when caip19AssetId cannot be resolved', async () => {
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        chainId: undefined,
+      });
+
+      render(<TokenDetails />);
+      await invokeSharePress();
+
+      expect(mockShareTokenBottomSheet).not.toHaveBeenCalled();
+    });
+
+    it('resolves caip19AssetId from route caipAssetId when provided', async () => {
+      const caipAssetId = 'eip155:8453/slip44:60';
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        caipAssetId,
+      });
+
+      render(<TokenDetails />);
+      await invokeSharePress();
+
+      expect(mockShareTokenBottomSheet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          shareUrl: expect.stringContaining(encodeURIComponent(caipAssetId)),
+        }),
+      );
+    });
+
+    it('resolves caip19AssetId directly when address is already CAIP-19 format', async () => {
+      const caipAddress =
+        'eip155:1/erc20:0x6b175474e89094c44da98b954eedeac495271d0f';
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        address: caipAddress,
+      });
+
+      render(<TokenDetails />);
+      await invokeSharePress();
+
+      expect(mockShareTokenBottomSheet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          shareUrl: expect.stringContaining(encodeURIComponent(caipAddress)),
+        }),
+      );
+    });
+
+    it('does not re-render TokenDetails when the share sheet opens', async () => {
+      render(<TokenDetails />);
+      const headerRenderCount = mockTokenDetailsInlineHeader.mock.calls.length;
+
+      await invokeSharePress();
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenCalledTimes(
+        headerRenderCount,
+      );
+    });
+
+    it('closes ShareTokenBottomSheet without re-rendering TokenDetails', async () => {
+      const { queryByTestId } = render(<TokenDetails />);
+      await invokeSharePress();
+      const headerRenderCount = mockTokenDetailsInlineHeader.mock.calls.length;
+      const { onClose } = (mockShareTokenBottomSheet.mock.calls.at(-1)?.[0] ??
+        {}) as { onClose: () => void };
+
+      act(() => {
+        onClose();
+      });
+
+      expect(queryByTestId('share-token-sheet')).not.toBeOnTheScreen();
+      expect(mockTokenDetailsInlineHeader).toHaveBeenCalledTimes(
+        headerRenderCount,
+      );
+    });
+  });
+
+  describe('header back button', () => {
+    it('calls navigation.goBack when onBackPress is invoked', () => {
+      render(<TokenDetails />);
+
+      const { onBackPress } = (mockTokenDetailsInlineHeader.mock.calls.at(
+        -1,
+      )?.[0] ?? {}) as { onBackPress: () => void };
+      act(() => {
+        onBackPress();
+      });
+
+      expect(mockGoBack).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('overview Buy/Send actions', () => {
+    it('fires cta_clicked and triggers onBuy when overview Buy is pressed', () => {
+      render(<TokenDetails />);
+
+      act(() => {
+        mockLatestOnBuy?.();
+      });
+
+      expect(mockOnBuy).toHaveBeenCalledTimes(1);
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({ exit_action: 'cta_clicked' }),
+      );
+    });
+
+    it('fires cta_clicked and triggers onSend when overview Send is pressed', async () => {
+      render(<TokenDetails />);
+
+      await act(async () => {
+        await mockLatestOnSend?.();
+      });
+
+      expect(mockOnSend).toHaveBeenCalledTimes(1);
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({ exit_action: 'cta_clicked' }),
+      );
+    });
+  });
+
+  describe('non-EVM asset', () => {
+    it('renders without crashing and shows sticky footer for non-EVM assets', () => {
+      mockUseTokenTransactions.mockReturnValue({
+        ...defaultUseTokenTransactionsReturn,
+        isNonEvmAsset: true,
+      });
+
+      const { queryByTestId } = render(<TokenDetails />);
+
+      // Sticky footer is still rendered for non-EVM assets (not inside the EVM/non-EVM branch)
+      expect(queryByTestId('bottomsheetfooter')).toBeOnTheScreen();
+    });
+
+    it('does not render loader for non-EVM assets when not loading', () => {
+      mockUseTokenTransactions.mockReturnValue({
+        ...defaultUseTokenTransactionsReturn,
+        isNonEvmAsset: true,
+        loading: false,
+      });
+
+      const { UNSAFE_queryAllByType } = render(<TokenDetails />);
+
+      expect(UNSAFE_queryAllByType(ActivityIndicator)).toHaveLength(0);
+    });
+  });
+
+  describe('TOKEN_DETAILS_OPENED tracking details', () => {
+    it('tags the legacy page with tdp_version v2 and token_category standard', async () => {
+      mockRouteParams.mockReturnValue(defaultRouteParams);
+
+      render(<TokenDetails />);
+
+      await waitFor(() => {
+        expect(mockAddProperties).toHaveBeenCalledWith(
+          expect.objectContaining({
+            tdp_version: 'v2',
+            token_category: 'standard',
+          }),
+        );
+      });
+    });
+
+    it('tracks has_balance: false when balance is "0"', async () => {
+      mockRouteParams.mockReturnValue({ ...defaultRouteParams, balance: '0' });
+
+      render(<TokenDetails />);
+
+      await waitFor(() => {
+        expect(mockAddProperties).toHaveBeenCalledWith(
+          expect.objectContaining({ has_balance: false }),
+        );
+      });
+    });
+
+    it('tracks has_balance: false when balance is undefined', async () => {
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        balance: undefined,
+      });
+
+      render(<TokenDetails />);
+
+      await waitFor(() => {
+        expect(mockAddProperties).toHaveBeenCalledWith(
+          expect.objectContaining({ has_balance: false }),
+        );
+      });
+    });
+
+    it('tracks has_balance: true when balance is a non-zero string', async () => {
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        balance: '10.5',
+      });
+
+      render(<TokenDetails />);
+
+      await waitFor(() => {
+        expect(mockAddProperties).toHaveBeenCalledWith(
+          expect.objectContaining({ has_balance: true }),
+        );
+      });
+    });
+
+    it('tracks source from route params', async () => {
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        source: 'trending',
+      });
+
+      render(<TokenDetails />);
+
+      await waitFor(() => {
+        expect(mockAddProperties).toHaveBeenCalledWith(
+          expect.objectContaining({ source: 'trending' }),
+        );
+      });
+    });
+
+    it('defaults source to "unknown" when not provided in route params', async () => {
+      mockRouteParams.mockReturnValue({
+        ...defaultRouteParams,
+        source: undefined,
+      });
+
+      render(<TokenDetails />);
+
+      await waitFor(() => {
+        expect(mockAddProperties).toHaveBeenCalledWith(
+          expect.objectContaining({ source: 'unknown' }),
+        );
+      });
+    });
+  });
+
+  describe('TOKEN_DETAILS_CLOSED via back navigation', () => {
+    it('fires TOKEN_DETAILS_CLOSED with back_navigation when screen is removed', () => {
+      render(<TokenDetails />);
+
+      act(() => {
+        mockBeforeRemoveListener?.();
+      });
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.TOKEN_DETAILS_CLOSED,
+      );
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({ exit_action: 'back_navigation' }),
+      );
+    });
+
+    it('does not fire TOKEN_DETAILS_CLOSED twice on double back navigation', () => {
+      render(<TokenDetails />);
+
+      act(() => {
+        mockBeforeRemoveListener?.();
+        mockBeforeRemoveListener?.();
+      });
+
+      const closedCount = mockCreateEventBuilder.mock.calls.filter(
+        ([event]) => event === MetaMetricsEvents.TOKEN_DETAILS_CLOSED,
+      ).length;
+      expect(closedCount).toBe(1);
+    });
+  });
+
+  describe('TOKEN_DETAILS_CLOSED via CTA', () => {
+    it('fires TOKEN_DETAILS_CLOSED with cta_clicked when Buy is pressed', () => {
+      const { getByText } = render(<TokenDetails />);
+
+      fireEvent.press(getByText('Buy'));
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.TOKEN_DETAILS_CLOSED,
+      );
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({ exit_action: 'cta_clicked' }),
+      );
+    });
+
+    it('fires TOKEN_DETAILS_CLOSED with cta_clicked when Swap is pressed', () => {
+      const { getByText } = render(<TokenDetails />);
+
+      fireEvent.press(getByText('Swap'));
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.TOKEN_DETAILS_CLOSED,
+      );
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({ exit_action: 'cta_clicked' }),
+      );
+    });
+  });
+
+  describe('TOKEN_DETAILS_CLOSED app state tracking', () => {
+    let handleAppStateChange: (nextState: AppStateStatus) => void;
+
+    const getTokenDetailsClosedCallCount = () =>
+      mockCreateEventBuilder.mock.calls.filter(
+        ([event]) => event === MetaMetricsEvents.TOKEN_DETAILS_CLOSED,
+      ).length;
+
+    beforeEach(() => {
+      jest
+        .spyOn(AppState, 'addEventListener')
+        .mockImplementation((_, listener) => {
+          handleAppStateChange = listener;
+          return { remove: jest.fn() };
+        });
+      Object.defineProperty(AppState, 'currentState', {
+        configurable: true,
+        value: 'active',
+      });
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('does not fire TOKEN_DETAILS_CLOSED on transient inactive (e.g. Control Center)', () => {
+      render(<TokenDetails />);
+
+      act(() => {
+        handleAppStateChange('inactive');
+        handleAppStateChange('active');
+      });
+
+      expect(getTokenDetailsClosedCallCount()).toBe(0);
+    });
+
+    it('fires TOKEN_DETAILS_CLOSED with app_backgrounded only when app is backgrounded', () => {
+      render(<TokenDetails />);
+
+      act(() => {
+        handleAppStateChange('background');
+      });
+
+      expect(getTokenDetailsClosedCallCount()).toBe(1);
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({ exit_action: 'app_backgrounded' }),
+      );
+    });
+
+    it('resets session after iOS background → inactive → active sequence', () => {
+      render(<TokenDetails />);
+
+      act(() => {
+        handleAppStateChange('background');
+      });
+      expect(getTokenDetailsClosedCallCount()).toBe(1);
+
+      act(() => {
+        handleAppStateChange('inactive');
+        handleAppStateChange('active');
+      });
+
+      act(() => {
+        handleAppStateChange('background');
+      });
+
+      expect(getTokenDetailsClosedCallCount()).toBe(2);
+    });
+  });
+
+  describe('watchlist star button', () => {
+    it('passes starButton ReactNode to header', () => {
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          starButton: expect.anything(),
+        }),
+      );
+    });
+  });
+
+  describe('memecoin TDP V1 routing', () => {
+    const applyBaselineSelectorsWithMemeFlag = (flagEnabled: boolean) => {
+      mockUseSelector.mockImplementation((selector) => {
+        if (selector === selectAssetsMemecoinTdpV1Enabled) return flagEnabled;
+        if (selector === selectNetworkConfigurationByChainId)
+          return { name: 'Ethereum' };
+        if (selector === selectNetworkConfigurations)
+          return { '0x1': { nativeCurrency: 'ETH' } };
+        if (selector === selectCurrencyRates)
+          return { ETH: { conversionRate: 1, usdConversionRate: 1 } };
+        if (selector === getRampNetworks) return [];
+        if (selector === selectDepositActiveFlag) return false;
+        if (selector === selectDepositMinimumVersionFlag) return null;
+        if (selector === selectSelectedInternalAccountByScope)
+          return getSelectedAccountByScopeStub;
+        if (selector === selectBridgeLimitOrderFeatureFlags)
+          return { enabled: true, enabledChainIds: ['eip155:1'] };
+        if (selector === selectBridgeRecurringBuyFeatureFlags)
+          return { enabled: true, enabledChainIds: ['eip155:1'] };
+        if (selector === selectMemecoinTdpV1PriceApiBaseUrl) return DEV_HOST;
+        return undefined;
+      });
+    };
+
+    /**
+     * Renders the route and reports what `usePriceApiHost` resolves to inside
+     * whichever page the variant picked.
+     */
+    const renderHostProbe = (
+      probe: typeof mockTokenDetailsV1 | typeof mockTokenDetailsInlineHeader,
+    ) => {
+      let seenHost: string | undefined;
+      probe.mockImplementation(() => {
+        seenHost = usePriceApiHost();
+        return null;
+      });
+      render(<TokenDetailsRoute />);
+      return seenHost;
+    };
+
+    beforeEach(() => {
+      mockUseIsMemeToken.mockReturnValue({
+        isMeme: false,
+        isLoading: false,
+        isError: false,
+        query: {},
+      });
+      mockTokenDetailsV1.mockClear();
+    });
+
+    // The host probes swap in implementations that render nothing but read
+    // context. Put the plain stubs back so later suites are unaffected.
+    afterEach(() => {
+      mockTokenDetailsV1.mockImplementation(() => null);
+      mockTokenDetailsInlineHeader.mockImplementation(() => null);
+    });
+
+    it('does not render TokenDetailsV1 when the flag is off and the token is not a meme', () => {
+      render(<TokenDetailsRoute />);
+
+      expect(mockTokenDetailsV1).not.toHaveBeenCalled();
+      expect(mockTokenDetailsInlineHeader).toHaveBeenCalled();
+    });
+
+    it('does not render TokenDetailsV1 when the flag is on but the token is not a meme', () => {
+      applyBaselineSelectorsWithMemeFlag(true);
+
+      render(<TokenDetailsRoute />);
+
+      expect(mockTokenDetailsV1).not.toHaveBeenCalled();
+    });
+
+    it('renders TokenDetailsV1 and skips the legacy header when the flag is on and the token is a meme', () => {
+      applyBaselineSelectorsWithMemeFlag(true);
+      mockUseIsMemeToken.mockReturnValue({
+        isMeme: true,
+        isLoading: false,
+        isError: false,
+        query: {},
+      });
+
+      render(<TokenDetailsRoute />);
+
+      expect(mockTokenDetailsV1).toHaveBeenCalledWith(
+        expect.objectContaining({ token: expect.any(Object) }),
+      );
+      expect(mockTokenDetailsInlineHeader).not.toHaveBeenCalled();
+    });
+
+    it('does not run legacy page hooks when it renders TokenDetailsV1', () => {
+      applyBaselineSelectorsWithMemeFlag(true);
+      mockUseIsMemeToken.mockReturnValue({
+        isMeme: true,
+        isLoading: false,
+        isError: false,
+        query: {},
+      });
+
+      render(<TokenDetailsRoute />);
+
+      expect(mockTokenDetailsV1).toHaveBeenCalled();
+      // A/B exposure events would otherwise be attributed to users who never
+      // see the legacy page, skewing those experiments.
+      expect(mockUseABTest).not.toHaveBeenCalled();
+      expect(mockUseTokenPrice).not.toHaveBeenCalled();
+      expect(mockUseTokenTransactions).not.toHaveBeenCalled();
+    });
+
+    it('supplies the configured price host to TokenDetailsV1', () => {
+      applyBaselineSelectorsWithMemeFlag(true);
+      mockUseIsMemeToken.mockReturnValue({
+        isMeme: true,
+        isLoading: false,
+        isError: false,
+        query: {},
+      });
+
+      expect(renderHostProbe(mockTokenDetailsV1)).toBe(DEV_HOST);
+    });
+
+    // The provider wraps the V1 branch only, so rendering the legacy page is
+    // itself what keeps it on prod. Nothing there reads the config.
+    it('leaves the legacy page on prod under the same config', () => {
+      applyBaselineSelectorsWithMemeFlag(true);
+
+      expect(renderHostProbe(mockTokenDetailsInlineHeader)).toBe(
+        PRICE_API_BASE_URL,
+      );
+      expect(mockTokenDetailsV1).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('header live price on scroll', () => {
+    const getScrollHandler = () =>
+      (mockTransactions.mock.calls.at(-1)?.[0] ?? {}) as {
+        onScrollThroughContent?: (y: number) => void;
+      };
+
+    it('shows the contract address (no description) before scrolling', () => {
+      render(<TokenDetails />);
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({ description: undefined }),
+      );
+    });
+
+    it('swaps the header subtitle to the live price once scrolled, and back when returning to top', () => {
+      render(<TokenDetails />);
+
+      act(() => {
+        getScrollHandler().onScrollThroughContent?.(120);
+      });
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({ description: expect.anything() }),
+      );
+
+      act(() => {
+        getScrollHandler().onScrollThroughContent?.(0);
+      });
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({ description: undefined }),
+      );
+    });
+
+    it('keeps the contract address when there is no live price', () => {
+      mockUseTokenPrice.mockReturnValue({
+        ...defaultUseTokenPriceReturn,
+        currentPrice: 0,
+      });
+
+      render(<TokenDetails />);
+
+      act(() => {
+        getScrollHandler().onScrollThroughContent?.(120);
+      });
+
+      expect(mockTokenDetailsInlineHeader).toHaveBeenLastCalledWith(
+        expect.objectContaining({ description: undefined }),
+      );
+    });
+  });
+
+  describe('glass header', () => {
+    const lastProps = (mock: jest.Mock) => mock.mock.calls.at(-1)?.[0];
+    const callProp = (mock: jest.Mock, name: string, ...args: unknown[]) => {
+      const handler = lastProps(mock)?.[name];
+      if (typeof handler !== 'function') {
+        throw new Error(`Expected a ${name} handler`);
+      }
+      act(() => {
+        handler(...args);
+      });
+    };
+    const withBrandRefresh = () => {
+      const base = mockUseSelector.getMockImplementation();
+      mockUseSelector.mockImplementation((selector) =>
+        selector === selectTokenDetailsBrandRefreshEnabled
+          ? true
+          : base?.(selector),
+      );
+    };
+
+    it('keeps the plain header in place by default', () => {
+      const { queryByTestId } = render(<TokenDetails />);
+
+      expect(lastProps(mockTokenDetailsInlineHeader)).toEqual(
+        expect.objectContaining({ isGlass: false }),
+      );
+      expect(queryByTestId(TokenDetailsTestIds.HEADER_SPACER)).toBeNull();
+    });
+
+    it('floats the glass header and starts the content below it', () => {
+      withBrandRefresh();
+      const { getByTestId } = render(<TokenDetails />);
+
+      expect(lastProps(mockTokenDetailsInlineHeader)).toEqual(
+        expect.objectContaining({ isGlass: true }),
+      );
+
+      callProp(mockTokenDetailsInlineHeader, 'onLayout', {
+        nativeEvent: { layout: { height: 120 } },
+      });
+
+      expect(getByTestId(TokenDetailsTestIds.HEADER_SPACER)).toHaveStyle({
+        height: 120,
+      });
+    });
+
+    it('keeps the transactions loader below the glass header', () => {
+      withBrandRefresh();
+      mockUseTokenTransactions.mockReturnValue({
+        ...defaultUseTokenTransactionsReturn,
+        transactionsUpdated: false,
+      });
+      const { getByTestId } = render(<TokenDetails />);
+
+      callProp(mockTokenDetailsInlineHeader, 'onLayout', {
+        nativeEvent: { layout: { height: 120 } },
+      });
+
+      expect(getByTestId(TokenDetailsTestIds.HEADER_SPACER)).toHaveStyle({
+        height: 120,
+      });
+    });
+
+    it('adds no spacer above the transactions loader with the plain header', () => {
+      mockUseTokenTransactions.mockReturnValue({
+        ...defaultUseTokenTransactionsReturn,
+        transactionsUpdated: false,
+      });
+      const { queryByTestId } = render(<TokenDetails />);
+
+      expect(queryByTestId(TokenDetailsTestIds.HEADER_SPACER)).toBeNull();
+    });
+
+    it('renders the Quick Buy sheet above the glass header', () => {
+      withBrandRefresh();
+      const { getByTestId } = render(<TokenDetails />);
+
+      const content = getByTestId(TokenDetailsTestIds.CONTENT);
+
+      expect(content).toHaveStyle({ isolation: 'isolate' });
+      expect(
+        within(content).queryByTestId('asset-details-quick-buy'),
+      ).toBeNull();
+      expect(getByTestId('asset-details-quick-buy')).toBeOnTheScreen();
+    });
+
+    it('keeps the footer outside the isolated content, so its sheets open above the glass header', () => {
+      withBrandRefresh();
+      const { getByTestId } = render(<TokenDetails />);
+
+      expect(
+        within(getByTestId(TokenDetailsTestIds.CONTENT)).queryByTestId(
+          'bottomsheetfooter',
+        ),
+      ).toBeNull();
+      expect(getByTestId('bottomsheetfooter')).toBeOnTheScreen();
+    });
+
+    it('fades the header backdrop with the list scroll', () => {
+      withBrandRefresh();
+      render(<TokenDetails />);
+
+      callProp(mockTransactions, 'onScrollThroughContent', 64);
+
+      expect(lastProps(mockTokenDetailsInlineHeader)).toEqual(
+        expect.objectContaining({
+          scrollY: expect.objectContaining({ value: 64 }),
+        }),
+      );
+    });
+  });
+});

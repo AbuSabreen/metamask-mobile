@@ -1,0 +1,262 @@
+import { hexToBN } from '@metamask/controller-utils';
+import {
+  GasFeeEstimateType,
+  type GasFeeEstimates,
+  type TransactionMeta,
+} from '@metamask/transaction-controller';
+import { Hex, add0x } from '@metamask/utils';
+import { BigNumber } from 'bignumber.js';
+import I18n from '../../../../../locales/i18n';
+import { formatAmount } from '../../../../components/UI/SimulationDetails/formatAmount';
+import {
+  addHexes,
+  decGWEIToHexWEI,
+  decimalToHex,
+  getValueFromWeiHex,
+  multiplyHexes,
+} from '../../../../util/conversions';
+
+const HEX_ZERO = '0x0';
+
+export function getFeesFromHex({
+  hexFee,
+  nativeConversionRate,
+  nativeCurrency,
+  fiatFormatter,
+  shouldHideFiat,
+}: {
+  hexFee: string;
+  nativeConversionRate: number | null | undefined;
+  nativeCurrency: string | undefined;
+  fiatFormatter: (amount: BigNumber) => string;
+  shouldHideFiat: boolean;
+}) {
+  if (!nativeCurrency) {
+    return {
+      currentCurrencyFee: null,
+      nativeCurrencyFee: null,
+      preciseCurrentCurrencyFee: null,
+      preciseNativeCurrencyFee: null,
+      preciseNativeFeeInHex: null,
+    };
+  }
+
+  const nativeConversionRateInBN =
+    nativeConversionRate === undefined || nativeConversionRate === null
+      ? new BigNumber(0)
+      : new BigNumber(nativeConversionRate);
+  const locale = I18n.locale;
+  const nativeCurrencyFee = formatAmount(
+    locale,
+    new BigNumber(
+      getValueFromWeiHex({
+        value: hexFee,
+        fromCurrency: 'WEI',
+        toCurrency: 'ETH',
+        numberOfDecimals: 4,
+        conversionRate: 1,
+        toDenomination: 'ETH',
+      }) ?? 0,
+    ),
+  );
+
+  const preciseNativeCurrencyFee = `${formatAmount(
+    locale,
+    new BigNumber(
+      getValueFromWeiHex({
+        value: hexFee,
+        fromCurrency: 'WEI',
+        toCurrency: 'ETH',
+        numberOfDecimals: 18,
+        conversionRate: 1,
+        toDenomination: 'ETH',
+      }) ?? 0,
+    ),
+  )} ${nativeCurrency}`;
+
+  const decimalCurrentCurrencyFee = Number(
+    getValueFromWeiHex({
+      value: hexFee,
+      conversionRate: nativeConversionRateInBN,
+      fromCurrency: 'GWEI',
+      toCurrency: 'ETH',
+      numberOfDecimals: 2,
+      toDenomination: 'ETH',
+    }),
+  );
+
+  // This is used to check if the fee is less than $0.01 - more precise than decimalCurrentCurrencyFee
+  // Because decimalCurrentCurrencyFee is rounded to 2 decimal places
+  const preciseCurrentCurrencyFeeNum = Number(
+    getValueFromWeiHex({
+      value: hexFee,
+      conversionRate: nativeConversionRateInBN,
+      fromCurrency: 'GWEI',
+      toCurrency: 'ETH',
+      numberOfDecimals: 18,
+      toDenomination: 'ETH',
+    }),
+  );
+
+  let currentCurrencyFee;
+  if (preciseCurrentCurrencyFeeNum === 0) {
+    currentCurrencyFee = fiatFormatter(new BigNumber(0));
+  } else if (preciseCurrentCurrencyFeeNum < 0.01) {
+    currentCurrencyFee = `< ${fiatFormatter(new BigNumber(0.01))}`;
+  } else {
+    currentCurrencyFee = fiatFormatter(
+      new BigNumber(decimalCurrentCurrencyFee),
+    );
+  }
+
+  if (shouldHideFiat) {
+    currentCurrencyFee = null;
+  }
+
+  const preciseCurrentCurrencyFee = currentCurrencyFee
+    ? new BigNumber(preciseCurrentCurrencyFeeNum).toString(10)
+    : null;
+
+  return {
+    currentCurrencyFee,
+    nativeCurrencyFee,
+    preciseCurrentCurrencyFee,
+    preciseNativeCurrencyFee,
+    preciseNativeFeeInHex: add0x(hexFee),
+  };
+}
+
+export function calculateGasEstimate({
+  feePerGas,
+  gasPrice,
+  gas,
+  shouldUseEIP1559FeeLogic,
+  priorityFeePerGas,
+  estimatedBaseFee,
+  layer1GasFee,
+  getFeesFromHexFn,
+  receiptGasPrice,
+}: {
+  feePerGas: string;
+  priorityFeePerGas: string;
+  gasPrice: string;
+  gas: string;
+  shouldUseEIP1559FeeLogic: boolean;
+  estimatedBaseFee: string | undefined;
+  layer1GasFee?: string;
+  receiptGasPrice?: string;
+  getFeesFromHexFn: (hexFee: string) => {
+    currentCurrencyFee: string | null;
+    nativeCurrencyFee: string | null;
+    preciseCurrentCurrencyFee: string | null;
+    preciseNativeCurrencyFee: string | null;
+    preciseNativeFeeInHex: string | null;
+  };
+}) {
+  if (receiptGasPrice) {
+    return getFeesFromHexFn(multiplyHexes(receiptGasPrice as Hex, gas as Hex));
+  }
+
+  let minimumFeePerGas = addHexes(
+    decGWEIToHexWEI(estimatedBaseFee) ?? HEX_ZERO,
+    decimalToHex(priorityFeePerGas),
+  );
+
+  const minimumFeePerGasBN = hexToBN(minimumFeePerGas as Hex);
+
+  // `minimumFeePerGas` should never be higher than the `maxFeePerGas`
+  if (minimumFeePerGasBN.gt(hexToBN(feePerGas as Hex))) {
+    minimumFeePerGas = feePerGas;
+  }
+
+  const estimation = multiplyHexes(
+    shouldUseEIP1559FeeLogic ? (minimumFeePerGas as Hex) : (gasPrice as Hex),
+    gas as Hex,
+  );
+
+  const hasLayer1GasFee = Boolean(layer1GasFee);
+
+  if (hasLayer1GasFee && layer1GasFee) {
+    const estimatedTotalFeesForL2 = addHexes(estimation, layer1GasFee) as Hex;
+
+    return getFeesFromHexFn(estimatedTotalFeesForL2);
+  }
+
+  return getFeesFromHexFn(estimation);
+}
+
+export function normalizeGasInput(value: string) {
+  return value.replace(',', '.');
+}
+
+export function convertGasInputToHexWEI(value: string) {
+  const normalizedValue = normalizeGasInput(value);
+  return add0x(decGWEIToHexWEI(normalizedValue) as Hex);
+}
+
+/**
+ * Returns the medium (market) max fee per gas, or gas price, from the estimates.
+ */
+export function getMarketFeeFromEstimates(
+  gasFeeEstimates: GasFeeEstimates | undefined,
+): Hex | undefined {
+  switch (gasFeeEstimates?.type) {
+    case GasFeeEstimateType.FeeMarket:
+      return gasFeeEstimates.medium?.maxFeePerGas;
+    case GasFeeEstimateType.Legacy:
+      return gasFeeEstimates.medium;
+    case GasFeeEstimateType.GasPrice:
+      return gasFeeEstimates.gasPrice;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Whether the transaction still uses the gas fees suggested by the dapp.
+ */
+export function areDappSuggestedAndTxParamGasFeesTheSame(
+  transactionMeta: TransactionMeta | undefined,
+): boolean {
+  const { txParams, dappSuggestedGasFees } = transactionMeta ?? {};
+  const { gasPrice, maxFeePerGas, maxPriorityFeePerGas } = txParams ?? {};
+  const {
+    gasPrice: dappGasPrice,
+    maxFeePerGas: dappMaxFeePerGas,
+    maxPriorityFeePerGas: dappMaxPriorityFeePerGas,
+  } = dappSuggestedGasFees ?? {};
+
+  const hasTxParamsFees = Boolean(
+    gasPrice || maxFeePerGas || maxPriorityFeePerGas,
+  );
+  const hasDappFees = Boolean(
+    dappGasPrice || dappMaxFeePerGas || dappMaxPriorityFeePerGas,
+  );
+
+  if (!hasTxParamsFees || !hasDappFees) {
+    return false;
+  }
+
+  const gasPriceMatchesDappGasPrice = Boolean(
+    gasPrice && gasPrice === dappGasPrice,
+  );
+
+  // Dapp gas price can be upgraded to EIP-1559 fees on supported networks.
+  const eip1559FeesMatchDappGasPrice = Boolean(
+    dappGasPrice &&
+      maxFeePerGas === dappGasPrice &&
+      maxPriorityFeePerGas === dappGasPrice,
+  );
+
+  const eip1559FeesMatchDappEip1559Fees = Boolean(
+    maxFeePerGas &&
+      maxFeePerGas === dappMaxFeePerGas &&
+      maxPriorityFeePerGas === dappMaxPriorityFeePerGas,
+  );
+
+  return (
+    gasPriceMatchesDappGasPrice ||
+    eip1559FeesMatchDappGasPrice ||
+    eip1559FeesMatchDappEip1559Fees
+  );
+}

@@ -1,4 +1,4 @@
-/* eslint-disable import/no-commonjs */
+/* eslint-disable import-x/no-commonjs */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
@@ -8,6 +8,8 @@ import {
   Linking,
 } from 'react-native';
 import { strings } from '../../../../locales/i18n';
+import FilesystemStorage from 'redux-persist-filesystem-storage';
+import { MIGRATION_ERROR_HAPPENED } from '../../../constants/storage';
 import { createStyles } from './styles';
 import Text, {
   TextVariant,
@@ -16,14 +18,14 @@ import StyledButton from '../../UI/StyledButton';
 import { createNavigationDetails } from '../../../util/navigation/navUtils';
 import Routes from '../../../constants/navigation/Routes';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import { Authentication } from '../../../core';
+import { useNavigation, StackActions } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
 import { useAppThemeFromContext } from '../../../util/theme';
 import { MetaMetricsEvents } from '../../../core/Analytics';
 import generateDeviceAnalyticsMetaData from '../../../util/metrics';
 import { SRP_GUIDE_URL } from '../../../constants/urls';
-import { StackNavigationProp } from '@react-navigation/stack';
-import { useMetrics } from '../../../components/hooks/useMetrics';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
+import Logger from '../../../util/Logger';
 
 export const createWalletRestoredNavDetails = createNavigationDetails(
   Routes.VAULT_RECOVERY.WALLET_RESTORED,
@@ -32,41 +34,47 @@ export const createWalletRestoredNavDetails = createNavigationDetails(
 const WalletRestored = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const { colors } = useAppThemeFromContext();
-  const { trackEvent } = useMetrics();
+  const { trackEvent, createEventBuilder } = useAnalytics();
   const styles = createStyles(colors);
-  const navigation = useNavigation<StackNavigationProp<any>>();
+  const navigation = useNavigation<AppNavigationProp>();
 
   const deviceMetaData = useMemo(() => generateDeviceAnalyticsMetaData(), []);
 
   useEffect(() => {
     trackEvent(
-      MetaMetricsEvents.VAULT_CORRUPTION_WALLET_SUCCESSFULLY_RESTORED_SCREEN_VIEWED,
-      deviceMetaData,
+      createEventBuilder(
+        MetaMetricsEvents.VAULT_CORRUPTION_WALLET_SUCCESSFULLY_RESTORED_SCREEN_VIEWED,
+      )
+        .addProperties({ ...deviceMetaData })
+        .build(),
     );
-  }, [deviceMetaData, trackEvent]);
+  }, [deviceMetaData, trackEvent, createEventBuilder]);
 
   const finishWalletRestore = useCallback(async (): Promise<void> => {
     try {
-      await Authentication.appTriggeredAuth();
-      navigation.replace(Routes.ONBOARDING.HOME_NAV);
-    } catch (e) {
-      // we were not able to log in automatically so we will go back to login
-      navigation.replace(Routes.ONBOARDING.LOGIN);
+      await FilesystemStorage.removeItem(MIGRATION_ERROR_HAPPENED);
+    } catch (error) {
+      Logger.error(error as Error, 'Failed to clear migration error flag');
     }
+
+    navigation.dispatch(StackActions.replace(Routes.ONBOARDING.LOGIN));
   }, [navigation]);
 
   const onPressBackupSRP = useCallback(async (): Promise<void> => {
     Linking.openURL(SRP_GUIDE_URL);
   }, []);
 
-  const handleOnNext = useCallback(async (): Promise<void> => {
+  const handleOnNext = useCallback((): void => {
     setLoading(true);
     trackEvent(
-      MetaMetricsEvents.VAULT_CORRUPTION_WALLET_SUCCESSFULLY_RESTORED_CONTINUE_BUTTON_PRESSED,
-      deviceMetaData,
+      createEventBuilder(
+        MetaMetricsEvents.VAULT_CORRUPTION_WALLET_SUCCESSFULLY_RESTORED_CONTINUE_BUTTON_PRESSED,
+      )
+        .addProperties({ ...deviceMetaData })
+        .build(),
     );
-    await finishWalletRestore();
-  }, [deviceMetaData, finishWalletRestore, trackEvent]);
+    finishWalletRestore();
+  }, [deviceMetaData, finishWalletRestore, trackEvent, createEventBuilder]);
 
   return (
     <SafeAreaView style={styles.screen}>

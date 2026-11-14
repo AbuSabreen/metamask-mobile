@@ -1,0 +1,474 @@
+import React from 'react';
+import { fireEvent } from '@testing-library/react-native';
+import renderWithProvider from '../../../../../../util/test/renderWithProvider';
+import { SelectedGasFeeToken } from './selected-gas-fee-token';
+import { useInsufficientBalanceAlert } from '../../../hooks/alerts/useInsufficientBalanceAlert';
+import { useEstimationFailed } from '../../../hooks/gas/useEstimationFailed';
+import { useSelectedGasFeeToken } from '../../../hooks/gas/useGasFeeToken';
+import { useIsGaslessSupported } from '../../../hooks/gas/useIsGaslessSupported';
+import useNetworkInfo from '../../../hooks/useNetworkInfo';
+import { transferTransactionStateMock } from '../../../__mocks__/transfer-transaction-mock';
+import { merge } from 'lodash';
+import { NATIVE_TOKEN_ADDRESS } from '../../../constants/tokens';
+import { Alert } from '../../../types/alerts';
+import { GasFeeToken } from '@metamask/transaction-controller';
+import { useTransactionBatchesMetadata } from '../../../hooks/transactions/useTransactionBatchesMetadata';
+import { useTransactionMetadataRequest } from '../../../hooks/transactions/useTransactionMetadataRequest';
+import { Hex } from '@metamask/utils';
+
+jest.mock('../../../hooks/alerts/useInsufficientBalanceAlert');
+jest.mock('../../../hooks/gas/useEstimationFailed');
+jest.mock('../../../hooks/gas/useGasFeeToken');
+jest.mock('../../../hooks/gas/useIsGaslessSupported');
+jest.mock('../../../hooks/useNetworkInfo');
+jest.mock('../../../hooks/tokens/useTokenWithBalance');
+jest.mock('../../../hooks/transactions/useTransactionBatchesMetadata');
+jest.mock('../../../hooks/transactions/useTransactionMetadataRequest');
+
+describe('SelectedGasFeeToken', () => {
+  const mockUseInsufficientBalanceAlert = jest.mocked(
+    useInsufficientBalanceAlert,
+  );
+  const mockUseEstimationFailed = jest.mocked(useEstimationFailed);
+  const mockUseSelectedGasFeeToken = jest.mocked(useSelectedGasFeeToken);
+  const mockUseIsGaslessSupported = jest.mocked(useIsGaslessSupported);
+  const mockUseNetworkInfo = jest.mocked(useNetworkInfo);
+  const mockUseTransactionBatchesMetadata = jest.mocked(
+    useTransactionBatchesMetadata,
+  );
+  const mockUseTransactionMetadataRequest = jest.mocked(
+    useTransactionMetadataRequest,
+  );
+
+  const setupTest = ({
+    insufficientBalance = [],
+    selectedGasFeeToken = undefined,
+    gaslessSupported = false,
+    isSmartTransaction = false,
+    gasFeeTokens = [],
+    transactionMetadata,
+    estimationFailed = false,
+    excludeNativeTokenForFee,
+    chainId = '0x1',
+  }: {
+    insufficientBalance?: Alert[];
+    selectedGasFeeToken?: ReturnType<typeof useSelectedGasFeeToken>;
+    gaslessSupported?: boolean;
+    isSmartTransaction?: boolean;
+    gasFeeTokens?: GasFeeToken[];
+    transactionMetadata?: ReturnType<
+      typeof useTransactionMetadataRequest
+    > | null;
+    expectModal?: boolean;
+    estimationFailed?: boolean;
+    excludeNativeTokenForFee?: boolean;
+    chainId?: Hex;
+  } = {}) => {
+    mockUseInsufficientBalanceAlert.mockReturnValue(insufficientBalance);
+    mockUseEstimationFailed.mockReturnValue(estimationFailed);
+    mockUseSelectedGasFeeToken.mockReturnValue(selectedGasFeeToken);
+    mockUseIsGaslessSupported.mockReturnValue({
+      isSupported: gaslessSupported,
+      isSmartTransaction,
+      pending: false,
+    });
+    mockUseNetworkInfo.mockReturnValue({
+      networkNativeCurrency: 'ETH',
+    } as ReturnType<typeof useNetworkInfo>);
+
+    // Set transaction metadata mock
+    // - If explicitly set to null, mock as undefined
+    // - If explicitly provided (even undefined), use that value
+    // - Otherwise, create default based on gasFeeTokens
+    if (transactionMetadata === null) {
+      mockUseTransactionMetadataRequest.mockReturnValue(undefined);
+    } else if (transactionMetadata !== undefined) {
+      mockUseTransactionMetadataRequest.mockReturnValue(transactionMetadata);
+    } else if (gasFeeTokens.length > 0) {
+      mockUseTransactionMetadataRequest.mockReturnValue({
+        chainId,
+        gasFeeTokens,
+        excludeNativeTokenForFee,
+      } as Partial<
+        ReturnType<typeof useTransactionMetadataRequest>
+      > as ReturnType<typeof useTransactionMetadataRequest>);
+    } else {
+      mockUseTransactionMetadataRequest.mockReturnValue({
+        chainId,
+        excludeNativeTokenForFee,
+      } as Partial<
+        ReturnType<typeof useTransactionMetadataRequest>
+      > as ReturnType<typeof useTransactionMetadataRequest>);
+    }
+
+    const state =
+      gasFeeTokens.length > 0
+        ? merge({}, transferTransactionStateMock, {
+            engine: {
+              backgroundState: {
+                TransactionController: {
+                  transactions: [
+                    {
+                      id: '699ca2f0-e459-11ef-b6f6-d182277cf5e1',
+                      gasFeeTokens,
+                    },
+                  ],
+                },
+              },
+            },
+          })
+        : transferTransactionStateMock;
+
+    const renderResult = renderWithProvider(<SelectedGasFeeToken />, { state });
+
+    return {
+      ...renderResult,
+      pressTokenButton: () =>
+        fireEvent.press(renderResult.getByTestId('selected-gas-fee-token')),
+      expectModalToOpen: () => {
+        expect(
+          renderResult.queryByTestId('gas-fee-token-modal'),
+        ).not.toBeOnTheScreen();
+        fireEvent.press(renderResult.getByTestId('selected-gas-fee-token'));
+        expect(
+          renderResult.getByTestId('gas-fee-token-modal'),
+        ).toBeOnTheScreen();
+      },
+      expectModalNotToOpen: () => {
+        fireEvent.press(renderResult.getByTestId('selected-gas-fee-token'));
+        expect(
+          renderResult.queryByTestId('gas-fee-token-modal'),
+        ).not.toBeOnTheScreen();
+      },
+    };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Set default mock return values
+    mockUseEstimationFailed.mockReturnValue(false);
+    mockUseTransactionBatchesMetadata.mockReturnValue(undefined);
+  });
+
+  it('renders the gas fee token button with the native token symbol', () => {
+    const { getByTestId, getByText } = setupTest();
+    expect(getByTestId('selected-gas-fee-token')).toBeOnTheScreen();
+    expect(getByText('ETH')).toBeOnTheScreen();
+  });
+
+  it('renders local native symbol if `gasFeeTokens` is empty and `excludeNativeTokenForFee` is set (Tempo)', () => {
+    const { getByTestId, getByText } = setupTest({
+      chainId: '0x1079',
+      selectedGasFeeToken: undefined,
+      gaslessSupported: true,
+      gasFeeTokens: [] as unknown as GasFeeToken[],
+      excludeNativeTokenForFee: true,
+    });
+    expect(getByTestId('selected-gas-fee-token')).toBeOnTheScreen();
+    expect(getByText('OUSD')).toBeOnTheScreen();
+  });
+
+  it('renders the arrow icon when gas fee tokens are available', () => {
+    const { getByTestId, getByText } = setupTest({
+      selectedGasFeeToken: {
+        tokenAddress: '0xTokenAddress',
+        symbol: 'DAI',
+      } as unknown as ReturnType<typeof useSelectedGasFeeToken>,
+      gaslessSupported: true,
+      isSmartTransaction: true,
+      gasFeeTokens: [
+        { tokenAddress: '0xTokenAddress', symbol: 'DAI' },
+      ] as unknown as GasFeeToken[],
+    });
+
+    expect(getByTestId('selected-gas-fee-token')).toBeOnTheScreen();
+    expect(getByText('DAI')).toBeOnTheScreen();
+    expect(getByTestId('selected-gas-fee-token-arrow')).toBeOnTheScreen();
+  });
+
+  it('does not render the arrow icon when no gas fee tokens are available', () => {
+    const { queryByTestId } = setupTest();
+    expect(queryByTestId('selected-gas-fee-token-arrow')).not.toBeOnTheScreen();
+  });
+
+  it('does not render arrow icon if only one gas fee token and `excludeNativeTokenForFee` is set', () => {
+    const { queryByTestId } = setupTest({
+      selectedGasFeeToken: {
+        tokenAddress: '0xTokenAddress',
+        symbol: 'DAI',
+      } as unknown as ReturnType<typeof useSelectedGasFeeToken>,
+      gaslessSupported: true,
+      gasFeeTokens: [
+        { tokenAddress: '0xTokenAddress', symbol: 'DAI' },
+      ] as unknown as GasFeeToken[],
+      excludeNativeTokenForFee: true,
+    });
+    expect(queryByTestId('selected-gas-fee-token-arrow')).not.toBeOnTheScreen();
+  });
+
+  it('still renders the arrow icon if two non-native gas fee tokens and `excludeNativeTokenForFee` is set', () => {
+    const { getByTestId, getByText } = setupTest({
+      selectedGasFeeToken: {
+        tokenAddress: '0xTokenAddress',
+        symbol: 'DAI',
+      } as unknown as ReturnType<typeof useSelectedGasFeeToken>,
+      gaslessSupported: true,
+      gasFeeTokens: [
+        { tokenAddress: '0xTokenAddress', symbol: 'DAI' },
+        { tokenAddress: '0xOtherTokenAddress', symbol: 'USDS' },
+      ] as unknown as GasFeeToken[],
+      excludeNativeTokenForFee: true,
+    });
+    expect(getByTestId('selected-gas-fee-token')).toBeOnTheScreen();
+    expect(getByText('DAI')).toBeOnTheScreen();
+    expect(getByTestId('selected-gas-fee-token-arrow')).toBeOnTheScreen();
+  });
+
+  describe('Modal', () => {
+    it('opens modal when button is pressed and gas fee tokens are supported', () => {
+      const { expectModalToOpen } = setupTest({
+        selectedGasFeeToken: {
+          tokenAddress: '0xTokenAddress',
+          symbol: 'DAI',
+        } as unknown as ReturnType<typeof useSelectedGasFeeToken>,
+        gaslessSupported: true,
+        isSmartTransaction: true,
+        gasFeeTokens: [
+          { tokenAddress: '0xTokenAddress', symbol: 'DAI' },
+        ] as unknown as GasFeeToken[],
+      });
+
+      expectModalToOpen();
+    });
+
+    it('does not open modal when button is pressed but gas fee tokens are not supported', () => {
+      const { expectModalNotToOpen } = setupTest({
+        gaslessSupported: false,
+        isSmartTransaction: false,
+      });
+
+      expectModalNotToOpen();
+    });
+
+    it('closes modal when onClose is called', () => {
+      const { getByTestId, queryByTestId } = setupTest({
+        selectedGasFeeToken: {
+          tokenAddress: '0xTokenAddress',
+          symbol: 'DAI',
+        } as unknown as ReturnType<typeof useSelectedGasFeeToken>,
+        gaslessSupported: true,
+        isSmartTransaction: true,
+        gasFeeTokens: [
+          { tokenAddress: '0xTokenAddress', symbol: 'DAI' },
+        ] as unknown as GasFeeToken[],
+      });
+
+      // Open modal
+      fireEvent.press(getByTestId('selected-gas-fee-token'));
+      expect(getByTestId('gas-fee-token-modal')).toBeOnTheScreen();
+
+      // Close modal
+      fireEvent.press(getByTestId('close-button'));
+      expect(queryByTestId('gas-fee-token-modal')).not.toBeOnTheScreen();
+    });
+
+    describe('Future native token', () => {
+      it('supports future native tokens when insufficient native balance and smart transaction', () => {
+        const { expectModalToOpen } = setupTest({
+          insufficientBalance: [{ reason: 'insufficient' } as unknown as Alert],
+          gaslessSupported: true,
+          isSmartTransaction: true,
+          gasFeeTokens: [
+            { tokenAddress: NATIVE_TOKEN_ADDRESS, symbol: 'ETH' },
+          ] as unknown as GasFeeToken[],
+        });
+
+        expectModalToOpen();
+      });
+
+      it('does not support gas fee tokens when only future native token and insufficient balance but not smart transaction', () => {
+        const { expectModalNotToOpen } = setupTest({
+          insufficientBalance: [
+            { reason: 'insufficient' },
+          ] as unknown as Alert[],
+          gaslessSupported: true,
+          isSmartTransaction: false,
+          gasFeeTokens: [
+            { tokenAddress: NATIVE_TOKEN_ADDRESS, symbol: 'ETH' },
+          ] as unknown as GasFeeToken[],
+        });
+
+        expectModalNotToOpen();
+      });
+    });
+
+    it('does not support gas fee tokens when gasless is not supported', () => {
+      const { expectModalNotToOpen } = setupTest({
+        gaslessSupported: false,
+        isSmartTransaction: true,
+        gasFeeTokens: [
+          { tokenAddress: '0xTokenAddress', symbol: 'DAI' },
+        ] as unknown as GasFeeToken[],
+      });
+
+      expectModalNotToOpen();
+    });
+
+    it('supports gas fee tokens when not only future native token', () => {
+      const { expectModalToOpen } = setupTest({
+        gaslessSupported: true,
+        isSmartTransaction: true,
+        gasFeeTokens: [
+          { tokenAddress: '0xTokenAddress1', symbol: 'DAI' },
+          { tokenAddress: NATIVE_TOKEN_ADDRESS, symbol: 'ETH' },
+        ] as unknown as GasFeeToken[],
+      });
+
+      expectModalToOpen();
+    });
+  });
+
+  describe('estimation failed', () => {
+    it('does not open modal when estimation failed even if gas fee tokens are supported', () => {
+      const { expectModalNotToOpen } = setupTest({
+        selectedGasFeeToken: {
+          tokenAddress: '0xTokenAddress',
+          symbol: 'DAI',
+        } as unknown as ReturnType<typeof useSelectedGasFeeToken>,
+        gaslessSupported: true,
+        isSmartTransaction: true,
+        gasFeeTokens: [
+          { tokenAddress: '0xTokenAddress', symbol: 'DAI' },
+        ] as unknown as GasFeeToken[],
+        estimationFailed: true,
+      });
+
+      expectModalNotToOpen();
+    });
+
+    it('does not render arrow icon when estimation failed', () => {
+      const { queryByTestId } = setupTest({
+        selectedGasFeeToken: {
+          tokenAddress: '0xTokenAddress',
+          symbol: 'DAI',
+        } as unknown as ReturnType<typeof useSelectedGasFeeToken>,
+        gaslessSupported: true,
+        isSmartTransaction: true,
+        gasFeeTokens: [
+          { tokenAddress: '0xTokenAddress', symbol: 'DAI' },
+        ] as unknown as GasFeeToken[],
+        estimationFailed: true,
+      });
+
+      expect(
+        queryByTestId('selected-gas-fee-token-arrow'),
+      ).not.toBeOnTheScreen();
+    });
+
+    it('opens modal when estimation has not failed and gas fee tokens are supported', () => {
+      const { expectModalToOpen } = setupTest({
+        selectedGasFeeToken: {
+          tokenAddress: '0xTokenAddress',
+          symbol: 'DAI',
+        } as unknown as ReturnType<typeof useSelectedGasFeeToken>,
+        gaslessSupported: true,
+        isSmartTransaction: true,
+        gasFeeTokens: [
+          { tokenAddress: '0xTokenAddress', symbol: 'DAI' },
+        ] as unknown as GasFeeToken[],
+        estimationFailed: false,
+      });
+
+      expectModalToOpen();
+    });
+  });
+
+  describe('Batch Transactions', () => {
+    it('uses chainId from batch metadata when transaction metadata is unavailable', () => {
+      const batchChainId = '0xe708';
+
+      mockUseTransactionBatchesMetadata.mockReturnValue({
+        chainId: batchChainId,
+      } as Partial<
+        ReturnType<typeof mockUseTransactionBatchesMetadata>
+      > as ReturnType<typeof mockUseTransactionBatchesMetadata>);
+
+      // Create state without transaction metadata
+      const stateWithoutTransactionMeta = merge(
+        {},
+        transferTransactionStateMock,
+        {
+          engine: {
+            backgroundState: {
+              TransactionController: {
+                transactions: [],
+              },
+            },
+          },
+        },
+      );
+
+      setupTest({ transactionMetadata: null });
+      const { getByTestId } = renderWithProvider(<SelectedGasFeeToken />, {
+        state: stateWithoutTransactionMeta,
+      });
+
+      expect(getByTestId('selected-gas-fee-token')).toBeOnTheScreen();
+      expect(mockUseNetworkInfo).toHaveBeenCalledWith(batchChainId);
+    });
+
+    it('prefers transaction metadata chainId over batch metadata chainId', () => {
+      const batchChainId = '0xe708';
+      const transactionChainId = '0x1';
+
+      mockUseTransactionBatchesMetadata.mockReturnValue({
+        chainId: batchChainId,
+      } as Partial<
+        ReturnType<typeof mockUseTransactionBatchesMetadata>
+      > as ReturnType<typeof mockUseTransactionBatchesMetadata>);
+
+      setupTest({
+        transactionMetadata: {
+          chainId: transactionChainId,
+        } as Partial<
+          ReturnType<typeof useTransactionMetadataRequest>
+        > as ReturnType<typeof useTransactionMetadataRequest>,
+      });
+
+      expect(mockUseNetworkInfo).toHaveBeenCalledWith(transactionChainId);
+    });
+
+    it('renders correctly with batch metadata chainId', () => {
+      const batchChainId = '0xe708';
+
+      mockUseTransactionBatchesMetadata.mockReturnValue({
+        chainId: batchChainId,
+      } as Partial<
+        ReturnType<typeof mockUseTransactionBatchesMetadata>
+      > as ReturnType<typeof mockUseTransactionBatchesMetadata>);
+
+      const stateWithoutTransactionMeta = merge(
+        {},
+        transferTransactionStateMock,
+        {
+          engine: {
+            backgroundState: {
+              TransactionController: {
+                transactions: [],
+              },
+            },
+          },
+        },
+      );
+
+      setupTest({ transactionMetadata: null });
+      const { getByTestId, getByText } = renderWithProvider(
+        <SelectedGasFeeToken />,
+        { state: stateWithoutTransactionMeta },
+      );
+
+      expect(getByTestId('selected-gas-fee-token')).toBeOnTheScreen();
+      expect(getByText('ETH')).toBeOnTheScreen();
+    });
+  });
+});

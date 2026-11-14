@@ -1,0 +1,104 @@
+import React from 'react';
+import { Hex } from '@metamask/utils';
+import { useSelector } from 'react-redux';
+
+import { ConfirmationRowComponentIDs } from '../../../../ConfirmationView.testIds';
+import { strings } from '../../../../../../../../locales/i18n';
+import { useStyles } from '../../../../../../../component-library/hooks';
+import { RootState } from '../../../../../../../reducers';
+import InfoRow from '../../../UI/info-row';
+import { InfoRowDivider } from '../../../UI/info-row/divider';
+import InfoSection from '../../../UI/info-row/info-section';
+import InfoRowAddress from '../../../UI/info-row/info-value/address';
+import DisplayURL from '../../../UI/info-row/info-value/display-url';
+import {
+  isRecognizedPermit,
+  parseAndNormalizeSignTypedDataFromSignatureRequest,
+} from '../../../../utils/signature';
+import { useIsExternalAppRequest } from '../../../../hooks/useIsExternalAppRequest';
+import { useSignatureRequest } from '../../../../hooks/signatures/useSignatureRequest';
+import useApprovalRequest from '../../../../hooks/useApprovalRequest';
+import { View } from 'react-native';
+import styleSheet from './info-section-origin-and-details.styles';
+import { isValidAddress } from 'ethereumjs-util';
+import { selectNetworkConfigurationByChainId } from '../../../../../../../selectors/networkController';
+import { getNetworkImageSource } from '../../../../../../../util/networks';
+import AvatarNetwork from '../../../../../../../component-library/components/Avatars/Avatar/variants/AvatarNetwork/AvatarNetwork';
+import { AvatarSize } from '../../../../../../../component-library/components/Avatars/Avatar/Avatar.types';
+import { Text, TextVariant } from '@metamask/design-system-react-native';
+
+export const InfoSectionOriginAndDetails = () => {
+  const { styles } = useStyles(styleSheet, {});
+  const { approvalRequest } = useApprovalRequest();
+  // Prefer the dapp URL from the request metadata over `approvalRequest.origin`.
+  // For WalletConnect/SDK connections `origin` is the permission subject
+  // (pairing topic / channelId hex), not the dapp domain.
+  const origin = (approvalRequest?.requestData?.meta?.url ??
+    approvalRequest?.origin) as string;
+
+  const signatureRequest = useSignatureRequest();
+  const isPermit = isRecognizedPermit(signatureRequest);
+
+  // For requests where we cannot verify the dapp's identity, display a generic
+  // "External app" label rather than the raw origin — same handling as
+  // OriginRow / NetworkAndOriginRow.
+  const isExternalApp = useIsExternalAppRequest();
+
+  const parsedData =
+    parseAndNormalizeSignTypedDataFromSignatureRequest(signatureRequest);
+  const spender = parsedData.message?.spender;
+  const verifyingContract = parsedData.domain?.verifyingContract;
+  const chainId = signatureRequest?.chainId as Hex;
+  const networkConfiguration = useSelector((state: RootState) =>
+    selectNetworkConfigurationByChainId(state, chainId),
+  );
+  const networkImage = getNetworkImageSource({ chainId: chainId as Hex });
+
+  if (!signatureRequest) {
+    return null;
+  }
+
+  return (
+    <InfoSection testID={ConfirmationRowComponentIDs.ORIGIN_INFO}>
+      {isPermit && spender && (
+        <>
+          <InfoRow label={strings('confirm.label.spender')}>
+            <InfoRowAddress address={spender} chainId={chainId} />
+          </InfoRow>
+          <View style={styles.dividerContainer}>
+            <InfoRowDivider />
+          </View>
+        </>
+      )}
+      <InfoRow
+        label={strings('confirm.label.request_from')}
+        tooltip={strings('confirm.personal_sign_tooltip')}
+      >
+        {isExternalApp ? (
+          <Text variant={TextVariant.BodyMd}>
+            {strings('confirm.label.external_app')}
+          </Text>
+        ) : (
+          <DisplayURL url={origin} />
+        )}
+      </InfoRow>
+      <InfoRow label={strings('transactions.network')}>
+        <View style={styles.networkRowContainer}>
+          {networkImage && (
+            <AvatarNetwork
+              size={AvatarSize.Xs}
+              imageSource={networkImage}
+              style={styles.avatarNetwork}
+            />
+          )}
+          <Text variant={TextVariant.BodyMd}>{networkConfiguration?.name}</Text>
+        </View>
+      </InfoRow>
+      {isValidAddress(verifyingContract) && (
+        <InfoRow label={strings('confirm.label.interacting_with')}>
+          <InfoRowAddress address={verifyingContract} chainId={chainId} />
+        </InfoRow>
+      )}
+    </InfoSection>
+  );
+};

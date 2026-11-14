@@ -1,0 +1,263 @@
+import { useEffect, useState, useRef } from 'react';
+import { usePerpsStream } from '../../providers/PerpsStreamManager';
+import {
+  CandlePeriod,
+  TimeDuration,
+  PERPS_CONSTANTS,
+  type CandleData,
+} from '@metamask/perps-controller';
+import DevLogger from '../../../../../core/SDKConnect/utils/DevLogger';
+import Logger from '../../../../../util/Logger';
+import { ensureError } from '../../../../../util/errorUtils';
+
+// Stable empty candle data reference to prevent re-renders
+const EMPTY_CANDLE_DATA: CandleData = {
+  symbol: '',
+  interval: CandlePeriod.OneHour,
+  candles: [],
+};
+
+export interface UsePerpsLiveCandlesOptions {
+  /** The asset symbol (e.g., "BTC", "ETH") */
+  symbol: string;
+  /** The candle interval (e.g., "1m", "5m", "15m") */
+  interval: CandlePeriod;
+  /** The duration for historical data (e.g., "1d", "7d", "1M") - currently informational only */
+  duration: TimeDuration;
+  /** Throttle delay in milliseconds (default: 1000ms) */
+  throttleMs?: number;
+  /** Restarts the subscription when its market context changes. */
+  resetKey?: string;
+  /** Defers subscription until the requested market context is connected. */
+  enabled?: boolean;
+}
+
+export interface UsePerpsLiveCandlesReturn {
+  /** Candle data with historical and live updates */
+  candleData: CandleData | null;
+  /** Whether we're waiting for the first real WebSocket data */
+  isLoading: boolean;
+  /** Whether we're fetching additional historical candles */
+  isLoadingMore: boolean;
+  /** Whether we have received any historical data */
+  hasHistoricalData: boolean;
+  /** Error state (if any) */
+  error: Error | null;
+  /** Fetch more historical candles before the current oldest candle */
+  fetchMoreHistory: () => Promise<void>;
+  /** Deliveries accepted by this exact symbol+interval subscription. */
+  deliveryRevision?: number;
+}
+
+/**
+ * Hook for real-time candle updates via WebSocket subscription
+ * Replaces the old polling-based usePerpsPositionData hook
+ *
+ * This hook provides:
+ * - Initial historical candle data via REST API
+ * - Live candle updates via WebSocket
+ * - Automatic cache sharing across components using the same coin+interval
+ *
+ * Example usage:
+ * ```
+ * const { candleData, isLoading } = usePerpsLiveCandles({
+ *   symbol: 'BTC',
+ *   interval: CandlePeriod.OneHour,
+ *   duration: TimeDuration.OneDay,
+ *   throttleMs: 1000
+ * });
+ * ```
+ *
+ * @param options - Configuration options for the hook
+ * @returns Object containing candle data, loading state, and error state
+ */
+export function usePerpsLiveCandles(
+  options: UsePerpsLiveCandlesOptions,
+): UsePerpsLiveCandlesReturn {
+  const {
+    symbol,
+    interval,
+    duration,
+    throttleMs = 1000,
+    resetKey,
+    enabled = true,
+  } = options;
+  const stream = usePerpsStream();
+  const [candleData, setCandleData] = useState<CandleData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const [deliveryRevision, setDeliveryRevision] = useState(0);
+  const hasReceivedFirstUpdate = useRef(false);
+  const acceptedDeliveryRef = useRef(false);
+
+  useEffect(() => {
+    let isActive = true;
+    // Reset state immediately when symbol or interval changes to prevent stale data
+    setCandleData(null);
+    setIsLoading(true);
+    setError(null);
+    hasReceivedFirstUpdate.current = false;
+
+    if (!enabled) {
+      return;
+    }
+
+    if (!symbol) {
+      setCandleData(EMPTY_CANDLE_DATA);
+      setIsLoading(false);
+      return;
+    }
+
+    try {
+      const unsubscribe = stream.candles.subscribe({
+        symbol,
+        interval,
+        duration,
+        callback: (newCandleData) => {
+          acceptedDeliveryRef.current = false;
+          if (!isActive) return;
+          // null/undefined means no cached data yet, keep loading state
+          if (newCandleData === null || newCandleData === undefined) {
+            return;
+          }
+
+          // DEFENSIVE: Validate incoming data matches current subscription
+          // This prevents race conditions when switching symbols where old subscription
+          // might deliver data after new subscription starts
+          if (
+            newCandleData.symbol !== symbol ||
+            newCandleData.interval !== interval
+          ) {
+            DevLogger.log('usePerpsLiveCandles: REJECTED - Validation failed', {
+              reason: 'Symbol or interval mismatch',
+              expectedSymbol: symbol,
+              receivedSymbol: newCandleData.symbol,
+              expectedInterval: interval,
+              receivedInterval: newCandleData.interval,
+            });
+            return;
+          }
+
+          // We have real data now (either empty array or candles)
+          if (!hasReceivedFirstUpdate.current) {
+            hasReceivedFirstUpdate.current = true;
+            setIsLoading(false);
+          }
+
+          setCandleData(newCandleData);
+          acceptedDeliveryRef.current = true;
+        },
+        onDelivery: (source) => {
+          if (source === 'fresh' && acceptedDeliveryRef.current) {
+            setDeliveryRevision((revision) => revision + 1);
+          }
+          acceptedDeliveryRef.current = false;
+        },
+        throttleMs,
+        onError: (err: Error) => {
+          if (!isActive) return;
+          const errorInstance = ensureError(err, 'usePerpsLiveCandles.onError');
+
+          // Log to Sentry: async subscription initialization failure
+          Logger.error(errorInstance, {
+            tags: {
+              feature: PERPS_CONSTANTS.FeatureName,
+              component: 'usePerpsLiveCandles',
+            },
+            context: {
+              name: 'candle_subscription_async',
+              data: {
+                operation: 'subscribe_async_error',
+                symbol,
+                interval,
+              },
+            },
+          });
+
+          setError(errorInstance);
+          setIsLoading(false);
+        },
+      });
+
+      return () => {
+        isActive = false;
+        unsubscribe();
+      };
+    } catch (err) {
+      const errorInstance = err instanceof Error ? err : new Error(String(err));
+
+      // Log to Sentry: subscription setup failure prevents live updates
+      Logger.error(
+        ensureError(errorInstance, 'usePerpsLiveCandles.subscribe'),
+        {
+          tags: {
+            feature: PERPS_CONSTANTS.FeatureName,
+            component: 'usePerpsLiveCandles',
+          },
+          context: {
+            name: 'candle_subscription',
+            data: {
+              operation: 'subscribe',
+              symbol,
+              interval,
+            },
+          },
+        },
+      );
+
+      setError(errorInstance);
+      setIsLoading(false);
+      return;
+    }
+  }, [stream, symbol, interval, duration, throttleMs, resetKey, enabled]);
+
+  const hasHistoricalData =
+    candleData !== null && candleData.candles.length > 0;
+
+  /**
+   * Fetch additional historical candles before the current oldest candle
+   * Used when user scrolls to the left edge of the chart
+   */
+  const fetchMoreHistory = async (): Promise<void> => {
+    if (!symbol || isLoadingMore) {
+      return;
+    }
+
+    try {
+      setIsLoadingMore(true);
+      DevLogger.log('usePerpsLiveCandles: Fetching more historical candles', {
+        symbol,
+        interval,
+        duration,
+      });
+
+      await stream.candles.fetchHistoricalCandles(symbol, interval, duration);
+
+      DevLogger.log(
+        'usePerpsLiveCandles: Successfully fetched more historical candles',
+        { symbol, interval, duration },
+      );
+    } catch (err) {
+      const errorInstance = err instanceof Error ? err : new Error(String(err));
+      DevLogger.log('usePerpsLiveCandles: Error fetching more history', {
+        symbol,
+        interval,
+        error: errorInstance.message,
+      });
+      setError(errorInstance);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  return {
+    candleData,
+    isLoading,
+    isLoadingMore,
+    hasHistoricalData,
+    error,
+    fetchMoreHistory,
+    deliveryRevision,
+  };
+}

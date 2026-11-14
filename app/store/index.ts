@@ -1,28 +1,42 @@
-import { Store } from 'redux';
+import { AnyAction } from 'redux';
 import { configureStore } from '@reduxjs/toolkit';
-import { persistStore, persistReducer } from 'redux-persist';
-import createSagaMiddleware from 'redux-saga';
+import { persistStore, persistReducer, Persistor } from 'redux-persist';
+import createSagaMiddleware, { SagaMiddleware } from 'redux-saga';
 import { rootSaga } from './sagas';
 import rootReducer, { RootState } from '../reducers';
-import EngineService from '../core/EngineService';
-import { Authentication } from '../core';
-import LockManagerService from '../core/LockManagerService';
 import ReadOnlyNetworkStore from '../util/test/network-store';
-import { isTest } from '../util/test/utils';
+import { hasTestOverrides } from '../util/test/utils';
+import { trace, endTrace, TraceName, TraceOperation } from '../util/trace';
 import thunk from 'redux-thunk';
-
 import persistConfig from './persistConfig';
+import getUIStartupSpan from '../core/Performance/UIStartup';
+import ReduxService, { ReduxStore } from '../core/redux';
+import { onPersistedDataLoaded } from '../actions/user';
+import { setBasicFunctionality } from '../actions/settings';
+import Logger from '../util/Logger';
+import devToolsEnhancer from 'redux-devtools-expo-dev-plugin';
+import {
+  clearAttribution,
+  expireAttributionIfStale,
+} from '../core/redux/slices/attribution';
 
-// TODO: Improve type safety by using real Action types instead of `any`
-const pReducer = persistReducer<RootState, any>(persistConfig, rootReducer);
+// TODO: Improve type safety by using real Action types instead of `AnyAction`
+const pReducer = persistReducer<RootState, AnyAction>(
+  persistConfig,
+  rootReducer,
+);
 
-// TODO: Fix the Action type. It's set to `any` now because some of the
-// TypeScript reducers have invalid actions
-// eslint-disable-next-line import/no-mutable-exports
-let store: Store<RootState, any>, persistor;
+// eslint-disable-next-line import-x/no-mutable-exports
+let store: ReduxStore, persistor: Persistor, runSaga: SagaMiddleware['run'];
+/* istanbul ignore next -- store initialization; runs at module load with heavy deps (sagas, persistence, tracing) */
 const createStoreAndPersistor = async () => {
+  trace({
+    name: TraceName.StoreInit,
+    parentContext: getUIStartupSpan(),
+    op: TraceOperation.StoreInit,
+  });
   // Obtain the initial state from ReadOnlyNetworkStore for E2E tests.
-  const initialState = isTest
+  const initialState = hasTestOverrides
     ? await ReadOnlyNetworkStore.getState()
     : undefined;
 
@@ -31,48 +45,73 @@ const createStoreAndPersistor = async () => {
   // Create the store and apply middlewares. In E2E tests, an optional initialState
   // from fixtures can be provided to preload the store; otherwise, it remains undefined.
 
+  const middlewares = [sagaMiddleware, thunk];
+
   store = configureStore({
     reducer: pReducer,
-    middleware: [sagaMiddleware, thunk],
+    middleware: middlewares,
     preloadedState: initialState,
+    devTools: false,
+    enhancers: (getDefaultEnhancers) =>
+      process.env.METAMASK_ENVIRONMENT === 'dev'
+        ? getDefaultEnhancers.concat(devToolsEnhancer())
+        : getDefaultEnhancers,
   });
+  // Set the store in the Redux class
+  ReduxService.store = store;
 
   sagaMiddleware.run(rootSaga);
+
+  runSaga = sagaMiddleware.run.bind(sagaMiddleware);
 
   /**
    * Initialize services after persist is completed
    */
   const onPersistComplete = () => {
-    /**
-     * EngineService.initalizeEngine(store) with SES/lockdown:
-     * Requires ethjs nested patches (lib->src)
-     * - ethjs/ethjs-query
-     * - ethjs/ethjs-contract
-     * Otherwise causing the following errors:
-     * - TypeError: Cannot assign to read only property 'constructor' of object '[object Object]'
-     * - Error: Requiring module "node_modules/ethjs/node_modules/ethjs-query/lib/index.js", which threw an exception: TypeError:
-     * -  V8: Cannot assign to read only property 'constructor' of object '[object Object]'
-     * -  JSC: Attempted to assign to readonly property
-     * - node_modules/babel-runtime/node_modules/regenerator-runtime/runtime.js
-     * - V8: TypeError: _$$_REQUIRE(...) is not a constructor
-     * - TypeError: undefined is not an object (evaluating 'TokenListController.tokenList')
-     * - V8: SES_UNHANDLED_REJECTION
-     */
-    store.dispatch({
-      type: 'TOGGLE_BASIC_FUNCTIONALITY',
-      basicFunctionalityEnabled:
-        store.getState().settings.basicFunctionalityEnabled,
-    });
-    EngineService.initalizeEngine(store);
-    Authentication.init(store);
-    LockManagerService.init(store);
+    endTrace({ name: TraceName.StoreInit });
+    // Signal that persisted data has been loaded
+    store.dispatch(onPersistedDataLoaded());
+
+    const currentState = store.getState();
+
+    // This sets the basic functionality value from the persisted state when the app is restarted
+    store.dispatch(
+      setBasicFunctionality(currentState.settings.basicFunctionalityEnabled),
+    );
+
+    // Clear attribution when marketing consent has not been explicitly granted.
+    // The opt-out saga handles future consent toggles, but persisted attribution
+    // can rehydrate while security.dataCollectionForMarketing is false or null.
+    if (currentState.security.dataCollectionForMarketing !== true) {
+      store.dispatch(clearAttribution());
+    } else {
+      store.dispatch(expireAttributionIfStale());
+    }
   };
 
   persistor = persistStore(store, null, onPersistComplete);
 };
 
+/* istanbul ignore next -- app bootstrap IIFE; E2E polling tested in e2eCommandPolling.test.ts */
 (async () => {
-  await createStoreAndPersistor();
+  try {
+    await createStoreAndPersistor();
+    if (hasTestOverrides) {
+      // Delay to give the store time to hydrate before first poll
+      setTimeout(async () => {
+        try {
+          const { startE2ECommandPolling } = await import(
+            '../util/test/e2eCommandPolling'
+          );
+          await startE2ECommandPolling();
+        } catch (err) {
+          Logger.error(err as Error, 'Error starting E2E command polling');
+        }
+      }, 5000);
+    }
+  } catch (error) {
+    Logger.error(error as Error, 'Error creating store and persistor');
+  }
 })();
 
-export { store, persistor };
+export { store, persistor, runSaga };

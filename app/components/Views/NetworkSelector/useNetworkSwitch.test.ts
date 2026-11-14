@@ -1,0 +1,198 @@
+import {
+  useNetworksByNamespace,
+  NetworkType,
+} from '../../hooks/useNetworksByNamespace/useNetworksByNamespace';
+import { useNetworkSelection } from '../../hooks/useNetworkSelection/useNetworkSelection';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { createMockUseAnalyticsHook } from '../../../util/test/analyticsMock';
+import Engine from '../../../core/Engine';
+
+// Mock the feature flags
+jest.mock('../../../util/networks', () => ({
+  getDecimalChainId: jest.fn(() => '1'),
+}));
+
+// Mock the hooks
+jest.mock('../../hooks/useNetworksByNamespace/useNetworksByNamespace', () => ({
+  useNetworksByNamespace: jest.fn(),
+  NetworkType: {
+    Popular: 'popular',
+  },
+}));
+
+jest.mock('../../hooks/useNetworkSelection/useNetworkSelection', () => ({
+  useNetworkSelection: jest.fn(),
+}));
+
+jest.mock('../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(),
+}));
+
+// Mock Engine
+jest.mock('../../../core/Engine', () => ({
+  context: {
+    MultichainNetworkController: {
+      setActiveNetwork: jest.fn(),
+    },
+    SelectedNetworkController: {
+      setNetworkClientIdForDomain: jest.fn(),
+    },
+    PreferencesController: {
+      setTokenNetworkFilter: jest.fn(),
+    },
+  },
+}));
+
+// Mock trace utilities
+jest.mock('../../../util/trace', () => ({
+  trace: jest.fn(),
+  endTrace: jest.fn(),
+  TraceName: {
+    SwitchCustomNetwork: 'SwitchCustomNetwork',
+    SwitchBuiltInNetwork: 'SwitchBuiltInNetwork',
+    NetworkSwitch: 'NetworkSwitch',
+  },
+  TraceOperation: {
+    SwitchCustomNetwork: 'SwitchCustomNetwork',
+    SwitchBuiltInNetwork: 'SwitchBuiltInNetwork',
+  },
+}));
+
+// Mock updateIncomingTransactions
+jest.mock('../../../util/transaction-controller', () => ({
+  updateIncomingTransactions: jest.fn(),
+}));
+
+// Mock navigation
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({
+    navigate: jest.fn(),
+  }),
+}));
+
+// Mock setTimeout
+jest.useFakeTimers();
+
+const mockUseNetworksByNamespace =
+  useNetworksByNamespace as jest.MockedFunction<typeof useNetworksByNamespace>;
+const mockUseNetworkSelection = useNetworkSelection as jest.MockedFunction<
+  typeof useNetworkSelection
+>;
+const mockUseAnalytics = jest.mocked(useAnalytics);
+
+const mockSelectNetwork = jest.fn();
+const mockTrackEvent = jest.fn();
+const mockCreateEventBuilder = jest.fn();
+
+describe('useSwitchNetworks Feature Flag Tests', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    mockUseNetworksByNamespace.mockReturnValue({
+      networks: [],
+      selectedNetworks: [],
+      areAllNetworksSelected: false,
+      areAnyNetworksSelected: false,
+      networkCount: 0,
+      selectedCount: 0,
+    });
+
+    mockUseNetworkSelection.mockReturnValue({
+      selectCustomNetwork: jest.fn(),
+      selectPopularNetwork: jest.fn(),
+      selectNetwork: mockSelectNetwork,
+      deselectAll: jest.fn(),
+      selectAllPopularNetworks: jest.fn(),
+      customNetworksToReset: [],
+    });
+
+    mockUseAnalytics.mockReturnValue(
+      createMockUseAnalyticsHook({
+        trackEvent: mockTrackEvent,
+        createEventBuilder: mockCreateEventBuilder,
+      }),
+    );
+
+    // Mock the event builder
+    mockCreateEventBuilder.mockReturnValue({
+      addProperties: jest.fn().mockReturnThis(),
+      build: jest.fn(() => ({ event: 'test' })),
+    });
+  });
+
+  describe('Network enablement functionality', () => {
+    // Common test configurations
+    const verifyControllersAvailable = () => {
+      expect(
+        Engine.context.MultichainNetworkController.setActiveNetwork,
+      ).toBeDefined();
+      expect(
+        Engine.context.SelectedNetworkController.setNetworkClientIdForDomain,
+      ).toBeDefined();
+      expect(
+        Engine.context.PreferencesController.setTokenNetworkFilter,
+      ).toBeDefined();
+    };
+
+    const verifyHookSetup = () => {
+      expect(mockUseNetworksByNamespace).toBeDefined();
+      expect(mockUseNetworkSelection).toBeDefined();
+      expect(mockSelectNetwork).toBeDefined();
+    };
+
+    it('should call selectNetwork', () => {
+      expect(mockSelectNetwork).toBeDefined();
+      verifyHookSetup();
+    });
+
+    it('should have proper hook setup', () => {
+      verifyControllersAvailable();
+    });
+  });
+
+  describe('Hook Configuration', () => {
+    it('should properly initialize hooks with default values', () => {
+      // Verify that the hooks are properly initialized
+      expect(mockUseNetworksByNamespace).toBeDefined();
+      expect(mockUseNetworkSelection).toBeDefined();
+      expect(mockUseAnalytics).toBeDefined();
+    });
+
+    it('should have all necessary Engine controllers available', () => {
+      // Verify that all necessary controllers are available
+      expect(
+        Engine.context.MultichainNetworkController.setActiveNetwork,
+      ).toBeDefined();
+      expect(
+        Engine.context.SelectedNetworkController.setNetworkClientIdForDomain,
+      ).toBeDefined();
+      expect(
+        Engine.context.PreferencesController.setTokenNetworkFilter,
+      ).toBeDefined();
+    });
+
+    it('should have proper metrics setup', () => {
+      // Verify that metrics are properly set up
+      expect(mockUseAnalytics).toBeDefined();
+      expect(mockTrackEvent).toBeDefined();
+      expect(mockCreateEventBuilder).toBeDefined();
+    });
+  });
+
+  describe('Network Selection Behavior', () => {
+    it('should provide selectNetwork function from useNetworkSelection', () => {
+      // Verify that selectNetwork is available from the hook
+      expect(mockSelectNetwork).toBeDefined();
+      expect(typeof mockSelectNetwork).toBe('function');
+    });
+
+    it('should provide networks from useNetworksByNamespace', () => {
+      // Verify that networks are available from the hook
+      const networksResult = mockUseNetworksByNamespace({
+        networkType: 'popular' as NetworkType,
+      });
+      expect(networksResult.networks).toBeDefined();
+      expect(Array.isArray(networksResult.networks)).toBe(true);
+    });
+  });
+});

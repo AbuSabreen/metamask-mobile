@@ -1,0 +1,946 @@
+import { fireEvent } from '@testing-library/react-native';
+import React from 'react';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import PredictBalance from './PredictBalance';
+import { strings } from '../../../../../../locales/i18n';
+import {
+  ButtonSize,
+  ButtonVariants,
+} from '../../../../../component-library/components/Buttons/Button';
+import { PREDICT_BALANCE_TEST_IDS } from './PredictBalance.testIds';
+import Routes from '../../../../../constants/navigation/Routes';
+
+jest.mock('react-native-device-info', () => ({
+  getVersion: jest.fn().mockReturnValue('1.0.0'),
+}));
+
+// Mock React Query
+jest.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({
+    invalidateQueries: jest.fn(),
+  }),
+}));
+
+const mockNavigate = jest.fn();
+
+// Mock React Navigation
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    navigate: mockNavigate,
+    goBack: jest.fn(),
+    setOptions: jest.fn(),
+  }),
+  useFocusEffect: jest.fn(),
+}));
+
+// Mock usePredictBalance hook
+const mockUsePredictBalance = jest.fn();
+jest.mock('../../hooks/usePredictBalance', () => ({
+  usePredictBalance: (options?: unknown) => mockUsePredictBalance(options),
+}));
+
+// Mock usePredictAccountState hook
+const mockUsePredictAccountState = jest.fn();
+jest.mock('../../hooks/usePredictAccountState', () => ({
+  usePredictAccountState: (options?: unknown) =>
+    mockUsePredictAccountState(options),
+}));
+
+// Mock usePredictDeposit hook
+const mockUsePredictDeposit = jest.fn();
+jest.mock('../../hooks/usePredictDeposit', () => ({
+  usePredictDeposit: () => mockUsePredictDeposit(),
+}));
+
+// Mock usePredictActionGuard hook
+const mockExecuteGuardedAction = jest.fn(async (action) => await action());
+jest.mock('../../hooks/usePredictActionGuard', () => ({
+  usePredictActionGuard: () => ({
+    executeGuardedAction: mockExecuteGuardedAction,
+    isEligible: true,
+  }),
+}));
+
+// Mock usePredictWithdraw hook
+const mockUsePredictWithdraw = jest.fn();
+jest.mock('../../hooks/usePredictWithdraw', () => ({
+  usePredictWithdraw: () => mockUsePredictWithdraw(),
+}));
+
+// Mock Clipboard
+jest.mock('@react-native-clipboard/clipboard', () => ({
+  setString: jest.fn(),
+}));
+
+const initialState = {
+  engine: {
+    backgroundState: {
+      ...backgroundState,
+      PreferencesController: {
+        ...backgroundState.PreferencesController,
+        privacyMode: false,
+      },
+    },
+  },
+};
+
+function stateWithDepositWalletWithdrawEnabled(enabled: boolean) {
+  return {
+    engine: {
+      backgroundState: {
+        ...initialState.engine.backgroundState,
+        RemoteFeatureFlagController: {
+          ...backgroundState.RemoteFeatureFlagController,
+          remoteFeatureFlags: {
+            ...backgroundState.RemoteFeatureFlagController?.remoteFeatureFlags,
+            confirmations_pay_extended: {
+              enableDepositWalletWithdraw: enabled,
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+function stateWithPredictPortfolioEnabled(enabled: boolean) {
+  return {
+    engine: {
+      backgroundState: {
+        ...initialState.engine.backgroundState,
+        RemoteFeatureFlagController: {
+          ...backgroundState.RemoteFeatureFlagController,
+          remoteFeatureFlags: {
+            ...backgroundState.RemoteFeatureFlagController?.remoteFeatureFlags,
+            predictPortfolio: {
+              enabled,
+              minimumVersion: '1.0.0',
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+describe('PredictBalance', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    // Default mock implementations
+    mockUsePredictBalance.mockReturnValue({
+      data: 100,
+      isLoading: false,
+    });
+
+    mockUsePredictDeposit.mockReturnValue({
+      deposit: jest.fn(),
+      isDepositPending: false,
+    });
+
+    mockUsePredictAccountState.mockReturnValue({
+      data: {
+        address: '0x1111111111111111111111111111111111111111',
+        isDeployed: true,
+        walletType: 'safe',
+      },
+      isLoading: false,
+    });
+
+    mockUsePredictWithdraw.mockReturnValue({
+      withdraw: jest.fn(),
+    });
+
+    // Reset executeGuardedAction mock to default behavior
+    mockExecuteGuardedAction.mockImplementation(
+      async (action) => await action(),
+    );
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('when loading', () => {
+    it('displays loading indicator when isLoading is true', () => {
+      // Arrange - override mock to return loading state
+      mockUsePredictBalance.mockReturnValue({
+        data: 0,
+        isLoading: true,
+      });
+
+      // Act
+      const { getByTestId } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(getByTestId('predict-balance-card-skeleton')).toBeOnTheScreen();
+    });
+
+    it('does not display balance when isLoading is true', () => {
+      // Arrange - override mock to return loading state
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: true,
+      });
+
+      // Act
+      const { queryByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(queryByText(/\$/)).not.toBeOnTheScreen();
+    });
+
+    it('does not display buttons when isLoading is true', () => {
+      // Arrange - override mock to return loading state
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: true,
+      });
+
+      // Act
+      const { queryByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(queryByText(/Add funds/i)).not.toBeOnTheScreen();
+      expect(queryByText(/Withdraw/i)).not.toBeOnTheScreen();
+    });
+  });
+
+  describe('when loaded', () => {
+    it('displays formatted balance', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 123.456,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(getByText(/\$123\.46/)).toBeOnTheScreen();
+    });
+
+    it('displays zero balance', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 0,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(getByText(/\$0/)).toBeOnTheScreen();
+    });
+
+    it('displays large balance correctly', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 1234567.89,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(getByText(/\$1,234,567\.89/)).toBeOnTheScreen();
+    });
+
+    it('renders container with correct test ID', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByTestId } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(getByTestId('predict-balance-card')).toBeOnTheScreen();
+    });
+
+    it('hides balance amount when privacy mode is enabled', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 24.66,
+        isLoading: false,
+      });
+
+      const privacyEnabledState = {
+        engine: {
+          backgroundState: {
+            ...backgroundState,
+            PreferencesController: {
+              ...backgroundState.PreferencesController,
+              privacyMode: true,
+            },
+          },
+        },
+      };
+
+      // Act
+      const { queryByText, getByText } = renderWithProvider(
+        <PredictBalance />,
+        {
+          state: privacyEnabledState,
+        },
+      );
+
+      // Assert
+      expect(queryByText('$24.66')).toBeNull();
+      expect(getByText('•••••••••')).toBeOnTheScreen();
+    });
+  });
+
+  describe('button display', () => {
+    it('displays Add Funds button', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(getByText(/Add funds/i)).toBeOnTheScreen();
+    });
+
+    it('displays Withdraw button when has balance', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(getByText(/Withdraw/i)).toBeOnTheScreen();
+    });
+
+    it('does not display Withdraw button when balance is zero', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 0,
+        isLoading: false,
+      });
+
+      // Act
+      const { queryByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(queryByText(/Withdraw/i)).not.toBeOnTheScreen();
+    });
+
+    it('displays Positions button when portfolio feature flag is enabled', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByTestId, getByText } = renderWithProvider(
+        <PredictBalance />,
+        {
+          state: stateWithPredictPortfolioEnabled(true),
+        },
+      );
+
+      // Assert
+      expect(
+        getByTestId(PREDICT_BALANCE_TEST_IDS.POSITIONS_BUTTON),
+      ).toBeOnTheScreen();
+      expect(getByText(strings('predict.tabs.positions'))).toBeOnTheScreen();
+    });
+
+    it('does not display Positions button when portfolio feature flag is disabled', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+
+      // Act
+      const { queryByTestId, queryByText } = renderWithProvider(
+        <PredictBalance />,
+        {
+          state: stateWithPredictPortfolioEnabled(false),
+        },
+      );
+
+      // Assert
+      expect(
+        queryByTestId(PREDICT_BALANCE_TEST_IDS.POSITIONS_BUTTON),
+      ).toBeNull();
+      expect(queryByText(strings('predict.tabs.positions'))).toBeNull();
+    });
+
+    it('navigates to Positions when Positions button is pressed', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByTestId } = renderWithProvider(<PredictBalance />, {
+        state: stateWithPredictPortfolioEnabled(true),
+      });
+      fireEvent.press(getByTestId(PREDICT_BALANCE_TEST_IDS.POSITIONS_BUTTON));
+
+      // Assert
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.PREDICT.POSITIONS);
+    });
+
+    it('uses compact action button sizing only when portfolio feature flag is enabled', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+
+      // Act
+      const enabledRender = renderWithProvider(<PredictBalance />, {
+        state: stateWithPredictPortfolioEnabled(true),
+      });
+
+      // Assert
+      expect(
+        enabledRender.UNSAFE_getAllByProps({
+          size: ButtonSize.Lg,
+          variant: ButtonVariants.Secondary,
+        }),
+      ).toHaveLength(3);
+
+      enabledRender.unmount();
+
+      const disabledRender = renderWithProvider(<PredictBalance />, {
+        state: stateWithPredictPortfolioEnabled(false),
+      });
+
+      expect(
+        disabledRender.UNSAFE_queryAllByProps({
+          size: ButtonSize.Lg,
+          variant: ButtonVariants.Secondary,
+        }),
+      ).toHaveLength(0);
+    });
+
+    it('calls deposit function with analytics properties when Add Funds button is pressed', () => {
+      // Arrange
+      const mockDeposit = jest.fn();
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+      mockUsePredictDeposit.mockReturnValue({
+        deposit: mockDeposit,
+        isDepositPending: false,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+      const addFundsButton = getByText(/Add funds/i);
+      fireEvent.press(addFundsButton);
+
+      // Assert
+      expect(mockDeposit).toHaveBeenCalledTimes(1);
+      expect(mockDeposit).toHaveBeenCalledWith({
+        analyticsProperties: {
+          entryPoint: 'homepage_balance',
+        },
+      });
+    });
+
+    it('calls executeGuardedAction when Add Funds button is pressed', () => {
+      // Arrange
+      const mockDeposit = jest.fn();
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+      mockUsePredictDeposit.mockReturnValue({
+        deposit: mockDeposit,
+        isDepositPending: false,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+      const addFundsButton = getByText(/Add funds/i);
+      fireEvent.press(addFundsButton);
+
+      // Assert - executeGuardedAction is called (it executes the deposit function)
+      expect(mockExecuteGuardedAction).toHaveBeenCalledTimes(1);
+      expect(mockDeposit).toHaveBeenCalled();
+    });
+
+    it('calls withdraw directly when Withdraw button is pressed for Safe users', () => {
+      // Arrange
+      const mockWithdraw = jest.fn();
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+      mockUsePredictWithdraw.mockReturnValue({
+        withdraw: mockWithdraw,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+      const withdrawButton = getByText(/Withdraw/i);
+      fireEvent.press(withdrawButton);
+
+      // Assert - withdraw is called directly without executeGuardedAction
+      expect(mockWithdraw).toHaveBeenCalledTimes(1);
+      expect(mockExecuteGuardedAction).not.toHaveBeenCalled();
+    });
+
+    it('calls withdraw for Deposit Wallet users when enableDepositWalletWithdraw flag is on', () => {
+      // Arrange
+      const mockWithdraw = jest.fn();
+      const mockOnDepositWalletWithdrawPress = jest.fn();
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+      mockUsePredictAccountState.mockReturnValue({
+        data: {
+          address: '0x2222222222222222222222222222222222222222',
+          isDeployed: true,
+          walletType: 'deposit-wallet',
+        },
+        isLoading: false,
+      });
+      mockUsePredictWithdraw.mockReturnValue({
+        withdraw: mockWithdraw,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(
+        <PredictBalance
+          onDepositWalletWithdrawPress={mockOnDepositWalletWithdrawPress}
+        />,
+        {
+          state: stateWithDepositWalletWithdrawEnabled(true),
+        },
+      );
+      const withdrawButton = getByText(/Withdraw/i);
+      fireEvent.press(withdrawButton);
+
+      // Assert
+      expect(mockWithdraw).toHaveBeenCalledTimes(1);
+      expect(mockOnDepositWalletWithdrawPress).not.toHaveBeenCalled();
+    });
+
+    it('calls temporary unavailable handler instead of withdrawing for Deposit Wallet users', () => {
+      // Arrange
+      const mockWithdraw = jest.fn();
+      const mockOnDepositWalletWithdrawPress = jest.fn();
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+      mockUsePredictAccountState.mockReturnValue({
+        data: {
+          address: '0x2222222222222222222222222222222222222222',
+          isDeployed: true,
+          walletType: 'deposit-wallet',
+        },
+        isLoading: false,
+      });
+      mockUsePredictWithdraw.mockReturnValue({
+        withdraw: mockWithdraw,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(
+        <PredictBalance
+          onDepositWalletWithdrawPress={mockOnDepositWalletWithdrawPress}
+        />,
+        {
+          state: initialState,
+        },
+      );
+      const withdrawButton = getByText(/Withdraw/i);
+      fireEvent.press(withdrawButton);
+
+      // Assert
+      expect(mockWithdraw).not.toHaveBeenCalled();
+      expect(mockOnDepositWalletWithdrawPress).toHaveBeenCalledTimes(1);
+    });
+
+    it('disables Withdraw while account state is unavailable', () => {
+      // Arrange
+      const mockWithdraw = jest.fn();
+      const mockOnDepositWalletWithdrawPress = jest.fn();
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+      mockUsePredictAccountState.mockReturnValue({
+        data: undefined,
+        isLoading: true,
+      });
+      mockUsePredictWithdraw.mockReturnValue({
+        withdraw: mockWithdraw,
+      });
+
+      // Act
+      const { getByTestId, UNSAFE_getByProps } = renderWithProvider(
+        <PredictBalance
+          onDepositWalletWithdrawPress={mockOnDepositWalletWithdrawPress}
+        />,
+        {
+          state: initialState,
+        },
+      );
+      const withdrawButton = getByTestId(
+        PREDICT_BALANCE_TEST_IDS.WITHDRAW_BUTTON,
+      );
+      fireEvent.press(withdrawButton);
+
+      // Assert
+      const disabledWithdrawButton = UNSAFE_getByProps({
+        testID: PREDICT_BALANCE_TEST_IDS.WITHDRAW_BUTTON,
+        isDisabled: true,
+      });
+      expect(disabledWithdrawButton.props.isDisabled).toBe(true);
+      expect(mockWithdraw).not.toHaveBeenCalled();
+      expect(mockOnDepositWalletWithdrawPress).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when balance fails to load', () => {
+    it('displays a retryable error state instead of $0 when the fetch fails with no cached data', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        isFetching: false,
+        refetch: jest.fn(),
+      });
+
+      // Act
+      const { getByTestId, getByText, queryByText } = renderWithProvider(
+        <PredictBalance />,
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByTestId(PREDICT_BALANCE_TEST_IDS.ERROR)).toBeOnTheScreen();
+      expect(
+        getByText(strings('predict.balance_error.title')),
+      ).toBeOnTheScreen();
+      expect(
+        getByText(strings('predict.balance_error.description')),
+      ).toBeOnTheScreen();
+      expect(queryByText(/\$0/)).not.toBeOnTheScreen();
+    });
+
+    it('calls refetch when the retry button is pressed', () => {
+      // Arrange
+      const mockRefetch = jest.fn();
+      mockUsePredictBalance.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        isFetching: false,
+        refetch: mockRefetch,
+      });
+
+      // Act
+      const { getByTestId } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+      fireEvent.press(getByTestId(PREDICT_BALANCE_TEST_IDS.RETRY_BUTTON));
+
+      // Assert
+      expect(mockRefetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('displays the loading skeleton while a retry is in flight', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+        isError: true,
+        isFetching: true,
+        refetch: jest.fn(),
+      });
+
+      // Act
+      const { getByTestId, queryByTestId } = renderWithProvider(
+        <PredictBalance />,
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByTestId(PREDICT_BALANCE_TEST_IDS.SKELETON)).toBeOnTheScreen();
+      expect(queryByTestId(PREDICT_BALANCE_TEST_IDS.ERROR)).toBeNull();
+    });
+
+    it('displays the last known balance when a background refetch fails', () => {
+      // Arrange — stale data beats an error state
+      mockUsePredictBalance.mockReturnValue({
+        data: 42.5,
+        isLoading: false,
+        isError: true,
+        isFetching: false,
+        refetch: jest.fn(),
+      });
+
+      // Act
+      const { getByText, queryByTestId } = renderWithProvider(
+        <PredictBalance />,
+        { state: initialState },
+      );
+
+      // Assert
+      expect(getByText(/\$42\.50/)).toBeOnTheScreen();
+      expect(queryByTestId(PREDICT_BALANCE_TEST_IDS.ERROR)).toBeNull();
+    });
+  });
+
+  describe('balance refresh', () => {
+    it('component renders with adding funds state when deposit is pending', () => {
+      // Arrange - set up pending deposit to test the adding funds UI
+      mockUsePredictDeposit.mockReturnValue({
+        deposit: jest.fn(),
+        isDepositPending: true,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert - should show adding funds message
+      expect(
+        getByText(strings('predict.deposit.adding_your_funds')),
+      ).toBeOnTheScreen();
+    });
+
+    it('component renders normally when deposit is not pending', () => {
+      // Arrange - set up no pending deposit
+      mockUsePredictDeposit.mockReturnValue({
+        deposit: jest.fn(),
+        isDepositPending: false,
+      });
+
+      // Act
+      const { getByTestId, queryByText } = renderWithProvider(
+        <PredictBalance />,
+        {
+          state: initialState,
+        },
+      );
+
+      // Assert - should render balance card normally, no adding funds message
+      expect(getByTestId('predict-balance-card')).toBeOnTheScreen();
+      expect(
+        queryByText(strings('predict.deposit.adding_your_funds')),
+      ).not.toBeOnTheScreen();
+    });
+  });
+
+  describe('onLayout callback', () => {
+    it('calls onLayout callback when provided', () => {
+      // Arrange
+      const mockOnLayout = jest.fn();
+
+      // Act
+      const { getByTestId } = renderWithProvider(
+        <PredictBalance onLayout={mockOnLayout} />,
+        {
+          state: initialState,
+        },
+      );
+
+      const balanceCard = getByTestId('predict-balance-card');
+
+      // Simulate onLayout event
+      fireEvent(balanceCard, 'layout', {
+        nativeEvent: {
+          layout: {
+            height: 200,
+          },
+        },
+      });
+
+      // Assert
+      expect(mockOnLayout).toHaveBeenCalledWith(200);
+    });
+
+    it('handles onLayout gracefully when no callback is provided', () => {
+      // Act
+      const { getByTestId } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      const balanceCard = getByTestId('predict-balance-card');
+
+      // Assert - should not throw error when onLayout is called without a callback
+      expect(() => {
+        fireEvent(balanceCard, 'layout', {
+          nativeEvent: {
+            layout: {
+              height: 200,
+            },
+          },
+        });
+      }).not.toThrow();
+    });
+  });
+
+  describe('edge cases', () => {
+    it('handles very small balance', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 0.01,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(getByText(/\$0\.01/)).toBeOnTheScreen();
+    });
+
+    it('handles very large balance', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 123456789.123456,
+        isLoading: false,
+      });
+
+      // Act
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      // Assert
+      expect(getByText(/\$123,456,789\.12/)).toBeOnTheScreen();
+    });
+
+    it('handles adding funds state', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: 100,
+        isLoading: false,
+      });
+      mockUsePredictDeposit.mockReturnValue({
+        deposit: jest.fn(),
+        isDepositPending: true,
+      });
+
+      // Act
+      const { getByTestId, getByText } = renderWithProvider(
+        <PredictBalance />,
+        {
+          state: initialState,
+        },
+      );
+
+      // Assert - Should still render the balance card and buttons
+      expect(getByTestId('predict-balance-card')).toBeOnTheScreen();
+      expect(getByText(/Add funds/i)).toBeOnTheScreen();
+    });
+
+    it('shows primary button variant for Add funds when balance is zero', () => {
+      mockUsePredictBalance.mockReturnValue({
+        data: 0,
+        isLoading: false,
+      });
+
+      const { UNSAFE_getAllByProps } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      const primaryButtons = UNSAFE_getAllByProps({
+        variant: ButtonVariants.Primary,
+      });
+      expect(primaryButtons.length).toBeGreaterThan(0);
+    });
+
+    it('shows secondary button variant for Add funds when balance is greater than zero', () => {
+      mockUsePredictBalance.mockReturnValue({
+        data: 10,
+        isLoading: false,
+      });
+
+      const { UNSAFE_getAllByProps, getByText } = renderWithProvider(
+        <PredictBalance />,
+        { state: initialState },
+      );
+
+      const secondaryButtons = UNSAFE_getAllByProps({
+        variant: ButtonVariants.Secondary,
+      });
+      expect(secondaryButtons.length).toBeGreaterThanOrEqual(2);
+      expect(getByText(/Withdraw/i)).toBeOnTheScreen();
+    });
+
+    it('displays Predictions title in TitleHub', () => {
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      expect(getByText(strings('wallet.predict'))).toBeOnTheScreen();
+    });
+
+    it('handles undefined balance gracefully', () => {
+      // Arrange
+      mockUsePredictBalance.mockReturnValue({
+        data: undefined,
+        isLoading: false,
+      });
+
+      // Act & Assert - should not crash
+      const { getByText } = renderWithProvider(<PredictBalance />, {
+        state: initialState,
+      });
+
+      expect(getByText(/\$0/)).toBeOnTheScreen();
+    });
+  });
+});

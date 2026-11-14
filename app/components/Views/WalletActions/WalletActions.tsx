@@ -1,197 +1,213 @@
 // Third party dependencies.
-import React, { useRef } from 'react';
-import { View, Platform } from 'react-native';
-import { swapsUtils } from '@metamask/swaps-controller';
-import { useDispatch, useSelector } from 'react-redux';
+import React, { useCallback, useMemo, useRef } from 'react';
+import { View } from 'react-native';
+import { useSelector } from 'react-redux';
 import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
 
 // External dependencies.
 import BottomSheet, {
   BottomSheetRef,
 } from '../../../component-library/components/BottomSheets/BottomSheet';
 import AppConstants from '../../../core/AppConstants';
-import {
-  selectChainId,
-  selectTicker,
-} from '../../../selectors/networkController';
-import { swapsLivenessSelector } from '../../../reducers/swaps';
-import { toggleReceiveModal } from '../../../actions/modals';
-import { isSwapsAllowed } from '../../../components/UI/Swaps/utils';
-import isBridgeAllowed from '../../UI/Bridge/utils/isBridgeAllowed';
-import useGoToBridge from '../../../components/UI/Bridge/utils/useGoToBridge';
-import Routes from '../../../constants/navigation/Routes';
+import { selectChainId } from '../../../selectors/networkController';
 import { MetaMetricsEvents } from '../../../core/Analytics';
-import { getEther } from '../../../util/transactions';
-import { newAssetTransaction } from '../../../actions/transaction';
-import { strings } from '../../../../locales/i18n';
-import { IconName } from '../../../component-library/components/Icons/Icon';
-import WalletAction from '../../../components/UI/WalletAction';
+import { IconName } from '@metamask/design-system-react-native';
+import ActionListItem from '../../../component-library/components-temp/ActionListItem';
 import { useStyles } from '../../../component-library/hooks';
-import generateTestId from '../../../../wdio/utils/generateTestId';
-import { AvatarSize } from '../../../component-library/components/Avatars/Avatar';
-import useRampNetwork from '../../UI/Ramp/hooks/useRampNetwork';
+import { strings } from '../../../../locales/i18n';
+import Routes from '../../../constants/navigation/Routes';
 import { getDecimalChainId } from '../../../util/networks';
+import { WalletActionsBottomSheetSelectorsIDs } from './WalletActionsBottomSheet.testIds';
 
 // Internal dependencies
 import styleSheet from './WalletActions.styles';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
+import { selectCanSignTransactions } from '../../../selectors/accountsController';
+import { EVENT_LOCATIONS as STAKE_EVENT_LOCATIONS } from '../../UI/Stake/constants/events';
 import {
-  WALLET_BRIDGE,
-  WALLET_BUY,
-  WALLET_RECEIVE,
-  WALLET_SELL,
-  WALLET_SEND,
-  WALLET_SWAP,
-} from './WalletActions.constants';
-import { useMetrics } from '../../../components/hooks/useMetrics';
+  selectPooledStakingEnabledFlag,
+  selectStablecoinLendingEnabledFlag,
+} from '../../UI/Earn/selectors/featureFlags';
+import { selectPerpsEnabledFlag } from '../../UI/Perps';
+import { PERPS_EVENT_VALUE } from '@metamask/perps-controller';
+import {
+  PredictEventValues,
+  selectPredictAvailability,
+  usePredictEntryActions,
+} from '../../UI/PredictNext';
+import { EARN_INPUT_VIEW_ACTIONS } from '../../UI/Earn/Views/EarnInputView/EarnInputView.types';
+import { earnSelectors } from '../../../selectors/earnController/earn';
+import {
+  useSwapBridgeNavigation,
+  SwapBridgeNavigationLocation,
+} from '../../UI/Bridge/hooks/useSwapBridgeNavigation';
+import { RootState } from '../../../reducers';
+import { selectIsSwapsEnabled } from '../../../core/redux/slices/bridge';
+import { selectIsFirstTimePerpsUser } from '../../UI/Perps/selectors/perpsController';
+import { usePerpsHeaderEntryNavigation } from '../../UI/Perps/hooks/usePerpsHeaderEntryNavigation';
+import { toPerpsNavigatorScreenParams } from '../../UI/Perps/utils/perpsModeSwitch';
+import useStakingEligibility from '../../UI/Stake/hooks/useStakingEligibility';
 
 const WalletActions = () => {
   const { styles } = useStyles(styleSheet, {});
   const sheetRef = useRef<BottomSheetRef>(null);
-  const { navigate } = useNavigation();
-  const goToBridge = useGoToBridge('TabBar');
+  const { navigate } = useNavigation<AppNavigationProp>();
+  const isPooledStakingEnabled = useSelector(selectPooledStakingEnabledFlag);
+  const { earnTokens } = useSelector(earnSelectors.selectEarnTokens);
 
+  const isFirstTimePerpsUser = useSelector(selectIsFirstTimePerpsUser);
   const chainId = useSelector(selectChainId);
-  const ticker = useSelector(selectTicker);
-  const swapsIsLive = useSelector(swapsLivenessSelector);
-  const dispatch = useDispatch();
+  const isStablecoinLendingEnabled = useSelector(
+    selectStablecoinLendingEnabledFlag,
+  );
+  const isSwapsEnabled = useSelector((state: RootState) =>
+    selectIsSwapsEnabled(state),
+  );
+  const isPerpsEnabled = useSelector(selectPerpsEnabledFlag);
+  const isPredictEnabled = useSelector(selectPredictAvailability);
+  const { openPredict } = usePredictEntryActions();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const canSignTransactions = useSelector(selectCanSignTransactions);
+  const { goToSwaps: goToSwapsBase } = useSwapBridgeNavigation({
+    location: SwapBridgeNavigationLocation.MainView,
+    sourcePage: 'MainView',
+  });
+  const { isEligible: isEarnEligible } = useStakingEligibility();
+  const { getTarget } = usePerpsHeaderEntryNavigation();
 
-  const [isNetworkRampSupported] = useRampNetwork();
-  const { trackEvent } = useMetrics();
+  const closeBottomSheetAndNavigate = useCallback(
+    (navigateFunc: () => void) => {
+      sheetRef.current?.onCloseBottomSheet(navigateFunc);
+    },
+    [],
+  );
 
-  const onReceive = () => {
-    sheetRef.current?.onCloseBottomSheet(() => dispatch(toggleReceiveModal()));
-    trackEvent(MetaMetricsEvents.RECEIVE_BUTTON_CLICKED, {
-      text: 'Receive',
-      tokenSymbol: '',
-      location: 'TabBar',
-      chain_id: getDecimalChainId(chainId),
-    });
-  };
-
-  const onBuy = () => {
-    sheetRef.current?.onCloseBottomSheet(() => {
-      navigate(Routes.RAMP.BUY);
-      trackEvent(MetaMetricsEvents.BUY_BUTTON_CLICKED, {
-        text: 'Buy',
-        location: 'TabBar',
-        chain_id_destination: getDecimalChainId(chainId),
-      });
-    });
-  };
-
-  const onSell = () => {
-    sheetRef.current?.onCloseBottomSheet(() => {
-      navigate(Routes.RAMP.SELL);
-      trackEvent(MetaMetricsEvents.SELL_BUTTON_CLICKED, {
-        text: 'Sell',
-        location: 'TabBar',
-        chain_id_source: getDecimalChainId(chainId),
-      });
-    });
-  };
-  const onSend = () => {
-    sheetRef.current?.onCloseBottomSheet(() => {
-      navigate('SendFlowView');
-      ticker && dispatch(newAssetTransaction(getEther(ticker)));
-      trackEvent(MetaMetricsEvents.SEND_BUTTON_CLICKED, {
-        text: 'Send',
-        tokenSymbol: '',
-        location: 'TabBar',
-        chain_id: getDecimalChainId(chainId),
-      });
-    });
-  };
-
-  const goToSwaps = () => {
-    sheetRef.current?.onCloseBottomSheet(() => {
-      navigate('Swaps', {
-        screen: 'SwapsAmountView',
+  const onEarn = useCallback(async () => {
+    closeBottomSheetAndNavigate(() => {
+      navigate('StakeModals', {
+        screen: Routes.STAKING.MODALS.EARN_TOKEN_LIST,
         params: {
-          sourceToken: swapsUtils.NATIVE_SWAPS_TOKEN_ADDRESS,
+          tokenFilter: {
+            includeNativeTokens: true,
+            includeStakingTokens: false,
+            includeLendingTokens: true,
+            includeReceiptTokens: false,
+          },
+          onItemPressScreen: EARN_INPUT_VIEW_ACTIONS.DEPOSIT,
         },
       });
-      trackEvent(MetaMetricsEvents.SWAP_BUTTON_CLICKED, {
-        text: 'Swap',
-        tokenSymbol: '',
-        location: 'TabBar',
-        chain_id: getDecimalChainId(chainId),
+    });
+
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.EARN_BUTTON_CLICKED)
+        .addProperties({
+          text: 'Earn',
+          location: STAKE_EVENT_LOCATIONS.WALLET_ACTIONS_BOTTOM_SHEET,
+          chain_id_destination: getDecimalChainId(chainId),
+        })
+        .build(),
+    );
+  }, [
+    closeBottomSheetAndNavigate,
+    navigate,
+    chainId,
+    createEventBuilder,
+    trackEvent,
+  ]);
+
+  const goToSwaps = useCallback(() => {
+    closeBottomSheetAndNavigate(() => {
+      goToSwapsBase();
+    });
+  }, [closeBottomSheetAndNavigate, goToSwapsBase]);
+
+  const onPerps = useCallback(() => {
+    closeBottomSheetAndNavigate(() => {
+      if (isFirstTimePerpsUser) {
+        navigate(Routes.PERPS.TUTORIAL);
+      } else {
+        const target = getTarget({
+          source: PERPS_EVENT_VALUE.SOURCE.MAIN_ACTION_BUTTON,
+        });
+        navigate(Routes.PERPS.ROOT, toPerpsNavigatorScreenParams(target));
+      }
+    });
+  }, [closeBottomSheetAndNavigate, navigate, isFirstTimePerpsUser, getTarget]);
+
+  const onPredict = useCallback(() => {
+    closeBottomSheetAndNavigate(() => {
+      openPredict({
+        type: 'home',
+        entryPoint: PredictEventValues.ENTRY_POINT.MAIN_TRADE_BUTTON,
       });
     });
-  };
+  }, [closeBottomSheetAndNavigate, openPredict]);
+
+  const isEarnWalletActionEnabled = useMemo(() => {
+    if (
+      !isEarnEligible ||
+      !isStablecoinLendingEnabled ||
+      (earnTokens.length <= 1 &&
+        earnTokens[0]?.isETH &&
+        !isPooledStakingEnabled)
+    ) {
+      return false;
+    }
+    return true;
+  }, [
+    isEarnEligible,
+    isStablecoinLendingEnabled,
+    earnTokens,
+    isPooledStakingEnabled,
+  ]);
 
   return (
     <BottomSheet ref={sheetRef}>
       <View style={styles.actionsContainer}>
-        {isNetworkRampSupported && (
-          <WalletAction
-            actionTitle={strings('asset_overview.buy_button')}
-            actionDescription={strings('asset_overview.buy_description')}
-            iconName={IconName.Add}
-            iconSize={AvatarSize.Md}
-            onPress={onBuy}
-            iconStyle={styles.icon}
-            {...generateTestId(Platform, WALLET_BUY)}
+        {AppConstants.SWAPS.ACTIVE && (
+          <ActionListItem
+            label={strings('asset_overview.swap')}
+            description={strings('asset_overview.swap_description')}
+            iconName={IconName.SwapVertical}
+            onPress={goToSwaps}
+            testID={WalletActionsBottomSheetSelectorsIDs.SWAP_BUTTON}
+            isDisabled={!isSwapsEnabled}
           />
         )}
 
-        {isNetworkRampSupported && (
-          <WalletAction
-            actionTitle={strings('asset_overview.sell_button')}
-            actionDescription={strings('asset_overview.sell_description')}
-            iconName={IconName.Minus}
-            iconSize={AvatarSize.Md}
-            onPress={onSell}
-            iconStyle={styles.icon}
-            {...generateTestId(Platform, WALLET_SELL)}
+        {isPerpsEnabled && (
+          <ActionListItem
+            label={strings('asset_overview.perps_button')}
+            description={strings('asset_overview.perps_description')}
+            iconName={IconName.Candlestick}
+            onPress={onPerps}
+            testID={WalletActionsBottomSheetSelectorsIDs.PERPS_BUTTON}
+            isDisabled={!canSignTransactions}
           />
         )}
 
-        {AppConstants.SWAPS.ACTIVE &&
-          swapsIsLive &&
-          isSwapsAllowed(chainId) && (
-            <WalletAction
-              actionTitle={strings('asset_overview.swap')}
-              actionDescription={strings('asset_overview.swap_description')}
-              iconName={IconName.SwapHorizontal}
-              iconSize={AvatarSize.Md}
-              onPress={goToSwaps}
-              iconStyle={styles.icon}
-              {...generateTestId(Platform, WALLET_SWAP)}
-            />
-          )}
-
-        {isBridgeAllowed(chainId) && (
-          <WalletAction
-            actionTitle={strings('asset_overview.bridge')}
-            actionDescription={strings('asset_overview.bridge_description')}
-            iconName={IconName.Bridge}
-            iconSize={AvatarSize.Md}
-            onPress={goToBridge}
-            iconStyle={styles.icon}
-            {...generateTestId(Platform, WALLET_BRIDGE)}
+        {isEarnWalletActionEnabled && (
+          <ActionListItem
+            label={strings('asset_overview.earn_button')}
+            description={strings('asset_overview.earn_description')}
+            iconName={IconName.Stake}
+            onPress={onEarn}
+            testID={WalletActionsBottomSheetSelectorsIDs.EARN_BUTTON}
+            isDisabled={!canSignTransactions}
           />
         )}
-        <WalletAction
-          actionTitle={strings('asset_overview.send_button')}
-          actionDescription={strings('asset_overview.send_description')}
-          iconName={IconName.Arrow2Right}
-          iconSize={AvatarSize.Md}
-          onPress={onSend}
-          iconStyle={{
-            transform: [{ rotate: '-45deg' }],
-            ...styles.icon,
-          }}
-          {...generateTestId(Platform, WALLET_SEND)}
-        />
-        <WalletAction
-          actionTitle={strings('asset_overview.receive_button')}
-          actionDescription={strings('asset_overview.receive_description')}
-          iconName={IconName.Received}
-          iconSize={AvatarSize.Md}
-          onPress={onReceive}
-          iconStyle={styles.icon}
-          {...generateTestId(Platform, WALLET_RECEIVE)}
-        />
+
+        {isPredictEnabled && (
+          <ActionListItem
+            label={strings('asset_overview.predict_button')}
+            description={strings('asset_overview.predict_description')}
+            iconName={IconName.Speedometer}
+            onPress={onPredict}
+            testID={WalletActionsBottomSheetSelectorsIDs.PREDICT_BUTTON}
+            isDisabled={!canSignTransactions}
+          />
+        )}
       </View>
     </BottomSheet>
   );

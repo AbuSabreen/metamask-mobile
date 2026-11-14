@@ -2,24 +2,10 @@
 import { InputProps } from './foundation/Input/Input.types';
 
 /**
- * TextFieldSize.
- */
-export enum TextFieldSize {
-  Sm = '32',
-  Md = '40',
-  Lg = '48',
-}
-
-/**
  * TextField component props.
  */
 export interface TextFieldProps
   extends Omit<InputProps, 'textVariant' | 'disableStateStyles'> {
-  /**
-   * Optional prop for size of the TextField.
-   * @default TextFieldSize.Md
-   */
-  size?: TextFieldSize;
   /**
    * Optional content to display before the Input.
    */
@@ -37,6 +23,10 @@ export interface TextFieldProps
    * Optional prop to replace defaulted input with custom Input.
    */
   inputElement?: React.ReactNode;
+  /**
+   * Optional test ID for the input element.
+   */
+  testID?: string;
 }
 
 /**
@@ -44,7 +34,7 @@ export interface TextFieldProps
  */
 export type TextFieldStyleSheetVars = Pick<
   TextFieldProps,
-  'style' | 'size' | 'isError' | 'isDisabled'
+  'style' | 'isError' | 'isDisabled'
 > & {
   isFocused: boolean;
 };

@@ -1,0 +1,417 @@
+import React from 'react';
+import { fireEvent, screen } from '@testing-library/react-native';
+import Settings, {
+  RAMP_SETTINGS_BACK_BUTTON_TEST_ID,
+  RAMP_SETTINGS_HEADER_TEST_ID,
+  RAMP_SETTINGS_HEADLESS_PLAYGROUND_BUTTON_TEST_ID,
+} from './Settings';
+import useActivationKeys from '../../hooks/useActivationKeys';
+import { RampSDK, withRampSDK } from '../../sdk';
+import { ActivationKey } from '../../../../../../reducers/fiatOrders/types';
+import {
+  renderScreen,
+  DeepPartial,
+} from '../../../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../../../util/test/initial-root-state';
+import Routes from '../../../../../../constants/navigation/Routes';
+import useRampsController from '../../../hooks/useRampsController';
+import { UserRegion } from '@metamask/ramps-controller';
+
+function render(Component: React.ComponentType) {
+  return renderScreen(
+    Component,
+    {
+      name: Routes.RAMP.SETTINGS,
+    },
+    {
+      state: {
+        engine: {
+          backgroundState,
+        },
+      },
+    },
+  );
+}
+
+const mockNavigate = jest.fn();
+const mockGoBack = jest.fn();
+
+jest.mock('@react-navigation/native', () => {
+  const actualReactNavigation = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualReactNavigation,
+    useNavigation: () => ({
+      navigate: mockNavigate,
+      goBack: mockGoBack,
+    }),
+  };
+});
+
+const mockedActivationKeys: ActivationKey[] = [
+  {
+    key: 'testKey1',
+    label: 'test key 1',
+    active: true,
+  },
+
+  {
+    key: 'testKey2',
+    label: 'test key 2',
+    active: false,
+  },
+];
+
+const mockUpdateActivationKey = jest.fn();
+const mockAddActivationKey = jest.fn();
+const mockRemoveActivationKey = jest.fn();
+
+const mockUseActivationKeysInitialValues: ReturnType<typeof useActivationKeys> =
+  {
+    isLoadingKeys: false,
+    activationKeys: mockedActivationKeys,
+    updateActivationKey: mockUpdateActivationKey,
+    addActivationKey: mockAddActivationKey,
+    removeActivationKey: mockRemoveActivationKey,
+  };
+
+let mockUseActivationKeysValues = mockUseActivationKeysInitialValues;
+
+jest.mock('../../hooks/useActivationKeys', () =>
+  jest.fn(() => mockUseActivationKeysValues),
+);
+
+const mockSetUserRegion = jest.fn();
+const mockSetSelectedProvider = jest.fn();
+
+const createMockUserRegion = (regionCode: string): UserRegion => {
+  const parts = regionCode.toLowerCase().split('-');
+  const countryCode = parts[0].toUpperCase();
+  const stateCode = parts[1]?.toUpperCase();
+
+  return {
+    country: {
+      isoCode: countryCode,
+      flag: '🇪🇺',
+      name: 'Europe Union',
+      phone: { prefix: '', placeholder: '', template: '' },
+      currency: '',
+      supported: { buy: true, sell: true },
+    },
+    state: stateCode
+      ? {
+          stateId: stateCode,
+          name: stateCode,
+          supported: { buy: true, sell: true },
+        }
+      : null,
+    regionCode: regionCode.toLowerCase(),
+  };
+};
+
+const mockUseRampsControllerInitialValues: ReturnType<
+  typeof useRampsController
+> = {
+  userRegion: createMockUserRegion('eu'),
+  setUserRegion: mockSetUserRegion,
+  selectedProvider: null,
+  setSelectedProvider: mockSetSelectedProvider,
+  setSelectedProviderForAsset: jest.fn(),
+  providers: [],
+  providersLoading: false,
+  providersError: null,
+  tokens: null,
+  selectedToken: null,
+  setSelectedToken: jest.fn(),
+  tokensLoading: false,
+  tokensError: null,
+  countries: [],
+  countriesLoading: false,
+  countriesError: null,
+  paymentMethods: [],
+  selectedPaymentMethod: null,
+  setSelectedPaymentMethod: jest.fn(),
+  paymentMethodsLoading: false,
+  paymentMethodsError: null,
+  paymentMethodsFetching: false,
+  paymentMethodsStatus: 'idle' as const,
+  getQuotes: jest.fn(),
+  getBuyWidgetData: jest.fn(),
+  orders: [],
+  getOrderById: jest.fn(),
+  addOrder: jest.fn(),
+  addPrecreatedOrder: jest.fn(),
+  removeOrder: jest.fn(),
+  refreshOrder: jest.fn(),
+  getOrderFromCallback: jest.fn(),
+};
+
+let mockUseRampsControllerValues = mockUseRampsControllerInitialValues;
+
+jest.mock('../../../hooks/useRampsController', () =>
+  jest.fn(() => mockUseRampsControllerValues),
+);
+
+const mockSetSelectedRegion = jest.fn();
+
+const mockuseRampSDKInitialValues: DeepPartial<RampSDK> = {
+  selectedRegion: {
+    emoji: '🇪🇺',
+    name: 'Europe Union',
+  },
+  setSelectedRegion: mockSetSelectedRegion,
+  isInternalBuild: false,
+};
+
+let mockUseRampSDKValues: DeepPartial<RampSDK> = {
+  ...mockuseRampSDKInitialValues,
+};
+
+jest.mock('../../sdk', () => ({
+  useRampSDK: () => mockUseRampSDKValues,
+  withRampSDK: jest.fn().mockImplementation((Component) => Component),
+}));
+
+describe('Settings', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  beforeEach(() => {
+    mockUseActivationKeysValues = {
+      ...mockUseActivationKeysInitialValues,
+    };
+    mockUseRampSDKValues = {
+      ...mockuseRampSDKInitialValues,
+    };
+    mockUseRampsControllerValues = {
+      ...mockUseRampsControllerInitialValues,
+    };
+  });
+
+  it('renders correctly', () => {
+    render(Settings);
+    expect(screen.getByText('Buy and sell crypto')).toBeOnTheScreen();
+    expect(withRampSDK).toHaveBeenCalled();
+  });
+
+  it('renders inline header with title Buy and sell crypto', () => {
+    render(Settings);
+    expect(screen.getByText('Buy and sell crypto')).toBeOnTheScreen();
+    expect(screen.getByTestId(RAMP_SETTINGS_HEADER_TEST_ID)).toBeOnTheScreen();
+  });
+
+  it('navigates back when header back button is pressed', () => {
+    render(Settings);
+    const backButton = screen.getByTestId(RAMP_SETTINGS_BACK_BUTTON_TEST_ID);
+    fireEvent.press(backButton);
+    expect(mockGoBack).toHaveBeenCalled();
+  });
+
+  it('renders correctly for internal builds', () => {
+    mockUseRampSDKValues = {
+      ...mockuseRampSDKInitialValues,
+      isInternalBuild: true,
+    };
+    render(Settings);
+    expect(
+      screen.getByRole('button', { name: 'Add activation key' }),
+    ).toBeOnTheScreen();
+  });
+
+  describe('Region', () => {
+    it('renders correctly when region is set', () => {
+      render(Settings);
+      expect(
+        screen.getByRole('button', { name: 'Change region' }),
+      ).toBeOnTheScreen();
+    });
+
+    it('renders correctly when region is not set', () => {
+      mockUseRampsControllerValues = {
+        ...mockUseRampsControllerInitialValues,
+        userRegion: null,
+      };
+      render(Settings);
+      expect(
+        screen.getByRole('button', { name: 'Change region' }),
+      ).toBeOnTheScreen();
+    });
+
+    it('renders correctly when region has state', () => {
+      mockUseRampsControllerValues = {
+        ...mockUseRampsControllerInitialValues,
+        userRegion: createMockUserRegion('eu-fr'),
+      };
+      render(Settings);
+      expect(screen.getByText('FR')).toBeOnTheScreen();
+    });
+
+    it('renders correctly when region is country only (no state)', () => {
+      mockUseRampsControllerValues = {
+        ...mockUseRampsControllerInitialValues,
+        userRegion: createMockUserRegion('fr'),
+      };
+      render(Settings);
+      expect(
+        screen.getByRole('button', { name: 'Change region' }),
+      ).toBeOnTheScreen();
+    });
+
+    it('navigates to region selector when change region button is pressed', () => {
+      render(Settings);
+      const changeRegionButton = screen.getByRole('button', {
+        name: 'Change region',
+      });
+      fireEvent.press(changeRegionButton);
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.SETTINGS.REGION_SELECTOR,
+      );
+    });
+  });
+
+  describe('Activation Keys', () => {
+    beforeEach(() => {
+      mockUseRampSDKValues = {
+        ...mockuseRampSDKInitialValues,
+        isInternalBuild: true,
+      };
+    });
+
+    it('renders correctly when is loading', () => {
+      mockUseActivationKeysValues = {
+        ...mockUseActivationKeysInitialValues,
+        isLoadingKeys: true,
+      };
+
+      render(Settings);
+      const addActivationKeyButton = screen.getByRole('button', {
+        name: 'Add activation key',
+      });
+      const [removeActivationKeyButton] = screen.getAllByRole('button', {
+        name: 'Delete activation key',
+      });
+      const [switchButton] = screen.getAllByRole('switch');
+
+      expect(addActivationKeyButton).toBeDisabled();
+      expect(removeActivationKeyButton).toBeDisabled();
+      expect(switchButton).toHaveProp('disabled', true);
+    });
+
+    it('renders correctly when there are no keys', () => {
+      mockUseActivationKeysValues = {
+        ...mockUseActivationKeysInitialValues,
+        activationKeys: [],
+      };
+      render(Settings);
+      expect(
+        screen.queryByRole('button', { name: 'Delete activation key' }),
+      ).not.toBeOnTheScreen();
+    });
+
+    it('navigates to add activation key when pressing add new key', () => {
+      render(Settings);
+      const addActivationKeyButton = screen.getByRole('button', {
+        name: 'Add activation key',
+      });
+      fireEvent.press(addActivationKeyButton);
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.RAMP.ACTIVATION_KEY_FORM,
+        {
+          onSubmit: expect.any(Function),
+          active: true,
+          key: '',
+          label: '',
+        },
+      );
+    });
+
+    it('calls addActivationKey when navigated view calls onSubmit', () => {
+      const testKey = 'example-test-key';
+      const testLabel = 'example-test-label';
+      mockNavigate.mockImplementationOnce((_route, { onSubmit }) => {
+        onSubmit(testKey, testLabel);
+      });
+      render(Settings);
+      const addActivationKeyButton = screen.getByRole('button', {
+        name: 'Add activation key',
+      });
+      fireEvent.press(addActivationKeyButton);
+      expect(mockAddActivationKey).toHaveBeenCalledWith(testKey, testLabel);
+    });
+
+    it('updates the activation key value when pressing the switch', () => {
+      const testActivationKey = {
+        ...mockUseActivationKeysInitialValues.activationKeys[0],
+        active: false,
+      };
+      mockUseActivationKeysValues = {
+        ...mockUseActivationKeysInitialValues,
+        activationKeys: [testActivationKey],
+      };
+      render(Settings);
+      const switchButton = screen.getByRole('switch');
+      fireEvent(switchButton, 'onValueChange');
+      expect(mockUpdateActivationKey).toHaveBeenCalledWith(
+        testActivationKey.key,
+        testActivationKey.label,
+        !testActivationKey.active,
+      );
+    });
+
+    it('calls removeActivationKey when pressing remove icon', () => {
+      const testActivationKey = {
+        ...mockUseActivationKeysInitialValues.activationKeys[0],
+        active: false,
+      };
+      mockUseActivationKeysValues = {
+        ...mockUseActivationKeysInitialValues,
+        activationKeys: [testActivationKey],
+      };
+      render(Settings);
+      const removeActivationKeyButton = screen.getByRole('button', {
+        name: 'Delete activation key',
+      });
+      fireEvent.press(removeActivationKeyButton);
+      expect(mockRemoveActivationKey).toHaveBeenCalledWith('testKey1');
+    });
+  });
+
+  describe('Headless Playground entry', () => {
+    it('does not render the entry button when not an internal build', () => {
+      mockUseRampSDKValues = {
+        ...mockuseRampSDKInitialValues,
+        isInternalBuild: false,
+      };
+      render(Settings);
+      expect(
+        screen.queryByTestId(RAMP_SETTINGS_HEADLESS_PLAYGROUND_BUTTON_TEST_ID),
+      ).not.toBeOnTheScreen();
+    });
+
+    it('renders the entry button when on an internal build', () => {
+      mockUseRampSDKValues = {
+        ...mockuseRampSDKInitialValues,
+        isInternalBuild: true,
+      };
+      render(Settings);
+      expect(
+        screen.getByTestId(RAMP_SETTINGS_HEADLESS_PLAYGROUND_BUTTON_TEST_ID),
+      ).toBeOnTheScreen();
+    });
+
+    it('navigates to the headless playground when the entry button is pressed', () => {
+      mockUseRampSDKValues = {
+        ...mockuseRampSDKInitialValues,
+        isInternalBuild: true,
+      };
+      render(Settings);
+      const entryButton = screen.getByTestId(
+        RAMP_SETTINGS_HEADLESS_PLAYGROUND_BUTTON_TEST_ID,
+      );
+      fireEvent.press(entryButton);
+      expect(mockNavigate).toHaveBeenCalledWith(
+        Routes.RAMP.HEADLESS_PLAYGROUND,
+      );
+    });
+  });
+});

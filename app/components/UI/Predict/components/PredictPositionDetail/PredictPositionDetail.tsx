@@ -1,0 +1,226 @@
+import {
+  Box,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import { useIsFocused } from '@react-navigation/native';
+import React from 'react';
+import { Image } from 'expo-image';
+import { useSelector } from 'react-redux';
+import SensitiveText, {
+  SensitiveTextLength,
+} from '../../../../../component-library/components/Texts/SensitiveText';
+import {
+  TextVariant as ComponentTextVariant,
+  TextColor as ComponentTextColor,
+} from '../../../../../component-library/components/Texts/Text/Text.types';
+import { selectPrivacyMode } from '../../../../../selectors/preferencesController';
+import { PredictMarketDetailsSelectorsIDs } from '../../Predict.testIds';
+import { strings } from '../../../../../../locales/i18n';
+import Button, {
+  ButtonSize,
+  ButtonVariants,
+  ButtonWidthTypes,
+} from '../../../../../component-library/components/Buttons/Button';
+import { Skeleton } from '../../../../../component-library/components-temp/Skeleton';
+import {
+  PredictMarket,
+  PredictMarketStatus,
+  PredictPosition as PredictPositionType,
+  Side,
+} from '../../types';
+import { formatPercentage, formatPrice } from '../../utils/format';
+import {
+  getPredictPositionDisplay,
+  getPredictPositionNetValue,
+} from '../../utils/orders';
+import { selectPredictFeeCollectionFlag } from '../../selectors/featureFlags';
+import { usePredictOrderPreview } from '../../hooks/usePredictOrderPreview';
+import { usePredictCashOut } from '../../hooks/usePredictCashOut';
+
+interface PredictPositionProps {
+  position: PredictPositionType;
+  market: PredictMarket;
+  marketStatus: PredictMarketStatus;
+}
+
+const AUTO_REFRESH_TIMEOUT = 5000;
+
+const PredictPosition: React.FC<PredictPositionProps> = ({
+  position,
+  market,
+  marketStatus,
+}: PredictPositionProps) => {
+  const tw = useTailwind();
+  const privacyMode = useSelector(selectPrivacyMode);
+  const feeCollection = useSelector(selectPredictFeeCollectionFlag);
+
+  const { icon, initialValue, outcome, title, optimistic, size } = position;
+  const { onCashOut } = usePredictCashOut({
+    market,
+    callerName: 'PredictPositionDetail',
+  });
+
+  // Only auto-refresh when the screen is focused to avoid duplicate fetches
+  const isFocused = useIsFocused();
+
+  const autoRefreshTimeout =
+    isFocused && marketStatus === PredictMarketStatus.OPEN
+      ? AUTO_REFRESH_TIMEOUT
+      : undefined;
+
+  const { preview, isLoading: isPreviewLoading } = usePredictOrderPreview({
+    marketId: position.marketId,
+    outcomeId: position.outcomeId,
+    outcomeTokenId: position.outcomeTokenId,
+    side: Side.SELL,
+    size: position.size,
+    autoRefreshTimeout,
+  });
+
+  const netValue = getPredictPositionNetValue({
+    sellable: marketStatus === PredictMarketStatus.OPEN,
+    grossValue: position.currentValue,
+    preview,
+    feeCollection,
+  });
+  const { value: currentValue, percentPnl } = getPredictPositionDisplay({
+    initialValue,
+    netValue,
+  });
+
+  const groupItemTitle = market?.outcomes.find(
+    (o) => o.id === position.outcomeId && o.groupItemTitle,
+  )?.groupItemTitle;
+
+  const outcomeToken = market?.outcomes
+    .find(
+      (o) =>
+        o.id === position.outcomeId &&
+        o.tokens.find((t) => t.id === position.outcomeTokenId),
+    )
+    ?.tokens.find((t) => t.id === position.outcomeTokenId);
+
+  const renderValueText = () => {
+    if (marketStatus === PredictMarketStatus.OPEN) {
+      // Show skeleton for optimistic positions or while preview is loading
+      if (optimistic || isPreviewLoading) {
+        return <Skeleton width={70} height={20} />;
+      }
+      return (
+        <SensitiveText
+          variant={ComponentTextVariant.BodyMDMedium}
+          isHidden={privacyMode}
+          length={SensitiveTextLength.Short}
+        >
+          {formatPrice(currentValue, { maximumDecimals: 2 })}
+        </SensitiveText>
+      );
+    }
+
+    if (percentPnl > 0) {
+      return (
+        <SensitiveText
+          variant={ComponentTextVariant.BodyMD}
+          color={ComponentTextColor.Success}
+          isHidden={privacyMode}
+          length={SensitiveTextLength.Medium}
+        >
+          {strings('predict.market_details.won')}{' '}
+          {formatPrice(currentValue, { maximumDecimals: 2 })}
+        </SensitiveText>
+      );
+    }
+
+    return (
+      <SensitiveText
+        variant={ComponentTextVariant.BodyMD}
+        color={ComponentTextColor.Error}
+        isHidden={privacyMode}
+        length={SensitiveTextLength.Medium}
+      >
+        {strings('predict.market_details.lost')}{' '}
+        {formatPrice(initialValue, { maximumDecimals: 2 })}
+      </SensitiveText>
+    );
+  };
+
+  return (
+    <Box twClassName="w-full p-4 mb-4 gap-3 bg-background-muted rounded-xl justify-between">
+      <Box twClassName="flex-row items-start gap-4">
+        {Boolean(icon) && (
+          <Box twClassName="w-10 h-10 self-start mt-1">
+            <Image
+              source={{ uri: icon }}
+              contentFit="cover"
+              style={tw.style('w-full h-full rounded-lg')}
+            />
+          </Box>
+        )}
+        <Box twClassName="flex-1">
+          <Text
+            variant={TextVariant.BodyMd}
+            color={TextColor.TextDefault}
+            style={tw.style('font-medium')}
+            ellipsizeMode="tail"
+          >
+            {groupItemTitle ?? title}
+          </Text>
+          <SensitiveText
+            variant={ComponentTextVariant.BodySMMedium}
+            color={ComponentTextColor.Alternative}
+            isHidden={privacyMode}
+            length={SensitiveTextLength.Long}
+          >
+            {strings('predict.position_info', {
+              initialValue: formatPrice(initialValue, {
+                maximumDecimals: 2,
+              }),
+              outcome: outcomeToken?.title ?? outcome,
+              shares: formatPrice(size, {
+                maximumDecimals: 2,
+              }),
+            })}
+          </SensitiveText>
+        </Box>
+        <Box twClassName="items-end justify-end ml-auto shrink-0">
+          {renderValueText()}
+          {marketStatus === PredictMarketStatus.OPEN &&
+            (optimistic || isPreviewLoading ? (
+              <Skeleton width={55} height={16} style={tw.style('mt-1')} />
+            ) : (
+              <SensitiveText
+                variant={ComponentTextVariant.BodySMMedium}
+                color={
+                  percentPnl > 0
+                    ? ComponentTextColor.Success
+                    : ComponentTextColor.Error
+                }
+                isHidden={privacyMode}
+                length={SensitiveTextLength.Short}
+              >
+                {formatPercentage(percentPnl)}
+              </SensitiveText>
+            ))}
+        </Box>
+      </Box>
+      {marketStatus === PredictMarketStatus.OPEN && (
+        <Button
+          testID={
+            PredictMarketDetailsSelectorsIDs.MARKET_DETAILS_CASH_OUT_BUTTON
+          }
+          variant={ButtonVariants.Secondary}
+          size={ButtonSize.Lg}
+          width={ButtonWidthTypes.Full}
+          label={strings('predict.cash_out')}
+          onPress={() => onCashOut(position)}
+          isDisabled={optimistic}
+        />
+      )}
+    </Box>
+  );
+};
+
+export default PredictPosition;

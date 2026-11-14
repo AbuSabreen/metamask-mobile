@@ -2,9 +2,10 @@ import migration from './033';
 import { merge } from 'lodash';
 import initialRootState from '../../util/test/initial-root-state';
 import { captureException } from '@sentry/react-native';
-import { CHAIN_IDS } from '@metamask/transaction-controller/dist/constants';
+import { CHAIN_IDS } from '@metamask/transaction-controller';
 import { GOERLI, SEPOLIA } from '../../../app/constants/network';
 import NetworkList from '../../../app/util/networks';
+import { getErrorMessage } from '../../util/test/getErrorMessage';
 
 const oldState = {
   engine: {
@@ -118,7 +119,7 @@ describe('Migration #33', () => {
 
       expect(newState).toStrictEqual(state);
       expect(mockedCaptureException).toHaveBeenCalledWith(expect.any(Error));
-      expect(mockedCaptureException.mock.calls[0][0].message).toBe(
+      expect(getErrorMessage(mockedCaptureException.mock.calls[0][0])).toBe(
         errorMessage,
       );
     });

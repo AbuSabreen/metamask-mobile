@@ -1,42 +1,82 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
-import { createSnapsMethodMiddleware } from '@metamask/snaps-rpc-methods';
 import {
-  RequestedPermissions,
-  SubjectType,
-} from '@metamask/permission-controller';
+  createSnapsMethodMiddleware,
+  type PermittedRpcMethodHooks,
+} from '@metamask/snaps-rpc-methods';
+import { SubjectType } from '@metamask/permission-controller';
+import { Json } from '@metamask/utils';
+import { captureException } from '@sentry/react-native';
+import { AppState } from 'react-native';
+import { getVersion } from 'react-native-device-info';
 
-// Snaps middleware
-/*
-    from extension https://github.dev/MetaMask/metamask-extension/blob/1d5e8a78400d7aaaf2b3cbdb30cff9399061df34/app/scripts/metamask-controller.js#L3830-L3861
-    */
+import { keyringSnapPermissionsBuilder } from '../SnapKeyring/keyringSnapsPermissions';
+import { RootExtendedMessenger, GlobalActions, GlobalEvents } from '../Engine';
+import { analytics } from '../../util/analytics/analytics';
+import { AnalyticsEventBuilder } from '../../util/analytics/AnalyticsEventBuilder';
+import { endTrace, trace } from '../../util/trace';
+
+export const trackSnapEvent = (eventPayload: {
+  event: string;
+  properties?: Record<string, Json>;
+  sensitiveProperties?: Record<string, Json>;
+}) => {
+  analytics.trackEvent(
+    AnalyticsEventBuilder.createEventBuilder(eventPayload.event)
+      .addProperties(eventPayload.properties)
+      .addSensitiveProperties(eventPayload.sensitiveProperties)
+      .build(),
+  );
+};
+
 const snapMethodMiddlewareBuilder = (
-  engineContext: any,
-  controllerMessenger: any,
+  controllerMessenger: RootExtendedMessenger,
   origin: string,
   subjectType: SubjectType,
 ) =>
-  createSnapsMethodMiddleware(subjectType === SubjectType.Snap, {
-    getUnlockPromise: () => Promise.resolve(),
-    getSnaps: controllerMessenger.call.bind(
-      controllerMessenger,
-      'SnapController:getPermitted',
-      origin,
-    ),
-    requestPermissions: async (requestedPermissions: RequestedPermissions) =>
-      await engineContext.PermissionController.requestPermissions(
-        { origin },
-        requestedPermissions,
-      ),
-    getPermissions: engineContext.PermissionController.getPermissions.bind(
-      engineContext.PermissionController,
-      origin,
-    ),
-    installSnaps: controllerMessenger.call.bind(
-      controllerMessenger,
-      'SnapController:install',
-      origin,
-    ),
-  });
+  createSnapsMethodMiddleware(
+    subjectType === SubjectType.Snap,
+    {
+      getUnlockPromise: async () => {
+        if (controllerMessenger.call('KeyringController:isUnlocked')) {
+          return;
+        }
+        await controllerMessenger.waitUntil('KeyringController:unlock');
+      },
+      getAllowedKeyringMethods: keyringSnapPermissionsBuilder(origin),
+      // Website origins are full dapp URLs, and Sentry tags skip URL scrubbing.
+      trackError: (error: Error) => {
+        if (subjectType !== SubjectType.Snap) {
+          return captureException(error);
+        }
+        return captureException(error, {
+          tags: { feature: 'snaps', snap_id: origin },
+        });
+      },
+      trackEvent: trackSnapEvent,
+      getIsActive: () =>
+        AppState.currentState === 'active' &&
+        controllerMessenger.call('KeyringController:isUnlocked'),
+      getVersion: () => {
+        const baseVersion = getVersion();
+        const buildType = process.env.METAMASK_BUILD_TYPE;
+
+        if (buildType === 'main' || buildType === 'qa') {
+          return baseVersion;
+        }
+
+        return `${baseVersion}-${buildType}.0`;
+      },
+      getMessenger: ({ actions, events }) =>
+        controllerMessenger.buildChild<string, GlobalActions, GlobalEvents>({
+          namespace: origin,
+          actions: (actions ?? []) as GlobalActions['type'][],
+          events: (events ?? []) as GlobalEvents['type'][],
+        }) as ReturnType<PermittedRpcMethodHooks['getMessenger']>,
+      // @ts-expect-error Type 'string' is not assignable to type 'TraceName'.
+      startTrace: trace,
+      // @ts-expect-error Type 'string' is not assignable to type 'TraceName'.
+      endTrace,
+    },
+    controllerMessenger,
+  );
 
 export default snapMethodMiddlewareBuilder;
-///: END:ONLY_INCLUDE_IF

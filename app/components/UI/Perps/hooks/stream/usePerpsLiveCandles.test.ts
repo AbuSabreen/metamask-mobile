@@ -1,0 +1,573 @@
+import { renderHook, act } from '@testing-library/react-native';
+import { usePerpsLiveCandles } from './usePerpsLiveCandles';
+import {
+  CandlePeriod,
+  TimeDuration,
+  type CandleData,
+} from '@metamask/perps-controller';
+
+// Mock the stream provider
+const mockCandleSubscribe = jest.fn();
+const mockFetchHistoricalCandles = jest.fn();
+const mockPerpsStream = {
+  candles: {
+    subscribe: mockCandleSubscribe,
+    fetchHistoricalCandles: mockFetchHistoricalCandles,
+  },
+};
+
+jest.mock('../../providers/PerpsStreamManager', () => ({
+  usePerpsStream: jest.fn(() => mockPerpsStream),
+}));
+
+// Mock DevLogger to suppress logs in tests
+jest.mock('../../../../../core/SDKConnect/utils/DevLogger');
+
+describe('usePerpsLiveCandles', () => {
+  const mockCandleData: CandleData = {
+    symbol: 'BTC',
+    interval: CandlePeriod.OneHour,
+    candles: [
+      {
+        time: 1700000000000,
+        open: '50000',
+        high: '51000',
+        low: '49000',
+        close: '50500',
+        volume: '100',
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFetchHistoricalCandles.mockReset();
+  });
+
+  it('subscribes to candles on mount', () => {
+    mockCandleSubscribe.mockReturnValue(jest.fn());
+
+    renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    expect(mockCandleSubscribe).toHaveBeenCalledWith({
+      symbol: 'BTC',
+      interval: CandlePeriod.OneHour,
+      duration: TimeDuration.OneDay,
+      callback: expect.any(Function),
+      onDelivery: expect.any(Function),
+      throttleMs: 1000,
+      onError: expect.any(Function),
+    });
+  });
+
+  it('unsubscribes on unmount', () => {
+    const mockUnsubscribe = jest.fn();
+    mockCandleSubscribe.mockReturnValue(mockUnsubscribe);
+
+    const { unmount } = renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    unmount();
+
+    expect(mockUnsubscribe).toHaveBeenCalled();
+  });
+
+  it('resubscribes when symbol changes', () => {
+    const mockUnsubscribe = jest.fn();
+    mockCandleSubscribe.mockReturnValue(mockUnsubscribe);
+
+    const { rerender } = renderHook(
+      ({ symbol }) =>
+        usePerpsLiveCandles({
+          symbol,
+          interval: CandlePeriod.OneHour,
+          duration: TimeDuration.OneDay,
+        }),
+      {
+        initialProps: { symbol: 'BTC' },
+      },
+    );
+
+    expect(mockCandleSubscribe).toHaveBeenCalledTimes(1);
+
+    // Change symbol
+    rerender({ symbol: 'ETH' });
+
+    // Should unsubscribe from old and subscribe to new
+    expect(mockUnsubscribe).toHaveBeenCalled();
+    expect(mockCandleSubscribe).toHaveBeenCalledTimes(2);
+    expect(mockCandleSubscribe).toHaveBeenLastCalledWith({
+      symbol: 'ETH',
+      interval: CandlePeriod.OneHour,
+      duration: TimeDuration.OneDay,
+      callback: expect.any(Function),
+      onDelivery: expect.any(Function),
+      throttleMs: 1000,
+      onError: expect.any(Function),
+    });
+  });
+
+  it('ignores callbacks from a replaced symbol subscription', () => {
+    const callbacks: ((data: CandleData) => void)[] = [];
+    mockCandleSubscribe.mockImplementation(({ callback }) => {
+      callbacks.push(callback);
+      return jest.fn();
+    });
+    const { result, rerender } = renderHook(
+      ({ symbol }) =>
+        usePerpsLiveCandles({
+          symbol,
+          interval: CandlePeriod.OneHour,
+          duration: TimeDuration.OneDay,
+        }),
+      { initialProps: { symbol: 'BTC' } },
+    );
+
+    rerender({ symbol: 'ETH' });
+    act(() => callbacks[1]({ ...mockCandleData, symbol: 'ETH' }));
+    act(() => callbacks[0](mockCandleData));
+
+    expect(result.current.candleData?.symbol).toBe('ETH');
+  });
+
+  it('resubscribes when interval changes', () => {
+    const mockUnsubscribe = jest.fn();
+    mockCandleSubscribe.mockReturnValue(mockUnsubscribe);
+
+    const { rerender } = renderHook(
+      ({ interval }) =>
+        usePerpsLiveCandles({
+          symbol: 'BTC',
+          interval,
+          duration: TimeDuration.OneDay,
+        }),
+      {
+        initialProps: { interval: CandlePeriod.OneHour },
+      },
+    );
+
+    expect(mockCandleSubscribe).toHaveBeenCalledTimes(1);
+
+    // Change interval
+    rerender({ interval: CandlePeriod.FiveMinutes });
+
+    // Should resubscribe
+    expect(mockUnsubscribe).toHaveBeenCalled();
+    expect(mockCandleSubscribe).toHaveBeenCalledTimes(2);
+    expect(mockCandleSubscribe).toHaveBeenLastCalledWith({
+      symbol: 'BTC',
+      interval: CandlePeriod.FiveMinutes,
+      duration: TimeDuration.OneDay,
+      callback: expect.any(Function),
+      onDelivery: expect.any(Function),
+      throttleMs: 1000,
+      onError: expect.any(Function),
+    });
+  });
+
+  it('waits for a new market context before accepting candles', () => {
+    const callbacks: ((data: CandleData) => void)[] = [];
+    const deliveryCallbacks: ((source: 'cache' | 'fresh') => void)[] = [];
+    mockCandleSubscribe.mockImplementation(({ callback, onDelivery }) => {
+      callbacks.push(callback);
+      deliveryCallbacks.push(onDelivery);
+      return jest.fn();
+    });
+
+    const { result, rerender } = renderHook(
+      ({ enabled, resetKey }) =>
+        usePerpsLiveCandles({
+          symbol: 'BTC',
+          interval: CandlePeriod.OneHour,
+          duration: TimeDuration.OneDay,
+          enabled,
+          resetKey,
+        }),
+      { initialProps: { enabled: true, resetKey: 'testnet|hyperliquid|1' } },
+    );
+
+    act(() => {
+      callbacks[0](mockCandleData);
+      deliveryCallbacks[0]('cache');
+    });
+    expect(result.current.candleData).toBe(mockCandleData);
+    expect(result.current.deliveryRevision).toBe(0);
+
+    act(() => {
+      callbacks[0](mockCandleData);
+      deliveryCallbacks[0]('fresh');
+    });
+    expect(result.current.candleData).toBe(mockCandleData);
+    expect(result.current.deliveryRevision).toBe(1);
+
+    rerender({ enabled: false, resetKey: 'mainnet|hyperliquid|1' });
+    expect(result.current.candleData).toBeNull();
+    expect(result.current.deliveryRevision).toBe(1);
+    expect(mockCandleSubscribe).toHaveBeenCalledTimes(1);
+
+    rerender({ enabled: true, resetKey: 'mainnet|hyperliquid|1' });
+    expect(mockCandleSubscribe).toHaveBeenCalledTimes(2);
+    expect(result.current.candleData).toBeNull();
+    expect(result.current.deliveryRevision).toBe(1);
+
+    act(() => {
+      callbacks[1](mockCandleData);
+      deliveryCallbacks[1]('fresh');
+    });
+    expect(result.current.candleData).toBe(mockCandleData);
+    expect(result.current.deliveryRevision).toBe(2);
+  });
+
+  it('handles empty symbol gracefully', () => {
+    mockCandleSubscribe.mockReturnValue(jest.fn());
+
+    const { result } = renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: '',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    // Empty symbol returns stable empty data object, not null
+    expect(result.current.candleData).toEqual({
+      symbol: '',
+      interval: CandlePeriod.OneHour,
+      candles: [],
+    });
+    expect(result.current.isLoading).toBe(false);
+    expect(mockCandleSubscribe).not.toHaveBeenCalled();
+  });
+
+  it('rejects updates with mismatched symbol', async () => {
+    let capturedCallback: (data: CandleData) => void = jest.fn();
+    mockCandleSubscribe.mockImplementation((params) => {
+      capturedCallback = params.callback;
+      return jest.fn();
+    });
+
+    const { result } = renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    // Send update for wrong symbol
+    const wrongSymbolData: CandleData = {
+      ...mockCandleData,
+      symbol: 'ETH',
+    };
+
+    act(() => {
+      capturedCallback(wrongSymbolData);
+    });
+
+    // Should not update
+    expect(result.current.candleData).toBeNull();
+    expect(result.current.isLoading).toBe(true);
+  });
+
+  it('rejects updates with mismatched interval', async () => {
+    let capturedCallback: (data: CandleData) => void = jest.fn();
+    mockCandleSubscribe.mockImplementation((params) => {
+      capturedCallback = params.callback;
+      return jest.fn();
+    });
+
+    const { result } = renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    // Send update for wrong interval
+    const wrongIntervalData: CandleData = {
+      ...mockCandleData,
+      interval: CandlePeriod.FiveMinutes,
+    };
+
+    act(() => {
+      capturedCallback(wrongIntervalData);
+    });
+
+    // Should not update
+    expect(result.current.candleData).toBeNull();
+    expect(result.current.isLoading).toBe(true);
+  });
+
+  it('ignores null or undefined updates', () => {
+    let capturedCallback: (data: CandleData) => void = jest.fn();
+    mockCandleSubscribe.mockImplementation((params) => {
+      capturedCallback = params.callback;
+      return jest.fn();
+    });
+
+    const { result } = renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    // Send null
+    act(() => {
+      capturedCallback(null as unknown as CandleData);
+    });
+
+    // Should not update state
+    expect(result.current.candleData).toBeNull();
+    expect(result.current.isLoading).toBe(true);
+
+    // Send undefined
+    act(() => {
+      capturedCallback(undefined as unknown as CandleData);
+    });
+
+    // Should not update state
+    expect(result.current.candleData).toBeNull();
+    expect(result.current.isLoading).toBe(true);
+  });
+
+  it('uses default throttle of 1000ms', () => {
+    mockCandleSubscribe.mockReturnValue(jest.fn());
+
+    renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    expect(mockCandleSubscribe).toHaveBeenCalledWith({
+      symbol: 'BTC',
+      interval: CandlePeriod.OneHour,
+      duration: TimeDuration.OneDay,
+      callback: expect.any(Function),
+      onDelivery: expect.any(Function),
+      throttleMs: 1000,
+      onError: expect.any(Function),
+    });
+  });
+
+  it('resets state when symbol changes', () => {
+    mockCandleSubscribe.mockReturnValue(jest.fn());
+
+    const { result, rerender } = renderHook(
+      ({ symbol }) =>
+        usePerpsLiveCandles({
+          symbol,
+          interval: CandlePeriod.OneHour,
+          duration: TimeDuration.OneDay,
+        }),
+      {
+        initialProps: { symbol: 'BTC' },
+      },
+    );
+
+    // Verify initial state
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.candleData).toBeNull();
+
+    rerender({ symbol: 'ETH' });
+
+    // State should be reset for new symbol
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.candleData).toBeNull();
+  });
+
+  it('resets state when interval changes', () => {
+    mockCandleSubscribe.mockReturnValue(jest.fn());
+
+    const { result, rerender } = renderHook(
+      ({ interval }) =>
+        usePerpsLiveCandles({
+          symbol: 'BTC',
+          interval,
+          duration: TimeDuration.OneDay,
+        }),
+      {
+        initialProps: { interval: CandlePeriod.OneHour },
+      },
+    );
+
+    // Verify initial state
+    expect(result.current.isLoading).toBe(true);
+
+    rerender({ interval: CandlePeriod.FiveMinutes });
+
+    // State should be reset for new interval
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.candleData).toBeNull();
+  });
+
+  it('resubscribes when duration changes', () => {
+    const mockUnsubscribe = jest.fn();
+    mockCandleSubscribe.mockReturnValue(mockUnsubscribe);
+
+    const { rerender } = renderHook(
+      ({ duration }) =>
+        usePerpsLiveCandles({
+          symbol: 'BTC',
+          interval: CandlePeriod.OneHour,
+          duration,
+        }),
+      {
+        initialProps: { duration: TimeDuration.OneDay },
+      },
+    );
+
+    expect(mockCandleSubscribe).toHaveBeenCalledTimes(1);
+
+    rerender({ duration: TimeDuration.OneWeek });
+
+    expect(mockUnsubscribe).toHaveBeenCalled();
+    expect(mockCandleSubscribe).toHaveBeenCalledTimes(2);
+    expect(mockCandleSubscribe).toHaveBeenLastCalledWith({
+      symbol: 'BTC',
+      interval: CandlePeriod.OneHour,
+      duration: TimeDuration.OneWeek,
+      callback: expect.any(Function),
+      onDelivery: expect.any(Function),
+      throttleMs: 1000,
+      onError: expect.any(Function),
+    });
+  });
+
+  it('passes custom throttleMs to subscription', () => {
+    mockCandleSubscribe.mockReturnValue(jest.fn());
+
+    renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+        throttleMs: 2000,
+      }),
+    );
+
+    expect(mockCandleSubscribe).toHaveBeenCalledWith({
+      symbol: 'BTC',
+      interval: CandlePeriod.OneHour,
+      duration: TimeDuration.OneDay,
+      callback: expect.any(Function),
+      onDelivery: expect.any(Function),
+      throttleMs: 2000,
+      onError: expect.any(Function),
+    });
+  });
+
+  it('handles subscription error gracefully', () => {
+    const subscriptionError = new Error('WebSocket connection failed');
+    mockCandleSubscribe.mockImplementation(() => {
+      throw subscriptionError;
+    });
+
+    const { result } = renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    expect(result.current.error).toEqual(subscriptionError);
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.candleData).toBeNull();
+  });
+
+  it('does not fetch more history when symbol is empty', async () => {
+    mockCandleSubscribe.mockReturnValue(jest.fn());
+
+    const { result } = renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: '',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.fetchMoreHistory();
+    });
+
+    expect(mockFetchHistoricalCandles).not.toHaveBeenCalled();
+    expect(result.current.isLoadingMore).toBe(false);
+  });
+
+  it('fetches more historical candles successfully', async () => {
+    mockCandleSubscribe.mockReturnValue(jest.fn());
+    mockFetchHistoricalCandles.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.fetchMoreHistory();
+    });
+
+    expect(mockFetchHistoricalCandles).toHaveBeenCalledWith(
+      'BTC',
+      CandlePeriod.OneHour,
+      TimeDuration.OneDay,
+    );
+  });
+
+  it('sets isLoadingMore during fetch', async () => {
+    let resolvePromise: (() => void) | undefined;
+    const fetchPromise = new Promise<void>((resolve) => {
+      resolvePromise = resolve;
+    });
+
+    mockCandleSubscribe.mockReturnValue(jest.fn());
+    mockFetchHistoricalCandles.mockReturnValue(fetchPromise);
+
+    const { result } = renderHook(() =>
+      usePerpsLiveCandles({
+        symbol: 'BTC',
+        interval: CandlePeriod.OneHour,
+        duration: TimeDuration.OneDay,
+      }),
+    );
+
+    let fetchPromiseFromHook: Promise<void> | undefined;
+
+    act(() => {
+      fetchPromiseFromHook = result.current.fetchMoreHistory();
+    });
+
+    expect(result.current.isLoadingMore).toBe(true);
+
+    await act(async () => {
+      if (resolvePromise) {
+        resolvePromise();
+      }
+      if (fetchPromiseFromHook) {
+        await fetchPromiseFromHook;
+      }
+    });
+
+    expect(result.current.isLoadingMore).toBe(false);
+  });
+});

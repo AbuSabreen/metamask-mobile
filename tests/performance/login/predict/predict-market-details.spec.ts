@@ -1,0 +1,134 @@
+import { test as perfTest } from '../../../framework/fixtures/playwright';
+import TimerHelper from '../../../framework/TimerHelper';
+import { loginToAppPlaywright } from '../../../flows/wallet.flow';
+import { AppiumAssertions } from '../../../framework';
+import TabBarComponent from '../../../page-objects/wallet/TabBarComponent';
+import WalletActionsBottomSheet from '../../../page-objects/wallet/WalletActionsBottomSheet';
+import PredictHome from '../../../page-objects/Predict/PredictHome';
+import PredictFeedView from '../../../page-objects/Predict/PredictFeedView';
+import PredictDetailsPage from '../../../page-objects/Predict/PredictDetailsPage';
+import { Performance, PerformancePredict } from '../../../tags.performance.js';
+import ToastModal from '../../../page-objects/wallet/ToastModal.js';
+import WalletView from '../../../page-objects/wallet/WalletView.js';
+import { enableHermesAppProfiling } from '../../helpers/appProfiling';
+
+/*
+ * Scenario: Predict Market Details Performance Test
+ *
+ * This test measures how long it takes to complete the market details flow
+ * under 4G network conditions (default for e2e tests).
+ *
+ * Test Setup:
+ * - Account with access to Predict markets and at least one market card
+ *
+ * The test measures:
+ * 1. Time to navigate to Predict tab
+ * 2. Time to open market details
+ * 3. Time to open About tab content
+ * 4. Time to open Outcomes tab content when available
+ */
+perfTest.describe(`${Performance} ${PerformancePredict}`, () => {
+  perfTest.setTimeout(15 * 60 * 1000);
+
+  perfTest(
+    'Predict Market Details - Complete Flow Performance',
+    { tag: '@team-predict' },
+    async ({ currentDeviceDetails, driver, performanceTracker }, testInfo) => {
+      // Login to the app
+      await loginToAppPlaywright();
+
+      // Timer 1: Navigate to Predict tab
+      const timer1 = new TimerHelper(
+        'Time since user taps Predict button until Predict Market List is displayed',
+        { ios: 8000, android: 5000 },
+        currentDeviceDetails.platform,
+      );
+      await ToastModal.waitForToastToDismiss();
+      await enableHermesAppProfiling();
+      await WalletView.scrollAndTapPredictionsSection();
+      await timer1.measure(async () => {
+        await AppiumAssertions.expectElementToBeVisible(PredictHome.container);
+      });
+
+      await PredictHome.tapCategoryTile('politics');
+      await PredictFeedView.waitForScreenToDisplay({
+        description: 'Predict politics feed should be visible',
+      });
+
+      // Timer 2: Open market details
+      const timer2 = new TimerHelper(
+        'Time since user taps market card until Market Detail screen is visible',
+        { ios: 1500, android: 1800 },
+        currentDeviceDetails.platform,
+      );
+
+      await PredictFeedView.tapMarketCard(1);
+      await timer2.measure(async () => {
+        await AppiumAssertions.expectElementToBeVisible(
+          PredictDetailsPage.container,
+        );
+      });
+
+      // Timer 3: Open About tab
+      const timer3 = new TimerHelper(
+        'Time since user taps About tab until About tab is visible',
+        { ios: 750, android: 2500 },
+        currentDeviceDetails.platform,
+      );
+
+      await PredictDetailsPage.tapAboutTab();
+      await timer3.measure(async () => {
+        await AppiumAssertions.expectElementToBeVisible(
+          PredictDetailsPage.aboutTabContent,
+        );
+      });
+
+      const timersToAdd = [timer1, timer2, timer3];
+      let timer4: TimerHelper | undefined;
+
+      const hasOutcomesTab = await (
+        await PredictDetailsPage.outcomesTab
+      ).isVisible();
+
+      if (hasOutcomesTab) {
+        // Timer 4: Open Outcomes tab
+        timer4 = new TimerHelper(
+          'Time since user taps Outcomes tab until Outcomes tab is visible',
+          { ios: 750, android: 4000 },
+          currentDeviceDetails.platform,
+        );
+
+        await PredictDetailsPage.tapOutcomesTab();
+
+        await timer4.measure(async () => {
+          await AppiumAssertions.expectElementToBeVisible(
+            PredictDetailsPage.outcomesTabContent,
+          );
+        });
+
+        timersToAdd.push(timer4);
+      }
+
+      // Add all timers to performance tracker
+      performanceTracker.addTimers(...timersToAdd);
+
+      // Attach performance metrics to test report
+
+      console.log('Predict Market Details Performance Test completed');
+      console.log(`Navigate to Predict: ${timer1.getDuration()}ms`);
+      console.log(`Open Market Details: ${timer2.getDuration()}ms`);
+      console.log(`Open About Tab: ${timer3.getDuration()}ms`);
+      if (timer4) {
+        console.log(`Open Outcomes Tab: ${timer4.getDuration()}ms`);
+      }
+      console.log(
+        `Total Time: ${
+          (timer1.getDuration() ?? 0) +
+          (timer2.getDuration() ?? 0) +
+          (timer3.getDuration() ?? 0) +
+          (timer4?.getDuration() ?? 0)
+        }ms`,
+      );
+    },
+  );
+});

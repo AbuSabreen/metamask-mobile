@@ -1,0 +1,54 @@
+name: Release Branch Sync
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - stable
+
+jobs:
+  validate-branch:
+    name: Validate release branch format
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    outputs:
+      is-valid: ${{ steps.check.outputs.is-valid }}
+    steps:
+      - name: Check branch name format
+        id: check
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [[ "$BRANCH" =~ ^release/[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Branch '$BRANCH' starts with release/X.Y.Z"
+            echo "is-valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Branch '$BRANCH' does not start with release/X.Y.Z. Skipping."
+            echo "is-valid=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  sync-release-branches:
+    name: Sync open release branches with stable
+    needs: validate-branch
+    if: needs.validate-branch.outputs.is-valid == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required by MetaMask/github-tools/.github/actions/get-token
+    steps:
+      - name: Get token
+        id: get-token
+        uses: MetaMask/github-tools/.github/actions/get-token@v1
+        with:
+          token-exchange-url: ${{ vars.TOKEN_EXCHANGE_URL }}
+          permissions: |
+            contents: write
+            pull_requests: write
+            workflows: write
+      - name: Sync release branches with stable
+        uses: metamask/github-tools/.github/actions/release-branch-sync@v1
+        with:
+          merged-release-branch: ${{ github.event.pull_request.head.ref }}
+          github-token: ${{ steps.get-token.outputs.token }}

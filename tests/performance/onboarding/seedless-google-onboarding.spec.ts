@@ -1,0 +1,158 @@
+import { test } from '../../framework/fixtures/playwright';
+import TimerHelper from '../../framework/TimerHelper';
+import { AppiumAssertions, AppiumGestures } from '../../framework';
+import { getPasswordForScenario } from '../../framework/utils/TestConstants.js';
+import {
+  closePredictModal,
+  dismissPushNotificationExistingUserSheet,
+} from '../../flows/wallet.flow';
+import {
+  Performance,
+  System,
+  PerformanceOnboarding,
+} from '../../tags.performance.js';
+import OnboardingView from '../../page-objects/Onboarding/OnboardingView';
+import OnboardingSheet from '../../page-objects/Onboarding/OnboardingSheet';
+import SocialLoginView from '../../page-objects/Onboarding/SocialLoginView';
+import CreatePasswordView from '../../page-objects/Onboarding/CreatePasswordView';
+import WalletView from '../../page-objects/wallet/WalletView';
+import LoginView from '../../page-objects/wallet/LoginView';
+import { measureCreatePasswordToWalletHome } from './helpers/seedlessOnboardingTimers';
+import {
+  captureOnboardingTtc,
+  trackTimer,
+} from './helpers/captureOnboardingTtc';
+import type { OnboardingScreenId } from '../../../app/hooks/performance/onboardingPerformanceIds';
+
+const waitForFirstSuccessful = async <T>(promises: Promise<T>[]): Promise<T> =>
+  await new Promise<T>((resolve, reject) => {
+    let rejectedCount = 0;
+
+    promises.forEach((promise) => {
+      promise.then(resolve).catch(() => {
+        rejectedCount += 1;
+        if (rejectedCount === promises.length) {
+          reject(new Error('All screen detection promises failed'));
+        }
+      });
+    });
+  });
+
+/* Seedless Onboarding: Google Login */
+test.describe(`${Performance} ${System} ${PerformanceOnboarding}`, () => {
+  test.setTimeout(360000);
+
+  test(
+    'Seedless Onboarding: Google Login New User',
+    { tag: '@metamask-onboarding-team' },
+    async ({ currentDeviceDetails, driver, performanceTracker }, testInfo) => {
+      const platform = currentDeviceDetails.platform;
+      const timer1 = new TimerHelper(
+        'Google: Tap "Create new wallet" → OnboardingSheet visible',
+        { ios: 1500, android: 2000 },
+        platform,
+      );
+      const timer2 = new TimerHelper(
+        'Google: Tap Google login → post-OAuth screen visible',
+        { ios: 15000, android: 5000 },
+        platform,
+      );
+      const timer3 = new TimerHelper(
+        'Google: Post-OAuth action → Password fields visible',
+        { ios: 4000, android: 4000 },
+        platform,
+      );
+      const timer4 = new TimerHelper(
+        'Google: Final onboarding action → wallet main screen visible',
+        { ios: 30000, android: 5000 },
+        platform,
+      );
+
+      const password = getPasswordForScenario('onboarding') ?? '';
+
+      await OnboardingView.tapCreateNewWalletButton();
+      await timer1.measure(async () => {
+        await AppiumAssertions.expectElementToBeVisible(
+          OnboardingSheet.googleLoginButton,
+          {
+            description: 'Google login button should be visible',
+          },
+        );
+      });
+      // Track immediately — do not Appium-poll TTC before OAuth tap.
+      trackTimer(performanceTracker, timer1);
+
+      await OnboardingSheet.tapGoogleLoginButton();
+      await SocialLoginView.dismissUpdateModalIfPresent();
+
+      let isNewUser = true;
+      let postOauthScreen: OnboardingScreenId = 'choose_pw';
+
+      await timer2.measure(async () => {
+        const result = await waitForFirstSuccessful([
+          CreatePasswordView.isVisible().then(() => 'new_user'),
+          SocialLoginView.isAccountFoundScreenVisible().then(
+            () => 'existing_user',
+          ),
+        ]);
+        isNewUser = result === 'new_user';
+        postOauthScreen =
+          result === 'new_user' ? 'choose_pw' : 'account_already_exists';
+      });
+      trackTimer(performanceTracker, timer2);
+      await captureOnboardingTtc(performanceTracker, postOauthScreen, platform);
+
+      if (isNewUser) {
+        await CreatePasswordView.enterPassword(password);
+        await CreatePasswordView.reEnterPassword(password);
+        await AppiumGestures.hideKeyboard();
+        try {
+          await CreatePasswordView.ensureMarketingOptInChecked();
+        } catch (error) {
+          console.error('Error ensuring marketing opt-in checked:', error);
+        }
+        await CreatePasswordView.tapCreatePasswordButton();
+        await measureCreatePasswordToWalletHome(timer4);
+        trackTimer(performanceTracker, timer4);
+        // Sheet probe was recorded in-app earlier; read it only after OAuth.
+        await captureOnboardingTtc(
+          performanceTracker,
+          'onboarding_sheet',
+          platform,
+        );
+
+        await dismissPushNotificationExistingUserSheet();
+        await closePredictModal();
+      } else {
+        await SocialLoginView.tapAccountFoundLoginButton();
+        await timer3.measure(async () => {
+          await LoginView.waitForScreenToDisplay();
+        });
+        trackTimer(performanceTracker, timer3);
+        await captureOnboardingTtc(
+          performanceTracker,
+          'social_rehydrate',
+          platform,
+        );
+        await captureOnboardingTtc(
+          performanceTracker,
+          'onboarding_sheet',
+          platform,
+        );
+
+        await LoginView.enterPassword(password);
+        await LoginView.tapLoginButton();
+
+        await timer4.measure(async () => {
+          await AppiumAssertions.expectElementToBeVisible(
+            WalletView.container,
+            {
+              description: 'Wallet main screen should be visible',
+            },
+          );
+        });
+        trackTimer(performanceTracker, timer4);
+      }
+    },
+  );
+});

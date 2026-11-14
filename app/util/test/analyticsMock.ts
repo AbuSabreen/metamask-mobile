@@ -1,0 +1,161 @@
+/**
+ * Reusable analytics mock for unit tests
+ * Provides a standard mock implementation of the analytics module
+ * that can be used across test files for consistency
+ */
+
+import type { UseAnalyticsHook } from '../../components/hooks/useAnalytics/useAnalytics.types';
+import {
+  AnalyticsEventBuilder,
+  type AnalyticsTrackingEvent,
+} from '../analytics/AnalyticsEventBuilder';
+
+export interface MockAnalytics {
+  isEnabled: jest.Mock<boolean, []>;
+  trackEvent: jest.Mock<void, [event: unknown]>;
+  optIn: jest.Mock<Promise<void>, []>;
+  optOut: jest.Mock<Promise<void>, []>;
+  getAnalyticsId: jest.Mock<Promise<string>, []>;
+  identify: jest.Mock<void, [traits?: unknown]>;
+  trackView: jest.Mock<void, [name: string, properties?: unknown]>;
+  isOptedIn: jest.Mock<Promise<boolean>, []>;
+}
+
+/**
+ * Create a mock analytics object with default implementations
+ * All methods are jest mocks that can be configured per test
+ *
+ * @param overrides - Optional overrides for specific methods
+ * @returns Mock analytics object
+ */
+export function createMockAnalytics(
+  overrides?: Partial<MockAnalytics>,
+): MockAnalytics {
+  const defaultMock: MockAnalytics = {
+    isEnabled: jest.fn<boolean, []>().mockReturnValue(false),
+    trackEvent: jest.fn(),
+    optIn: jest.fn().mockResolvedValue(undefined),
+    optOut: jest.fn().mockResolvedValue(undefined),
+    getAnalyticsId: jest.fn().mockResolvedValue('test-analytics-id'),
+    identify: jest.fn(),
+    trackView: jest.fn(),
+    isOptedIn: jest.fn().mockResolvedValue(false),
+  };
+
+  return { ...defaultMock, ...overrides };
+}
+
+/**
+ * Jest mock factory for the analytics module
+ * Use this in jest.mock() calls
+ *
+ * @param overrides - Optional overrides for specific methods
+ * @returns Jest mock module
+ */
+export function createAnalyticsMockModule(overrides?: Partial<MockAnalytics>) {
+  const mockAnalytics = createMockAnalytics(overrides);
+  return {
+    analytics: mockAnalytics,
+  };
+}
+
+/**
+ * Creates a fresh `UseAnalyticsHook` mock on every call.
+ *
+ * Always use this factory rather than a shared constant, since
+ * `jest.resetAllMocks()` / `jest.clearAllMocks()` wipe mock implementations
+ * on any shared jest.fn() reference.
+ *
+ * @example
+ * jest.mocked(useAnalytics).mockReturnValue(
+ *   createMockUseAnalyticsHook({ trackEvent: mockTrackEvent }),
+ * );
+ *
+ * @example with beforeEach reset
+ * beforeEach(() => {
+ *   jest.resetAllMocks();
+ *   jest.mocked(useAnalytics).mockReturnValue(createMockUseAnalyticsHook());
+ * });
+ */
+export const createMockUseAnalyticsHook = (
+  overrides?: Partial<UseAnalyticsHook>,
+): UseAnalyticsHook => ({
+  trackEvent: jest.fn(),
+  createEventBuilder: jest.fn(() => ({
+    addProperties: jest.fn().mockReturnThis(),
+    addSensitiveProperties: jest.fn().mockReturnThis(),
+    removeProperties: jest.fn().mockReturnThis(),
+    removeSensitiveProperties: jest.fn().mockReturnThis(),
+    build: jest.fn().mockReturnValue({
+      name: 'mock-event',
+      properties: {},
+      sensitiveProperties: {},
+    }),
+  })),
+  isEnabled: jest.fn().mockReturnValue(true),
+  identify: jest.fn().mockResolvedValue(undefined),
+  enable: jest.fn().mockResolvedValue(undefined),
+  createDataDeletionTask: jest.fn().mockResolvedValue({ status: 'ok' }),
+  checkDataDeleteStatus: jest.fn().mockResolvedValue({
+    deletionRequestDate: undefined,
+    dataDeletionRequestStatus: 'UNKNOWN',
+  }),
+  getDeleteRegulationCreationDate: jest.fn().mockReturnValue('20/04/2024'),
+  getDeleteRegulationId: jest.fn().mockReturnValue('mock-regulation-id'),
+  getAnalyticsId: jest.fn().mockResolvedValue('mock-analytics-id'),
+  ...overrides,
+});
+
+/**
+ * Creates a fresh mock event-builder on every call.
+ *
+ * Mirrors the shape returned by `AnalyticsEventBuilder.createEventBuilder`.
+ * Use this factory wherever a test needs a standalone builder double, keeping
+ * each test isolated from shared state on jest mocks.
+ *
+ * @param buildReturnValue - Optional custom value for `build()` to return.
+ * Defaults to a minimal `AnalyticsTrackingEvent`-compatible object.
+ *
+ * @example
+ * const mockCreateEventBuilder = jest.fn(() => createMockEventBuilder());
+ * jest.mocked(useAnalytics).mockReturnValue(
+ *   createMockUseAnalyticsHook({ createEventBuilder: mockCreateEventBuilder }),
+ * );
+ */
+/**
+ * Configures a mocked `useAnalytics` hook for external link tracking tests.
+ * Call from `beforeEach` after `jest.mock('.../useAnalytics')`.
+ */
+export const configureUseAnalyticsExternalLinkMock = (
+  trackEventMock: jest.Mock = jest.fn(),
+): jest.Mock => {
+  const { useAnalytics } = jest.requireMock(
+    '../../components/hooks/useAnalytics/useAnalytics',
+  ) as {
+    useAnalytics: jest.Mock<UseAnalyticsHook, []>;
+  };
+
+  useAnalytics.mockReturnValue(
+    createMockUseAnalyticsHook({
+      trackEvent: trackEventMock,
+      createEventBuilder: AnalyticsEventBuilder.createEventBuilder,
+    }),
+  );
+  return trackEventMock;
+};
+
+export const createMockEventBuilder = (
+  buildReturnValue?: AnalyticsTrackingEvent,
+) => ({
+  addProperties: jest.fn().mockReturnThis(),
+  addSensitiveProperties: jest.fn().mockReturnThis(),
+  removeProperties: jest.fn().mockReturnThis(),
+  removeSensitiveProperties: jest.fn().mockReturnThis(),
+  build: jest.fn().mockReturnValue(
+    buildReturnValue ?? {
+      name: 'mock-event',
+      properties: {},
+      sensitiveProperties: {},
+    },
+  ),
+});

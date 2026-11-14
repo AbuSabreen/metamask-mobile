@@ -1,54 +1,45 @@
 import {
-  AccountTrackerState,
+  AccountTrackerControllerState,
   CurrencyRateState,
-  NftDetectionController,
-  NftState,
-  TokenDetectionController,
-  TokenListState,
-  TokenRatesState,
-  TokensState,
+  NftControllerState,
+  TokenRatesControllerState,
+  TokensControllerState,
   TokenBalancesControllerState,
 } from '@metamask/assets-controllers';
-import SwapsController from '@metamask/swaps-controller';
 import { NetworkState } from '@metamask/network-controller';
-import { AddressBookState } from '@metamask/address-book-controller';
-import { BaseState } from '@metamask/base-controller';
+import { AddressBookControllerState } from '@metamask/address-book-controller';
 import { KeyringControllerMemState } from '@metamask/keyring-controller';
 import { PreferencesState } from '@metamask/preferences-controller';
 import { PhishingControllerState } from '@metamask/phishing-controller';
-import { TransactionState } from '@metamask/transaction-controller';
+import { RampsControllerState } from '@metamask/ramps-controller';
+import { TransactionControllerState } from '@metamask/transaction-controller';
 import { GasFeeController } from '@metamask/gas-fee-controller';
-import { PPOMState } from '@metamask/ppom-validator';
 import { ApprovalControllerState } from '@metamask/approval-controller';
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
+import { AccountsControllerState } from '@metamask/accounts-controller';
+import { AccountTreeControllerState } from '@metamask/account-tree-controller';
 import { SnapController } from '@metamask/snaps-controllers';
-///: END:ONLY_INCLUDE_IF
+
 export interface EngineState {
   engine: {
     backgroundState: {
-      AccountTrackerController: AccountTrackerState;
-      AddressBookController: AddressBookState;
-      AssetsContractController: BaseState;
-      NftController: NftState;
-      TokenListController: TokenListState;
+      AccountTrackerController: AccountTrackerControllerState;
+      AddressBookController: AddressBookControllerState;
+      NftController: NftControllerState;
       CurrencyRateController: CurrencyRateState;
       KeyringController: KeyringControllerMemState;
       NetworkController: NetworkState;
       PreferencesController: PreferencesState;
       PhishingController: PhishingControllerState;
-      PPOMController: PPOMState;
+      RampsController: RampsControllerState;
       TokenBalancesController: TokenBalancesControllerState;
-      TokenRatesController: TokenRatesState;
-      TransactionController: TransactionState;
-      SwapsController: SwapsController;
-      ///: BEGIN:ONLY_INCLUDE_IF(snaps)
+      TokenRatesController: TokenRatesControllerState;
+      TransactionController: TransactionControllerState;
       SnapController: SnapController;
-      ///: END:ONLY_INCLUDE_IF
       GasFeeController: GasFeeController;
-      TokensController: TokensState;
-      TokenDetectionController: TokenDetectionController;
-      NftDetectionController: NftDetectionController;
+      TokensController: TokensControllerState;
       ApprovalController: ApprovalControllerState;
+      AccountsController: AccountsControllerState;
+      AccountTreeController: AccountTreeControllerState;
     };
   };
 }

@@ -25,12 +25,25 @@ It is recommended to install a Ruby version manager such as [rbenv](https://gith
 
 Install ruby version defined in the file `.ruby-version`
 
+<details>
+  <summary>Troubleshooting</summary>
+
+```bash
+  # Inspect that ruby is in path
+  which ruby
+
+  # Ensure you are using the correct ruby version
+  ruby --version
+```
+
+</details>
+
 ### Gems
 
 Install [`bundler`](https://bundler.io/) gem to manage and install gems such as Cocoapods. The `bundle install` command, which is run during `yarn setup` handles installing gem versions as specified in the project's `GemFile`
 
 ```bash
-gem install bundler -v 2.5.8 && bundle install
+gem install bundler -v 2.5.8 && bundle install --gemfile=ios/Gemfile
 ```
 
 ### Xcode
@@ -47,19 +60,59 @@ To install a simulator, open Xcode > Settings... (or Preferences...) and select 
 
 If you are using Xcode version 14.0 or greater than to install a simulator, open Xcode > Settings > Platforms tab, then click "+" icon and select iOS… option.
 
+You might need to install `applesimutils` as well if is not installed by default with Xcode:
+
+```bash
+brew tap wix/brew
+brew install applesimutils
+```
+
 ### Node
 
 It is recommended to install a Node version manager such as [nodenv](https://github.com/nodenv/nodenv?tab=readme-ov-file#installation), [nvm](https://github.com/nvm-sh/nvm?tab=readme-ov-file#installing-and-updating), [asdf](https://asdf-vm.com/guide/getting-started.html#_3-install-asdf)
 
 Install node version defined in the file `.nvmrc`
 
-### Yarn v1
+### Yarn v4
 
-With the correct Node version installed, Yarn v1 can be installed sudo-less in your system using `npm`
+Ensure you are using the correct yarn version (yarn v4.14.1) as noted in the `package.json`.
+
+<details>
+  <summary>Install Yarn v4 using corepack (recommended)</summary>
 
 ```bash
-npm install -g yarn
+corepack enable
+corepack prepare yarn@4.14.1 --activate
+
+# check yarn version (should show 4.14.1)
+yarn --version
 ```
+
+</details>
+
+<details>
+  <summary>Install Yarn v4 with NPM</summary>
+
+```bash
+npm install -g yarn@4.14.1
+
+# check yarn version (should show 4.14.1)
+yarn --version
+```
+
+</details>
+
+<details>
+  <summary>Use project's bundled Yarn (no global install needed)</summary>
+
+The project includes its own Yarn v4.14.1 binary at `.yarn/releases/yarn-4.14.1.cjs`. If you have any version of Yarn installed, the project will automatically use the correct version thanks to the `.yarnrc.yml` configuration.
+
+```bash
+# check yarn version (should show 4.14.1 when run from project directory)
+yarn --version
+```
+
+</details>
 
 ## Android
 
@@ -71,7 +124,7 @@ Install [Android Studio](https://developer.android.com/studio)
   - Select `SDK Tools` tab
   - Check `Show Package Details` option below the tools list to show available versions
   - Locate `NDK (Side-by-side)` option in the tools list
-  - Check NDK version `24.0.8215888`
+  - Check NDK version `26.1.10909125`
   - Locate `CMake` option in the tools list
   - Check CMake version `3.22.1`
   - Click "Apply" or "OK" to download

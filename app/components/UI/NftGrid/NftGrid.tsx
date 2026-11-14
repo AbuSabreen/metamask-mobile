@@ -1,0 +1,394 @@
+import React, {
+  useMemo,
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
+import { RefreshControl } from 'react-native';
+import type { TabRefreshHandle } from '../../Views/Wallet/types';
+import { useNftRefresh } from './useNftRefresh';
+import { FlashList } from '@shopify/flash-list';
+import { useSelector } from 'react-redux';
+import { RootState } from '../../../reducers';
+import { RefreshTestId } from './constants';
+import { endTrace, trace, TraceName } from '../../../util/trace';
+import { Nft } from '@metamask/assets-controllers';
+import {
+  isNftFetchingProgressSelector,
+  multichainCollectiblesByEnabledNetworksSelector,
+} from '../../../reducers/collectibles';
+import { selectSelectedAccountGroupInternalAccounts } from '../../../selectors/multichainAccounts/accountTreeController';
+import NftGridItem from './NftGridItem';
+import NftGridItemBottomSheet from './NftGridItemBottomSheet';
+import NftGridHeader from './NftGridHeader';
+import NftGridSkeleton from './NftGridSkeleton';
+import NftSkeletonCell from './NftSkeletonCell';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { CollectiblesEmptyState } from '../CollectiblesEmptyState';
+import { WalletViewSelectorsIDs } from '../../Views/Wallet/WalletView.testIds';
+import {
+  Box,
+  Button,
+  ButtonVariant,
+  IconName as DSIconName,
+} from '@metamask/design-system-react-native';
+import BasicFunctionalityEmptyState from '../BasicFunctionality/BasicFunctionalityEmptyState/BasicFunctionalityEmptyState';
+import { selectBasicFunctionalityEnabled } from '../../../selectors/settings';
+import Routes from '../../../constants/navigation/Routes';
+import { strings } from '../../../../locales/i18n';
+import BaseControlBar from '../shared/BaseControlBar';
+import ButtonIcon, {
+  ButtonIconSizes,
+} from '../../../component-library/components/Buttons/ButtonIcon';
+import { IconName } from '../../../component-library/components/Icons/Icon';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import { useTheme } from '../../../util/theme';
+import { useNftDetection } from '../../hooks/useNftDetection';
+
+interface NftGridProps {
+  isFullView?: boolean;
+}
+
+interface SkeletonSentinel {
+  skeleton: true;
+  key: string;
+}
+type GridItem = Nft | SkeletonSentinel;
+
+const NftGridContent = ({
+  allFilteredCollectibles,
+  nftRowList,
+  goToAddCollectible,
+  isAddNFTEnabled,
+  isFullView = false,
+}: {
+  allFilteredCollectibles: Nft[];
+  nftRowList: React.ReactNode;
+  goToAddCollectible: () => void;
+  isAddNFTEnabled: boolean;
+  isFullView?: boolean;
+}) => {
+  const isNftFetchingProgress = useSelector(isNftFetchingProgressSelector);
+
+  if (allFilteredCollectibles.length > 0) {
+    return <>{nftRowList}</>;
+  }
+
+  if (isNftFetchingProgress) {
+    return <NftGridSkeleton isFullView={isFullView} />;
+  }
+
+  return (
+    <CollectiblesEmptyState
+      onAction={goToAddCollectible}
+      actionButtonProps={{
+        testID: WalletViewSelectorsIDs.IMPORT_NFT_BUTTON,
+        isDisabled: !isAddNFTEnabled,
+      }}
+      twClassName="mx-auto mt-4"
+      testID="collectibles-empty-state"
+    />
+  );
+};
+
+const NftGrid = forwardRef<TabRefreshHandle, NftGridProps>(
+  ({ isFullView = false }, ref) => {
+    const navigation = useNavigation<AppNavigationProp>();
+    const { trackEvent, createEventBuilder } = useAnalytics();
+    const [isAddNFTEnabled, setIsAddNFTEnabled] = useState(true);
+    const [longPressedCollectible, setLongPressedCollectible] =
+      useState<Nft | null>(null);
+    const tw = useTailwind();
+    const { colors } = useTheme();
+    const { refreshing, onRefresh } = useNftRefresh();
+
+    useImperativeHandle(ref, () => ({
+      refresh: onRefresh,
+    }));
+
+    const nftSource = isFullView ? 'mobile-nft-list-page' : 'mobile-nft-list';
+
+    const selectedGroupAccounts = useSelector(
+      selectSelectedAccountGroupInternalAccounts,
+    );
+    const isBasicFunctionalityEnabled = useSelector(
+      selectBasicFunctionalityEnabled,
+    );
+
+    const addressesOverride = useMemo(
+      () =>
+        selectedGroupAccounts?.length > 0
+          ? selectedGroupAccounts.map((a) => a.address)
+          : undefined,
+      [selectedGroupAccounts],
+    );
+
+    const collectiblesByEnabledNetworks: Record<string, Nft[]> = useSelector(
+      (state: RootState) =>
+        (
+          multichainCollectiblesByEnabledNetworksSelector as (
+            s: RootState,
+            preferredChainIds?: string[],
+            addressesOverride?: string[],
+          ) => Record<string, Nft[]>
+        )(state, undefined, addressesOverride),
+    );
+
+    const { detectNfts, abortDetection, chainIdsToDetectNftsFor } =
+      useNftDetection();
+
+    const isInitialMount = useRef(true);
+    const hasTrackedScreenViewRef = useRef(false);
+    const hasSeenNftFetchingRef = useRef(false);
+
+    const isNftFetchingProgress = useSelector(isNftFetchingProgressSelector);
+
+    // Mark that a fetch has been initiated (useFocusEffect/detectNfts sets isNftFetchingProgress
+    // to true). Only track "Position Screen Viewed" after at least one fetch cycle, so we don't
+    // fire with stale empty data before detection runs (isNftFetchingProgress defaults to false).
+    useEffect(() => {
+      if (isNftFetchingProgress) {
+        hasSeenNftFetchingRef.current = true;
+      }
+    }, [isNftFetchingProgress]);
+
+    const allFilteredCollectibles: Nft[] = useMemo(() => {
+      trace({ name: TraceName.LoadCollectibles });
+
+      const source = Object.values(collectiblesByEnabledNetworks).flat();
+      const owned = source.filter((c) => c.isCurrentlyOwned);
+
+      endTrace({ name: TraceName.LoadCollectibles });
+      return owned;
+    }, [collectiblesByEnabledNetworks]);
+
+    const maxItems = useMemo(() => {
+      if (isFullView) {
+        return undefined;
+      }
+      return 18;
+    }, [isFullView]);
+
+    const collectiblesToRender: Nft[] = useMemo(() => {
+      const itemsToProcess = maxItems
+        ? allFilteredCollectibles.slice(0, maxItems)
+        : allFilteredCollectibles;
+
+      return itemsToProcess;
+    }, [allFilteredCollectibles, maxItems]);
+
+    useEffect(() => {
+      if (
+        !isFullView ||
+        isNftFetchingProgress ||
+        !hasSeenNftFetchingRef.current ||
+        hasTrackedScreenViewRef.current
+      )
+        return;
+      hasTrackedScreenViewRef.current = true;
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.POSITION_SCREEN_VIEWED)
+          .addProperties({
+            item_count: allFilteredCollectibles.length,
+            location: 'homepage',
+            is_empty: allFilteredCollectibles.length === 0,
+            screen_type: 'nfts',
+          })
+          .build(),
+      );
+    }, [
+      isFullView,
+      isNftFetchingProgress,
+      allFilteredCollectibles.length,
+      trackEvent,
+      createEventBuilder,
+    ]);
+
+    // Trigger NFT detection when enabled networks change (after initial mount)
+    useEffect(() => {
+      if (isInitialMount.current) {
+        isInitialMount.current = false;
+        return;
+      }
+
+      detectNfts();
+    }, [chainIdsToDetectNftsFor, detectNfts]);
+
+    // Trigger NFT detection when the full view is focused
+    useFocusEffect(
+      useCallback(() => {
+        if (isFullView) {
+          detectNfts(false); // Fetch all pages for full view
+        }
+
+        // Cleanup: abort detection when screen loses focus or unmounts
+        return () => {
+          if (isFullView) {
+            abortDetection();
+          }
+        };
+      }, [isFullView, detectNfts, abortDetection]),
+    );
+
+    const goToAddCollectible = useCallback(() => {
+      setIsAddNFTEnabled(false);
+      navigation.navigate('AddAsset', { assetType: 'collectible' });
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.WALLET_ADD_COLLECTIBLES)
+          .addProperties({ action: 'Wallet View', name: 'Add Collectibles' })
+          .build(),
+      );
+      setIsAddNFTEnabled(true);
+    }, [navigation, trackEvent, createEventBuilder]);
+
+    const handleLongPress = useCallback((nft: Nft) => {
+      setLongPressedCollectible(nft);
+    }, []);
+
+    const handleViewAllNfts = useCallback(() => {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.VIEW_ALL_ASSETS_CLICKED)
+          .addProperties({ asset_type: 'NFT' })
+          .build(),
+      );
+      navigation.navigate(Routes.WALLET.NFTS_FULL_VIEW);
+    }, [navigation, trackEvent, createEventBuilder]);
+
+    // Append skeleton sentinels after real NFTs so empty slots shimmer while detecting.
+    // Count = slots needed to complete the current row + 6 full extra slots.
+    // e.g. 5 NFTs → 1 to complete row + 6 = 7 skeletons; 4 NFTs → 2 + 6 = 8.
+    const gridData: GridItem[] = useMemo(() => {
+      if (!isNftFetchingProgress) return collectiblesToRender;
+      const rowRemainder = (3 - (collectiblesToRender.length % 3)) % 3;
+      const skeletonCount = rowRemainder + 6;
+      const skeletonItems: SkeletonSentinel[] = Array.from(
+        { length: skeletonCount },
+        (_, i) => ({ skeleton: true as const, key: `skeleton-${i}` }),
+      );
+      return [...collectiblesToRender, ...skeletonItems];
+    }, [collectiblesToRender, isNftFetchingProgress]);
+
+    const nftRowList = useMemo(
+      () => (
+        <FlashList
+          data={gridData}
+          renderItem={({ item, index }: { item: GridItem; index: number }) => {
+            const padding = ['pr-2', 'px-1', 'pl-2'][index % 3];
+            if ('skeleton' in item) {
+              return (
+                <Box twClassName={padding}>
+                  <NftSkeletonCell />
+                </Box>
+              );
+            }
+            return (
+              <Box twClassName={padding}>
+                <NftGridItem
+                  item={item}
+                  onLongPress={handleLongPress}
+                  source={nftSource}
+                />
+              </Box>
+            );
+          }}
+          keyExtractor={(item: GridItem) =>
+            'skeleton' in item
+              ? item.key
+              : `${item.chainId}-${item.address}-${item.tokenId}`
+          }
+          testID={RefreshTestId}
+          refreshControl={
+            <RefreshControl
+              colors={[colors.primary.default]}
+              tintColor={colors.icon.default}
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+            />
+          }
+          contentContainerStyle={!isFullView ? undefined : tw`px-4`}
+          scrollEnabled={isFullView}
+          numColumns={3}
+        />
+      ),
+      [
+        gridData,
+        isFullView,
+        handleLongPress,
+        nftSource,
+        tw,
+        colors,
+        refreshing,
+        onRefresh,
+      ],
+    );
+
+    // NFT media, metadata, and detection all come from external services, so
+    // the whole surface is unavailable rather than partially usable.
+    if (!isBasicFunctionalityEnabled) {
+      return (
+        <BasicFunctionalityEmptyState
+          title={strings('wallet.nfts_unavailable_title')}
+          iconName={DSIconName.Warning}
+        />
+      );
+    }
+
+    return (
+      <>
+        <BaseControlBar
+          networkFilterTestId={WalletViewSelectorsIDs.TOKEN_NETWORK_FILTER}
+          customWrapper={'outer'}
+          additionalButtons={
+            <ButtonIcon
+              testID={WalletViewSelectorsIDs.IMPORT_TOKEN_BUTTON}
+              size={ButtonIconSizes.Md}
+              onPress={goToAddCollectible}
+              iconName={IconName.Add}
+            />
+          }
+          hideSort
+          style={isFullView ? tw`px-4 pb-4` : tw`pb-3`}
+        />
+
+        <NftGridHeader />
+
+        <NftGridContent
+          allFilteredCollectibles={allFilteredCollectibles}
+          nftRowList={nftRowList}
+          goToAddCollectible={goToAddCollectible}
+          isAddNFTEnabled={isAddNFTEnabled}
+          isFullView={isFullView}
+        />
+
+        {/* View all NFTs button - shown when there are more items than maxItems */}
+        {maxItems && allFilteredCollectibles.length > maxItems && (
+          <Box twClassName="pt-3 pb-9">
+            <Button
+              variant={ButtonVariant.Secondary}
+              onPress={handleViewAllNfts}
+              isFullWidth
+              testID="view-all-nfts-button"
+            >
+              {strings('wallet.view_all_nfts')}
+            </Button>
+          </Box>
+        )}
+        <NftGridItemBottomSheet
+          isVisible={longPressedCollectible !== null}
+          onClose={() => setLongPressedCollectible(null)}
+          nft={longPressedCollectible}
+        />
+      </>
+    );
+  },
+);
+
+NftGrid.displayName = 'NftGrid';
+
+export default NftGrid;

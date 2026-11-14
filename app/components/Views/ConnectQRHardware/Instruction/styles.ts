@@ -1,9 +1,9 @@
 import { StyleSheet } from 'react-native';
 import { fontStyles } from '../../../../styles/common';
 import { Theme } from '../../../../util/theme/models';
+import { EdgeInsets } from 'react-native-safe-area-context';
 
-// eslint-disable-next-line import/prefer-default-export
-export const createStyles = (theme: Theme) =>
+export const createStyles = (theme: Theme, insets: EdgeInsets) =>
   StyleSheet.create({
     wrapper: {
       flex: 1,
@@ -13,7 +13,7 @@ export const createStyles = (theme: Theme) =>
     container: {
       flexDirection: 'column',
       alignItems: 'center',
-      paddingHorizontal: 32,
+      paddingHorizontal: 16,
     },
     scrollWrapper: {
       width: '100%',
@@ -41,23 +41,15 @@ export const createStyles = (theme: Theme) =>
       ...fontStyles.bold,
     },
     bottom: {
-      alignItems: 'center',
-      height: 80,
-      justifyContent: 'space-between',
+      width: '100%',
+      paddingHorizontal: 16,
+      marginBottom: insets.bottom + 20,
+    },
+    buttonContainer: {
+      width: '100%',
     },
     button: {
       padding: 5,
-      paddingHorizontal: '30%',
-    },
-    buttonText: {
-      color: theme.brandColors.white000,
-      ...fontStyles.normal,
-    },
-    image: {
-      width: 240,
-      height: 96,
-      marginTop: 20,
-      marginBottom: 20,
     },
     keystone: {
       color: theme.colors.text.default,

@@ -3,22 +3,36 @@ import { render } from '@testing-library/react-native';
 import { BigNumber } from 'bignumber.js';
 
 import BalanceChangeRow from './BalanceChangeRow';
-import { BalanceChange } from '../types';
-
-jest.mock('../FiatDisplay/FiatDisplay', () => ({
-  IndividualFiatDisplay: 'IndividualFiatDisplay',
-}));
-
-const balanceChangeMock = {
-  asset: {
-    type: 'ERC20',
-    address: '0xabc123',
-  },
-  amount: new BigNumber(100),
-} as BalanceChange;
+import { AssetType, BalanceChange } from '../types';
 
 jest.mock('../AmountPill/AmountPill', () => 'AmountPill');
 jest.mock('../AssetPill/AssetPill', () => 'AssetPill');
+jest.mock('../FiatDisplay/FiatDisplay', () => ({
+  IndividualFiatDisplay: 'IndividualFiatDisplay',
+}));
+jest.mock(
+  '../../../Views/confirmations/hooks/metrics/useConfirmationAlertMetrics',
+  () => ({
+    useConfirmationAlertMetrics: () => ({
+      trackInlineAlertClicked: jest.fn(),
+      trackAlertActionClicked: jest.fn(),
+      trackAlertRendered: jest.fn(),
+    }),
+  }),
+);
+
+const CHAIN_ID_MOCK = '0x123';
+
+const balanceChangeMock: BalanceChange = {
+  asset: {
+    type: AssetType.ERC20,
+    address: '0xabc123',
+    chainId: CHAIN_ID_MOCK,
+  },
+  amount: new BigNumber(100),
+  fiatAmount: 0,
+  usdAmount: 0,
+} as BalanceChange;
 
 describe('BalanceChangeList', () => {
   it('renders a balance change row', () => {
@@ -63,5 +77,54 @@ describe('BalanceChangeList', () => {
     const container = queryByTestId('balance-change-row-fiat-display');
 
     expect(container).toBeNull();
+  });
+
+  it('adds EditSpendingCapButton component if onApprovalAmountUpdate is defined', () => {
+    const { getByTestId } = render(
+      <BalanceChangeRow
+        showFiat={false}
+        balanceChange={balanceChangeMock}
+        onApprovalAmountUpdate={() => Promise.resolve()}
+      />,
+    );
+
+    expect(getByTestId('edit-spending-cap-button')).toBeTruthy();
+  });
+
+  it('renders an alert row if there are incoming tokens and a label is provided', () => {
+    const { getByTestId, queryByTestId } = render(
+      <BalanceChangeRow
+        showFiat={false}
+        balanceChange={balanceChangeMock}
+        label="You received"
+        hasIncomingTokens
+      />,
+    );
+    expect(getByTestId('info-row')).toBeTruthy();
+    expect(queryByTestId('balance-change-row-label')).toBeNull();
+  });
+
+  it('does not render an alert row if there are no incoming tokens', () => {
+    const { getByTestId, queryByTestId } = render(
+      <BalanceChangeRow
+        showFiat={false}
+        balanceChange={balanceChangeMock}
+        label="You received"
+        hasIncomingTokens={false}
+      />,
+    );
+    expect(getByTestId('balance-change-row-label')).toBeTruthy();
+    expect(queryByTestId('info-row')).toBeNull();
+  });
+
+  it('does not render an alert row if no label is provided', () => {
+    const { queryByTestId } = render(
+      <BalanceChangeRow
+        showFiat={false}
+        balanceChange={balanceChangeMock}
+        hasIncomingTokens
+      />,
+    );
+    expect(queryByTestId('info-row')).toBeNull();
   });
 });

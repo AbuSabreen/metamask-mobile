@@ -1,141 +1,265 @@
-import React, { FC, useCallback, useEffect, useState } from 'react';
-import { Linking, ScrollView, Switch, View } from 'react-native';
+import React, { useCallback } from 'react';
+import { Alert, ScrollView, Switch, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { MMKV } from 'react-native-mmkv';
 import { strings } from '../../../../../locales/i18n';
-import { colors as importedColors } from '../../../../styles/common';
+import Engine from '../../../../core/Engine';
 import { useTheme } from '../../../../util/theme';
-import Text, {
-  TextVariant,
+import {
+  Button,
+  ButtonVariant,
+  ButtonSize,
+  FontWeight,
+  Text,
   TextColor,
-} from '../../../../component-library/components/Texts/Text';
-import { getNavigationOptionsTitle } from '../../../UI/Navbar';
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import Routes from '../../../../../app/constants/navigation/Routes';
+import { selectPerformanceMetrics } from '../../../../core/redux/slices/performance';
+import { useDispatch, useSelector } from 'react-redux';
+import { isTestEnvironment } from '../../../../util/test/utils';
+import ReactNativeBlobUtil from 'react-native-blob-util';
+import Share from 'react-native-share';
+import {
+  getApplicationName,
+  getVersion,
+  getBuildNumber,
+} from 'react-native-device-info';
+import {
+  selectIsDaimoDemo,
+  setIsDaimoDemo,
+} from '../../../../core/redux/slices/card';
+import { NON_PRODUCTION_ENVIRONMENTS } from '../../../UI/Card/constants';
+import { selectIsCardAuthenticated } from '../../../../selectors/cardController';
+import { ExperimentalSelectorsIDs } from './ExperimentalView.testIds';
 import { Props } from './ExperimentalSettings.types';
 import createStyles from './ExperimentalSettings.styles';
-import Button, {
-  ButtonVariants,
-  ButtonSize,
-  ButtonWidthTypes,
-} from '../../../../component-library/components/Buttons/Button';
-import Device from '../../../../../app/util/device';
-import { SES_URL } from '../../../../../app/constants/urls';
-import Routes from '../../../../../app/constants/navigation/Routes';
-
-const storage = new MMKV(); // id: mmkv.default
+import HeaderStandardGlass from '../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../selectors/featureFlagController/glassHeaders';
 
 /**
  * Main view for app Experimental Settings
  */
-const ExperimentalSettings = ({ navigation, route }: Props) => {
-  const [sesEnabled, setSesEnabled] = useState(
-    storage.getBoolean('is-ses-enabled'),
-  );
-
-  const toggleSesEnabled = () => {
-    storage.set('is-ses-enabled', !sesEnabled);
-    setSesEnabled(!sesEnabled);
-  };
-
-  const isFullScreenModal = route?.params?.isFullScreenModal;
+const ExperimentalSettings = ({ navigation }: Props) => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const dispatch = useDispatch();
+  const performanceMetrics = useSelector(selectPerformanceMetrics);
+  const isDaimoDemo = useSelector(selectIsDaimoDemo);
+  const isCardAuthenticated = useSelector(selectIsCardAuthenticated);
 
   const theme = useTheme();
-  const { colors } = theme;
+  const { colors, brandColors } = theme;
   const styles = createStyles(colors);
 
-  useEffect(
-    () => {
-      navigation.setOptions(
-        getNavigationOptionsTitle(
-          strings('app_settings.experimental_title'),
-          navigation,
-          isFullScreenModal,
-          colors,
-          null,
-        ),
-      );
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [colors],
+  const canShowDaimoDemoToggle = NON_PRODUCTION_ENVIRONMENTS.includes(
+    process.env.METAMASK_ENVIRONMENT ?? '',
   );
 
-  const goToWalletConnectSessions = useCallback(() => {
-    navigation.navigate(Routes.WALLET.WALLET_CONNECT_SESSIONS_VIEW);
+  const handleBack = useCallback(() => {
+    navigation.goBack();
   }, [navigation]);
 
-  const openSesLink = () => Linking.openURL(SES_URL);
+  const goToWalletConnectSessions = () => {
+    navigation.navigate(Routes.WALLET.WALLET_CONNECT_SESSIONS_VIEW);
+  };
 
-  const WalletConnectSettings: FC = () => (
+  const renderWalletConnectSettings = () => (
     <>
-      <Text color={TextColor.Default} variant={TextVariant.BodyLGMedium}>
+      <Text
+        color={TextColor.TextDefault}
+        variant={TextVariant.BodyMd}
+        fontWeight={FontWeight.Medium}
+      >
         {strings('experimental_settings.wallet_connect_dapps')}
       </Text>
       <Text
-        color={TextColor.Alternative}
-        variant={TextVariant.BodyMD}
+        color={TextColor.TextAlternative}
+        variant={TextVariant.BodySm}
+        fontWeight={FontWeight.Medium}
         style={styles.desc}
       >
         {strings('experimental_settings.wallet_connect_dapps_desc')}
       </Text>
       <Button
-        variant={ButtonVariants.Secondary}
+        variant={ButtonVariant.Secondary}
         size={ButtonSize.Lg}
-        label={strings('experimental_settings.wallet_connect_dapps_cta')}
         onPress={goToWalletConnectSessions}
-        width={ButtonWidthTypes.Full}
+        isFullWidth
         style={styles.accessory}
-      />
+      >
+        {strings('experimental_settings.wallet_connect_dapps_cta')}
+      </Button>
     </>
   );
 
-  const SesSettings: FC = () => (
-    <>
-      <Text
-        color={TextColor.Default}
-        variant={TextVariant.HeadingLG}
-        style={styles.heading}
-      >
-        {strings('app_settings.security_heading')}
-      </Text>
-      <View style={styles.setting}>
-        <View style={styles.switchElement}>
-          <Text color={TextColor.Default} variant={TextVariant.BodyLGMedium}>
-            {strings('app_settings.ses_heading')}
-          </Text>
+  const handleDaimoDemoToggle = (value: boolean) => {
+    dispatch(setIsDaimoDemo(value));
+  };
+
+  const renderDaimoDemoSettings = () => (
+    <View style={styles.heading}>
+      <View style={styles.titleContainer}>
+        <Text
+          color={TextColor.TextDefault}
+          variant={TextVariant.BodyMd}
+          fontWeight={FontWeight.Medium}
+          style={styles.title}
+        >
+          {strings('experimental_settings.daimo_demo_title')}
+        </Text>
+        <View style={styles.toggleWrap}>
           <Switch
-            value={sesEnabled}
-            onValueChange={toggleSesEnabled}
+            value={isDaimoDemo}
+            onValueChange={handleDaimoDemoToggle}
+            testID="is-daimo-demo-switch"
             trackColor={{
               true: colors.primary.default,
               false: colors.border.muted,
             }}
-            thumbColor={importedColors.white}
-            style={styles.switch}
+            thumbColor={brandColors.white}
             ios_backgroundColor={colors.border.muted}
+            accessibilityLabel={strings(
+              'experimental_settings.daimo_demo_title',
+            )}
           />
         </View>
-        <Text
-          color={TextColor.Alternative}
-          variant={TextVariant.BodyMD}
-          style={styles.desc}
-        >
-          {strings('app_settings.ses_description')}{' '}
-          <Button
-            variant={ButtonVariants.Link}
-            size={ButtonSize.Auto}
-            onPress={openSesLink}
-            label={strings('app_settings.ses_link')}
-          />
-          .
-        </Text>
       </View>
-    </>
+      <Text
+        color={TextColor.TextAlternative}
+        variant={TextVariant.BodySm}
+        fontWeight={FontWeight.Medium}
+        style={styles.desc}
+      >
+        {strings('experimental_settings.daimo_demo_desc')}
+      </Text>
+    </View>
   );
 
+  const downloadPerformanceMetrics = async () => {
+    try {
+      const appName = await getApplicationName();
+      const appVersion = await getVersion();
+      const buildNumber = await getBuildNumber();
+
+      // Create a filename with timestamp
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `performance-metrics-${timestamp}.json`;
+
+      // Get the document directory path
+      const documentDir = ReactNativeBlobUtil.fs.dirs.DocumentDir;
+      const filePath = `${documentDir}/${filename}`;
+
+      // Convert performance metrics to JSON string
+      const jsonData = JSON.stringify(performanceMetrics, null, 2);
+
+      // Write the file
+      await ReactNativeBlobUtil.fs.writeFile(filePath, jsonData, 'utf8');
+
+      // Share the file
+      await Share.open({
+        title: `${appName} Performance Metrics - v${appVersion} (${buildNumber})`,
+        subject: `${appName} Performance Metrics - v${appVersion} (${buildNumber})`,
+        url: `file://${filePath}`,
+        type: 'application/json',
+      });
+    } catch (error) {
+      console.error('Error downloading performance metrics:', error);
+    }
+  };
+
+  const handleCardLogout = () => {
+    Alert.alert(
+      strings('card.card_home.logout_confirmation_title'),
+      strings('card.card_home.logout_confirmation_message'),
+      [
+        {
+          text: strings('card.card_home.logout_confirmation_cancel'),
+          style: 'cancel',
+        },
+        {
+          text: strings('card.card_home.logout_confirmation_confirm'),
+          style: 'destructive',
+          onPress: () => {
+            Engine.context.CardController.logout().catch(() => {
+              // CardController logs provider logout failures itself.
+            });
+          },
+        },
+      ],
+    );
+  };
+
+  const renderCardLogoutSettings = () => (
+    <View style={styles.heading}>
+      <Text
+        color={TextColor.TextDefault}
+        variant={TextVariant.BodyMd}
+        fontWeight={FontWeight.Medium}
+      >
+        {strings('experimental_settings.card_logout_title')}
+      </Text>
+      <Text
+        color={TextColor.TextAlternative}
+        variant={TextVariant.BodySm}
+        fontWeight={FontWeight.Medium}
+        style={styles.desc}
+      >
+        {strings('experimental_settings.card_logout_desc')}
+      </Text>
+      <Button
+        variant={ButtonVariant.Secondary}
+        size={ButtonSize.Lg}
+        onPress={handleCardLogout}
+        isFullWidth
+        style={styles.accessory}
+        testID={ExperimentalSelectorsIDs.CARD_LOGOUT_BUTTON}
+      >
+        {strings('experimental_settings.card_logout_cta')}
+      </Button>
+    </View>
+  );
+
+  const renderPerformanceSettings = () => (
+    <View style={styles.heading}>
+      <Text
+        color={TextColor.TextDefault}
+        variant={TextVariant.BodyMd}
+        fontWeight={FontWeight.Medium}
+      >
+        Download Performance Metrics
+      </Text>
+      <Button
+        variant={ButtonVariant.Secondary}
+        size={ButtonSize.Lg}
+        onPress={downloadPerformanceMetrics}
+        isFullWidth
+        style={styles.accessory}
+        testID="download-performance-metrics-button"
+      >
+        {'Download Performance Metrics'}
+      </Button>
+    </View>
+  );
   return (
-    <ScrollView style={styles.wrapper}>
-      <WalletConnectSettings />
-      {Device.isIos() && <SesSettings />}
-    </ScrollView>
+    <SafeAreaView edges={{ bottom: 'additive' }} style={styles.wrapper}>
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        title={strings('app_settings.experimental_title')}
+        onBack={handleBack}
+        backButtonProps={{
+          testID: ExperimentalSelectorsIDs.EXPERIMENTAL_SETTINGS_BACK_BUTTON,
+        }}
+        testID={ExperimentalSelectorsIDs.EXPERIMENTAL_SETTINGS_HEADER}
+        includesTopInset
+      />
+      <ScrollView style={styles.content}>
+        {renderWalletConnectSettings()}
+        {canShowDaimoDemoToggle && renderDaimoDemoSettings()}
+        {isCardAuthenticated && renderCardLogoutSettings()}
+        {isTestEnvironment && renderPerformanceSettings()}
+      </ScrollView>
+    </SafeAreaView>
   );
 };
 

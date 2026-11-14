@@ -1,11 +1,12 @@
 import React, { useCallback } from 'react';
-import { Platform, Switch, View } from 'react-native';
+import { Switch, View } from 'react-native';
 import { createStyles } from './styles';
-import generateTestId from '../../../../wdio/utils/generateTestId';
-import Text, {
+import {
+  FontWeight,
+  Text,
   TextColor,
   TextVariant,
-} from '../../../component-library/components/Texts/Text';
+} from '@metamask/design-system-react-native';
 import { useTheme } from '../../../util/theme';
 
 interface SecurityOptionsToggleProps {
@@ -40,9 +41,13 @@ const SecurityOptionToggle = ({
     [onOptionUpdated],
   );
   return (
-    <View>
+    <View style={styles.container}>
       <View style={styles.titleContainer}>
-        <Text variant={TextVariant.BodyLGMedium} style={styles.title}>
+        <Text
+          variant={TextVariant.BodyMd}
+          fontWeight={FontWeight.Medium}
+          style={styles.title}
+        >
           {title}
         </Text>
         <View style={styles.switchElement}>
@@ -53,18 +58,19 @@ const SecurityOptionToggle = ({
               true: colors.primary.default,
               false: colors.border.muted,
             }}
-            thumbColor={theme.brandColors.white000}
+            thumbColor={theme.brandColors.white}
             style={styles.switch}
             ios_backgroundColor={colors.border.muted}
             disabled={disabled}
-            {...generateTestId(Platform, testId)}
+            testID={testId}
           />
         </View>
       </View>
       {description ? (
         <Text
-          variant={TextVariant.BodyMD}
-          color={TextColor.Alternative}
+          variant={TextVariant.BodySm}
+          fontWeight={FontWeight.Medium}
+          color={TextColor.TextAlternative}
           style={styles.desc}
         >
           {description}

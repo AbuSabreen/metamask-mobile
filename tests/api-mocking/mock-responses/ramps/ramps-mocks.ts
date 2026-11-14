@@ -1,0 +1,534 @@
+import { Mockttp } from 'mockttp';
+import { setupMockRequest } from '../../helpers/mockHelpers.ts';
+import { MockApiEndpoint, RampsRegion } from '../../../framework/types.ts';
+import { getDecodedProxiedURL } from '../../../smoke-appium/notifications/utils/helpers.ts';
+import { RAMPS_NETWORKS_RESPONSE } from './responses/ramps-networks-response.ts';
+import { getCountryResponseForUrl } from './responses/countries-contracts.ts';
+import {
+  RAMPS_REGION_CONFIG_RESPONSE,
+  RAMPS_AMOUNT_RESPONSE,
+} from './responses/ramps-region-config-response.ts';
+import { RAMPS_TOP_TOKENS_RESPONSE } from './responses/ramps-tokens-response.ts';
+import { RAMPS_PROVIDERS_RESPONSE } from './responses/ramps-providers-response.ts';
+import { RAMPS_PAYMENTS_V2_RESPONSE } from './responses/ramps-payments-response.ts';
+import { createGeolocationResponse } from './responses/ramps-geolocation.ts';
+import {
+  createRampsQuoteResponse,
+  ProviderType,
+} from './responses/ramps-quotes-response.ts';
+import {
+  TRANSAK_AUTH_LOGIN_RESPONSE,
+  TRANSAK_AUTH_VERIFY_RESPONSE,
+} from './transak/transak-auth-response.ts';
+import { TRANSAK_QUOTE_RESPONSE } from './transak/transak-quotes-response.ts';
+import {
+  TRANSAK_USER_DETAILS_RESPONSE,
+  TRANSAK_KYC_REQUIREMENT_RESPONSE,
+  TRANSAK_USER_LIMITS_RESPONSE,
+} from './transak/transak-user-response.ts';
+import { TRANSAK_CREATE_ORDER_RESPONSE } from './transak/transak-order-response.ts';
+import { TRANSAK_RAMPS_TRANSLATE_RESPONSE } from './transak/transak-ramps-translate-response.ts';
+import { TRANSAK_PAYMENTS_OVERRIDE_RESPONSE } from './transak/transak-payments-override-response.ts';
+import {
+  BUY_ORDER_WIDGET_URL_RESPONSE,
+  BUY_ORDER_CALLBACK_RESPONSE,
+} from './responses/ramps-buy-order-checkout-response.ts';
+import { createBuyOrderResponse } from './responses/ramps-buy-order-status-response.ts';
+import { createDepositOrderResponse } from './responses/ramps-deposit-order-status-response.ts';
+import {
+  isRampCacheHost,
+  isRampTranslateUrl,
+  isTransakGatewayUrl,
+  isTransakNativeOrderUrl,
+  rampUrl,
+  RAMP_TOKEN_ICON_URL,
+} from './ramps-hosts.ts';
+
+/** Registers an array of static GET mocks in parallel. */
+const registerGetMocks = (mockServer: Mockttp, mocks: MockApiEndpoint[]) =>
+  Promise.all(
+    mocks.map((mock) =>
+      setupMockRequest(mockServer, {
+        requestMethod: 'GET',
+        url: mock.urlEndpoint,
+        response: mock.response,
+        responseCode: mock.responseCode,
+      }),
+    ),
+  );
+
+/**
+ * Geolocation + region eligibility mocks.
+ * Returns the detected country and confirms buy/sell/deposit eligibility.
+ */
+export const RAMPS_REGION_MOCKS = async (
+  mockServer: Mockttp,
+  selectedRegion: RampsRegion,
+) => {
+  const geolocationResponse = createGeolocationResponse(selectedRegion);
+
+  await registerGetMocks(mockServer, [
+    ...geolocationResponse,
+    {
+      urlEndpoint: rampUrl('on-ramp-content', '/regions/countries/[^/]+$'),
+      responseCode: 200,
+      response: { global: true, deposit: true, aggregator: true },
+    },
+  ]);
+};
+
+/**
+ * Catalog data mocks — networks, countries, region config, amount conversion,
+ * tokens, providers, and payment methods.
+ */
+export const RAMPS_CATALOG_MOCKS = async (mockServer: Mockttp) => {
+  await registerGetMocks(mockServer, [
+    {
+      urlEndpoint: rampUrl('on-ramp-cache', String.raw`/regions/networks\?.*$`),
+      responseCode: 200,
+      response: RAMPS_NETWORKS_RESPONSE,
+    },
+    // Region config (payment methods, crypto/fiat options, limits)
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp-cache',
+        String.raw`/regions/[^/]+/light\?.*$`,
+      ),
+      responseCode: 200,
+      response: RAMPS_REGION_CONFIG_RESPONSE,
+    },
+    // Amount conversion
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp-cache',
+        String.raw`/currencies/crypto/.*/amount\?.*$`,
+      ),
+      responseCode: 200,
+      response: RAMPS_AMOUNT_RESPONSE,
+    },
+    // Top tokens V2
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp-cache',
+        String.raw`/v2/regions/[^/]+/topTokens\?.*$`,
+      ),
+      responseCode: 200,
+      response: RAMPS_TOP_TOKENS_RESPONSE,
+    },
+    // Providers V2
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp-cache',
+        String.raw`/v2/regions/[^/]+/providers\?.*$`,
+      ),
+      responseCode: 200,
+      response: RAMPS_PROVIDERS_RESPONSE,
+    },
+    // Tokens (legacy)
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp-cache',
+        String.raw`/regions/[^/]+/tokens\?.*$`,
+      ),
+      responseCode: 200,
+      response: RAMPS_TOP_TOKENS_RESPONSE,
+    },
+    // Payments V2
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp-cache',
+        String.raw`/v2/regions/[^/]+/payments\?.*$`,
+      ),
+      responseCode: 200,
+      response: RAMPS_PAYMENTS_V2_RESPONSE,
+    },
+    // Tokens fallback (handles malformed region paths from legacy useRampTokens)
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp-cache',
+        String.raw`/regions/.*/tokens\?.*$`,
+      ),
+      responseCode: 200,
+      response: RAMPS_TOP_TOKENS_RESPONSE,
+    },
+  ]);
+
+  // Countries split by actual client contract:
+  // - /v2/regions/countries => @metamask/ramps-controller Country.supported
+  // - /regions/countries?action=deposit => NativeRampsSdk DepositRegion.supported:boolean
+  // - /regions/countries => legacy aggregator flow (sell): OnRampSdk Country.support
+  await mockServer
+    .forGet('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      const parsedUrl = new URL(url);
+
+      return (
+        isRampCacheHost(parsedUrl.hostname) &&
+        (parsedUrl.pathname === '/v2/regions/countries' ||
+          parsedUrl.pathname === '/regions/countries')
+      );
+    })
+    .asPriority(999)
+    .thenCallback((request) => {
+      const url = getDecodedProxiedURL(request.url);
+
+      return {
+        statusCode: 200,
+        json: getCountryResponseForUrl(url),
+      };
+    });
+};
+
+/**
+ * Quote mocks for V1 and V2 endpoints.
+ * Returns a single transak-staging quote so the controller auto-selects it.
+ *
+ * @param providerType - 'native' for the Transak KYC flow, 'aggregator' for the widget/WebView flow.
+ */
+export const RAMPS_QUOTE_MOCKS = async (
+  mockServer: Mockttp,
+  providerType: ProviderType = 'aggregator',
+) => {
+  const quoteResponse = createRampsQuoteResponse(providerType);
+  await registerGetMocks(mockServer, [
+    {
+      urlEndpoint: rampUrl('on-ramp', String.raw`/providers/all/quote\?.*$`),
+      responseCode: 200,
+      response: quoteResponse,
+    },
+    {
+      urlEndpoint: rampUrl('on-ramp', String.raw`/v2/quotes\?.*$`),
+      responseCode: 200,
+      response: quoteResponse,
+    },
+  ]);
+};
+
+/**
+ * Checkout flow mocks — buy widget URL and callback endpoints.
+ * After a quote is selected, RampsController.syncWidgetUrl() fetches the widget URL,
+ * then getOrderFromCallback() extracts the order ID from the provider callback.
+ */
+export const RAMPS_CHECKOUT_MOCKS = async (mockServer: Mockttp) => {
+  await registerGetMocks(mockServer, [
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp',
+        String.raw`/v2/providers/[^/]+/buy(\?.*)?$`,
+      ),
+      responseCode: 200,
+      response: BUY_ORDER_WIDGET_URL_RESPONSE,
+    },
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp',
+        String.raw`/v2/providers/[^/]+/callback(\?.*)?$`,
+      ),
+      responseCode: 200,
+      response: BUY_ORDER_CALLBACK_RESPONSE,
+    },
+    {
+      urlEndpoint: rampUrl(
+        'on-ramp-content',
+        String.raw`/regions/fake-callback(\?.*)?$`,
+      ),
+      responseCode: 200,
+      response: BUY_ORDER_CALLBACK_RESPONSE,
+    },
+  ]);
+};
+
+/**
+ * Token icon mocks (GET + HEAD) for production and UAT static assets.
+ */
+export const RAMPS_TOKEN_ICON_MOCKS = async (mockServer: Mockttp) => {
+  const iconPattern = RAMP_TOKEN_ICON_URL;
+
+  await Promise.all([
+    setupMockRequest(mockServer, {
+      requestMethod: 'GET',
+      url: iconPattern,
+      response: '',
+      responseCode: 200,
+    }),
+    setupMockRequest(mockServer, {
+      requestMethod: 'HEAD',
+      url: iconPattern,
+      response: '',
+      responseCode: 200,
+    }),
+  ]);
+};
+
+/**
+ * Ramps order persistence mock.
+ * The ramps controller writes orders to authenticated user storage after
+ * creating or refreshing them.
+ */
+export const RAMPS_ORDER_STORAGE_MOCKS = async (mockServer: Mockttp) => {
+  await setupMockRequest(mockServer, {
+    requestMethod: 'PUT',
+    url: 'https://user-storage.api.cx.metamask.io/api/v1/userstorage/rampsOrders',
+    response: 'OK',
+    responseCode: 200,
+  });
+};
+
+/**
+ * Buy order-status mock.
+ * Always returns COMPLETED so the order is stored as completed by
+ * getOrderFromCallback, matching how the native deposit flow works
+ * (refreshOrder is called before addOrder there, so the stored order
+ * is already completed when OrderDetails mounts).
+ */
+export const BUY_ORDER_STATUS_MOCKS = async (mockServer: Mockttp) => {
+  const orderUrlPattern = rampUrl(
+    'on-ramp',
+    String.raw`/v2/providers/[^/]+/orders/[^/]+(\?.*)?$`,
+  );
+
+  await mockServer
+    .forGet('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return orderUrlPattern.test(url);
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: createBuyOrderResponse('COMPLETED'),
+    }));
+};
+
+/**
+ * Stateful deposit order-status mock for the native Transak flow.
+ * Returns PENDING on the first call, then COMPLETED on every subsequent call.
+ */
+export const DEPOSIT_ORDER_STATUS_MOCKS = async (mockServer: Mockttp) => {
+  let depositOrderCallCount = 0;
+  await mockServer
+    .forGet('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      // Matches both the legacy TransakService endpoint (/providers/...) and the
+      // v2 RampsService endpoint (/v2/providers/...) used by refreshOrder.
+      return isTransakNativeOrderUrl(url);
+    })
+    .asPriority(1000)
+    .thenCallback(() => {
+      depositOrderCallCount++;
+      const status = depositOrderCallCount <= 1 ? 'PENDING' : 'COMPLETED';
+      return {
+        statusCode: 200,
+        json: createDepositOrderResponse(status),
+      };
+    });
+};
+
+/**
+ * Mocks all Transak API endpoints for the native KYC + bank-transfer flow.
+ * Covers: auth/login, auth/verify, lookup/quotes, user details, KYC requirement,
+ * user limits, create order, ramps translation, and ramps orders (with stateful polling).
+ *
+ * Also overrides the payments mock to add isManualBankTransfer: true to debit-credit-card
+ * so the flow takes the bank transfer path (avoiding the unmockable WebView).
+ */
+export const TRANSAK_NATIVE_FLOW_MOCKS = async (mockServer: Mockttp) => {
+  // --- Transak API mocks (production and staging gateways) ---
+  // All responses wrapped in { data: ... } because TransakService unwraps .data
+
+  // POST auth/login — sendUserOtp(email)
+  await mockServer
+    .forPost('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return isTransakGatewayUrl(url, '/api/v2/auth/login');
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: TRANSAK_AUTH_LOGIN_RESPONSE,
+    }));
+
+  // POST auth/verify — verifyUserOtp()
+  await mockServer
+    .forPost('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return isTransakGatewayUrl(url, '/api/v2/auth/verify');
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: TRANSAK_AUTH_VERIFY_RESPONSE,
+    }));
+
+  // GET lookup/quotes — transakGetBuyQuote() internal Transak quote
+  await mockServer
+    .forGet('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return isTransakGatewayUrl(url, '/api/v2/lookup/quotes');
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: TRANSAK_QUOTE_RESPONSE,
+    }));
+
+  // GET user/ — getUserDetails()
+  await mockServer
+    .forGet('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return isTransakGatewayUrl(url, '/api/v2/user/');
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: TRANSAK_USER_DETAILS_RESPONSE,
+    }));
+
+  // GET kyc/requirement — getKycRequirement()
+  await mockServer
+    .forGet('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return isTransakGatewayUrl(url, '/api/v2/kyc/requirement');
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: TRANSAK_KYC_REQUIREMENT_RESPONSE,
+    }));
+
+  // GET orders/user-limit — getUserLimits()
+  await mockServer
+    .forGet('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return isTransakGatewayUrl(url, '/api/v2/orders/user-limit');
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: TRANSAK_USER_LIMITS_RESPONSE,
+    }));
+
+  // POST orders — createOrder()
+  await mockServer
+    .forPost('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return (
+        isTransakGatewayUrl(url, '/api/v2/orders') &&
+        !url.includes('user-limit') &&
+        !url.includes('payment-confirmation') &&
+        !url.includes('active-orders')
+      );
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: TRANSAK_CREATE_ORDER_RESPONSE,
+    }));
+
+  // GET orders/{id} — TransakService.getOrder() payment-details enrichment
+  // Called after createOrder when an access token is present.
+  await mockServer
+    .forGet('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return (
+        isTransakGatewayUrl(url, '/api/v2/orders/') &&
+        !url.includes('user-limit') &&
+        !url.includes('active-orders')
+      );
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: { data: { orderId: 'mock-transak-order-123' } },
+    }));
+
+  // GET translate — getTranslation() on the production or UAT on-ramp host
+  await mockServer
+    .forGet('/proxy')
+    .matching((request) => {
+      const url = getDecodedProxiedURL(request.url);
+      return isRampTranslateUrl(url);
+    })
+    .asPriority(999)
+    .thenCallback(() => ({
+      statusCode: 200,
+      json: TRANSAK_RAMPS_TRANSLATE_RESPONSE,
+    }));
+
+  await DEPOSIT_ORDER_STATUS_MOCKS(mockServer);
+
+  // Payments override — isManualBankTransfer: true for bank transfer path
+  await setupMockRequest(
+    mockServer,
+    {
+      requestMethod: 'GET',
+      url: rampUrl(
+        'on-ramp-cache',
+        String.raw`/v2/regions/[^/]+/payments\?.*$`,
+      ),
+      response: TRANSAK_PAYMENTS_OVERRIDE_RESPONSE,
+      responseCode: 200,
+    },
+    1000,
+  );
+};
+
+/**
+ * Sets up region eligibility and catalog mocks.
+ * Covers geolocation, deposit/aggregator eligibility, and all catalog data
+ * (networks, tokens, providers, payment methods, token icons).
+ *
+ * Use directly for tests that navigate the token-selection or off-ramp UI
+ * without proceeding to a quote or checkout step.
+ * Use setupDepositOnRampMocks or setupBuyOnRampMocks for full-flow tests.
+ */
+export const setupRegionAwareOnRampMocks = async (
+  mockServer: Mockttp,
+  selectedRegion: RampsRegion,
+) => {
+  await RAMPS_REGION_MOCKS(mockServer, selectedRegion);
+  await RAMPS_CATALOG_MOCKS(mockServer);
+  await RAMPS_TOKEN_ICON_MOCKS(mockServer);
+};
+
+/**
+ * Sets up all mocks for the native Transak deposit flow (KYC/OTP + bank transfer).
+ * Builds on region/catalog mocks and adds native quotes, checkout, and all
+ * Transak-specific API endpoints.
+ */
+export const setupDepositOnRampMocks = async (
+  mockServer: Mockttp,
+  selectedRegion: RampsRegion,
+) => {
+  await setupRegionAwareOnRampMocks(mockServer, selectedRegion);
+  await RAMPS_ORDER_STORAGE_MOCKS(mockServer);
+  await RAMPS_QUOTE_MOCKS(mockServer, 'native');
+  await RAMPS_CHECKOUT_MOCKS(mockServer);
+  await TRANSAK_NATIVE_FLOW_MOCKS(mockServer);
+};
+
+/**
+ * Sets up all mocks for the aggregator WebView buy flow.
+ * Builds on region/catalog mocks and adds aggregator quotes, checkout,
+ * and buy order status polling.
+ */
+export const setupBuyOnRampMocks = async (
+  mockServer: Mockttp,
+  selectedRegion: RampsRegion,
+) => {
+  await setupRegionAwareOnRampMocks(mockServer, selectedRegion);
+  await RAMPS_ORDER_STORAGE_MOCKS(mockServer);
+  await RAMPS_QUOTE_MOCKS(mockServer);
+  await RAMPS_CHECKOUT_MOCKS(mockServer);
+  await BUY_ORDER_STATUS_MOCKS(mockServer);
+};

@@ -1,69 +1,72 @@
 import React, { useState, useRef } from 'react';
-import {
-  View,
-  Text,
-  TouchableWithoutFeedback,
-  Keyboard,
-  InteractionManager,
-  UIManager,
-  LayoutAnimation,
-  Platform,
-} from 'react-native';
-import { useNavigation } from '@react-navigation/native';
-import Icon from 'react-native-vector-icons/FontAwesome';
-import { OutlinedTextField } from 'react-native-material-textfield';
-import { createStyles } from './styles';
-import ReusableModal, { ReusableModalRef } from '../ReusableModal';
-import WarningExistingUserModal from '../WarningExistingUserModal';
-import { useDeleteWallet } from '../../hooks/DeleteWallet';
+import { InteractionManager, UIManager } from 'react-native';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import { Authentication } from '../../../core';
 import { strings } from '../../../../locales/i18n';
-import { tlc } from '../../../util/general';
-import { useTheme } from '../../../util/theme';
 import Device from '../../../util/device';
 import Routes from '../../../constants/navigation/Routes';
-import { DeleteWalletModalSelectorsIDs } from '../../../../e2e/selectors/Modals/DeleteWalletModal.selectors';
-import generateTestId from '../../../../wdio/utils/generateTestId';
-import { MetaMetricsEvents } from '../../../core/Analytics';
-import { useMetrics } from '../../../components/hooks/useMetrics';
-import { useDispatch } from 'react-redux';
+import { ForgotPasswordModalSelectorsIDs } from '../../../util/ForgotPasswordModal.testIds';
+import { IMetaMetricsEvent, MetaMetricsEvents } from '../../../core/Analytics';
+import { useDispatch, useSelector } from 'react-redux';
 import { clearHistory } from '../../../actions/browser';
 import CookieManager from '@react-native-cookies/cookies';
-
-const DELETE_KEYWORD = 'delete';
+import { RootState } from '../../../reducers';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
+import trackOnboarding from '../../../util/metrics/TrackOnboarding/trackOnboarding';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import {
+  AvatarIcon,
+  AvatarIconSeverity,
+  AvatarIconSize,
+  BottomSheet,
+  BottomSheetFooter,
+  type BottomSheetRef,
+  Box,
+  ButtonSize,
+  ButtonsAlignment,
+  FontWeight,
+  IconAlertSeverity,
+  IconName,
+  ListItem,
+  ListItemVariant,
+  Text,
+  TextColor,
+  TextVariant,
+  TitleAlert,
+} from '@metamask/design-system-react-native';
+import BottomSheetHeaderGlass from '../../../component-library/components-temp/BottomSheetHeaderGlass';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
 
 if (Device.isAndroid() && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-const DeleteWalletModal = () => {
-  const navigation = useNavigation();
-  const { colors, themeAppearance } = useTheme();
-  const { trackEvent } = useMetrics();
-  const styles = createStyles(colors);
+const DeleteWalletModal: React.FC = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
+  const route = useRoute();
+  const { isEnabled } = useAnalytics();
 
-  const modalRef = useRef<ReusableModalRef>(null);
+  const isResetWalletFromParams =
+    (route.params as { isResetWallet?: boolean })?.isResetWallet || false;
+  const isOauthLoginSuccess =
+    (route.params as { oauthLoginSuccess?: boolean })?.oauthLoginSuccess ||
+    false;
 
-  const [showConfirm, setShowConfirm] = useState<boolean>(false);
-  const [deleteText, setDeleteText] = useState<string>('');
-  const [disableButton, setDisableButton] = useState<boolean>(true);
+  const modalRef = useRef<BottomSheetRef>(null);
 
-  const [resetWalletState, deleteUser] = useDeleteWallet();
+  const [isResetWallet, setIsResetWallet] = useState<boolean>(false);
+
   const dispatch = useDispatch();
+  const isDataCollectionForMarketingEnabled = useSelector(
+    (state: RootState) => state.security.dataCollectionForMarketing,
+  );
 
-  const showConfirmModal = () => {
-    setShowConfirm(true);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-  };
-
-  const isTextDelete = (text: string) => tlc(text) === DELETE_KEYWORD;
-
-  const checkDelete = (text: string) => {
-    setDeleteText(text);
-    setDisableButton(!isTextDelete(text));
-  };
+  const [isDeletingWallet, setIsDeletingWallet] = useState<boolean>(false);
 
   const dismissModal = (cb?: () => void): void =>
-    modalRef?.current?.dismissModal(cb);
+    modalRef?.current?.onCloseBottomSheet(cb);
 
   const triggerClose = (): void => dismissModal();
 
@@ -88,97 +91,205 @@ const DeleteWalletModal = () => {
     });
   };
 
-  const deleteWallet = async () => {
-    await dispatch(clearHistory());
-    await CookieManager.clearAll(true);
-    triggerClose();
-    await resetWalletState();
-    await deleteUser();
-    trackEvent(MetaMetricsEvents.DELETE_WALLET_MODAL_WALLET_DELETED, {});
-    InteractionManager.runAfterInteractions(() => {
-      navigateOnboardingRoot();
-    });
+  const track = (
+    event: IMetaMetricsEvent,
+    properties: Record<string, string | boolean | number>,
+  ) => {
+    trackOnboarding(
+      AnalyticsEventBuilder.createEventBuilder(event)
+        .addProperties(properties)
+        .build(),
+    );
   };
 
+  const deleteWallet = async () => {
+    setIsDeletingWallet(true);
+    try {
+      dispatch(clearHistory(isEnabled(), isDataCollectionForMarketingEnabled));
+      await CookieManager.clearAll(true);
+      await Authentication.deleteWallet();
+      // Track analytics for successful deletion
+      track(MetaMetricsEvents.RESET_WALLET_CONFIRMED, {});
+      InteractionManager.runAfterInteractions(() => {
+        navigateOnboardingRoot();
+      });
+    } catch (error) {
+      console.error('Error during wallet deletion:', error);
+      triggerClose();
+    }
+    setIsDeletingWallet(false);
+  };
+
+  const showForgotPassword = !isResetWallet && !isResetWalletFromParams;
+
   return (
-    <ReusableModal ref={modalRef}>
-      {showConfirm ? (
-        <WarningExistingUserModal
-          warningModalVisible
-          cancelText={strings('login.delete_my')}
-          cancelTestID={DeleteWalletModalSelectorsIDs.DELETE_PERMANENTLY_BUTTON}
-          confirmTestID={DeleteWalletModalSelectorsIDs.DELETE_CANCEL_BUTTON}
-          cancelButtonDisabled={disableButton}
-          onCancelPress={deleteWallet}
-          onRequestClose={triggerClose}
-          onConfirmPress={triggerClose}
-        >
-          <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-            <View style={styles.areYouSure}>
-              <Text style={[styles.heading, styles.delete]}>
-                {strings('login.type_delete', {
-                  [DELETE_KEYWORD]: DELETE_KEYWORD,
-                })}
-              </Text>
-              <OutlinedTextField
-                style={styles.input}
-                {...generateTestId(
-                  Platform,
-                  DeleteWalletModalSelectorsIDs.INPUT,
-                )}
-                autoFocus
-                returnKeyType={'done'}
-                onChangeText={checkDelete}
-                autoCapitalize="none"
-                value={deleteText}
-                baseColor={colors.border.default}
-                tintColor={colors.primary.default}
-                placeholderTextColor={colors.text.muted}
-                keyboardAppearance={themeAppearance}
-              />
-            </View>
-          </TouchableWithoutFeedback>
-        </WarningExistingUserModal>
-      ) : (
-        <WarningExistingUserModal
-          warningModalVisible
-          cancelText={strings('login.i_understand')}
-          onCancelPress={showConfirmModal}
-          onRequestClose={triggerClose}
-          onConfirmPress={triggerClose}
-          cancelTestID={DeleteWalletModalSelectorsIDs.CONTINUE_BUTTON}
-          confirmTestID={DeleteWalletModalSelectorsIDs.CANCEL_BUTTON}
-        >
-          <View
-            style={styles.areYouSure}
-            testID={DeleteWalletModalSelectorsIDs.CONTAINER}
+    <BottomSheet
+      ref={modalRef}
+      isInteractable={!isDeletingWallet}
+      goBack={navigation.goBack}
+    >
+      {showForgotPassword ? (
+        <>
+          <BottomSheetHeaderGlass
+            isGlass={isGlassHeader}
+            onClose={triggerClose}
+            testID={ForgotPasswordModalSelectorsIDs.TITLE}
+            closeButtonProps={{
+              testID: ForgotPasswordModalSelectorsIDs.CLOSE_BUTTON,
+            }}
           >
-            <Icon
-              style={styles.warningIcon}
-              size={46}
-              color={colors.error.default}
-              name="exclamation-triangle"
+            {strings('login.forgot_password_desc')}
+          </BottomSheetHeaderGlass>
+          <Box
+            testID={ForgotPasswordModalSelectorsIDs.CONTAINER}
+            paddingHorizontal={4}
+            paddingBottom={4}
+          >
+            <Text
+              variant={TextVariant.BodyMd}
+              color={TextColor.TextAlternative}
+              testID={ForgotPasswordModalSelectorsIDs.DESCRIPTION}
+            >
+              {strings('login.forgot_password_desc_2')}
+            </Text>
+          </Box>
+          <Box gap={4}>
+            <ListItem
+              variant={ListItemVariant.MultiLine}
+              twClassName="min-h-0 py-0"
+              avatar={
+                <AvatarIcon
+                  iconName={IconName.FaceId}
+                  size={AvatarIconSize.Md}
+                  severity={AvatarIconSeverity.Neutral}
+                />
+              }
+              title={
+                <Text
+                  variant={TextVariant.BodyMd}
+                  color={TextColor.TextDefault}
+                >
+                  {strings('login.forgot_password_point_1')}{' '}
+                  <Text
+                    variant={TextVariant.BodyMd}
+                    color={TextColor.TextDefault}
+                    fontWeight={FontWeight.Bold}
+                  >
+                    {strings('login.forgot_password_point_1_bold')}
+                  </Text>{' '}
+                  {strings('login.forgot_password_point_1_1')}
+                </Text>
+              }
             />
-            <Text style={[styles.heading, styles.red]}>
-              {strings('login.are_you_sure')}
-            </Text>
-            <Text style={styles.warningText}>
-              <Text>{strings('login.your_current_wallet')}</Text>
-              <Text style={styles.bold}>{strings('login.removed_from')}</Text>
-              <Text>{strings('login.this_action')}</Text>
-            </Text>
-            <Text style={[styles.warningText]}>
-              <Text>{strings('login.you_can_only')}</Text>
-              <Text style={styles.bold}>
-                {strings('login.recovery_phrase')}
+            <ListItem
+              variant={ListItemVariant.MultiLine}
+              twClassName="min-h-0 pt-0 pb-2"
+              avatar={
+                <AvatarIcon
+                  iconName={IconName.ShieldLock}
+                  size={AvatarIconSize.Md}
+                  severity={AvatarIconSeverity.Neutral}
+                />
+              }
+              title={
+                <Text
+                  variant={TextVariant.BodyMd}
+                  color={TextColor.TextDefault}
+                >
+                  {strings('login.forgot_password_point_2')}{' '}
+                  <Text
+                    variant={TextVariant.BodyMd}
+                    color={TextColor.TextDefault}
+                    fontWeight={FontWeight.Bold}
+                  >
+                    {strings('login.forgot_password_point_2_bold')}{' '}
+                  </Text>
+                  {strings('login.forgot_password_point_2_1')}
+                </Text>
+              }
+            />
+          </Box>
+          <BottomSheetFooter
+            primaryButtonProps={{
+              children: strings('login.reset_wallet'),
+              isDanger: true,
+              size: ButtonSize.Lg,
+              onPress: () => {
+                setIsResetWallet(true);
+                track(MetaMetricsEvents.RESET_WALLET, {
+                  account_type: isOauthLoginSuccess ? 'social' : 'metamask',
+                });
+              },
+              testID: ForgotPasswordModalSelectorsIDs.RESET_WALLET_BUTTON,
+            }}
+            twClassName="pt-4"
+          />
+        </>
+      ) : (
+        <>
+          <Box
+            testID={ForgotPasswordModalSelectorsIDs.CONTAINER}
+            paddingHorizontal={4}
+            gap={4}
+          >
+            <TitleAlert
+              severity={IconAlertSeverity.Danger}
+              title={strings('login.are_you_sure')}
+              titleProps={{
+                testID: ForgotPasswordModalSelectorsIDs.WARNING_TEXT,
+              }}
+              twClassName="pt-6"
+            />
+            <Box gap={4}>
+              <Text
+                variant={TextVariant.BodyMd}
+                color={TextColor.TextAlternative}
+              >
+                {strings('login.reset_wallet_desc')}
               </Text>
-              <Text>{strings('login.metamask_does_not')}</Text>
-            </Text>
-          </View>
-        </WarningExistingUserModal>
+              <Text
+                variant={TextVariant.BodyMd}
+                color={TextColor.TextAlternative}
+              >
+                {strings('login.reset_wallet_desc_srp_1')}{' '}
+                <Text
+                  variant={TextVariant.BodyMd}
+                  color={TextColor.TextDefault}
+                  fontWeight={FontWeight.Bold}
+                >
+                  {strings('login.reset_wallet_desc_srp_bold')}
+                </Text>
+                {'. '}
+                {strings('login.reset_wallet_desc_srp_2')}
+              </Text>
+            </Box>
+          </Box>
+          <BottomSheetFooter
+            buttonsAlignment={ButtonsAlignment.Vertical}
+            primaryButtonProps={{
+              children: strings('login.erase_my'),
+              onPress: deleteWallet,
+              size: ButtonSize.Lg,
+              isDanger: true,
+              isLoading: isDeletingWallet,
+              isDisabled: isDeletingWallet,
+              testID: ForgotPasswordModalSelectorsIDs.YES_RESET_WALLET_BUTTON,
+              style: { marginTop: 0 },
+            }}
+            secondaryButtonProps={{
+              children: strings('login.cancel'),
+              onPress: triggerClose,
+              size: ButtonSize.Lg,
+              isDisabled: isDeletingWallet,
+              testID: ForgotPasswordModalSelectorsIDs.CANCEL_BUTTON,
+              twClassName: 'mt-4',
+            }}
+            twClassName="pt-6 flex-col-reverse"
+          />
+        </>
       )}
-    </ReusableModal>
+    </BottomSheet>
   );
 };
 
-export default React.memo(DeleteWalletModal);
+export default DeleteWalletModal;

@@ -27,8 +27,6 @@ const styleSheet = (params: {
       {
         padding: 16,
         borderRadius: 4,
-        alignItems: 'flex-start',
-        backgroundColor: colors.background.default,
         opacity: isDisabled ? 0.5 : 1,
       } as ViewStyle,
       style,
@@ -37,9 +35,9 @@ const styleSheet = (params: {
       padding: 0,
     },
     underlay: {
-      ...StyleSheet.absoluteFillObject,
+      ...StyleSheet.absoluteFill,
       flexDirection: 'row',
-      backgroundColor: colors.primary.muted,
+      backgroundColor: colors.background.muted,
     },
     checkbox: {
       marginRight: 8 - Number(gap),

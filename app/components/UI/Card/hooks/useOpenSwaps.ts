@@ -1,0 +1,114 @@
+import { useCallback, useMemo } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { Hex } from 'viem';
+
+import {
+  SwapBridgeNavigationLocation,
+  useSwapBridgeNavigation,
+} from '../../Bridge/hooks/useSwapBridgeNavigation';
+import Routes from '../../../../constants/navigation/Routes';
+import { BridgeToken } from '../../Bridge/types';
+import { CardFundingToken } from '../types';
+import { buildTokenIconUrl } from '../util/buildTokenIconUrl';
+import { getHighestFiatToken } from '../util/getHighestFiatToken';
+import {
+  selectSelectedSourceChainIds,
+  setDestToken,
+} from '../../../../core/redux/slices/bridge';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { useTokensWithBalance } from '../../Bridge/hooks/useTokensWithBalance';
+import { withCardProvider } from '../util/metrics';
+import { selectCardActiveProviderId } from '../../../../selectors/cardController';
+
+export interface OpenSwapsParams {
+  beforeNavigate?: (navigate: () => void) => void;
+}
+
+export interface UseOpenSwapsOptions {
+  location?: SwapBridgeNavigationLocation;
+  sourcePage?: string;
+  priorityToken?: CardFundingToken | null;
+}
+
+export const useOpenSwaps = ({
+  location = SwapBridgeNavigationLocation.TokenView,
+  sourcePage = Routes.CARD.HOME,
+  priorityToken,
+}: UseOpenSwapsOptions = {}) => {
+  const dispatch = useDispatch();
+  const chainIds = useSelector(selectSelectedSourceChainIds);
+  const tokensWithBalance = useTokensWithBalance({
+    chainIds,
+  });
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const activeProviderId = useSelector(selectCardActiveProviderId);
+
+  const sourceToken = useMemo(() => {
+    if (priorityToken) {
+      const highestFiatToken = getHighestFiatToken(
+        tokensWithBalance,
+        priorityToken.address as Hex,
+      );
+
+      return highestFiatToken;
+    }
+  }, [tokensWithBalance, priorityToken]);
+
+  const { goToSwaps } = useSwapBridgeNavigation({
+    location,
+    sourcePage,
+    sourceToken,
+  });
+
+  const openSwaps = useCallback(
+    ({ beforeNavigate }: OpenSwapsParams) => {
+      if (!priorityToken) return;
+
+      const destToken: BridgeToken = {
+        address: priorityToken.address ?? '',
+        symbol: priorityToken.symbol ?? '',
+        name: priorityToken.name ?? '',
+        decimals: priorityToken.decimals ?? 0,
+        chainId: priorityToken.caipChainId,
+        image: buildTokenIconUrl(
+          priorityToken.caipChainId,
+          priorityToken.address ?? '',
+        ),
+        aggregators: [],
+      };
+      dispatch(setDestToken(destToken));
+
+      const navigate = () => {
+        goToSwaps(sourceToken, destToken);
+        trackEvent(
+          createEventBuilder(MetaMetricsEvents.CARD_ADD_FUNDS_SWAPS_CLICKED)
+            .addProperties(
+              withCardProvider(activeProviderId, {
+                source_token: sourceToken?.symbol,
+                destination_token: destToken.symbol,
+              }),
+            )
+            .build(),
+        );
+      };
+
+      if (beforeNavigate) {
+        beforeNavigate(navigate);
+      } else {
+        navigate();
+      }
+    },
+    [
+      dispatch,
+      goToSwaps,
+      trackEvent,
+      createEventBuilder,
+      activeProviderId,
+      sourceToken,
+      priorityToken,
+    ],
+  );
+
+  return { openSwaps };
+};

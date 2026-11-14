@@ -1,111 +1,415 @@
-import Logger from '../util/Logger';
+import { EthAccountType, SolAccountType } from '@metamask/keyring-api';
 import Engine from './Engine';
-import { withLedgerKeyring } from './Ledger/Ledger';
 
-import { restoreLedgerKeyring, restoreQRKeyring } from './Vault';
+import { getSeedPhrase, recreateVaultsWithNewPassword } from './Vault';
+import { KeyringSelector, KeyringTypes } from '@metamask/keyring-controller';
+import {
+  createMockInternalAccount,
+  createMockSnapInternalAccount,
+} from '../util/test/accountsControllerTestUtils';
+import ReduxService, { ReduxStore } from './redux';
+import { RootState } from '../reducers';
+import { RecursivePartial } from './Authentication/Authentication.test';
+import { SeedlessOnboardingControllerErrorMessage } from '@metamask/seedless-onboarding-controller';
+import Logger from '../util/Logger';
+
+const mockAddNewKeyring = jest.fn();
+const mockWithKeyring = jest.fn();
+const mockExportSeedPhrase = jest.fn();
+const mockListMultichainAccounts = jest.fn();
+const mockCreateNewVaultAndRestore = jest.fn();
+const mockAddNewAccount = jest.fn();
+const mockExportAccount = jest.fn();
+const mockImportAccountWithStrategy = jest.fn();
+
+const mockHdAccount1 = createMockInternalAccount(
+  '0x67B2fAf7959fB61eb9746571041476Bbd0672569',
+  'Hd Account 1',
+  KeyringTypes.hd,
+  EthAccountType.Eoa,
+);
+const mockHdAccount2 = createMockInternalAccount(
+  '0xf57E323fD8C7Bb908A13557b1cE4441c8213824c',
+  'Hd Account 2',
+  KeyringTypes.hd,
+  EthAccountType.Eoa,
+);
+const mockHdAccount3 = createMockInternalAccount(
+  '0x67B2fAf7959fB61eb9746571041476Bbd0672569',
+  'Hd Account 3',
+  KeyringTypes.hd,
+  EthAccountType.Eoa,
+);
+const mockHdAccount4 = createMockInternalAccount(
+  '0xf57E323fD8C7Bb908A13557b1cE4441c8213824c',
+  'Hd Account 4',
+  KeyringTypes.hd,
+  EthAccountType.Eoa,
+);
+const mockQrAccount = createMockInternalAccount(
+  '0xB6ce536fe74d9d5a25356B249424E1D3BDaADC57',
+  'Qr Account',
+  KeyringTypes.qr,
+  EthAccountType.Eoa,
+);
+const mockLedgerAccount = createMockInternalAccount(
+  '0xE3D19DCfE5255C3448CB80299906ac15Dee2cF29',
+  'Ledger Account',
+  KeyringTypes.ledger,
+  EthAccountType.Eoa,
+);
+const mockSolanaAccount = createMockSnapInternalAccount(
+  '',
+  'Solana Account 1',
+  SolAccountType.DataAccount,
+  'hd-keyring-id-2',
+);
+const mockThirdPartySnapAccount = createMockSnapInternalAccount(
+  '0x571CE5f203f93662301D43A5020aDB895f842cC9',
+  'Third Party Snap Account',
+  EthAccountType.Eoa,
+);
+
+const mockPrivateKeyAccount = createMockInternalAccount(
+  '0x15fB9d189aEa6233bE7487294702A431a7656810',
+  'Private Key Account',
+  KeyringTypes.simple,
+  EthAccountType.Eoa,
+);
+const mockHdKeyringMetadata = {
+  id: 'hd-keyring-id',
+  name: '',
+};
+
+const mockHdKeyringMetadata2 = {
+  id: 'hd-keyring-id-2',
+  name: '',
+};
+
+const mockQrKeyringMetadata = {
+  id: 'qr-keyring-id',
+  name: '',
+};
+
+const mockLedgerKeyringMetadata = {
+  id: 'ledger-keyring-id',
+  name: '',
+};
+
+const mockSnapKeyringMetadata = {
+  id: 'snap-keyring-id',
+  name: '',
+};
+
+const mockSimpleKeyringMetadata = {
+  id: 'simple-keyring-id',
+  name: '',
+};
+
+const mockHdKeyring = {
+  type: KeyringTypes.hd,
+  accounts: [mockHdAccount1.address, mockHdAccount2.address],
+  metadata: mockHdKeyringMetadata,
+};
+
+const mockHdKeyring2 = {
+  type: KeyringTypes.hd,
+  accounts: [mockHdAccount3.address, mockHdAccount4.address],
+  metadata: mockHdKeyringMetadata2,
+};
+
+const mockQrKeyring = {
+  type: KeyringTypes.qr,
+  accounts: [mockQrAccount.address],
+  metadata: mockQrKeyringMetadata,
+};
+
+const mockLedgerKeyring = {
+  type: KeyringTypes.ledger,
+  accounts: [mockLedgerAccount.address],
+  metadata: mockLedgerKeyringMetadata,
+};
+
+const mockSnapKeyring = {
+  type: KeyringTypes.snap,
+  accounts: [mockSolanaAccount.address, mockThirdPartySnapAccount.address],
+  metadata: mockSnapKeyringMetadata,
+};
+
+const mockSimpleKeyring = {
+  type: KeyringTypes.simple,
+  accounts: [mockPrivateKeyAccount.address],
+  metadata: mockSimpleKeyringMetadata,
+};
 
 jest.mock('./Engine', () => ({
   context: {
     KeyringController: {
-      restoreQRKeyring: jest.fn(),
-      withKeyring: jest.fn(),
+      submitPassword: jest.fn(),
+      changePassword: jest.fn(),
+      // Using any to mock any callback.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      withKeyring: (selectedKeyring: KeyringSelector, callback: any) =>
+        mockWithKeyring(selectedKeyring, callback),
+      addNewKeyring: (type: KeyringTypes, options: { mnemonic?: string }) =>
+        mockAddNewKeyring(type, options),
+      exportSeedPhrase: (password: string, keyringId: string) =>
+        mockExportSeedPhrase(password, keyringId),
+      createNewVaultAndRestore: (password: string, seedPhrase: string) =>
+        mockCreateNewVaultAndRestore(password, seedPhrase),
+      addNewAccount: () => mockAddNewAccount(),
+      exportAccount: (password: string, account: string) =>
+        mockExportAccount(password, account),
+      importAccountWithStrategy: (strategy: string, accounts: string[]) =>
+        mockImportAccountWithStrategy(strategy, accounts),
+      exportEncryptionKey: jest.fn(),
+      state: {
+        get keyrings() {
+          return [
+            mockHdKeyring,
+            mockHdKeyring2,
+            mockQrKeyring,
+            mockLedgerKeyring,
+            mockSnapKeyring,
+            mockSimpleKeyring,
+          ];
+        },
+      },
+    },
+    AccountsController: {
+      listMultichainAccounts: () => mockListMultichainAccounts(),
+    },
+    SeedlessOnboardingController: {
+      changePassword: jest.fn(),
+      storeKeyringEncryptionKey: jest.fn(),
+      loadKeyringEncryptionKey: jest.fn(),
+      submitGlobalPassword: jest.fn(),
+      checkIsPasswordOutdated: jest.fn(),
+    },
+    CardController: {
+      logout: jest.fn(),
     },
   },
+  setSelectedAddress: jest.fn(),
 }));
-const MockEngine = jest.mocked(Engine);
+const mockEngine = jest.mocked(Engine);
 
 jest.mock('./Ledger/Ledger', () => ({
   withLedgerKeyring: jest.fn(),
 }));
-const mockWithLedgerKeyring = jest.mocked(withLedgerKeyring);
 
 jest.mock('../util/Logger', () => ({
   error: jest.fn(),
+}));
+
+jest.mock('../util/trace', () => ({
+  ...jest.requireActual('../util/trace'),
+  trace: jest.fn(),
+  endTrace: jest.fn(),
 }));
 
 describe('Vault', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
-  describe('restoreQRKeyring', () => {
-    it('should restore QR keyring if it exists', async () => {
-      const { KeyringController } = MockEngine.context;
-      const mockSerializedQrKeyring = 'serialized-keyring';
 
-      await restoreQRKeyring(mockSerializedQrKeyring);
+  describe('getSeedPhrase', () => {
+    it('calls exportSeedPhrase', async () => {
+      mockExportSeedPhrase.mockResolvedValue(new Uint8Array([1, 2, 3]));
+      const password = 'test-password';
+      const keyringId = 'keyring-1';
 
-      expect(
-        MockEngine.context.KeyringController.restoreQRKeyring,
-      ).toHaveBeenCalled();
-      expect(KeyringController.restoreQRKeyring).toHaveBeenCalledWith(
-        mockSerializedQrKeyring,
-      );
-    });
+      await getSeedPhrase(password, keyringId);
 
-    it('should log error if an exception is thrown', async () => {
-      const error = new Error('Test error');
-      MockEngine.context.KeyringController.restoreQRKeyring.mockRejectedValue(
-        error,
-      );
-      const mockSerializedQrKeyring = 'serialized-keyring';
-
-      await restoreQRKeyring(mockSerializedQrKeyring);
-
-      expect(Logger.error).toHaveBeenCalledWith(
-        error,
-        'error while trying to get qr accounts on recreate vault',
+      expect(mockExportSeedPhrase).toHaveBeenCalledWith(
+        { password },
+        keyringId,
       );
     });
   });
 
-  describe('restoreLedgerKeyring', () => {
-    it('should restore ledger keyring if it exists', async () => {
-      const mockLedgerKeyring = {
-        deserialize: jest.fn(),
+  describe('recreateVaultWithNewPassword', () => {
+    it('should submit old password, change password, and set selected address', async () => {
+      // mock redux state
+      const mockReduxState: RecursivePartial<RootState> = {
+        engine: {
+          backgroundState: {
+            SeedlessOnboardingController: {
+              vault: undefined,
+              socialBackupsMetadata: [],
+            },
+          },
+        },
       };
-      mockWithLedgerKeyring.mockImplementation(
-        // @ts-expect-error The Ledger keyring is not compatible with our keyring type yet
-        (operation) => operation(mockLedgerKeyring),
+
+      // mock Redux store
+      jest.spyOn(ReduxService, 'store', 'get').mockReturnValue({
+        dispatch: jest.fn(),
+        getState: jest.fn(() => mockReduxState),
+      } as unknown as ReduxStore);
+
+      await recreateVaultsWithNewPassword(
+        'old-password',
+        'new-password',
+        '0x123',
       );
-      const mockSerializedLedgerKeyring = 'serialized-keyring';
 
-      await restoreLedgerKeyring(mockSerializedLedgerKeyring);
+      expect(
+        mockEngine.context.KeyringController.changePassword,
+      ).toHaveBeenCalledWith('new-password');
+      expect(mockEngine.context.CardController.logout).toHaveBeenCalledTimes(1);
+      expect(mockEngine.setSelectedAddress).toHaveBeenCalledWith('0x123');
+    });
 
-      expect(mockLedgerKeyring.deserialize).toHaveBeenCalledWith(
-        mockSerializedLedgerKeyring,
+    it('still changes the password when signing out of Card fails', async () => {
+      const mockReduxState: RecursivePartial<RootState> = {
+        engine: {
+          backgroundState: {
+            SeedlessOnboardingController: {
+              vault: undefined,
+              socialBackupsMetadata: [],
+            },
+          },
+        },
+      };
+
+      jest.spyOn(ReduxService, 'store', 'get').mockReturnValue({
+        dispatch: jest.fn(),
+        getState: jest.fn(() => mockReduxState),
+      } as unknown as ReduxStore);
+
+      mockEngine.context.CardController.logout.mockRejectedValue(
+        new Error('logout failed'),
+      );
+
+      await expect(
+        recreateVaultsWithNewPassword('old-password', 'new-password', '0x123'),
+      ).resolves.toBeUndefined();
+
+      expect(
+        mockEngine.context.KeyringController.changePassword,
+      ).toHaveBeenCalledWith('new-password');
+      expect(mockEngine.setSelectedAddress).toHaveBeenCalledWith('0x123');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(Logger.error).toHaveBeenCalled();
+    });
+
+    it('should call seedlessChangePassword and syncKeyringEncryptionKey if seedless onboarding flow is active', async () => {
+      // mock redux state
+      const mockReduxState: RecursivePartial<RootState> = {
+        engine: {
+          backgroundState: {
+            SeedlessOnboardingController: {
+              vault: 'valid vault data',
+              socialBackupsMetadata: [],
+            },
+          },
+        },
+      };
+
+      // mock Redux store
+      jest.spyOn(ReduxService, 'store', 'get').mockReturnValue({
+        dispatch: jest.fn(),
+        getState: jest.fn(() => mockReduxState),
+      } as unknown as ReduxStore);
+
+      await recreateVaultsWithNewPassword(
+        'old-password',
+        'new-password',
+        '0x123',
+      );
+
+      expect(
+        mockEngine.context.KeyringController.changePassword,
+      ).toHaveBeenCalledWith('new-password');
+      expect(mockEngine.setSelectedAddress).toHaveBeenCalledWith('0x123');
+
+      expect(
+        mockEngine.context.SeedlessOnboardingController.changePassword,
+      ).toHaveBeenCalled();
+
+      expect(
+        mockEngine.context.SeedlessOnboardingController
+          .storeKeyringEncryptionKey,
+      ).toHaveBeenCalled();
+      expect(
+        (
+          mockEngine.context.SeedlessOnboardingController
+            .storeKeyringEncryptionKey as jest.Mock
+        ).mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        (mockEngine.context.CardController.logout as jest.Mock).mock
+          .invocationCallOrder[0],
       );
     });
 
-    it('should log error if the Ledger keyring throws an error', async () => {
-      const error = new Error('Test error');
-      const mockLedgerKeyring = {
-        deserialize: jest.fn().mockRejectedValue(error),
+    it('finishes the password change when the Card sign-out never resolves', async () => {
+      const mockReduxState: RecursivePartial<RootState> = {
+        engine: {
+          backgroundState: {
+            SeedlessOnboardingController: {
+              vault: undefined,
+              socialBackupsMetadata: [],
+            },
+          },
+        },
       };
-      mockWithLedgerKeyring.mockImplementation(
-        // @ts-expect-error The Ledger keyring is not compatible with our keyring type yet
-        (operation) => operation(mockLedgerKeyring),
-      );
-      const mockSerializedLedgerKeyring = 'serialized-keyring';
 
-      await restoreLedgerKeyring(mockSerializedLedgerKeyring);
+      jest.spyOn(ReduxService, 'store', 'get').mockReturnValue({
+        dispatch: jest.fn(),
+        getState: jest.fn(() => mockReduxState),
+      } as unknown as ReduxStore);
 
-      expect(Logger.error).toHaveBeenCalledWith(
-        error,
-        'error while trying to restore Ledger accounts on recreate vault',
+      mockEngine.context.CardController.logout.mockReturnValue(
+        new Promise(() => undefined),
       );
+
+      await expect(
+        recreateVaultsWithNewPassword('old-password', 'new-password', '0x123'),
+      ).resolves.toBeUndefined();
+
+      expect(mockEngine.setSelectedAddress).toHaveBeenCalledWith('0x123');
+      expect(mockEngine.context.CardController.logout).toHaveBeenCalledTimes(1);
     });
 
-    it('should log error if the KeyringController throws an error', async () => {
-      const error = new Error('Test error');
-      mockWithLedgerKeyring.mockRejectedValue(error);
-      const mockSerializedLedgerKeyring = 'serialized-keyring';
+    it('should restore when seedless change password failed if seedless onboarding flow is active', async () => {
+      // mock redux state
+      const mockReduxState: RecursivePartial<RootState> = {
+        engine: {
+          backgroundState: {
+            SeedlessOnboardingController: {
+              vault: 'valid vault data',
+              socialBackupsMetadata: [],
+            },
+          },
+        },
+      };
 
-      await restoreLedgerKeyring(mockSerializedLedgerKeyring);
+      // mock Redux store
+      jest.spyOn(ReduxService, 'store', 'get').mockReturnValue({
+        dispatch: jest.fn(),
+        getState: jest.fn(() => mockReduxState),
+      } as unknown as ReduxStore);
 
-      expect(Logger.error).toHaveBeenCalledWith(
-        error,
-        'error while trying to restore Ledger accounts on recreate vault',
+      mockEngine.context.SeedlessOnboardingController.changePassword.mockRejectedValue(
+        new Error(SeedlessOnboardingControllerErrorMessage.IncorrectPassword),
       );
+
+      await expect(
+        recreateVaultsWithNewPassword('old-password', 'new-password', '0x123'),
+      ).rejects.toThrow(
+        new Error(SeedlessOnboardingControllerErrorMessage.IncorrectPassword),
+      );
+
+      expect(
+        mockEngine.context.KeyringController.changePassword,
+      ).not.toHaveBeenCalledWith('new-password');
+      expect(mockEngine.context.CardController.logout).not.toHaveBeenCalled();
+      expect(
+        mockEngine.context.SeedlessOnboardingController.changePassword,
+      ).toHaveBeenCalled();
+
+      expect(mockEngine.setSelectedAddress).not.toHaveBeenCalledWith('0x123');
     });
   });
 });

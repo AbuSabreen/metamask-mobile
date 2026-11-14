@@ -1,0 +1,126 @@
+import { useMemo, useCallback } from 'react';
+import { useSelector } from 'react-redux';
+import { formatChainIdToCaip } from '@metamask/bridge-controller';
+import { selectNetworkConfigurationsByCaipChainId } from '../../selectors/networkController';
+import { useNetworkEnablement } from './useNetworkEnablement/useNetworkEnablement';
+import { KnownCaipNamespace } from '@metamask/utils';
+
+export interface NetworkInfo {
+  caipChainId: string;
+  networkName: string;
+}
+
+export interface CurrentNetworkInfo {
+  enabledNetworks: { chainId: string; enabled: boolean }[];
+  getNetworkInfo: (index?: number) => NetworkInfo | null;
+  getNetworkInfoByChainId: (chainId: string) => NetworkInfo | null;
+  isDisabled: boolean;
+  hasEnabledNetworks: boolean;
+  isNetworkEnabledForDefi: boolean;
+  hasMultipleNamespacesEnabled: boolean;
+}
+
+/**
+ * Hook that provides current network information for the active namespace
+ */
+export const useCurrentNetworkInfo = (): CurrentNetworkInfo => {
+  const { namespace, enabledNetworksByNamespace } = useNetworkEnablement();
+  const networksByCaipChainId = useSelector(
+    selectNetworkConfigurationsByCaipChainId,
+  );
+
+  // Get all enabled networks for the namespace
+  const enabledNetworks = useMemo(() => {
+    const networksForNamespace = {
+      ...Object.values(enabledNetworksByNamespace).reduce(
+        (acc, obj) => ({ ...acc, ...obj }),
+        {},
+      ),
+    };
+
+    return Object.entries(networksForNamespace)
+      .filter(([_key, value]) => value)
+      .map(([chainId, enabled]) => ({ chainId, enabled: Boolean(enabled) }));
+  }, [enabledNetworksByNamespace]);
+
+  // Generic function to get network info by index
+  const getNetworkInfo = useCallback(
+    (index: number = 0): NetworkInfo | null => {
+      if (enabledNetworks.length <= index) return null;
+
+      const chainId = enabledNetworks[index].chainId;
+      const caipChainId = formatChainIdToCaip(chainId);
+      const networkName = networksByCaipChainId[caipChainId]?.name || '';
+
+      return { caipChainId, networkName };
+    },
+    [enabledNetworks, networksByCaipChainId],
+  );
+
+  // Generic function to get network info by specific chainId
+  const getNetworkInfoByChainId = useCallback(
+    (chainId: string): NetworkInfo | null => {
+      const found = enabledNetworks.find(
+        (network) => network.chainId === chainId,
+      );
+      if (!found) return null;
+
+      const caipChainId = formatChainIdToCaip(found.chainId);
+      const networkName = networksByCaipChainId[caipChainId]?.name || '';
+
+      return { caipChainId, networkName };
+    },
+    [enabledNetworks, networksByCaipChainId],
+  );
+
+  // Check if multiple namespaces are enabled (e.g., "All popular networks" mode)
+  const hasMultipleNamespacesEnabled = useMemo(() => {
+    const enabledNamespaces = Object.keys(enabledNetworksByNamespace).filter(
+      (ns) => {
+        const networksInNamespace = enabledNetworksByNamespace[ns];
+        if (
+          typeof networksInNamespace === 'object' &&
+          networksInNamespace !== null
+        ) {
+          return Object.values(networksInNamespace).some((enabled) => enabled);
+        }
+        return false;
+      },
+    );
+    return enabledNamespaces.length > 1;
+  }, [enabledNetworksByNamespace]);
+
+  // Check if current namespace supports DeFi (currently only EVM/Eip155)
+  const isNetworkEnabledForDefi = useMemo(
+    () =>
+      namespace === KnownCaipNamespace.Eip155 || hasMultipleNamespacesEnabled,
+    [namespace, hasMultipleNamespacesEnabled],
+  );
+
+  // For now there is no use case to have it disabled
+  // but leaving it here since it might be useful
+  const isDisabled: boolean = false;
+
+  const hasEnabledNetworks = enabledNetworks.length > 0;
+
+  return useMemo(
+    () => ({
+      enabledNetworks,
+      getNetworkInfo,
+      getNetworkInfoByChainId,
+      isDisabled,
+      hasEnabledNetworks,
+      isNetworkEnabledForDefi,
+      hasMultipleNamespacesEnabled,
+    }),
+    [
+      enabledNetworks,
+      getNetworkInfo,
+      getNetworkInfoByChainId,
+      isDisabled,
+      hasEnabledNetworks,
+      isNetworkEnabledForDefi,
+      hasMultipleNamespacesEnabled,
+    ],
+  );
+};

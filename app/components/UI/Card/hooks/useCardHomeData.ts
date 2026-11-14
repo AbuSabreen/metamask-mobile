@@ -1,0 +1,137 @@
+import { useCallback, useEffect, useMemo } from 'react';
+import { useSelector } from 'react-redux';
+import Engine from '../../../../core/Engine';
+import {
+  selectCardHomeData,
+  selectCardHomeDataStatus,
+  selectCardPrimaryToken,
+  selectCardAvailableTokens,
+  selectCardFundingTokens,
+  selectIsCardAuthenticated,
+  selectIsCardholder,
+  selectCardHomeDataFetchedThisSession,
+} from '../../../../selectors/cardController';
+import { getAssetBalanceKey } from '../util/getAssetBalanceKey';
+import { useAssetBalances } from './useAssetBalances';
+import { ensureCardFundingTokensImported } from '../util/ensureCardFundingTokensImported';
+import { useEnsureCardNetworkExists } from './useEnsureCardNetworkExists';
+import type { CardFundingTokenWithBalance } from '../types';
+
+export const useCardHomeData = () => {
+  const data = useSelector(selectCardHomeData);
+  const status = useSelector(selectCardHomeDataStatus);
+  const primaryTokenRaw = useSelector(selectCardPrimaryToken);
+  const availableTokensRaw = useSelector(selectCardAvailableTokens);
+  const fundingTokensRaw = useSelector(selectCardFundingTokens);
+  const isCardholder = useSelector(selectIsCardholder);
+  const isCardAuthenticated = useSelector(selectIsCardAuthenticated);
+  const fetchedThisSession = useSelector(selectCardHomeDataFetchedThisSession);
+  const { ensureNetworkExists } = useEnsureCardNetworkExists();
+
+  // Money Home mounts this for every visitor, but a user with no card has
+  // nothing to fetch — `MoneyMetaMaskCard` only reads it in 'manage' mode.
+  const hasCard = isCardholder || isCardAuthenticated;
+
+  // A cold start restores 'success' and would otherwise never refetch;
+  // `fetchedThisSession` is not persisted, so it flags data that came off disk.
+  useEffect(() => {
+    if (
+      hasCard &&
+      (status === 'idle' || status === 'error' || !fetchedThisSession)
+    ) {
+      Engine.context.CardController.fetchCardHomeData();
+    }
+  }, [hasCard, status, fetchedThisSession]);
+
+  const refetch = useCallback(
+    () => Engine.context.CardController.fetchCardHomeData({ force: true }),
+    [],
+  );
+
+  // One useAssetBalances call covering all known card tokens, deduplicated by key.
+  const tokensForBalanceLookup = useMemo(() => {
+    const seen = new Set<string>();
+    return [
+      ...(primaryTokenRaw ? [primaryTokenRaw] : []),
+      ...availableTokensRaw,
+      ...fundingTokensRaw,
+    ].filter((token) => {
+      const key = getAssetBalanceKey(token);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [primaryTokenRaw, availableTokensRaw, fundingTokensRaw]);
+
+  useEffect(() => {
+    ensureCardFundingTokensImported(
+      tokensForBalanceLookup,
+      ensureNetworkExists,
+    );
+  }, [tokensForBalanceLookup, ensureNetworkExists]);
+
+  const balanceMap = useAssetBalances(tokensForBalanceLookup);
+
+  // Merge balance info into enriched token objects.
+  const primaryToken = useMemo((): CardFundingTokenWithBalance | null => {
+    if (!primaryTokenRaw) return null;
+    const info = balanceMap.get(getAssetBalanceKey(primaryTokenRaw));
+    return {
+      ...primaryTokenRaw,
+      asset: info?.asset,
+      balanceFiat: info?.balanceFiat,
+      balanceFormatted: info?.balanceFormatted,
+      rawFiatNumber: info?.rawFiatNumber,
+      rawTokenBalance: info?.rawTokenBalance,
+      isUnavailable: info?.isUnavailable,
+    };
+  }, [primaryTokenRaw, balanceMap]);
+
+  const availableTokens = useMemo(
+    (): CardFundingTokenWithBalance[] =>
+      availableTokensRaw.map((token) => {
+        const info = balanceMap.get(getAssetBalanceKey(token));
+        return {
+          ...token,
+          asset: info?.asset,
+          balanceFiat: info?.balanceFiat,
+          balanceFormatted: info?.balanceFormatted,
+          rawFiatNumber: info?.rawFiatNumber,
+          rawTokenBalance: info?.rawTokenBalance,
+          isUnavailable: info?.isUnavailable,
+        };
+      }),
+    [availableTokensRaw, balanceMap],
+  );
+
+  const fundingTokens = useMemo(
+    (): CardFundingTokenWithBalance[] =>
+      fundingTokensRaw.map((token) => {
+        const info = balanceMap.get(getAssetBalanceKey(token));
+        return {
+          ...token,
+          asset: info?.asset,
+          balanceFiat: info?.balanceFiat,
+          balanceFormatted: info?.balanceFormatted,
+          rawFiatNumber: info?.rawFiatNumber,
+          rawTokenBalance: info?.rawTokenBalance,
+          isUnavailable: info?.isUnavailable,
+        };
+      }),
+    [fundingTokensRaw, balanceMap],
+  );
+
+  const hasData = data !== null;
+
+  return {
+    data,
+    isLoading: !hasData && (status === 'loading' || status === 'idle'),
+    isRefreshing: hasData && status === 'loading',
+    isError: !hasData && status === 'error',
+    refetch,
+    primaryToken,
+    availableTokens,
+    fundingTokens,
+    balanceMap,
+  };
+};

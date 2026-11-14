@@ -1,265 +1,206 @@
-/* eslint-disable react-native/no-inline-styles */
-/* eslint-disable react/display-name */
-import React, { FC, useEffect } from 'react';
-import { Pressable, ScrollView, Switch, View } from 'react-native';
-import { useSelector, useDispatch } from 'react-redux';
-import { camelCase } from 'lodash';
+import React, { useCallback, useEffect } from 'react';
+import { ScrollView, TouchableOpacity } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSelector } from 'react-redux';
 
 import { strings } from '../../../../../locales/i18n';
 import { useTheme } from '../../../../util/theme';
-import Text, {
-  TextVariant,
-  TextColor,
-} from '../../../../component-library/components/Texts/Text';
-import { useAccounts } from '../../../../components/hooks/useAccounts';
-import { AvatarAccountType } from '../../../../component-library/components/Avatars/Avatar';
-import { getNavigationOptionsTitle } from '../../../UI/Navbar';
 
+import { useStyles } from '../../../../component-library/hooks';
+import HeaderStandardGlass from '../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../selectors/featureFlagController/glassHeaders';
 import { Props } from './NotificationsSettings.types';
-import createStyles from './NotificationsSettings.styles';
-import NotificationOptionToggle from './NotificationOptionToggle';
-import notificationsRows from './notificationsRows';
-import {
-  NotificationsToggleTypes,
-  NotificationsViewSelectorsIDs,
-} from './NotificationsSettings.constants';
 
-import {
-  notificationSettings as defaultDisabledNotificationSettings,
-  mmStorage,
-  requestPushNotificationsPermission,
-} from '../../../../util/notifications';
-import { updateNotificationStatus } from '../../../../actions/notification';
-import { STORAGE_IDS } from '../../../../util/notifications/settings/storage/constants';
+import { selectIsMetamaskNotificationsEnabled } from '../../../../selectors/notifications';
+import { selectSocialLeaderboardEnabled } from '../../../../selectors/featureFlagController/socialLeaderboard';
+
 import Routes from '../../../../constants/navigation/Routes';
-import { IconName } from '../../../../component-library/components/Icons/Icon';
-import ButtonIcon, {
-  ButtonIconSizes,
-} from '../../../../component-library/components/Buttons/ButtonIcon';
 
-/**
- * TODO: Discuss the granularity of the notifications settings.
- * i.e. Users can turn off all notifications for a particular account, for all accounts, or some notifications to account A, but not for account B.
- *
- */
-interface SessionHeaderProps {
+import { MainNotificationToggle } from './MainNotificationToggle';
+import styleSheet from './NotificationsSettings.styles';
+import {
+  useNotificationStoragePreferences,
+  type NotificationPreferenceSection,
+} from './hooks/useNotificationStoragePreferences';
+import {
+  getNotificationSettingsSectionRouteParams,
+  NOTIFICATION_SETTINGS_SECTIONS,
+  resolveNotificationSettingsSection,
+  type NotificationSettingsSectionConfig,
+} from './notificationSettingsSections';
+
+import {
+  Box,
+  Text,
+  Icon,
+  IconName,
+  IconColor,
+  TextVariant,
+  FontWeight,
+  BoxFlexDirection,
+  BoxAlignItems,
+  IconSize,
+} from '@metamask/design-system-react-native';
+import { NotificationPreferences } from '@metamask/authenticated-user-storage';
+
+interface NotificationRowProps {
   title: string;
-  description: string;
-  styles: ReturnType<typeof createStyles>;
+  /** Channels summary shown under the title. Omitted for wallet activity,
+   * whose per-account settings have no channel toggles to summarize. */
+  status?: string;
+  iconName: IconName;
+  onPress: () => void;
 }
 
-const SessionHeader = ({ title, description, styles }: SessionHeaderProps) => (
-  <>
-    <View style={styles.switchElement}>
-      <Text color={TextColor.Default} variant={TextVariant.BodyLGMedium}>
-        {title}
-      </Text>
-    </View>
-    <View style={styles.setting}>
-      <Text color={TextColor.Alternative} variant={TextVariant.BodyMD}>
-        {description}
-      </Text>
-    </View>
-  </>
-);
-
-const NotificationsSettings = ({ navigation, route }: Props) => {
-  const notificationsSettingsState = useSelector(
-    (state: any) => state.notification.notificationsSettings,
-  );
-
-  const isNotificationEnabled = notificationsSettingsState?.isEnabled;
-
-  const dispatch = useDispatch();
-  const { accounts } = useAccounts();
-
-  const accountAvatarType = useSelector((state: any) =>
-    state.settings.useBlockieIcon
-      ? AvatarAccountType.Blockies
-      : AvatarAccountType.JazzIcon,
-  );
-
-  const toggleNotificationsEnabled = () => {
-    !isNotificationEnabled
-      ? requestPushNotificationsPermission()
-      : dispatch(
-          updateNotificationStatus({
-            isEnabled: false,
-            notificationsOpts: defaultDisabledNotificationSettings,
-            accounts: [],
-          }),
-        );
-  };
-
-  const isFullScreenModal = route?.params?.isFullScreenModal;
-
+const NotificationRow = ({
+  title,
+  status,
+  iconName,
+  onPress,
+}: NotificationRowProps) => {
   const theme = useTheme();
-  const { colors } = theme;
-  const styles = createStyles(colors);
-
-  useEffect(() => {
-    notificationsSettingsState &&
-      mmStorage.saveLocal(
-        STORAGE_IDS.NOTIFICATIONS_SETTINGS,
-        JSON.stringify(notificationsSettingsState),
-      );
-  }, [notificationsSettingsState]);
-
-  useEffect(
-    () => {
-      navigation.setOptions(
-        getNavigationOptionsTitle(
-          strings('app_settings.notifications_title'),
-          navigation,
-          isFullScreenModal,
-          colors,
-          null,
-        ),
-      );
-      dispatch(
-        updateNotificationStatus({
-          ...notificationsSettingsState,
-          accounts:
-            notificationsSettingsState?.accounts ??
-            accounts.reduce((acc: { [key: string]: boolean }, account) => {
-              acc[account.address] = true;
-              return acc;
-            }, {}),
-        }),
-      );
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [colors],
-  );
-
-  const MainNotificationSettings: FC = () => (
-    <>
-      <Pressable
-        style={styles.switchElement}
-        onPressOut={toggleNotificationsEnabled}
-      >
-        <Text color={TextColor.Default} variant={TextVariant.BodyLGMedium}>
-          {strings('app_settings.allow_notifications')}
-        </Text>
-        <Switch
-          disabled={!isNotificationEnabled}
-          value={isNotificationEnabled}
-          onChange={toggleNotificationsEnabled}
-          trackColor={{
-            true: colors.primary.default,
-            false: colors.border.muted,
-          }}
-          thumbColor={theme.brandColors.white000}
-          style={styles.switch}
-          ios_backgroundColor={colors.border.muted}
-        />
-      </Pressable>
-      <View style={styles.setting}>
-        <Text color={TextColor.Alternative} variant={TextVariant.BodyMD}>
-          {strings('app_settings.allow_notifications_desc')}
-        </Text>
-      </View>
-    </>
-  );
+  const { styles } = useStyles(styleSheet, { theme });
 
   return (
-    <ScrollView style={styles.wrapper}>
-      <MainNotificationSettings />
-      {notificationsSettingsState?.isEnabled && (
-        <>
-          <SessionHeader
-            title={strings(
-              'app_settings.notifications_opts.customize_session_title',
-            )}
-            description={strings(
-              'app_settings.notifications_opts.customize_session_desc',
-            )}
-            styles={styles}
-          />
-          {notificationsRows.map((opt) => (
-            <NotificationOptionToggle
-              type={NotificationsToggleTypes.ACTIONS}
-              key={opt.title}
-              icon={opt.icon}
-              title={opt.title}
-              description={opt.description}
-              value={
-                notificationsSettingsState.notificationsOpts[
-                  camelCase(opt.title)
-                ]
-              }
-              onOptionUpdated={(value) => {
-                dispatch(
-                  updateNotificationStatus({
-                    ...notificationsSettingsState,
-                    notificationsOpts: {
-                      ...notificationsSettingsState.notificationsOpts,
-                      [camelCase(opt.title)]: value,
-                    },
-                  }),
-                );
-              }}
-              testId={NotificationsViewSelectorsIDs[opt.title]}
-              disabled={opt.disabled}
-            />
-          ))}
-          <SessionHeader
-            title={strings(
-              'app_settings.notifications_opts.account_session_title',
-            )}
-            description={strings(
-              'app_settings.notifications_opts.account_session_desc',
-            )}
-            styles={styles}
-          />
-          {accounts.map((account) => (
-            <NotificationOptionToggle
-              type={NotificationsToggleTypes.ACCOUNT}
-              icon={accountAvatarType}
-              key={account.address}
-              title={account.name}
-              description={account.address}
-              value={
-                notificationsSettingsState?.accounts[account.address] ?? true
-              }
-              onOptionUpdated={(value) => {
-                dispatch(
-                  updateNotificationStatus({
-                    ...notificationsSettingsState,
-                    accounts: {
-                      ...notificationsSettingsState.accounts,
-                      [account.address]: value,
-                    },
-                  }),
-                );
-              }}
-            />
-          ))}
-        </>
-      )}
-    </ScrollView>
+    <TouchableOpacity
+      style={[styles.switchElement, styles.notificationRow]}
+      onPress={onPress}
+    >
+      <Box
+        flexDirection={BoxFlexDirection.Row}
+        alignItems={BoxAlignItems.Center}
+      >
+        <Icon
+          name={iconName}
+          color={IconColor.IconAlternative}
+          size={IconSize.Lg}
+        />
+        <Box twClassName="ml-4">
+          <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
+            {title}
+          </Text>
+          {status ? (
+            <Text variant={TextVariant.BodySm} twClassName="text-alternative">
+              {status}
+            </Text>
+          ) : null}
+        </Box>
+      </Box>
+      <Icon name={IconName.ArrowRight} color={IconColor.IconAlternative} />
+    </TouchableOpacity>
+  );
+};
+
+type NotificationPreferenceStatus =
+  NotificationPreferences[NotificationPreferenceSection];
+
+const getStatusText = (prefs?: NotificationPreferenceStatus | null) => {
+  const active = [];
+  if (prefs?.pushNotificationsEnabled) {
+    active.push(strings('app_settings.notifications_opts.status_push'));
+  }
+  if (prefs?.inAppNotificationsEnabled) {
+    active.push(strings('app_settings.notifications_opts.status_in_app'));
+  }
+  return active.length > 0
+    ? active.join(', ')
+    : strings('app_settings.notifications_opts.status_off');
+};
+
+const NotificationsSettings = ({ navigation, route }: Props) => {
+  const theme = useTheme();
+  const { styles } = useStyles(styleSheet, { theme });
+
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const isMetamaskNotificationsEnabled = useSelector(
+    selectIsMetamaskNotificationsEnabled,
+  );
+  const isSocialLeaderboardEnabled = useSelector(
+    selectSocialLeaderboardEnabled,
+  );
+
+  const { preferences } = useNotificationStoragePreferences();
+  const sectionParam = route.params?.section;
+
+  const navigateToSection = useCallback(
+    (section: NotificationSettingsSectionConfig) => {
+      navigation.navigate(
+        Routes.SETTINGS.NOTIFICATION_SETTINGS_SECTION,
+        getNotificationSettingsSectionRouteParams(section),
+      );
+    },
+    [navigation],
+  );
+
+  useEffect(() => {
+    if (!sectionParam) {
+      return;
+    }
+
+    const section = resolveNotificationSettingsSection(sectionParam);
+    if (!section) {
+      navigation.setParams({ section: undefined });
+      return;
+    }
+
+    if (!isMetamaskNotificationsEnabled) {
+      return;
+    }
+
+    navigation.setParams({ section: undefined });
+    navigateToSection(section);
+  }, [
+    isMetamaskNotificationsEnabled,
+    navigateToSection,
+    navigation,
+    sectionParam,
+  ]);
+
+  return (
+    <SafeAreaView edges={['top']} style={styles.safeArea}>
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        onBack={navigation.goBack}
+      />
+      <ScrollView
+        style={
+          isGlassHeader
+            ? [styles.container, styles.notificationsList]
+            : styles.container
+        }
+      >
+        <Text variant={TextVariant.HeadingLg} fontWeight={FontWeight.Bold}>
+          {strings('app_settings.notifications_title')}
+        </Text>
+        <MainNotificationToggle />
+
+        {isMetamaskNotificationsEnabled &&
+          NOTIFICATION_SETTINGS_SECTIONS.map((section) => {
+            if (
+              section.requiresSocialLeaderboard &&
+              !isSocialLeaderboardEnabled
+            ) {
+              return null;
+            }
+
+            return (
+              <NotificationRow
+                key={section.type}
+                title={strings(section.titleKey)}
+                status={
+                  section.showStatus
+                    ? getStatusText(preferences?.[section.type])
+                    : undefined
+                }
+                iconName={section.iconName}
+                onPress={() => navigateToSection(section)}
+              />
+            );
+          })}
+      </ScrollView>
+    </SafeAreaView>
   );
 };
 
 export default NotificationsSettings;
-
-NotificationsSettings.navigationOptions = ({
-  navigation,
-  isNotificationEnabled,
-}: {
-  navigation: any;
-  isNotificationEnabled: boolean;
-}) => ({
-  headerLeft: () => (
-    <ButtonIcon
-      size={ButtonIconSizes.Lg}
-      iconName={IconName.ArrowLeft}
-      onPress={() =>
-        !isNotificationEnabled
-          ? navigation.navigate(Routes.WALLET.HOME)
-          : navigation.goBack()
-      }
-      style={{ marginHorizontal: 16 }}
-    />
-  ),
-});

@@ -1,0 +1,91 @@
+import React, { useRef, isValidElement, useCallback } from 'react';
+import {
+  Box,
+  Text,
+  TextVariant,
+  TextColor,
+  BottomSheetFooter,
+  ButtonSize,
+} from '@metamask/design-system-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import BottomSheet, {
+  BottomSheetRef,
+} from '../../../component-library/components/BottomSheets/BottomSheet';
+import { strings } from '../../../../locales/i18n';
+
+import { TooltipModalRouteParams } from './ToolTipModal.types';
+import { useParams } from '../../../util/navigation/navUtils';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { useSelector } from 'react-redux';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
+
+const TooltipModal = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const {
+    tooltip,
+    title,
+    footerText,
+    buttonText,
+    onButtonPress,
+    dismissOnButtonPress,
+  } = useParams<TooltipModalRouteParams>();
+
+  const tw = useTailwind();
+  const insets = useSafeAreaInsets();
+
+  const bottomSheetRef = useRef<BottomSheetRef>(null);
+
+  const onCloseModal = () => bottomSheetRef.current?.onCloseBottomSheet();
+
+  const handleGotItPress = useCallback(() => {
+    onButtonPress?.();
+    if (dismissOnButtonPress !== false) {
+      bottomSheetRef.current?.onCloseBottomSheet();
+    }
+  }, [onButtonPress, dismissOnButtonPress]);
+
+  return (
+    <BottomSheet ref={bottomSheetRef}>
+      <HeaderStandardGlass
+        isFloating={false}
+        isGlass={isGlassHeader}
+        title={title}
+        onClose={onCloseModal}
+        testID="tooltip-modal-header"
+        closeButtonProps={{ testID: 'tooltip-modal-close' }}
+      />
+      <Box twClassName="px-4">
+        {isValidElement(tooltip) ? (
+          tooltip
+        ) : (
+          <Text variant={TextVariant.BodyMd} color={TextColor.TextAlternative}>
+            {tooltip}
+          </Text>
+        )}
+      </Box>
+      <BottomSheetFooter
+        primaryButtonProps={{
+          size: ButtonSize.Lg,
+          children: buttonText ?? strings('browser.got_it'),
+          onPress: handleGotItPress,
+        }}
+        twClassName="px-4 pt-6"
+        style={tw.style({ paddingBottom: footerText ? 0 : insets.bottom })}
+      />
+      {footerText && (
+        <Box
+          style={tw.style('flex-row justify-center px-4 pt-1', {
+            paddingBottom: insets.bottom,
+          })}
+        >
+          <Text variant={TextVariant.BodySm} color={TextColor.TextAlternative}>
+            {footerText}
+          </Text>
+        </Box>
+      )}
+    </BottomSheet>
+  );
+};
+
+export default TooltipModal;

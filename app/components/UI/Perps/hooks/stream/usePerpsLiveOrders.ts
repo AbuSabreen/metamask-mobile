@@ -1,0 +1,160 @@
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
+import { useSelector } from 'react-redux';
+import { usePerpsStream } from '../../providers/PerpsStreamManager';
+import { isTPSLOrder, type Order } from '@metamask/perps-controller';
+import { hasPreloadedData, getPreloadedData } from './hasCachedPerpsData';
+import { selectPerpsSelectedAccountAddress } from '../../selectors/selectedAccountAddress';
+
+// Stable empty array reference to prevent re-renders
+const EMPTY_ORDERS: Order[] = [];
+
+export interface UsePerpsLiveOrdersOptions {
+  /** Throttle delay in milliseconds (default: 0 - no throttling for instant updates) */
+  throttleMs?: number;
+  /** Filter out TP/SL orders (Stop Market, Stop Limit, Take Profit Limit) */
+  hideTpSl?: boolean;
+  /** Filter out all reduce-only orders */
+  hideReduceOnly?: boolean;
+}
+
+export interface UsePerpsLiveOrdersReturn {
+  /** Array of current orders */
+  orders: Order[];
+  /** Whether we're waiting for the first real WebSocket data (not cached) */
+  isInitialLoading: boolean;
+  error?: Error | null;
+  retry: () => void;
+  /** Deliveries accepted by this selected-account subscription. */
+  deliveryRevision?: number;
+}
+
+/**
+ * Hook for real-time order updates via WebSocket subscription
+ * Live WebSocket subscription for open orders
+ *
+ * Orders update instantly by default since they don't change frequently
+ * and users expect immediate feedback when placing/cancelling orders.
+ *
+ * @param options - Configuration options for the hook
+ * @returns Object containing orders array and loading state
+ */
+export function usePerpsLiveOrders(
+  options: UsePerpsLiveOrdersOptions = {},
+): UsePerpsLiveOrdersReturn {
+  const { throttleMs = 0, hideTpSl = false, hideReduceOnly = false } = options; // No throttling by default for instant updates
+  const stream = usePerpsStream();
+  const [error, setError] = useState<Error | null>(null);
+  const selectedAddress = useSelector(selectPerpsSelectedAccountAddress);
+  const initialChannelOrders = stream.orders.getSnapshot();
+  const [orders, setOrders] = useState<Order[]>(() => {
+    const cached =
+      initialChannelOrders ??
+      getPreloadedData<Order[]>('cachedOrders') ??
+      EMPTY_ORDERS;
+    return cached;
+  });
+  const [ordersAddress, setOrdersAddress] = useState(selectedAddress);
+  const [isInitialLoading, setIsInitialLoading] = useState(() => {
+    if (initialChannelOrders !== null && initialChannelOrders !== undefined) {
+      return false;
+    }
+    const hasCached = hasPreloadedData('cachedOrders');
+    return !hasCached;
+  });
+  const lastOrdersRef = useRef<Order[]>(EMPTY_ORDERS);
+  const hasReceivedFirstUpdate = useRef(false);
+  const [deliveryRevision, setDeliveryRevision] = useState(0);
+  const acceptedDeliveryRef = useRef(false);
+
+  useEffect(() => {
+    const unsubscribe = stream.orders.subscribe({
+      onError: (failure) => {
+        setOrdersAddress(selectedAddress);
+        setError(failure);
+        setIsInitialLoading(false);
+      },
+      callback: (newOrders) => {
+        setError(stream.orders.getError());
+        acceptedDeliveryRef.current = false;
+        if (newOrders === null || newOrders === undefined) {
+          // Cleared on account switch — show skeleton until first update for new account
+          hasReceivedFirstUpdate.current = false;
+          setIsInitialLoading(true);
+          lastOrdersRef.current = EMPTY_ORDERS;
+          setOrders(EMPTY_ORDERS);
+          setOrdersAddress(selectedAddress);
+          return;
+        }
+
+        // We have real data now (either empty array or orders)
+        if (!hasReceivedFirstUpdate.current) {
+          hasReceivedFirstUpdate.current = true;
+          setIsInitialLoading(false);
+        }
+        acceptedDeliveryRef.current = true;
+
+        // Only update if orders actually changed
+        setOrdersAddress(selectedAddress);
+        // For empty arrays, use stable reference
+        if (newOrders.length === 0) {
+          if (lastOrdersRef.current.length === 0) {
+            // Already empty, don't update
+            return;
+          }
+          lastOrdersRef.current = EMPTY_ORDERS;
+          setOrders(EMPTY_ORDERS);
+        } else {
+          lastOrdersRef.current = newOrders;
+          setOrders(newOrders);
+        }
+      },
+      onDelivery: (source) => {
+        if (source === 'fresh' && acceptedDeliveryRef.current) {
+          setDeliveryRevision((revision) => revision + 1);
+        }
+        acceptedDeliveryRef.current = false;
+      },
+      throttleMs,
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [selectedAddress, stream, throttleMs]);
+
+  const retry = useCallback(() => {
+    stream.retryOrderStreams();
+  }, [stream]);
+
+  // Filter orders based on requested display options
+  const filteredOrders = useMemo(() => {
+    if (!hideTpSl && !hideReduceOnly) {
+      return orders;
+    }
+    return orders.filter((order) => {
+      // A TP/SL order is either a recognized TP/SL order type or a trigger
+      // order. Checking both keeps this in sync with the market-details filter
+      // so reduce-only trigger TP/SL orders never leak past hideTpSl.
+      if (
+        hideTpSl &&
+        (order.isTrigger === true || isTPSLOrder(order.detailedOrderType))
+      ) {
+        return false;
+      }
+
+      if (hideReduceOnly && order.reduceOnly === true) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [orders, hideTpSl, hideReduceOnly]);
+
+  return {
+    error: ordersAddress === selectedAddress ? error : null,
+    retry,
+    orders: ordersAddress === selectedAddress ? filteredOrders : EMPTY_ORDERS,
+    isInitialLoading: ordersAddress !== selectedAddress || isInitialLoading,
+    deliveryRevision,
+  };
+}

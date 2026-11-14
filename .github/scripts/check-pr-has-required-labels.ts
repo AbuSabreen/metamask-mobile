@@ -42,8 +42,6 @@ async function main(): Promise<void> {
 
   const preventMergeLabels = [
     'needs-qa',
-    "QA'd but questions",
-    'issues-found',
     'need-ux-ds-review',
     'blocked',
     'stale',
@@ -68,11 +66,12 @@ async function main(): Promise<void> {
     }
   }
 
-  // Otherwise, throw an arror to prevent from merging
+  // Otherwise, throw an error to prevent from merging
   let errorMessage = '';
   if (!hasTeamLabel) {
     errorMessage += 'No team labels found on the PR. ';
   }
+  
   errorMessage += `Please make sure the PR is appropriately labeled before merging it.\n\nSee labeling guidelines for more detail: https://github.com/MetaMask/metamask-mobile/blob/main/.github/guidelines/LABELING_GUIDELINES.md`;
   core.setFailed(errorMessage);
   process.exit(1);

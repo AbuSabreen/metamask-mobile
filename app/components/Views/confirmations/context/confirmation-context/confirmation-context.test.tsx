@@ -1,0 +1,149 @@
+import React from 'react';
+import { renderHook, act } from '@testing-library/react-native';
+import {
+  ConfirmationContextProvider,
+  useConfirmationContext,
+} from './confirmation-context';
+
+describe('ConfirmationContext', () => {
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <ConfirmationContextProvider>{children}</ConfirmationContextProvider>
+  );
+
+  it('provides initial values', () => {
+    const { result } = renderHook(() => useConfirmationContext(), { wrapper });
+
+    expect(result.current).toStrictEqual({
+      mmPayRequestInProgressNavHandler: expect.objectContaining({
+        current: false,
+      }),
+      headlessBuyError: undefined,
+      isFooterVisible: undefined,
+      isConfirmationSubmitting: false,
+      isConfirmationSubmittingRef: { current: false },
+      isGasFeeModalVisible: false,
+      isHeadlessBuyInProgress: false,
+      isTransactionDataUpdating: false,
+      isTransactionValueUpdating: false,
+      pendingFiatAmount: undefined,
+      setPendingFiatAmount: expect.any(Function),
+      setHeadlessBuyError: expect.any(Function),
+      setIsFooterVisible: expect.any(Function),
+      setIsGasFeeModalVisible: expect.any(Function),
+      setIsConfirmationSubmitting: expect.any(Function),
+      setIsHeadlessBuyInProgress: expect.any(Function),
+      setIsTransactionDataUpdating: expect.any(Function),
+      setIsTransactionValueUpdating: expect.any(Function),
+    });
+  });
+
+  it('updates isTransactionValueUpdating state when calling setIsTransactionValueUpdating', () => {
+    const { result } = renderHook(() => useConfirmationContext(), { wrapper });
+
+    act(() => {
+      result.current.setIsTransactionValueUpdating(true);
+    });
+
+    expect(result.current.isTransactionValueUpdating).toBe(true);
+
+    act(() => {
+      result.current.setIsTransactionValueUpdating(false);
+    });
+
+    expect(result.current.isTransactionValueUpdating).toBe(false);
+  });
+
+  it('updates isFooterVisible state when calling setIsFooterVisible', () => {
+    const { result } = renderHook(() => useConfirmationContext(), { wrapper });
+
+    act(() => {
+      result.current.setIsFooterVisible(false);
+    });
+
+    expect(result.current.isFooterVisible).toBe(false);
+  });
+
+  it('updates pendingFiatAmount state when calling setPendingFiatAmount', () => {
+    const { result } = renderHook(() => useConfirmationContext(), { wrapper });
+
+    act(() => {
+      result.current.setPendingFiatAmount('150000');
+    });
+
+    expect(result.current.pendingFiatAmount).toBe('150000');
+
+    act(() => {
+      result.current.setPendingFiatAmount(undefined);
+    });
+
+    expect(result.current.pendingFiatAmount).toBeUndefined();
+  });
+
+  it('updates isGasFeeModalVisible state when calling setIsGasFeeModalVisible', () => {
+    const { result } = renderHook(() => useConfirmationContext(), { wrapper });
+
+    act(() => {
+      result.current.setIsGasFeeModalVisible(true);
+    });
+
+    expect(result.current.isGasFeeModalVisible).toBe(true);
+
+    act(() => {
+      result.current.setIsGasFeeModalVisible(false);
+    });
+
+    expect(result.current.isGasFeeModalVisible).toBe(false);
+  });
+
+  it('updates isHeadlessBuyInProgress state when calling setIsHeadlessBuyInProgress', () => {
+    const { result } = renderHook(() => useConfirmationContext(), { wrapper });
+
+    act(() => {
+      result.current.setIsHeadlessBuyInProgress(true);
+    });
+
+    expect(result.current.isHeadlessBuyInProgress).toBe(true);
+
+    act(() => {
+      result.current.setIsHeadlessBuyInProgress(false);
+    });
+
+    expect(result.current.isHeadlessBuyInProgress).toBe(false);
+  });
+
+  it('updates isTransactionDataUpdating state when calling setIsTransactionDataUpdating', () => {
+    const { result } = renderHook(() => useConfirmationContext(), { wrapper });
+
+    act(() => {
+      result.current.setIsTransactionDataUpdating(true);
+    });
+
+    expect(result.current.isTransactionDataUpdating).toBe(true);
+
+    act(() => {
+      result.current.setIsTransactionDataUpdating(false);
+    });
+
+    expect(result.current.isTransactionDataUpdating).toBe(false);
+  });
+
+  it('updates isConfirmationSubmitting state when calling setIsConfirmationSubmitting', () => {
+    const { result } = renderHook(() => useConfirmationContext(), { wrapper });
+
+    act(() => {
+      result.current.setIsConfirmationSubmitting(true);
+      expect(result.current.isConfirmationSubmittingRef.current).toBe(true);
+    });
+
+    expect(result.current.isConfirmationSubmitting).toBe(true);
+    expect(result.current.isConfirmationSubmittingRef.current).toBe(true);
+
+    act(() => {
+      result.current.setIsConfirmationSubmitting(false);
+      expect(result.current.isConfirmationSubmittingRef.current).toBe(false);
+    });
+
+    expect(result.current.isConfirmationSubmitting).toBe(false);
+    expect(result.current.isConfirmationSubmittingRef.current).toBe(false);
+  });
+});

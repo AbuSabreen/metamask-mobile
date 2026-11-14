@@ -1,0 +1,60 @@
+import { test as perfTest } from '../../../framework/fixtures/playwright';
+import TimerHelper from '../../../framework/TimerHelper';
+import { loginToAppPlaywright } from '../../../flows/wallet.flow';
+import { AppiumAssertions } from '../../../framework';
+import ToastModal from '../../../page-objects/wallet/ToastModal';
+import PredictHome from '../../../page-objects/Predict/PredictHome';
+import { Performance, PerformancePredict } from '../../../tags.performance.js';
+import WalletView from '../../../page-objects/wallet/WalletView.js';
+import { enableHermesAppProfiling } from '../../helpers/appProfiling';
+
+/*
+ * Scenario: Predict Available Balance Performance Test
+ *
+ * This test measures how long it takes to load the available balance
+ * on the Predict Market List screen under 4G network conditions
+ * (default for e2e tests).
+ *
+ * Test Setup:
+ * - Account with access to Predict and visible available balance card
+ *
+ * The test measures:
+ * 1. Time to navigate to Predict tab
+ * 2. Time to verify available balance info is displayed
+ */
+perfTest.describe(`${Performance} ${PerformancePredict}`, () => {
+  perfTest(
+    'Predict Available Balance - Complete Flow Performance',
+    { tag: '@team-predict' },
+    async ({ currentDeviceDetails, driver, performanceTracker }, testInfo) => {
+      // Login to the app
+      await loginToAppPlaywright();
+      perfTest.setTimeout(15 * 60 * 1000);
+      // Timer 1: Navigate to Predict tab and verify available balance
+      const timer1 = new TimerHelper(
+        'Time since user taps Predict button until Available Balance is displayed',
+        { ios: 4500, android: 2400 },
+        currentDeviceDetails.platform,
+      );
+
+      await ToastModal.waitForToastToDismiss();
+      await enableHermesAppProfiling();
+      await WalletView.scrollAndTapPredictionsSection();
+
+      await timer1.measure(async () => {
+        await AppiumAssertions.expectElementToBeVisible(PredictHome.container, {
+          timeout: 60000,
+        });
+      });
+
+      // Add all timers to performance tracker
+      performanceTracker.addTimers(timer1);
+
+      // Attach performance metrics to test report
+
+      console.log('Predict Available Balance Performance Test completed');
+      console.log(`Available Balance Display: ${timer1.getDuration()}ms`);
+      console.log(`Total Time: ${timer1.getDuration() ?? 0}ms`);
+    },
+  );
+});

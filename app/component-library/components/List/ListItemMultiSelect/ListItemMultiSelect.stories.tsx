@@ -27,13 +27,15 @@ const ListItemMultiSelectMeta = {
 export default ListItemMultiSelectMeta;
 
 export const ListItemMultiSelect = {
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   render: (args: any) => (
     <ListItemMultiSelectComponent {...args}>
       <ListItemColumn>
         <Icon name={IconName.Clock} />
       </ListItemColumn>
       <ListItemColumn widthType={WidthType.Fill}>
-        <Text numberOfLines={1} variant={TextVariant.HeadingSMRegular}>
+        <Text numberOfLines={1} variant={TextVariant.BodyMD}>
           {'Sample Title'}
         </Text>
         <Text variant={TextVariant.BodyMD}>{'Sample Description'}</Text>

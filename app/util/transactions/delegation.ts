@@ -1,0 +1,317 @@
+import {
+  AuthorizationList,
+  TransactionMeta,
+  decodeAuthorizationSignature,
+} from '@metamask/transaction-controller';
+import {
+  BATCH_DEFAULT_MODE,
+  DeleGatorEnvironment,
+  ExecutionMode,
+  ExecutionStruct,
+  SINGLE_DEFAULT_MODE,
+  getDeleGatorEnvironment,
+} from '../../core/Delegation';
+import {
+  ANY_BENEFICIARY,
+  Delegation,
+  createDelegation,
+  encodeRedeemDelegations,
+} from '../../core/Delegation/delegation';
+import { Hex, createProjectLogger } from '@metamask/utils';
+import { Messenger } from '@metamask/messenger';
+import { DelegationControllerSignDelegationAction } from '@metamask/delegation-controller';
+import { RemoteFeatureFlagControllerGetStateAction } from '@metamask/remote-feature-flag-controller';
+import {
+  KeyringControllerGetStateAction,
+  KeyringControllerSignEip7702AuthorizationAction,
+  KeyringControllerUnlockEvent,
+} from '@metamask/keyring-controller';
+import { toHex } from '@metamask/controller-utils';
+import Engine from '../../core/Engine';
+import { getDelegationCaveats } from './caveats';
+
+const log = createProjectLogger('transaction-delegation');
+
+export type SignMessenger = Messenger<
+  string,
+  | DelegationControllerSignDelegationAction
+  | RemoteFeatureFlagControllerGetStateAction
+  | KeyringControllerGetStateAction
+  | KeyringControllerSignEip7702AuthorizationAction,
+  KeyringControllerUnlockEvent
+>;
+
+export interface DelegationTransaction {
+  authorizationList?: AuthorizationList;
+  data: Hex;
+  to: Hex;
+  value: Hex;
+}
+
+export async function getDelegationTransaction<
+  MessengerType extends SignMessenger,
+>(
+  messenger: MessengerType,
+  transaction: TransactionMeta,
+  isSubsidized?: boolean,
+): Promise<DelegationTransaction> {
+  await waitForKeyringUnlock(messenger, transaction.id);
+
+  const { chainId } = transaction;
+  const delegationEnvironment = getDeleGatorEnvironment(parseInt(chainId, 16));
+
+  const delegationManagerAddress =
+    delegationEnvironment.DelegationManager as Hex;
+
+  const executions = buildExecutions(transaction, isSubsidized);
+
+  const delegations = await buildDelegation({
+    environment: delegationEnvironment,
+    executions: executions[0],
+    isSubsidized,
+    messenger,
+    transactionMeta: transaction,
+  });
+
+  const modes: ExecutionMode[] = [
+    isSubsidized || executions[0].length <= 1
+      ? SINGLE_DEFAULT_MODE
+      : BATCH_DEFAULT_MODE,
+  ];
+
+  log('Built delegations', { delegations, modes, executions });
+
+  const transactionData = encodeRedeemDelegations({
+    delegations,
+    modes,
+    executions,
+  });
+
+  const authorizationList = await buildAuthorizationList(
+    transaction,
+    messenger,
+  );
+
+  return {
+    authorizationList,
+    data: transactionData,
+    to: delegationManagerAddress,
+    value: '0x0',
+  };
+}
+
+async function buildAuthorizationList<MessengerType extends SignMessenger>(
+  transactionMeta: TransactionMeta,
+  messenger: MessengerType,
+): Promise<AuthorizationList | undefined> {
+  const { TransactionController } = Engine.context;
+  const { chainId, networkClientId, txParams } = transactionMeta;
+  const { from } = txParams;
+
+  const atomicBatchResult = await TransactionController.isAtomicBatchSupported({
+    address: from as Hex,
+    chainIds: [chainId],
+  });
+
+  const chainResult = atomicBatchResult.find(
+    (r) => r.chainId.toLowerCase() === chainId.toLowerCase(),
+  );
+
+  if (!chainResult) {
+    throw new Error('Chain does not support EIP-7702');
+  }
+
+  const { delegationAddress, isSupported, upgradeContractAddress } =
+    chainResult;
+
+  if (isSupported) {
+    log('Skipping authorization as already upgraded');
+    return undefined;
+  }
+
+  if (!delegationAddress) {
+    log('Upgrading account to EIP-7702', { from, upgradeContractAddress });
+  } else {
+    log('Overwriting authorization as already upgraded', {
+      from,
+      current: delegationAddress,
+      new: upgradeContractAddress,
+    });
+  }
+
+  if (!upgradeContractAddress) {
+    throw new Error('Upgrade contract address not found');
+  }
+
+  const nonceLock = await TransactionController.getNonceLock(
+    from,
+    networkClientId,
+  );
+
+  const nonce = nonceLock.nonceDetails.params.nextNetworkNonce;
+  nonceLock.releaseLock();
+
+  const authorizationSignature = (await messenger.call(
+    'KeyringController:signEip7702Authorization',
+    {
+      chainId: parseInt(chainId, 16),
+      contractAddress: upgradeContractAddress,
+      from,
+      nonce,
+    },
+  )) as Hex;
+
+  const { r, s, yParity } = decodeAuthorizationSignature(
+    authorizationSignature,
+  );
+
+  log('Authorization signature', {
+    authorizationSignature,
+    r,
+    s,
+    yParity,
+    nonce,
+  });
+
+  return [
+    {
+      address: upgradeContractAddress,
+      chainId,
+      nonce: toHex(nonce),
+      r,
+      s,
+      yParity,
+    },
+  ];
+}
+
+async function buildDelegation<MessengerType extends SignMessenger>({
+  environment,
+  executions,
+  isSubsidized,
+  messenger,
+  transactionMeta,
+}: {
+  environment: DeleGatorEnvironment;
+  executions: ExecutionStruct[];
+  isSubsidized?: boolean;
+  messenger: MessengerType;
+  transactionMeta: TransactionMeta;
+}): Promise<Delegation[][]> {
+  const caveats = getDelegationCaveats({
+    environment,
+    executions,
+    isSubsidized,
+    messenger,
+    transactionMeta,
+  });
+
+  log('Caveats', caveats);
+
+  const unsignedDelegation = createDelegation({
+    from: transactionMeta.txParams.from as Hex,
+    to: ANY_BENEFICIARY,
+    caveats,
+  });
+
+  log('Signing delegation', unsignedDelegation);
+
+  const delegationSignature = (await messenger.call(
+    'DelegationController:signDelegation',
+    {
+      chainId: transactionMeta.chainId,
+      delegation: unsignedDelegation,
+    },
+  )) as Hex;
+
+  log('Delegation signature', delegationSignature);
+
+  const delegations: Delegation[][] = [
+    [
+      {
+        ...unsignedDelegation,
+
+        signature: delegationSignature,
+      },
+    ],
+  ];
+
+  return delegations;
+}
+
+function buildExecutions(
+  transactionMeta: TransactionMeta,
+  useParentExecution = false,
+): ExecutionStruct[][] {
+  const { nestedTransactions, txParams } = transactionMeta;
+
+  if (useParentExecution) {
+    return [
+      [
+        {
+          target: txParams.to as Hex,
+          value: BigInt((txParams.value as Hex) ?? '0x0'),
+          callData: normalizeCallData(txParams.data),
+        },
+      ],
+    ];
+  }
+
+  return [
+    (nestedTransactions ?? []).map((tx) => ({
+      target: tx.to as Hex,
+      value: BigInt(tx.value ?? '0x0'),
+      callData: normalizeCallData(tx.data),
+    })),
+  ];
+}
+
+function normalizeCallData(data: unknown): Hex {
+  if (typeof data !== 'string' || data.length === 0) {
+    return '0x';
+  }
+
+  const hasHexPrefix = data.slice(0, 2).toLowerCase() === '0x';
+  const lower = data.toLowerCase();
+  const prefixed = hasHexPrefix ? `0x${lower.slice(2)}` : `0x${lower}`;
+  const hexBody = prefixed.slice(2);
+
+  if (hexBody.length === 0) {
+    return '0x';
+  }
+
+  if (hexBody.length % 2 !== 0) {
+    return normalizeCallData(`0x0${hexBody}`);
+  }
+
+  return prefixed as Hex;
+}
+
+/**
+ * Resolves once the keyring is unlocked. Quote refreshes run on a timer and
+ * can fire while the wallet is locked (e.g. after the app was backgrounded),
+ * where signing would fail with `ControllerLocked` and leave a sticky quote
+ * error. Waiting lets the pending refresh complete after the user unlocks.
+ */
+async function waitForKeyringUnlock<MessengerType extends SignMessenger>(
+  messenger: MessengerType,
+  transactionId: string,
+): Promise<void> {
+  const { isUnlocked } = messenger.call('KeyringController:getState');
+
+  if (isUnlocked) {
+    return;
+  }
+
+  log('Keyring locked, waiting for unlock before signing', { transactionId });
+
+  await new Promise<void>((resolve) => {
+    const handler = () => {
+      messenger.unsubscribe('KeyringController:unlock', handler);
+      resolve();
+    };
+    messenger.subscribe('KeyringController:unlock', handler);
+  });
+
+  log('Keyring unlocked, resuming signing', { transactionId });
+}

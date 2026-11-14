@@ -1,0 +1,138 @@
+import { Hex } from '@metamask/utils';
+import { isAddress as isSolanaAddress } from '@solana/addresses';
+
+import { strings } from '../../../../../locales/i18n';
+import {
+  collectConfusables,
+  getConfusablesExplanations,
+  hasZeroWidthPoints,
+} from '../../../../util/confusables';
+import {
+  isBtcMainnetAddress,
+  isTronAddress,
+  isStellarAddress,
+} from '../../../../core/Multichain/utils';
+import { ZERO_ADDRESS, DEAD_ADDRESS } from '../../../../constants/address';
+
+export const validateBitcoinAddress = (
+  toAddress: string,
+): {
+  error?: string;
+  warning?: string;
+} => {
+  if (!isBtcMainnetAddress(toAddress)) {
+    return {
+      error: strings('send.invalid_address'),
+    };
+  }
+
+  return {};
+};
+
+export const validateHexAddress = async (
+  toAddress: string,
+  chainId?: Hex,
+  assetAddress?: string,
+): Promise<{
+  error?: string;
+  warning?: string;
+}> => {
+  if (toAddress?.toLowerCase() === ZERO_ADDRESS.toLowerCase()) {
+    return {
+      error: strings('send.invalid_address'),
+    };
+  }
+
+  if (toAddress?.toLowerCase() === DEAD_ADDRESS.toLowerCase()) {
+    return {
+      warning: strings('send.invalid_address'),
+    };
+  }
+
+  if (toAddress?.toLowerCase() === assetAddress?.toLowerCase()) {
+    return {
+      error: strings('send.contractAddressError'),
+    };
+  }
+
+  return {};
+};
+
+const SOLANA_BURN_ADDRESSES = [
+  '1nc1nerator11111111111111111111111111111111',
+  'So11111111111111111111111111111111111111112',
+];
+
+export const validateSolanaAddress = (
+  toAddress: string,
+): {
+  error?: string;
+  warning?: string;
+} => {
+  if (SOLANA_BURN_ADDRESSES.includes(toAddress)) {
+    return {
+      error: strings('send.invalid_address'),
+    };
+  }
+
+  if (!isSolanaAddress(toAddress)) {
+    return {
+      error: strings('send.invalid_address'),
+    };
+  }
+  return {};
+};
+
+export const getConfusableCharacterInfo = (toAddress: string) => {
+  const confusableCollection = collectConfusables(toAddress);
+  if (confusableCollection.length) {
+    const invalidAddressMessage = strings('transaction.invalid_address');
+    const confusableCharacterWarningMessage = `${strings(
+      'transaction.confusable_msg',
+    )} - ${getConfusablesExplanations(confusableCollection)}`;
+    const invisibleCharacterWarningMessage = strings(
+      'send.invisible_character_error',
+    );
+    const isError = confusableCollection.some(hasZeroWidthPoints);
+    if (isError) {
+      // Show ERROR for zero-width characters (more important than warning)
+      return {
+        error: invalidAddressMessage,
+        warning: invisibleCharacterWarningMessage,
+      };
+    }
+    // Show WARNING for confusable characters
+    return {
+      warning: confusableCharacterWarningMessage,
+    };
+  }
+  return {};
+};
+
+export const validateTronAddress = (
+  toAddress: string,
+): {
+  error?: string;
+  warning?: string;
+} => {
+  if (!isTronAddress(toAddress)) {
+    return {
+      error: strings('send.invalid_address'),
+    };
+  }
+  return {};
+};
+
+export const validateStellarAddress = (
+  toAddress: string,
+): {
+  error?: string;
+  warning?: string;
+} => {
+  if (!isStellarAddress(toAddress)) {
+    return {
+      error: strings('send.invalid_address'),
+    };
+  }
+  return {};
+};

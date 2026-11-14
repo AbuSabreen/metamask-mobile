@@ -1,0 +1,729 @@
+import { act, renderHook } from '@testing-library/react-native';
+import { useOHLCVRealtime } from './useOHLCVRealtime';
+
+const mockCall = jest.fn().mockResolvedValue(undefined);
+const mockSubscribe = jest.fn();
+const mockUnsubscribe = jest.fn();
+
+jest.mock('../../../../core/Engine', () => ({
+  __esModule: true,
+  default: {
+    controllerMessenger: {
+      call: (...args: unknown[]) => mockCall(...args),
+      subscribe: (...args: unknown[]) => mockSubscribe(...args),
+      unsubscribe: (...args: unknown[]) => mockUnsubscribe(...args),
+    },
+  },
+}));
+
+const mockFetch = jest.fn();
+global.fetch = mockFetch as jest.Mock;
+
+function arrangeDefaultOptions() {
+  return {
+    assetId: 'eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    interval: '15m',
+    currency: 'usd',
+    timePeriod: '1d',
+    enabled: true,
+  };
+}
+
+function makeFetchResponse(bar: Record<string, number>) {
+  return {
+    ok: true,
+    json: jest.fn().mockResolvedValue(bar),
+  };
+}
+
+describe('useOHLCVRealtime', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockCall.mockReset().mockResolvedValue(undefined);
+    mockSubscribe.mockReset();
+    mockUnsubscribe.mockReset();
+    mockFetch.mockReset();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('subscribes to barUpdated, subscriptionError, and chainStatusChanged events', () => {
+    renderHook(() => useOHLCVRealtime(arrangeDefaultOptions()));
+
+    expect(mockSubscribe).toHaveBeenCalledWith(
+      'OHLCVService:barUpdated',
+      expect.any(Function),
+    );
+    expect(mockSubscribe).toHaveBeenCalledWith(
+      'OHLCVService:subscriptionError',
+      expect.any(Function),
+    );
+    expect(mockSubscribe).toHaveBeenCalledWith(
+      'OHLCVService:chainStatusChanged',
+      expect.any(Function),
+    );
+  });
+
+  it('does not call OHLCVService:subscribe before debounce period', () => {
+    renderHook(() => useOHLCVRealtime(arrangeDefaultOptions()));
+
+    expect(mockCall).not.toHaveBeenCalledWith(
+      'OHLCVService:subscribe',
+      expect.anything(),
+    );
+  });
+
+  it('calls OHLCVService:subscribe after 500ms debounce', async () => {
+    renderHook(() => useOHLCVRealtime(arrangeDefaultOptions()));
+
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(mockCall).toHaveBeenCalledWith('OHLCVService:subscribe', {
+      assetId: 'eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      interval: '15m',
+      currency: 'usd',
+    });
+  });
+
+  it('does not subscribe when enabled is false', async () => {
+    renderHook(() =>
+      useOHLCVRealtime({ ...arrangeDefaultOptions(), enabled: false }),
+    );
+
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(mockSubscribe).not.toHaveBeenCalled();
+    expect(mockCall).not.toHaveBeenCalled();
+  });
+
+  it('does not subscribe when assetId is empty', async () => {
+    renderHook(() =>
+      useOHLCVRealtime({ ...arrangeDefaultOptions(), assetId: '' }),
+    );
+
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(mockSubscribe).not.toHaveBeenCalled();
+  });
+
+  it('unsubscribes from all events and calls OHLCVService:unsubscribe on unmount', async () => {
+    const { unmount } = renderHook(() =>
+      useOHLCVRealtime(arrangeDefaultOptions()),
+    );
+
+    await act(async () => {
+      jest.advanceTimersByTime(500);
+    });
+
+    unmount();
+
+    expect(mockUnsubscribe).toHaveBeenCalledWith(
+      'OHLCVService:barUpdated',
+      expect.any(Function),
+    );
+    expect(mockUnsubscribe).toHaveBeenCalledWith(
+      'OHLCVService:subscriptionError',
+      expect.any(Function),
+    );
+    expect(mockUnsubscribe).toHaveBeenCalledWith(
+      'OHLCVService:chainStatusChanged',
+      expect.any(Function),
+    );
+    expect(mockCall).toHaveBeenCalledWith('OHLCVService:unsubscribe', {
+      assetId: 'eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      interval: '15m',
+      currency: 'usd',
+    });
+  });
+
+  it('calls OHLCVService:unsubscribe on unmount even if debounce did not fire', () => {
+    const { unmount } = renderHook(() =>
+      useOHLCVRealtime(arrangeDefaultOptions()),
+    );
+
+    unmount();
+
+    expect(mockCall).toHaveBeenCalledWith('OHLCVService:unsubscribe', {
+      assetId: 'eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      interval: '15m',
+      currency: 'usd',
+    });
+  });
+
+  it('sets latestBar when barUpdated event matches channel', async () => {
+    const { result } = renderHook(() =>
+      useOHLCVRealtime(arrangeDefaultOptions()),
+    );
+
+    expect(result.current.latestBar).toBeNull();
+
+    const barUpdatedHandler = mockSubscribe.mock.calls.find(
+      (call) => call[0] === 'OHLCVService:barUpdated',
+    )?.[1];
+
+    const bar = {
+      timestamp: 1700000000,
+      open: 100,
+      high: 105,
+      low: 99,
+      close: 103,
+      volume: 5000,
+    };
+
+    await act(async () => {
+      barUpdatedHandler({
+        channel:
+          'ohlcv.v1.eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.15m.usd',
+        bar,
+      });
+    });
+
+    expect(result.current.latestBar).toEqual(bar);
+  });
+
+  it('keeps the same latestBar reference when an identical bar arrives twice', async () => {
+    const { result } = renderHook(() =>
+      useOHLCVRealtime(arrangeDefaultOptions()),
+    );
+
+    const barUpdatedHandler = mockSubscribe.mock.calls.find(
+      (call) => call[0] === 'OHLCVService:barUpdated',
+    )?.[1];
+
+    const bar = {
+      timestamp: 1700000000,
+      open: 100,
+      high: 105,
+      low: 99,
+      close: 103,
+      volume: 5000,
+    };
+    const channel =
+      'ohlcv.v1.eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.15m.usd';
+
+    await act(async () => {
+      barUpdatedHandler({ channel, bar });
+    });
+
+    const firstBarReference = result.current.latestBar;
+    expect(firstBarReference).toEqual(bar);
+
+    await act(async () => {
+      // New object, but field-for-field identical to the previous bar.
+      barUpdatedHandler({ channel, bar: { ...bar } });
+    });
+
+    // areBarsEqual should detect the duplicate and skip the state update,
+    // so the reference stays the original bar object (no re-render triggered).
+    expect(result.current.latestBar).toBe(firstBarReference);
+  });
+
+  it('ignores barUpdated events for different channels', async () => {
+    const { result } = renderHook(() =>
+      useOHLCVRealtime(arrangeDefaultOptions()),
+    );
+
+    const barUpdatedHandler = mockSubscribe.mock.calls.find(
+      (call) => call[0] === 'OHLCVService:barUpdated',
+    )?.[1];
+
+    await act(async () => {
+      barUpdatedHandler({
+        channel: 'ohlcv.v1.eip155:1/slip44:60.15m.usd',
+        bar: {
+          timestamp: 1700000000,
+          open: 100,
+          high: 105,
+          low: 99,
+          close: 103,
+          volume: 5000,
+        },
+      });
+    });
+
+    expect(result.current.latestBar).toBeNull();
+  });
+
+  it('resets latestBar to null when options change', async () => {
+    const { result, rerender } = renderHook(
+      (props) => useOHLCVRealtime(props),
+      { initialProps: arrangeDefaultOptions() },
+    );
+
+    const barUpdatedHandler = mockSubscribe.mock.calls.find(
+      (call) => call[0] === 'OHLCVService:barUpdated',
+    )?.[1];
+
+    await act(async () => {
+      barUpdatedHandler({
+        channel:
+          'ohlcv.v1.eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.15m.usd',
+        bar: {
+          timestamp: 1700000000,
+          open: 100,
+          high: 105,
+          low: 99,
+          close: 103,
+          volume: 5000,
+        },
+      });
+    });
+
+    expect(result.current.latestBar).not.toBeNull();
+
+    rerender({ ...arrangeDefaultOptions(), interval: '1h' });
+
+    expect(result.current.latestBar).toBeNull();
+  });
+
+  it('does not report the previous asset bar on the render the asset changes', async () => {
+    const latestBarsByAssetId: [string, unknown][] = [];
+    const { rerender } = renderHook(
+      (props) => {
+        const { latestBar } = useOHLCVRealtime(props);
+        latestBarsByAssetId.push([props.assetId, latestBar]);
+        return latestBar;
+      },
+      { initialProps: arrangeDefaultOptions() },
+    );
+
+    const barUpdatedHandler = mockSubscribe.mock.calls.find(
+      (call) => call[0] === 'OHLCVService:barUpdated',
+    )?.[1];
+
+    await act(async () => {
+      barUpdatedHandler({
+        channel:
+          'ohlcv.v1.eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.15m.usd',
+        bar: {
+          timestamp: 1700000000,
+          open: 1,
+          high: 1,
+          low: 1,
+          close: 1,
+          volume: 5000,
+        },
+      });
+    });
+
+    const nextAssetId = 'eip155:1/slip44:60';
+    rerender({ ...arrangeDefaultOptions(), assetId: nextAssetId });
+
+    const nextAssetBars = latestBarsByAssetId
+      .filter(([assetId]) => assetId === nextAssetId)
+      .map(([, latestBar]) => latestBar);
+    expect(nextAssetBars.length).toBeGreaterThan(0);
+    expect(nextAssetBars.every((latestBar) => latestBar === null)).toBe(true);
+  });
+
+  describe('isLoading', () => {
+    const channel =
+      'ohlcv.v1.eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.15m.usd';
+    const bar = {
+      timestamp: 1700000000,
+      open: 100,
+      high: 105,
+      low: 99,
+      close: 103,
+      volume: 5000,
+    };
+
+    it('is true until the first price for the asset is known', () => {
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+
+      expect(result.current.isLoading).toBe(true);
+    });
+
+    it('is false once the first /latest poll returns a bar', async () => {
+      mockFetch.mockResolvedValue(
+        makeFetchResponse({ ...bar, timestamp: 1700000000000 }),
+      );
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      expect(result.current.latestBar).not.toBeNull();
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('is false once the first /latest poll answers without a bar', async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 404 });
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      expect(result.current.latestBar).toBeNull();
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('is false once the first /latest poll throws', async () => {
+      mockFetch.mockRejectedValue(new Error('network down'));
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('is false once a bar arrives over the socket', async () => {
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+      const barUpdatedHandler = mockSubscribe.mock.calls.find(
+        (call) => call[0] === 'OHLCVService:barUpdated',
+      )?.[1];
+
+      await act(async () => {
+        barUpdatedHandler({ channel, bar });
+      });
+
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('is false when OHLCVService:subscribe throws and no poll follows', async () => {
+      mockCall.mockRejectedValueOnce(new Error('WS subscribe failed'));
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    it('is true again from the render the asset changes', async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 404 });
+      const isLoadingByAssetId: [string, boolean][] = [];
+      const { rerender } = renderHook(
+        (props) => {
+          const { isLoading } = useOHLCVRealtime(props);
+          isLoadingByAssetId.push([props.assetId, isLoading]);
+          return isLoading;
+        },
+        { initialProps: arrangeDefaultOptions() },
+      );
+
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+      expect(isLoadingByAssetId[isLoadingByAssetId.length - 1][1]).toBe(false);
+
+      const nextAssetId = 'eip155:1/slip44:60';
+      rerender({ ...arrangeDefaultOptions(), assetId: nextAssetId });
+
+      const nextAssetLoadingStates = isLoadingByAssetId
+        .filter(([assetId]) => assetId === nextAssetId)
+        .map(([, isLoading]) => isLoading);
+      expect(nextAssetLoadingStates.length).toBeGreaterThan(0);
+      expect(nextAssetLoadingStates.every(Boolean)).toBe(true);
+    });
+
+    it.each([
+      { name: 'disabled', overrides: { enabled: false } },
+      { name: 'missing an asset id', overrides: { assetId: '' } },
+    ])('is false when $name', ({ overrides }) => {
+      const { result } = renderHook(() =>
+        useOHLCVRealtime({ ...arrangeDefaultOptions(), ...overrides }),
+      );
+
+      expect(result.current.isLoading).toBe(false);
+    });
+  });
+
+  describe('/latest host', () => {
+    const pollOnce = async (
+      options: Parameters<typeof useOHLCVRealtime>[0],
+    ) => {
+      mockFetch.mockResolvedValue(
+        makeFetchResponse({
+          timestamp: 1700000000000,
+          open: 100,
+          high: 110,
+          low: 95,
+          close: 108,
+          volume: 9000,
+        }),
+      );
+
+      renderHook(() => useOHLCVRealtime(options));
+
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      return mockFetch.mock.calls[0][0] as string;
+    };
+
+    // Bridge's live rate and the legacy chart both reach this hook without a
+    // provider, so prod is what it must ask for.
+    it('requests prod outside a PriceApiHostProvider', async () => {
+      const url = await pollOnce(arrangeDefaultOptions());
+
+      expect(url).toContain('https://price.api.cx.metamask.io/v3/ohlcv/');
+      expect(url).toContain('/latest');
+    });
+
+    // The fallback has to ask the host that holds the history the chart is
+    // already drawing, or the in-progress candle never arrives for a token
+    // the prod stream does not carry.
+    it('requests the given host instead of prod', async () => {
+      const url = await pollOnce({
+        ...arrangeDefaultOptions(),
+        baseUrl: 'https://price.dev-api.cx.metamask.io',
+      });
+
+      expect(url).toContain('https://price.dev-api.cx.metamask.io/v3/ohlcv/');
+      expect(url).toContain('/latest');
+    });
+  });
+
+  describe('staleness fallback', () => {
+    it('polls REST API after 30s of no WS messages', async () => {
+      mockFetch.mockResolvedValue(
+        makeFetchResponse({
+          timestamp: 1700000000000,
+          open: 100,
+          high: 110,
+          low: 95,
+          close: 108,
+          volume: 9000,
+        }),
+      );
+
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+
+      // Fire the debounce so subscribe succeeds (sets lastMessageTime)
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      // Advance past staleness threshold (5s) + one check interval (5s)
+      await act(async () => {
+        jest.advanceTimersByTime(5_000 + 5_000);
+      });
+
+      // Called twice: once immediately after subscribe, once from staleness check
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      // Check the last fetch call (from staleness check)
+      const fetchUrl = mockFetch.mock.calls[1][0] as string;
+      expect(fetchUrl).toContain('price.api.cx.metamask.io/v3/ohlcv/');
+      expect(fetchUrl).toContain('/latest');
+      expect(fetchUrl).toContain('timePeriod=1d');
+      expect(fetchUrl).toContain('interval=15m');
+      expect(fetchUrl).toContain('vsCurrency=usd');
+
+      // Bar is set with timestamp converted from ms to seconds
+      expect(result.current.latestBar).toEqual({
+        timestamp: 1700000000,
+        open: 100,
+        high: 110,
+        low: 95,
+        close: 108,
+        volume: 9000,
+      });
+    });
+
+    it('does not poll if WS messages are arriving within 30s', async () => {
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+
+      // Fire debounce
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      // Simulate a WS bar arriving at T+7s (before staleness threshold)
+      const barUpdatedHandler = mockSubscribe.mock.calls.find(
+        (call) => call[0] === 'OHLCVService:barUpdated',
+      )?.[1];
+
+      await act(async () => {
+        jest.advanceTimersByTime(7_000);
+      });
+
+      await act(async () => {
+        barUpdatedHandler({
+          channel:
+            'ohlcv.v1.eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.15m.usd',
+          bar: {
+            timestamp: 1700000000,
+            open: 100,
+            high: 105,
+            low: 99,
+            close: 103,
+            volume: 5000,
+          },
+        });
+      });
+
+      // Check interval fires at T+10s (only 3s after last message - not stale)
+      await act(async () => {
+        jest.advanceTimersByTime(3_000);
+      });
+
+      // Only called once immediately after subscribe, not again since WS is active
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result.current.latestBar).not.toBeNull();
+    });
+
+    it('polls REST API when chain status is down', async () => {
+      mockFetch.mockResolvedValue(
+        makeFetchResponse({
+          timestamp: 1700000000000,
+          open: 50,
+          high: 55,
+          low: 48,
+          close: 52,
+          volume: 3000,
+        }),
+      );
+
+      renderHook(() => useOHLCVRealtime(arrangeDefaultOptions()));
+
+      // Fire debounce
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      // Trigger chainStatusChanged with 'down' for our chain
+      const chainStatusHandler = mockSubscribe.mock.calls.find(
+        (call) => call[0] === 'OHLCVService:chainStatusChanged',
+      )?.[1];
+
+      await act(async () => {
+        chainStatusHandler({
+          chainIds: ['eip155:8453'],
+          status: 'down',
+        });
+      });
+
+      // Called twice: once immediately after subscribe, once when chain goes down
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not poll when chainStatusChanged is for a different chain', async () => {
+      renderHook(() => useOHLCVRealtime(arrangeDefaultOptions()));
+
+      // Fire debounce
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      const chainStatusHandler = mockSubscribe.mock.calls.find(
+        (call) => call[0] === 'OHLCVService:chainStatusChanged',
+      )?.[1];
+
+      await act(async () => {
+        chainStatusHandler({
+          chainIds: ['eip155:1'],
+          status: 'down',
+        });
+      });
+
+      // Advance but not past staleness threshold from subscribe time (5s)
+      await act(async () => {
+        jest.advanceTimersByTime(3_000);
+      });
+
+      // Only called once immediately after subscribe, not again for different chain
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('handles REST API failure gracefully', async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 500 });
+
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+
+      // Fire debounce
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      // Force staleness
+      await act(async () => {
+        jest.advanceTimersByTime(5_000 + 5_000);
+      });
+
+      // Called twice: once immediately after subscribe, once from staleness check
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(result.current.latestBar).toBeNull();
+    });
+
+    it('activates REST fallback when OHLCVService:subscribe throws', async () => {
+      mockCall.mockRejectedValueOnce(new Error('WS subscribe failed'));
+      mockFetch.mockResolvedValue(
+        makeFetchResponse({
+          timestamp: 1700000000000,
+          open: 100,
+          high: 110,
+          low: 95,
+          close: 108,
+          volume: 9000,
+        }),
+      );
+
+      const { result } = renderHook(() =>
+        useOHLCVRealtime(arrangeDefaultOptions()),
+      );
+
+      // Fire the debounce — subscribe will reject
+      await act(async () => {
+        jest.advanceTimersByTime(500);
+      });
+
+      // Simulate the subscriptionError event that would be emitted by OHLCVService
+      const subscriptionErrorHandler = mockSubscribe.mock.calls.find(
+        (call) => call[0] === 'OHLCVService:subscriptionError',
+      )?.[1];
+
+      await act(async () => {
+        subscriptionErrorHandler({
+          channel:
+            'ohlcv.v1.eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913.15m.usd',
+          error: 'WS subscribe failed',
+          operation: 'subscribe',
+        });
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result.current.latestBar).toEqual({
+        timestamp: 1700000000,
+        open: 100,
+        high: 110,
+        low: 95,
+        close: 108,
+        volume: 9000,
+      });
+    });
+  });
+});

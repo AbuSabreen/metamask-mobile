@@ -1,10 +1,3 @@
-import { ImageSourcePropType } from 'react-native';
-
-export interface Gateway {
-  key: number;
-  value: string;
-  label: string;
-}
 export interface GatewayWithAvailability {
   key: string;
   value: string;
@@ -12,27 +5,16 @@ export interface GatewayWithAvailability {
   available: boolean;
 }
 
-export interface HeadingProps {
-  first?: boolean;
-  children: React.FC;
-}
+/**
+ * Sections of the Security & Privacy settings screen that can be scrolled to
+ * via navigation params (e.g. from the /privacy deeplink).
+ */
+export type SecuritySettingsScrollSection = 'metametrics' | 'data-collection';
 
 export interface SecuritySettingsParams {
-  scrollToDetectNFTs?: boolean;
+  scrollToSection?: SecuritySettingsScrollSection;
 }
 
 export interface EtherscanNetworksType {
   [key: string]: { domain: string; subdomain: string; networkId: string };
-}
-
-export interface NetworksI {
-  [key: string]: {
-    name: string;
-    imageSource?: ImageSourcePropType;
-    shortName: string;
-    networkId?: number;
-    chainId?: string;
-    color: string;
-    networkType: string;
-  };
 }

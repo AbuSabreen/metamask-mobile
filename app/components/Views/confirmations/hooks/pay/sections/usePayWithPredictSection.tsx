@@ -1,0 +1,141 @@
+import React, { useCallback, useMemo } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import { useSelector } from 'react-redux';
+import {
+  TransactionType,
+  hasTransactionType,
+} from '@metamask/transaction-controller';
+import { PaymentOverride } from '@metamask/transaction-pay-controller';
+import type { AppNavigationProp } from '../../../../../../core/NavigationService/types';
+import { BigNumber } from 'bignumber.js';
+import {
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  Icon,
+  IconColor,
+  IconName,
+  IconSize,
+} from '@metamask/design-system-react-native';
+import { strings } from '../../../../../../../locales/i18n';
+import { RootState } from '../../../../../../reducers';
+import { selectPaymentOverrideByTransactionId } from '../../../../../../selectors/transactionPayController';
+import useFiatFormatter from '../../../../../UI/SimulationDetails/FiatDisplay/useFiatFormatter';
+import { usePredictBalance } from '../../../../../UI/Predict/hooks/usePredictBalance';
+import { usePredictPaymentToken } from '../../../../../UI/Predict/hooks/usePredictPaymentToken';
+import { useTransactionMetadataRequest } from '../../transactions/useTransactionMetadataRequest';
+import {
+  PayWithRowConfig,
+  PayWithSectionConfig,
+} from '../../../components/modals/pay-with-bottom-sheet/pay-with-bottom-sheet.types';
+import { dismissActivePreviewSheet } from '../../../../../UI/Predict/contexts';
+import {
+  usePredictEntryActions,
+  usePredictLegacyDeposit,
+} from '../../../../../UI/PredictNext';
+import useApprovalRequest from '../../useApprovalRequest';
+import { PayWithBottomSheetIDs } from '../../../ConfirmationView.testIds';
+import { useClearPaymentOverride } from './useClearPaymentOverride';
+
+export const PAY_WITH_PREDICT_SECTION_TEST_ID =
+  PayWithBottomSheetIDs.PREDICT_SECTION;
+export const PAY_WITH_PREDICT_BALANCE_ROW_TEST_ID =
+  PayWithBottomSheetIDs.PREDICT_BALANCE_ROW;
+
+export function usePayWithPredictSection(): PayWithSectionConfig | null {
+  const navigation = useNavigation<AppNavigationProp>();
+  const transactionMeta = useTransactionMetadataRequest();
+  const { onReject } = useApprovalRequest();
+  const formatFiat = useFiatFormatter({ currency: 'usd' });
+  // The Predict source is the legacy Polymarket balance and deposit. It is
+  // absent, and its balance is not read, unless that is the Active Venue's.
+  const {
+    isAvailable: isPredictDepositAvailable,
+    isAvailableNow: isPredictDepositAvailableNow,
+  } = usePredictLegacyDeposit();
+  const { data: predictBalance = 0 } = usePredictBalance({
+    enabled: isPredictDepositAvailable,
+  });
+  const { resetSelectedPaymentToken, isPredictBalanceSelected } =
+    usePredictPaymentToken();
+  const transactionId = transactionMeta?.id ?? '';
+  const paymentOverride = useSelector((state: RootState) =>
+    selectPaymentOverrideByTransactionId(state, transactionId),
+  );
+  const isMoneyAccountSelected =
+    paymentOverride === PaymentOverride.MoneyAccount;
+  const clearPaymentOverride = useClearPaymentOverride();
+  const { openPredict } = usePredictEntryActions();
+
+  const isPredictDepositAndOrder = hasTransactionType(transactionMeta, [
+    TransactionType.predictDepositAndOrder,
+  ]);
+
+  const balance = useMemo(
+    () => formatFiat(new BigNumber(String(predictBalance))),
+    [formatFiat, predictBalance],
+  );
+
+  const handleSelect = useCallback(() => {
+    resetSelectedPaymentToken();
+    clearPaymentOverride();
+    navigation.goBack();
+  }, [clearPaymentOverride, navigation, resetSelectedPaymentToken]);
+
+  const handleAdd = useCallback(() => {
+    // Re-check before rejecting the confirmation, so a stale tap cannot
+    // discard it for a deposit that no longer applies.
+    if (!isPredictDepositAvailableNow()) {
+      return;
+    }
+    onReject();
+    dismissActivePreviewSheet();
+    openPredict({ type: 'addFunds', autoDeposit: true });
+  }, [isPredictDepositAvailableNow, onReject, openPredict]);
+
+  return useMemo(() => {
+    if (!isPredictDepositAndOrder || !isPredictDepositAvailable) {
+      return null;
+    }
+
+    const row: PayWithRowConfig = {
+      id: 'predict-balance',
+      icon: React.createElement(Icon, {
+        name: IconName.Predictions,
+        size: IconSize.Md,
+        color: IconColor.IconAlternative,
+      }),
+      title: strings('confirm.pay_with_bottom_sheet.predict_balance'),
+      subtitle: strings('confirm.pay_with_bottom_sheet.available_balance', {
+        balance,
+      }),
+      isSelected: isPredictBalanceSelected && !isMoneyAccountSelected,
+      trailingElement: (
+        <Button
+          variant={ButtonVariant.Secondary}
+          size={ButtonSize.Sm}
+          onPress={handleAdd}
+        >
+          {strings('confirm.pay_with_bottom_sheet.add')}
+        </Button>
+      ),
+      onPress: handleSelect,
+      testID: PAY_WITH_PREDICT_BALANCE_ROW_TEST_ID,
+    };
+
+    return {
+      id: 'predict',
+      title: strings('confirm.pay_with_bottom_sheet.predict'),
+      testID: PAY_WITH_PREDICT_SECTION_TEST_ID,
+      rows: [row],
+    };
+  }, [
+    balance,
+    handleAdd,
+    handleSelect,
+    isMoneyAccountSelected,
+    isPredictBalanceSelected,
+    isPredictDepositAndOrder,
+    isPredictDepositAvailable,
+  ]);
+}

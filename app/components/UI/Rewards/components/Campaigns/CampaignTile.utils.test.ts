@@ -1,0 +1,540 @@
+/**
+ * Unit tests for CampaignTile utility functions
+ */
+
+import {
+  getCampaignStatus,
+  getLatestActiveCampaignOfType,
+  getLatestActiveOrUpcomingCampaignOfType,
+  formatCampaignStatusLabel,
+  formatCampaignDateRange,
+  getCampaignPillLabel,
+  getCampaignStatusInfo,
+  isCampaignTypeSupported,
+} from './CampaignTile.utils';
+import {
+  type CampaignDto,
+  CampaignType,
+} from '../../../../../core/Engine/controllers/rewards-controller/types';
+
+jest.mock('@metamask/design-system-react-native', () => ({
+  IconName: {
+    Clock: 'Clock',
+    Confirmation: 'Confirmation',
+    Speed: 'Speed',
+  },
+}));
+
+jest.mock('../../../../../../locales/i18n', () => ({
+  __esModule: true,
+  default: { locale: 'en-US' },
+  strings: jest.fn((key: string, params?: Record<string, string>) =>
+    params ? `${key}:${JSON.stringify(params)}` : key,
+  ),
+}));
+
+import { strings } from '../../../../../../locales/i18n';
+
+/**
+ * Helper to build test CampaignDto objects.
+ */
+function buildCampaignDto(overrides: Partial<CampaignDto> = {}): CampaignDto {
+  return {
+    id: 'campaign-1',
+    type: CampaignType.ONDO_HOLDING,
+    name: 'Test Campaign',
+    startDate: '2025-06-01T00:00:00.000Z',
+    endDate: '2025-12-31T23:59:59.999Z',
+    termsAndConditions: null,
+    excludedRegions: [],
+    details: null,
+    featured: true,
+    showUpcomingDate: false,
+    ...overrides,
+  };
+}
+
+describe('CampaignTile.utils', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  describe('getCampaignStatus', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    it('returns upcoming when now is before startDate', () => {
+      jest.setSystemTime(new Date('2025-01-15T12:00:00.000Z'));
+
+      const campaign = buildCampaignDto({
+        startDate: '2025-06-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      });
+
+      const result = getCampaignStatus(campaign);
+
+      expect(result).toBe('upcoming');
+    });
+
+    it('returns active when now is within startDate and endDate', () => {
+      jest.setSystemTime(new Date('2025-08-15T12:00:00.000Z'));
+
+      const campaign = buildCampaignDto({
+        startDate: '2025-06-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      });
+
+      const result = getCampaignStatus(campaign);
+
+      expect(result).toBe('active');
+    });
+
+    it('returns active when now equals startDate', () => {
+      jest.setSystemTime(new Date('2025-06-01T00:00:00.000Z'));
+
+      const campaign = buildCampaignDto({
+        startDate: '2025-06-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      });
+
+      const result = getCampaignStatus(campaign);
+
+      expect(result).toBe('active');
+    });
+
+    it('returns complete when now is after endDate', () => {
+      jest.setSystemTime(new Date('2026-01-15T12:00:00.000Z'));
+
+      const campaign = buildCampaignDto({
+        startDate: '2025-06-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      });
+
+      const result = getCampaignStatus(campaign);
+
+      expect(result).toBe('complete');
+    });
+
+    it('returns complete when now equals endDate', () => {
+      jest.setSystemTime(new Date('2025-12-31T23:59:59.999Z'));
+
+      const campaign = buildCampaignDto({
+        startDate: '2025-06-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      });
+
+      const result = getCampaignStatus(campaign);
+
+      expect(result).toBe('complete');
+    });
+  });
+
+  describe('formatCampaignStatusLabel', () => {
+    it('returns localized starts_date for upcoming status with formatted startDate', () => {
+      const campaign = buildCampaignDto({
+        startDate: '2025-03-15T14:30:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      });
+
+      const result = formatCampaignStatusLabel('upcoming', campaign);
+
+      expect(strings).toHaveBeenCalledWith('rewards.campaign.starts_date', {
+        date: 'March 15',
+      });
+      expect(result).toContain('rewards.campaign.starts_date:');
+      expect(result).toContain('"date"');
+    });
+
+    it('returns localized ends_date for active status with formatted endDate', () => {
+      const campaign = buildCampaignDto({
+        startDate: '2025-01-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:00.000Z',
+      });
+
+      const result = formatCampaignStatusLabel('active', campaign);
+
+      expect(strings).toHaveBeenCalledWith('rewards.campaign.ends_date', {
+        date: 'December 31',
+      });
+      expect(result).toContain('rewards.campaign.ends_date:');
+      expect(result).toContain('"date"');
+    });
+
+    it('returns localized ended_date for complete status with formatted endDate', () => {
+      const campaign = buildCampaignDto({
+        startDate: '2025-01-01T00:00:00.000Z',
+        endDate: '2025-07-04T18:00:00.000Z',
+      });
+
+      const result = formatCampaignStatusLabel('complete', campaign);
+
+      expect(strings).toHaveBeenCalledWith('rewards.campaign.ended_date', {
+        date: 'July 4',
+      });
+      expect(result).toContain('rewards.campaign.ended_date:');
+      expect(result).toContain('"date"');
+    });
+
+    it('returns empty string for unknown status', () => {
+      const campaign = buildCampaignDto();
+
+      const result = formatCampaignStatusLabel(
+        'unknown' as 'upcoming' | 'active' | 'complete',
+        campaign,
+      );
+
+      expect(result).toBe('');
+    });
+  });
+
+  describe('getCampaignPillLabel', () => {
+    it('returns pill_up_next (Coming soon) for upcoming status', () => {
+      const result = getCampaignPillLabel('upcoming');
+
+      expect(strings).toHaveBeenCalledWith('rewards.campaign.pill_up_next');
+      expect(result).toBe('rewards.campaign.pill_up_next');
+    });
+
+    it('returns pill_active for active status', () => {
+      const result = getCampaignPillLabel('active');
+
+      expect(strings).toHaveBeenCalledWith('rewards.campaign.pill_active');
+      expect(result).toBe('rewards.campaign.pill_active');
+    });
+
+    it('returns pill_complete for complete status', () => {
+      const result = getCampaignPillLabel('complete');
+
+      expect(strings).toHaveBeenCalledWith('rewards.campaign.pill_complete');
+      expect(result).toBe('rewards.campaign.pill_complete');
+    });
+
+    it('returns empty string for unknown status', () => {
+      const result = getCampaignPillLabel(
+        'unknown' as 'upcoming' | 'active' | 'complete',
+      );
+
+      expect(result).toBe('');
+    });
+  });
+
+  describe('getCampaignStatusInfo', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    it('combines status, pill label, description, and icon for upcoming campaign', () => {
+      jest.setSystemTime(new Date('2025-01-15T12:00:00.000Z'));
+
+      const campaign = buildCampaignDto({
+        startDate: '2025-06-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      });
+
+      const result = getCampaignStatusInfo(campaign);
+
+      expect(result).toEqual({
+        status: 'upcoming',
+        statusLabel: 'rewards.campaign.pill_up_next',
+        dateLabel: expect.stringContaining('rewards.campaign.starts_date'),
+        dateLabelIcon: 'Speed',
+      });
+    });
+
+    it('combines status, pill label, description, and icon for active campaign', () => {
+      jest.setSystemTime(new Date('2025-08-15T12:00:00.000Z'));
+
+      const campaign = buildCampaignDto({
+        startDate: '2025-06-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      });
+
+      const result = getCampaignStatusInfo(campaign);
+
+      expect(result).toEqual({
+        status: 'active',
+        statusLabel: 'rewards.campaign.pill_active',
+        dateLabel: expect.stringContaining('rewards.campaign.ends_date'),
+        dateLabelIcon: 'Clock',
+      });
+    });
+
+    it('combines status, pill label, description, and icon for complete campaign', () => {
+      jest.setSystemTime(new Date('2026-01-15T12:00:00.000Z'));
+
+      const campaign = buildCampaignDto({
+        startDate: '2025-06-01T00:00:00.000Z',
+        endDate: '2025-12-31T23:59:59.999Z',
+      });
+
+      const result = getCampaignStatusInfo(campaign);
+
+      expect(result).toEqual({
+        status: 'complete',
+        statusLabel: 'rewards.campaign.pill_complete',
+        dateLabel: expect.stringContaining('rewards.campaign.ended_date'),
+        dateLabelIcon: 'Confirmation',
+      });
+    });
+  });
+
+  describe('isCampaignTypeSupported', () => {
+    it('returns true for ONDO_HOLDING campaign type', () => {
+      expect(isCampaignTypeSupported(CampaignType.ONDO_HOLDING)).toBe(true);
+    });
+
+    it('returns true for SEASON_1 campaign type', () => {
+      expect(isCampaignTypeSupported(CampaignType.SEASON_1)).toBe(true);
+    });
+
+    it('returns false for unknown campaign types', () => {
+      expect(isCampaignTypeSupported('UNKNOWN' as CampaignType)).toBe(false);
+    });
+  });
+
+  describe('formatCampaignDateRange', () => {
+    it('collapses the month when start and end share a month', () => {
+      expect(
+        formatCampaignDateRange(
+          '2026-07-08T00:00:00.000Z',
+          '2026-07-14T00:00:00.000Z',
+          'en-US',
+        ),
+      ).toBe('Jul 8–14');
+    });
+
+    it('keeps both months when the range spans months', () => {
+      expect(
+        formatCampaignDateRange(
+          '2026-07-28T00:00:00.000Z',
+          '2026-08-03T00:00:00.000Z',
+          'en-US',
+        ),
+      ).toBe('Jul 28–Aug 3');
+    });
+  });
+
+  describe('getLatestActiveCampaignOfType', () => {
+    const NOW = new Date('2026-07-15T00:00:00.000Z');
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    const past = buildCampaignDto({
+      id: 'perps-past',
+      type: CampaignType.PERPS_TRADING,
+      startDate: '2026-05-01T00:00:00.000Z',
+      endDate: '2026-06-01T00:00:00.000Z',
+    });
+    const active = buildCampaignDto({
+      id: 'perps-active',
+      type: CampaignType.PERPS_TRADING,
+      startDate: '2026-07-01T00:00:00.000Z',
+      endDate: '2026-08-01T00:00:00.000Z',
+    });
+    const upcoming = buildCampaignDto({
+      id: 'perps-upcoming',
+      type: CampaignType.PERPS_TRADING,
+      startDate: '2026-09-01T00:00:00.000Z',
+      endDate: '2026-10-01T00:00:00.000Z',
+    });
+
+    it('returns the active campaign, ignoring a past one listed first', () => {
+      expect(
+        getLatestActiveCampaignOfType(
+          [past, active],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBe(active);
+    });
+
+    it('returns null when only an upcoming campaign of the type exists', () => {
+      expect(
+        getLatestActiveCampaignOfType([upcoming], CampaignType.PERPS_TRADING),
+      ).toBeNull();
+    });
+
+    it('returns the active campaign over an upcoming one', () => {
+      expect(
+        getLatestActiveCampaignOfType(
+          [upcoming, active],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBe(active);
+    });
+
+    it('returns the most recently started campaign when several are active', () => {
+      const earlierActive = buildCampaignDto({
+        id: 'perps-active-earlier',
+        type: CampaignType.PERPS_TRADING,
+        startDate: '2026-06-15T00:00:00.000Z',
+        endDate: '2026-08-01T00:00:00.000Z',
+      });
+
+      expect(
+        getLatestActiveCampaignOfType(
+          [active, earlierActive],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBe(active);
+    });
+
+    it('returns null when only complete campaigns of the type exist', () => {
+      expect(
+        getLatestActiveCampaignOfType([past], CampaignType.PERPS_TRADING),
+      ).toBeNull();
+    });
+
+    it('ignores active campaigns of a different type', () => {
+      const otherType = buildCampaignDto({
+        id: 'ondo-active',
+        type: CampaignType.ONDO_HOLDING,
+        startDate: '2026-07-10T00:00:00.000Z',
+        endDate: '2026-08-01T00:00:00.000Z',
+      });
+
+      expect(
+        getLatestActiveCampaignOfType([otherType], CampaignType.PERPS_TRADING),
+      ).toBeNull();
+    });
+
+    it('returns null for an empty campaign list', () => {
+      expect(
+        getLatestActiveCampaignOfType([], CampaignType.PERPS_TRADING),
+      ).toBeNull();
+    });
+  });
+
+  describe('getLatestActiveOrUpcomingCampaignOfType', () => {
+    const NOW = new Date('2026-07-15T00:00:00.000Z');
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    const past = buildCampaignDto({
+      id: 'perps-past',
+      type: CampaignType.PERPS_TRADING,
+      startDate: '2026-05-01T00:00:00.000Z',
+      endDate: '2026-06-01T00:00:00.000Z',
+    });
+    const active = buildCampaignDto({
+      id: 'perps-active',
+      type: CampaignType.PERPS_TRADING,
+      startDate: '2026-07-01T00:00:00.000Z',
+      endDate: '2026-08-01T00:00:00.000Z',
+    });
+    const upcoming = buildCampaignDto({
+      id: 'perps-upcoming',
+      type: CampaignType.PERPS_TRADING,
+      startDate: '2026-09-01T00:00:00.000Z',
+      endDate: '2026-10-01T00:00:00.000Z',
+    });
+
+    it('returns null when no campaign of the type exists', () => {
+      expect(
+        getLatestActiveOrUpcomingCampaignOfType(
+          [buildCampaignDto({ type: CampaignType.ONDO_HOLDING })],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBeNull();
+    });
+
+    it('returns null when only complete campaigns of the type exist', () => {
+      expect(
+        getLatestActiveOrUpcomingCampaignOfType(
+          [past],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBeNull();
+    });
+
+    it('prefers the active campaign over a past one listed first', () => {
+      expect(
+        getLatestActiveOrUpcomingCampaignOfType(
+          [past, active],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBe(active);
+    });
+
+    it('prefers the active campaign over an upcoming one', () => {
+      expect(
+        getLatestActiveOrUpcomingCampaignOfType(
+          [upcoming, active],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBe(active);
+    });
+
+    it('returns the most recently started campaign when several are active', () => {
+      const earlierActive = buildCampaignDto({
+        id: 'perps-active-earlier',
+        type: CampaignType.PERPS_TRADING,
+        startDate: '2026-06-15T00:00:00.000Z',
+        endDate: '2026-08-01T00:00:00.000Z',
+      });
+
+      expect(
+        getLatestActiveOrUpcomingCampaignOfType(
+          [active, earlierActive],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBe(active);
+    });
+
+    it('returns the soonest upcoming campaign when none is active', () => {
+      const laterUpcoming = buildCampaignDto({
+        id: 'perps-upcoming-later',
+        type: CampaignType.PERPS_TRADING,
+        startDate: '2026-11-01T00:00:00.000Z',
+        endDate: '2026-12-01T00:00:00.000Z',
+      });
+
+      expect(
+        getLatestActiveOrUpcomingCampaignOfType(
+          [past, laterUpcoming, upcoming],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBe(upcoming);
+    });
+
+    it('ignores active campaigns of a different type', () => {
+      const otherType = buildCampaignDto({
+        id: 'ondo-active',
+        type: CampaignType.ONDO_HOLDING,
+        startDate: '2026-07-10T00:00:00.000Z',
+        endDate: '2026-08-01T00:00:00.000Z',
+      });
+
+      expect(
+        getLatestActiveOrUpcomingCampaignOfType(
+          [otherType, upcoming],
+          CampaignType.PERPS_TRADING,
+        ),
+      ).toBe(upcoming);
+    });
+
+    it('returns null for an empty campaign list', () => {
+      expect(
+        getLatestActiveOrUpcomingCampaignOfType([], CampaignType.PERPS_TRADING),
+      ).toBeNull();
+    });
+  });
+});

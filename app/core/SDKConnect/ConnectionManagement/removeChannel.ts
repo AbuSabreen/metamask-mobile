@@ -1,4 +1,3 @@
-import { PermissionController } from '@metamask/permission-controller';
 import {
   removeApprovedHost,
   removeConnection,
@@ -8,8 +7,9 @@ import AppConstants from '../../../core/AppConstants';
 import Engine from '../../Engine';
 import SDKConnect from '../SDKConnect';
 import DevLogger from '../utils/DevLogger';
+import { revokeChannelPermissions } from '../utils/revokeChannelPermissions.util';
 
-function removeChannel({
+async function removeChannel({
   channelId,
   engine,
   sendTerminate,
@@ -19,7 +19,7 @@ function removeChannel({
   engine?: typeof Engine;
   sendTerminate?: boolean;
   instance: SDKConnect;
-}) {
+}): Promise<boolean> {
   // check if it is an android sdk connection, if it doesn't belong to regular connections
   const isDappConnection = instance.state.connections[channelId] === undefined;
 
@@ -30,16 +30,25 @@ function removeChannel({
   );
 
   if (isDappConnection) {
-    instance.state.androidService?.removeConnection(channelId);
+    // Android SDK disabled for security reasons (pm-security #532, #534)
     instance.state.deeplinkingService?.removeConnection(channelId);
   }
 
   if (instance.state.connected[channelId]) {
     try {
-      instance.state.connected[channelId].removeConnection({
-        terminate: sendTerminate ?? false,
+      const terminated = await instance.state.connected[
+        channelId
+      ].removeConnection({
+        terminate: true,
         context: 'SDKConnect::removeChannel',
       });
+      if (!terminated) {
+        DevLogger.log(
+          `SDKConnect::removeChannel channelId=${channelId} terminated=${terminated} try again later`,
+        );
+        // don't delete channel, try again later
+        return terminated;
+      }
     } catch (err) {
       console.error(`Can't remove connection ${channelId}`, err);
     }
@@ -59,14 +68,10 @@ function removeChannel({
 
   delete instance.state.connecting[channelId];
   if (engine) {
-    // Remove matching permissions from controller
-    const permissionsController = (
-      engine.context as { PermissionController: PermissionController<any, any> }
-    ).PermissionController;
-    if (permissionsController.getPermissions(channelId)) {
-      permissionsController.revokeAllPermissions(channelId);
-    }
+    revokeChannelPermissions(channelId);
   }
+
+  return true;
 }
 
 export default removeChannel;

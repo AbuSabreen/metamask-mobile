@@ -1,10 +1,36 @@
+import type { Caip25CaveatValue } from '@metamask/chain-agnostic-permission';
+import { rpcErrors } from '@metamask/rpc-errors';
+import {
+  CaipAccountId,
+  CaipChainId,
+  Hex,
+  KnownCaipNamespace,
+  parseCaipChainId,
+} from '@metamask/utils';
+import {
+  NavigationContainerRef,
+  ParamListBase,
+} from '@react-navigation/native';
 import { RelayerTypes } from '@walletconnect/types';
 import { parseRelayParams } from '@walletconnect/utils';
 import qs from 'qs';
-import { store } from '../../../app/store';
-import { wait } from '../SDKConnect/utils/wait.util';
-import { NavigationContainerRef } from '@react-navigation/native';
 import Routes from '../../../app/constants/navigation/Routes';
+import { store } from '../../../app/store';
+import type { WC2Metadata } from '../../actions/sdk/state';
+import {
+  selectEvmChainId,
+  selectEvmNetworkConfigurationsByChainId,
+  selectNetworkConfigurations,
+  selectNetworkConfigurationsByCaipChainId,
+} from '../../selectors/networkController';
+import { getPermittedAccounts, getPermittedCaipChainIds } from '../Permissions';
+import { findExistingNetwork } from '../RPCMethods/lib/ethereum-chain-utils';
+import DevLogger from '../SDKConnect/utils/DevLogger';
+import { wait } from '../SDKConnect/utils/wait.util';
+import { WalletKitTypes } from '@reown/walletkit';
+import { EVM_APPROVED_METHODS, EVM_METHODS_TO_REDIRECT } from './wc-config';
+import type { NamespaceConfig, ProposalParamsLight } from './multichain/types';
+import { enrichCaveatValueForNamespace } from './multichain/utils';
 
 export interface WCMultiVersionParams {
   protocol: string;
@@ -19,7 +45,88 @@ export interface WCMultiVersionParams {
   handshakeTopic?: string;
 }
 
-const parseWalletConnectUri = (uri: string): WCMultiVersionParams => {
+export const getHostname = (uri: string): string => {
+  try {
+    // Handle empty or invalid URIs
+    if (!uri) return '';
+
+    // For standard URLs, use URL API
+    if (uri.includes('://')) {
+      try {
+        const url = new URL(uri);
+        return url.hostname;
+      } catch (e) {
+        // If URL parsing fails, continue with manual parsing
+      }
+    }
+
+    // For protocol-based URIs like wc: or ethereum:
+    const pathStart: number = uri.indexOf(':');
+    if (pathStart !== -1) {
+      return uri.substring(0, pathStart);
+    }
+
+    // If no protocol separator found, return the original string
+    return uri;
+  } catch (error) {
+    DevLogger.log('Error in getHostname:', error);
+    return uri;
+  }
+};
+
+/**
+ * Validates a URL.
+ *
+ * @param url - The URL string to validate
+ * @returns true if the URL is valid, false otherwise
+ */
+export const isValidUrl = (url: string | undefined | null): boolean => {
+  if (!url || typeof url !== 'string' || url.trim() === '') {
+    return false;
+  }
+
+  // Validate the URL
+  try {
+    new URL(url.trim());
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Normalizes a dApp URL by ensuring it has a valid protocol.
+ *
+ * @param url - The URL string to normalize
+ * @param defaultProtocol - The protocol to use if none is present (defaults to 'https://')
+ * @returns The normalized URL with a valid protocol, or empty string if invalid
+ */
+export const normalizeDappUrl = (
+  url: string | undefined | null,
+  defaultProtocol = 'https://',
+): string => {
+  if (!url || typeof url !== 'string' || url.trim() === '') {
+    return '';
+  }
+
+  const trimmedUrl = url.trim();
+
+  // Add protocol if missing
+  const normalizedUrl = trimmedUrl.includes('://')
+    ? trimmedUrl
+    : `${defaultProtocol}${trimmedUrl}`;
+
+  // Validate the URL
+  try {
+    new URL(normalizedUrl);
+    return normalizedUrl;
+  } catch {
+    DevLogger.log('Invalid URL format:', trimmedUrl);
+    return '';
+  }
+};
+
+export const parseWalletConnectUri = (uri: string): WCMultiVersionParams => {
   // Handle wc:{} and wc://{} format
   const str = uri.startsWith('wc://') ? uri.replace('wc://', 'wc:') : uri;
   const pathStart: number = str.indexOf(':');
@@ -35,7 +142,7 @@ const parseWalletConnectUri = (uri: string): WCMultiVersionParams => {
   const result = {
     protocol,
     topic: requiredValues[0],
-    version: parseInt(requiredValues[1], 10),
+    version: Number.parseInt(requiredValues[1], 10),
     symKey: queryParams.symKey as string,
     relay: parseRelayParams(queryParams),
     bridge: queryParams.bridge as string,
@@ -49,13 +156,13 @@ const parseWalletConnectUri = (uri: string): WCMultiVersionParams => {
 export const hideWCLoadingState = ({
   navigation,
 }: {
-  navigation?: NavigationContainerRef;
+  navigation?: NavigationContainerRef<ParamListBase>;
 }): void => {
   const currentRoute = navigation?.getCurrentRoute()?.name;
   if (currentRoute === Routes.SHEET.SDK_LOADING && navigation?.canGoBack()) {
     navigation?.goBack();
   } else if (
-    currentRoute === Routes.SHEET.RETURN_TO_DAPP_MODAL &&
+    currentRoute === Routes.SDK.RETURN_TO_DAPP_NOTIFICATION &&
     navigation?.canGoBack()
   ) {
     // also close return to dapp if it wasnt previously closed
@@ -66,7 +173,7 @@ export const hideWCLoadingState = ({
 export const showWCLoadingState = ({
   navigation,
 }: {
-  navigation?: NavigationContainerRef;
+  navigation?: NavigationContainerRef<ParamListBase>;
 }): void => {
   navigation?.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
     screen: Routes.SHEET.SDK_LOADING,
@@ -83,7 +190,11 @@ export const isValidWCURI = (uri: string): boolean => {
   return false;
 };
 
-const MAX_LOOP_COUNTER = 60;
+// Export a config object that can be modified for testing
+export const networkModalOnboardingConfig = {
+  MAX_LOOP_COUNTER: 60,
+};
+
 export const waitForNetworkModalOnboarding = async ({
   chainId,
 }: {
@@ -101,14 +212,275 @@ export const waitForNetworkModalOnboarding = async ({
 
     if (networkOnboardedState[chainId]) {
       waitForNetworkModalOnboarded = false;
-      // exit the looop
+      // exit the loop
     } else {
       await wait(1000);
     }
 
-    if (loopCounter >= MAX_LOOP_COUNTER) {
+    if (loopCounter >= networkModalOnboardingConfig.MAX_LOOP_COUNTER) {
       throw new Error('Timeout error');
     }
   }
 };
-export default parseWalletConnectUri;
+
+export const getScopedPermissions = async ({
+  channelId,
+}: {
+  channelId: string;
+}) => {
+  const permittedChains = await getPermittedCaipChainIds(channelId);
+  const evmChains = permittedChains.filter((chain) =>
+    chain.startsWith(`${KnownCaipNamespace.Eip155}:`),
+  );
+
+  if (evmChains.length === 0) {
+    DevLogger.log(`WC::getScopedPermissions no permitted EVM chains found`);
+    return {};
+  }
+
+  const namespaces: Record<string, NamespaceConfig> = {};
+  // EIP155 namespace
+  const approvedAccounts = getPermittedAccounts(channelId);
+  if (!Array.isArray(approvedAccounts)) {
+    throw rpcErrors.internal({
+      message: `WalletConnect permissions are in an unexpected format: approved accounts must be an array.`,
+    });
+  }
+
+  namespaces[KnownCaipNamespace.Eip155] = {
+    chains: evmChains,
+    methods: EVM_APPROVED_METHODS,
+    events: ['chainChanged', 'accountsChanged'],
+    accounts: evmChains.flatMap((chain) =>
+      approvedAccounts.map((account) => `${chain}:${account}` as CaipAccountId),
+    ),
+  };
+
+  return namespaces;
+};
+
+/**
+ * Seed the EVM (eip155) chains a WalletConnect proposal requested into the
+ * CAIP-25 caveat value before the permission request is raised, mirroring
+ * what non-EVM adapters do via `enrichCaveatValue`.
+ *
+ * Without this, a proposal combining eip155 with a namespace that has an
+ * adapter (e.g. Tron) produces a permission request whose only chain scopes
+ * are the adapter's, so the approval UI pre-selects only that namespace and
+ * leaves EVM networks unchecked.
+ *
+ * Only chains the wallet has a network configuration for are carried
+ * through; if the proposal requested eip155 chains but none are configured,
+ * we fall back to the wallet's currently selected EVM chain. Proposals that
+ * do not reference any eip155 chain are returned unchanged.
+ *
+ * Should be removed when we'll create a specific adapter for Eip155 chains.
+ */
+export const enrichCaveatValueForEip155 = ({
+  proposal,
+  caveatValue,
+}: {
+  proposal: ProposalParamsLight;
+  caveatValue: Caip25CaveatValue;
+}): Caip25CaveatValue => {
+  const state = store.getState();
+  const configuredCaipChainIds = Object.keys(
+    selectNetworkConfigurationsByCaipChainId(state),
+  ) as CaipChainId[];
+  const supportedEvmScopes = new Set<CaipChainId>(
+    configuredCaipChainIds.filter((caipChainId) =>
+      caipChainId.startsWith(`${KnownCaipNamespace.Eip155}:`),
+    ),
+  );
+  const walletChainIdDecimal = parseInt(selectEvmChainId(state), 16);
+
+  return enrichCaveatValueForNamespace({
+    proposal,
+    caveatValue,
+    namespace: KnownCaipNamespace.Eip155,
+    supportedScopes: supportedEvmScopes,
+    fallbackScope:
+      `${KnownCaipNamespace.Eip155}:${walletChainIdDecimal}` as CaipChainId,
+  });
+};
+
+export const isSwitchingChainRequest = (
+  request: WalletKitTypes.SessionRequest,
+) => {
+  const {
+    params: {
+      request: { method },
+    },
+  } = request;
+  return method === 'wallet_switchEthereumChain';
+};
+
+export const getChainIdForCaipChainId = (caipChainId: CaipChainId) => {
+  const caipNetworkConfiguration = selectNetworkConfigurationsByCaipChainId(
+    store.getState(),
+  );
+  const networkConfig = caipNetworkConfiguration[caipChainId];
+
+  if (!networkConfig) {
+    throw new Error(
+      `No network configuration found for CAIP chain ID: ${caipChainId}`,
+    );
+  }
+
+  const { chainId } = networkConfig;
+
+  if (!chainId) {
+    throw new Error(
+      `No chainId found in network configuration for CAIP chain ID: ${caipChainId}`,
+    );
+  }
+
+  return chainId as Hex;
+};
+
+export const getRequestCaip2ChainId = (
+  request: WalletKitTypes.SessionRequest,
+) => {
+  const isSwitchingChain = isSwitchingChainRequest(request);
+  const hexChainId = isSwitchingChain
+    ? request.params.request.params[0].chainId
+    : getChainIdForCaipChainId(request.params.chainId as CaipChainId);
+  const caip2ChainId = `eip155:${parseInt(hexChainId, 16)}` as CaipChainId;
+  return caip2ChainId;
+};
+
+export const getNetworkClientIdForCaipChainId = (caipChainId: CaipChainId) => {
+  const networkConfigurationsByChainId =
+    selectEvmNetworkConfigurationsByChainId(store.getState());
+  const chainId = getChainIdForCaipChainId(caipChainId);
+  const networkConfig = networkConfigurationsByChainId[chainId as Hex];
+
+  if (!networkConfig) {
+    throw new Error(`No network configuration found for chain ID: ${chainId}`);
+  }
+
+  const { rpcEndpoints } = networkConfig;
+
+  if (!rpcEndpoints || rpcEndpoints.length === 0) {
+    throw new Error(`No RPC endpoints found for chain ID: ${chainId}`);
+  }
+
+  const { networkClientId } = rpcEndpoints[0];
+
+  if (!networkClientId) {
+    throw new Error(
+      `No networkClientId found in RPC endpoint for chain ID: ${chainId}`,
+    );
+  }
+
+  return networkClientId;
+};
+
+export const hasPermissionsToSwitchChainRequest = async (
+  caip2ChainId: CaipChainId,
+  channelId: string,
+) => {
+  const networkConfigurations = selectNetworkConfigurations(store.getState());
+  const hexChainIdString = getChainIdForCaipChainId(caip2ChainId);
+
+  const existingNetwork = findExistingNetwork(
+    hexChainIdString,
+    networkConfigurations,
+  );
+
+  if (!existingNetwork) {
+    DevLogger.log(`WC::checkWCPermissions no existing network found`);
+    throw rpcErrors.invalidParams({
+      message: `Invalid parameters: active chainId is different than the one provided.`,
+    });
+  }
+
+  const permittedChains = await getPermittedCaipChainIds(channelId);
+  const isAllowedChainId = permittedChains.includes(caip2ChainId);
+  DevLogger.log(`WC::checkWCPermissions permittedChains: ${permittedChains}`);
+
+  return {
+    allowed: isAllowedChainId,
+    existingNetwork,
+    hexChainIdString,
+  };
+};
+
+/**
+ * Returns the origin for a WalletConnect session request.
+ *
+ * WARNING: The returned value is **NOT a trusted origin**. It comes from one of
+ * two sources, neither of which is independently verified:
+ *
+ * 1. `verifyContext?.verified?.origin` — Provided by WalletConnect's Verify API
+ * when available. Offers some domain verification but is optional and not
+ * always present.
+ * 2. `defaultOrigin` — Falls back to the self-reported `session.peer.metadata.url`
+ * which is entirely dapp-controlled and trivially spoofable.
+ *
+ * This value MUST NOT be treated as equivalent to a browser-provided origin
+ * (e.g., `sender.url` on extension or WebView URL on mobile).
+ */
+export const getUnverifiedRequestOrigin = (
+  request: WalletKitTypes.SessionRequest,
+  defaultOrigin: string,
+) => {
+  // Only trust verifyContext.verified.origin when it's a parseable URL. The
+  // WalletConnect Verify API may return an empty string or a non-URL value
+  // (e.g. a topic/identifier) when the dapp is unverified, which would
+  // otherwise be rendered verbatim in the "Request from" field.
+  const verifiedOrigin = request.verifyContext?.verified?.origin;
+  if (isValidUrl(verifiedOrigin)) {
+    return verifiedOrigin as string;
+  }
+  return defaultOrigin;
+};
+
+/**
+ * Determine whether a WalletConnect request method should trigger a deeplink redirect for EIP155 chains.
+ */
+export const isEIP155RedirectMethodForChain = ({
+  scope,
+  method,
+}: {
+  scope: CaipChainId;
+  method: string;
+}): boolean => {
+  if (scope.startsWith(`${KnownCaipNamespace.Eip155}:`)) {
+    return EVM_METHODS_TO_REDIRECT.includes(method);
+  }
+  return false;
+};
+
+/**
+ * Whether this CAIP namespace belongs to EIP-155 chains or not.
+ *
+ * Should be removed when we'll create a specific adapter for Eip155 chains.
+ */
+export const isEIP155NameSpace = (namespace: string): boolean =>
+  namespace === KnownCaipNamespace.Eip155;
+
+/**
+ * Whether this CAIP chain id belongs to an EIP-155 chain or not.
+ *
+ * Should be removed when we'll create a specific adapter for Eip155 chains.
+ */
+export const isEIP155Scope = (scope: CaipChainId): boolean => {
+  const { namespace } = parseCaipChainId(scope);
+  return isEIP155NameSpace(namespace);
+};
+
+/**
+ * Whether a permission-request origin belongs to the active WalletConnect flow.
+ *
+ * `wc2Metadata.id` stores the WC pairing topic (permission origin), not the
+ * dapp URL. Stale metadata must not classify unrelated in-app browser requests
+ * as WalletConnect.
+ */
+export const isWalletConnectPermissionOrigin = (
+  origin: string,
+  wc2Metadata?: Partial<WC2Metadata>,
+): boolean =>
+  Boolean(
+    wc2Metadata?.id && wc2Metadata.id.length > 0 && origin === wc2Metadata.id,
+  );

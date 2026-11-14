@@ -1,0 +1,409 @@
+import React from 'react';
+import { TEST_HEX_COLORS } from '../../testUtils/mockColors';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import {
+  PredictOutcome,
+  Recurrence,
+  PredictMarket as PredictMarketType,
+} from '../../types';
+import PredictMarket from './';
+import PredictMarketSingle from '../PredictMarketSingle';
+import PredictMarketMultiple from '../PredictMarketMultiple';
+import PredictMarketSportCard from '../PredictMarketSportCard';
+import PredictCryptoUpDownMarketCard from '../PredictCryptoUpDownMarketCard';
+import type { TransactionActiveAbTestEntry } from '../../../../../util/transactions/transaction-active-ab-test-attribution-registry';
+
+jest.mock('../../selectors/featureFlags', () => ({
+  ...jest.requireActual('../../selectors/featureFlags'),
+  selectPredictUpDownEnabledFlag: jest.fn(() => true),
+}));
+
+// Mock the sub-components
+jest.mock('../PredictMarketSingle', () => {
+  const { View, Text } = jest.requireActual('react-native');
+  return jest.fn(({ market }) => (
+    <View testID="predict-market-single">
+      <Text>PredictMarketSingle: {market.title}</Text>
+    </View>
+  ));
+});
+
+jest.mock('../PredictMarketMultiple', () => {
+  const { View, Text } = jest.requireActual('react-native');
+  return jest.fn(({ market }) => (
+    <View testID="predict-market-multiple">
+      <Text>PredictMarketMultiple: {market.title}</Text>
+    </View>
+  ));
+});
+
+jest.mock('../PredictMarketSportCard', () => {
+  const { View, Text } = jest.requireActual('react-native');
+  return jest.fn(({ market }) => (
+    <View testID="predict-market-sport-card">
+      <Text>PredictMarketSportCard: {market.title}</Text>
+    </View>
+  ));
+});
+
+jest.mock('../PredictCryptoUpDownMarketCard', () => {
+  const { View, Text } = jest.requireActual('react-native');
+  return jest.fn(({ market }) => (
+    <View testID="predict-crypto-up-down-market-card">
+      <Text>PredictCryptoUpDownMarketCard: {market.title}</Text>
+    </View>
+  ));
+});
+
+const mockSingleOutcome: PredictOutcome = {
+  id: 'test-outcome-1',
+  providerId: 'test-provider',
+  marketId: 'test-market-1',
+  title: 'Will Bitcoin reach $150,000 by end of year?',
+  description: 'Bitcoin price prediction market',
+  image: 'https://example.com/bitcoin.png',
+  status: 'open',
+  tokens: [
+    {
+      id: 'token-yes',
+      title: 'Yes',
+      price: 0.65,
+    },
+    {
+      id: 'token-no',
+      title: 'No',
+      price: 0.35,
+    },
+  ],
+  volume: 1000000,
+  groupItemTitle: 'Crypto Markets',
+  negRisk: false,
+  tickSize: '0.01',
+};
+
+const mockMultipleOutcome1: PredictOutcome = {
+  id: 'test-outcome-2',
+  providerId: 'test-provider',
+  marketId: 'test-market-2',
+  title: 'Bitcoin prediction',
+  description: 'Bitcoin price prediction',
+  image: 'https://example.com/bitcoin.png',
+  status: 'open',
+  tokens: [
+    { id: 'token-btc-yes', title: 'Yes', price: 0.55 },
+    { id: 'token-btc-no', title: 'No', price: 0.45 },
+  ],
+  volume: 500000,
+  groupItemTitle: 'Bitcoin',
+  negRisk: false,
+  tickSize: '0.01',
+};
+
+const mockMultipleOutcome2: PredictOutcome = {
+  id: 'test-outcome-3',
+  providerId: 'test-provider',
+  marketId: 'test-market-2',
+  title: 'Ethereum prediction',
+  description: 'Ethereum price prediction',
+  image: 'https://example.com/ethereum.png',
+  status: 'open',
+  tokens: [
+    { id: 'token-eth-yes', title: 'Yes', price: 0.75 },
+    { id: 'token-eth-no', title: 'No', price: 0.25 },
+  ],
+  volume: 300000,
+  groupItemTitle: 'Ethereum',
+  negRisk: false,
+  tickSize: '0.01',
+};
+
+const mockSingleMarket: PredictMarketType = {
+  id: 'test-market-1',
+  providerId: 'test-provider',
+  slug: 'bitcoin-price-prediction',
+  title: 'Bitcoin Single Market',
+  description: 'Bitcoin price prediction market',
+  image: 'https://example.com/bitcoin.png',
+  status: 'open',
+  recurrence: Recurrence.NONE,
+  category: 'crypto',
+  tags: [],
+  outcomes: [mockSingleOutcome],
+  liquidity: 1000000,
+  volume: 1000000,
+};
+
+const mockMultipleMarket: PredictMarketType = {
+  id: 'test-market-2',
+  providerId: 'test-provider',
+  slug: 'crypto-predictions',
+  title: 'Crypto Multiple Market',
+  description: 'Multiple crypto predictions',
+  image: 'https://example.com/crypto.png',
+  status: 'open',
+  recurrence: Recurrence.NONE,
+  category: 'crypto',
+  tags: [],
+  outcomes: [mockMultipleOutcome1, mockMultipleOutcome2],
+  liquidity: 1000000,
+  volume: 1000000,
+};
+
+const mockNflGameOutcome: PredictOutcome = {
+  id: 'nfl-outcome-1',
+  providerId: 'test-provider',
+  marketId: 'nfl-market-1',
+  title: 'Seahawks vs Broncos',
+  description: 'NFL game prediction',
+  image: 'https://example.com/nfl.png',
+  status: 'open',
+  tokens: [
+    { id: 'token-sea', title: 'Seahawks', price: 0.55 },
+    { id: 'token-den', title: 'Broncos', price: 0.45 },
+  ],
+  volume: 500000,
+  groupItemTitle: 'NFL',
+  negRisk: false,
+  tickSize: '0.01',
+};
+
+const mockNflMarket: PredictMarketType = {
+  id: 'nfl-market-1',
+  providerId: 'test-provider',
+  slug: 'seahawks-vs-broncos',
+  title: 'Seahawks vs Broncos',
+  description: 'NFL game prediction market',
+  image: 'https://example.com/nfl.png',
+  status: 'open',
+  recurrence: Recurrence.NONE,
+  category: 'sports',
+  tags: ['nfl'],
+  outcomes: [mockNflGameOutcome],
+  liquidity: 1000000,
+  volume: 1000000,
+  game: {
+    id: 'nfl-game-1',
+    startTime: '2025-01-20T18:00:00Z',
+    status: 'scheduled',
+    league: 'nfl',
+    elapsed: null,
+    period: null,
+    score: null,
+    homeTeam: {
+      id: 'den',
+      name: 'Denver Broncos',
+      logo: 'https://example.com/broncos.png',
+      abbreviation: 'DEN',
+      color: TEST_HEX_COLORS.TEAM_ALT_ORANGE,
+      alias: 'Broncos',
+    },
+    awayTeam: {
+      id: 'sea',
+      name: 'Seattle Seahawks',
+      logo: 'https://example.com/seahawks.png',
+      abbreviation: 'SEA',
+      color: TEST_HEX_COLORS.TEAM_SEA,
+      alias: 'Seahawks',
+    },
+  },
+};
+
+const mockCryptoUpDownMarket: PredictMarketType = {
+  id: 'btc-up-down-market-1',
+  providerId: 'test-provider',
+  slug: 'btc-up-or-down-5m-1',
+  title: 'BTC Up or Down - 5 Minutes',
+  description: 'BTC Up or Down market',
+  image: 'https://example.com/btc.png',
+  status: 'open',
+  recurrence: Recurrence.NONE,
+  category: 'crypto',
+  tags: ['crypto', 'up-or-down', 'bitcoin'],
+  outcomes: [mockSingleOutcome],
+  liquidity: 1000000,
+  volume: 1000000,
+  endDate: '2026-04-09T19:45:00Z',
+  series: {
+    id: 'btc-series',
+    slug: 'btc-up-or-down-5m',
+    title: 'BTC Up or Down - 5 Minutes',
+    recurrence: '5m',
+  },
+};
+
+const initialState = {
+  engine: {
+    backgroundState,
+  },
+};
+
+const transactionActiveAbTests: TransactionActiveAbTestEntry[] = [
+  {
+    key: 'predict-empty-state',
+    value: 'treatment',
+    key_value_pair: 'predict-empty-state=treatment',
+  },
+];
+
+// Helper function to set up test environment
+function setupPredictMarketTest(
+  market: PredictMarketType,
+  props: Partial<React.ComponentProps<typeof PredictMarket>> = {},
+  { upDownEnabled = true }: { upDownEnabled?: boolean } = {},
+) {
+  jest.clearAllMocks();
+  const { selectPredictUpDownEnabledFlag } = jest.requireMock(
+    '../../selectors/featureFlags',
+  );
+  selectPredictUpDownEnabledFlag.mockReturnValue(upDownEnabled);
+  return renderWithProvider(<PredictMarket {...props} market={market} />, {
+    state: initialState,
+  });
+}
+
+describe('PredictMarket', () => {
+  it('does not re-render the market card when props are unchanged', () => {
+    const { rerender } = setupPredictMarketTest(mockSingleMarket);
+
+    rerender(<PredictMarket market={mockSingleMarket} />);
+
+    expect(PredictMarketSingle).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders PredictMarketSingle for markets with one outcome', () => {
+    const { getByTestId } = setupPredictMarketTest(mockSingleMarket);
+
+    expect(getByTestId('predict-market-single')).toBeOnTheScreen();
+  });
+
+  it('renders PredictMarketMultiple for markets with multiple outcomes', () => {
+    const { getByTestId } = setupPredictMarketTest(mockMultipleMarket);
+
+    expect(getByTestId('predict-market-multiple')).toBeOnTheScreen();
+  });
+
+  it('passes the market prop correctly to sub-components', () => {
+    const { getByText } = setupPredictMarketTest(mockSingleMarket);
+
+    expect(
+      getByText('PredictMarketSingle: Bitcoin Single Market'),
+    ).toBeOnTheScreen();
+  });
+
+  it('renders PredictMarketSportCard for NFL game markets', () => {
+    const { getByTestId } = setupPredictMarketTest(mockNflMarket);
+
+    expect(getByTestId('predict-market-sport-card')).toBeOnTheScreen();
+  });
+
+  it('renders PredictCryptoUpDownMarketCard for crypto Up/Down markets', () => {
+    const { getByTestId, queryByTestId } = setupPredictMarketTest(
+      mockCryptoUpDownMarket,
+    );
+
+    expect(getByTestId('predict-crypto-up-down-market-card')).toBeOnTheScreen();
+    expect(queryByTestId('predict-market-single')).toBeNull();
+    expect(queryByTestId('predict-market-multiple')).toBeNull();
+  });
+
+  it('does not render PredictCryptoUpDownMarketCard when predictUpDownEnabled flag is off', () => {
+    const { queryByTestId } = setupPredictMarketTest(
+      mockCryptoUpDownMarket,
+      {},
+      { upDownEnabled: false },
+    );
+
+    expect(queryByTestId('predict-crypto-up-down-market-card')).toBeNull();
+    expect(queryByTestId('predict-market-single')).toBeOnTheScreen();
+  });
+
+  it('passes transactionActiveAbTests to PredictCryptoUpDownMarketCard for crypto Up/Down markets', () => {
+    setupPredictMarketTest(mockCryptoUpDownMarket, {
+      transactionActiveAbTests,
+    });
+
+    expect(
+      (PredictCryptoUpDownMarketCard as jest.Mock).mock.calls[0][0],
+    ).toEqual(
+      expect.objectContaining({
+        transactionActiveAbTests,
+      }),
+    );
+  });
+
+  it('passes market prop correctly to PredictMarketSportCard for NFL markets', () => {
+    const { getByText } = setupPredictMarketTest(mockNflMarket);
+
+    expect(
+      getByText('PredictMarketSportCard: Seahawks vs Broncos'),
+    ).toBeOnTheScreen();
+  });
+
+  it('renders PredictMarketSingle for single-outcome market without NFL game', () => {
+    const { getByTestId, queryByTestId } =
+      setupPredictMarketTest(mockSingleMarket);
+
+    expect(getByTestId('predict-market-single')).toBeOnTheScreen();
+    expect(queryByTestId('predict-market-sport-card')).toBeNull();
+  });
+
+  it('renders PredictMarketMultiple for multi-outcome market without NFL game', () => {
+    const { getByTestId, queryByTestId } =
+      setupPredictMarketTest(mockMultipleMarket);
+
+    expect(getByTestId('predict-market-multiple')).toBeOnTheScreen();
+    expect(queryByTestId('predict-market-sport-card')).toBeNull();
+  });
+
+  it('passes buy handler props to the selected child card', () => {
+    const onBuyButtonPress = jest.fn();
+
+    setupPredictMarketTest(mockSingleMarket, {
+      onBuyButtonPress,
+    });
+
+    expect(PredictMarketSingle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onBuyButtonPress,
+      }),
+      undefined,
+    );
+  });
+
+  it('passes buy handler props to multi-outcome and sport cards', () => {
+    const onBuyButtonPress = jest.fn();
+
+    setupPredictMarketTest(mockMultipleMarket, {
+      onBuyButtonPress,
+    });
+    expect(PredictMarketMultiple).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onBuyButtonPress,
+      }),
+      undefined,
+    );
+
+    setupPredictMarketTest(mockNflMarket, {
+      onBuyButtonPress,
+    });
+
+    expect(PredictMarketSportCard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onBuyButtonPress,
+      }),
+      undefined,
+    );
+
+    setupPredictMarketTest(mockCryptoUpDownMarket, {
+      onBuyButtonPress,
+    });
+
+    expect(PredictCryptoUpDownMarketCard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        onBuyButtonPress,
+      }),
+      undefined,
+    );
+  });
+});

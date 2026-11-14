@@ -1,6 +1,8 @@
-/* eslint-disable import/prefer-default-export */
+/* eslint-disable import-x/prefer-default-export */
 import { StyleSheet } from 'react-native';
 
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const createStyles = (colors: any) =>
   StyleSheet.create({
     screen: { justifyContent: 'center', paddingHorizontal: 24 },
@@ -18,7 +20,7 @@ export const createStyles = (colors: any) =>
     optionIcon: { fontSize: 24 },
     optionLabel: {
       fontSize: 14,
-      fontFamily: 'EuclidCircularB-Regular',
+      fontFamily: 'Inter-Regular',
       color: colors.primary.default,
     },
     helpOption: { marginVertical: 12 },
@@ -26,19 +28,19 @@ export const createStyles = (colors: any) =>
     fox: { height: 44, width: 44, marginBottom: 12 },
     questionLabel: {
       fontSize: 18,
-      paddingHorizontal: 30,
-      fontFamily: 'EuclidCircularB-Bold',
+      paddingHorizontal: 16,
+      fontFamily: 'Inter-SemiBold',
       textAlign: 'center',
       color: colors.text.default,
       lineHeight: 26,
     },
     description: {
       fontSize: 14,
-      fontFamily: 'EuclidCircularB-Regular',
+      fontFamily: 'Inter-Regular',
       color: colors.text.alternative,
       textAlign: 'center',
       lineHeight: 20,
-      paddingHorizontal: 30,
+      paddingHorizontal: 16,
       marginBottom: 12,
       marginTop: 6,
     },

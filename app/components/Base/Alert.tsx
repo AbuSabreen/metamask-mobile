@@ -27,9 +27,11 @@ interface Props {
   renderIcon?: () => ReactNode;
   onPress?: () => void;
   onDismiss?: () => void;
-  children?: ReactNode;
+  children?: ReactNode | ((textStyle: StyleProp<TextStyle>) => ReactNode);
 }
 
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const createStyles = (colors: any) =>
   StyleSheet.create({
     base: {
@@ -69,21 +71,35 @@ const createStyles = (colors: any) =>
 
 const getAlertStyles: (
   alertType: AlertType,
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   styles: StyleSheet.NamedStyles<any>,
 ) => [StyleProp<ViewStyle>, StyleProp<TextStyle>] = (alertType, styles) => {
   switch (alertType) {
     case AlertType.Warning: {
       return [
-        styles.warning,
-        { ...styles.textWarning, ...styles.baseTextStyle },
+        styles.warning as StyleProp<ViewStyle>,
+        {
+          ...styles.textWarning,
+          ...styles.baseTextStyle,
+        } as StyleProp<TextStyle>,
       ];
     }
     case AlertType.Error: {
-      return [styles.error, { ...styles.textError, ...styles.baseTextStyle }];
+      return [
+        styles.error as StyleProp<ViewStyle>,
+        {
+          ...styles.textError,
+          ...styles.baseTextStyle,
+        } as StyleProp<TextStyle>,
+      ];
     }
     case AlertType.Info:
     default: {
-      return [styles.info, { ...styles.textInfo, ...styles.baseTextStyle }];
+      return [
+        styles.info as StyleProp<ViewStyle>,
+        { ...styles.textInfo, ...styles.baseTextStyle } as StyleProp<TextStyle>,
+      ];
     }
   }
 };
@@ -107,8 +123,8 @@ const Alert = ({
   ...props
 }: Props) => {
   const Wrapper:
-    | React.ComponentClass<TouchableOpacityProps>
-    | React.ComponentClass<ViewProps> = onPress ? TouchableOpacity : View;
+    | React.ComponentType<TouchableOpacityProps>
+    | React.ComponentType<ViewProps> = onPress ? TouchableOpacity : View;
   const { colors } = useTheme();
   const styles = createStyles(colors);
 
@@ -137,7 +153,10 @@ const Alert = ({
             onPress={onDismiss}
             hitSlop={{ top: 20, left: 20, right: 20, bottom: 20 }}
           >
-            <IonicIcon name="ios-close" style={styles.closeIcon} size={30} />
+            {
+              // All this component is deprecated so it should be replaced and removed
+              <IonicIcon name="close" style={styles.closeIcon} size={30} />
+            }
           </TouchableOpacity>
         </View>
       )}

@@ -1,0 +1,696 @@
+import notifee, {
+  AuthorizationStatus,
+  EventType,
+  NotificationSettings,
+  NativeAndroidChannel,
+  EventDetail,
+} from '@notifee/react-native';
+import { Linking, Platform } from 'react-native';
+import {
+  ChannelId,
+  notificationChannels,
+} from '../../../util/notifications/androidChannels';
+import NotificationService, {
+  canOsPromptForPushPermission,
+  getPushPermission,
+  getPushPermissionStatus,
+  isPushPermissionGranted,
+  isPushPermissionPromptable,
+  requestPushPermissions,
+} from './NotificationService';
+import { markPushNotificationOsPromptRequested } from '../../../actions/onboarding';
+import { store } from '../../../store';
+import { PressActionId } from '../types';
+
+jest.mock('@notifee/react-native', () => ({
+  getNotificationSettings: jest.fn(),
+  getChannels: jest.fn(),
+  requestPermission: jest.fn(),
+  cancelTriggerNotification: jest.fn(),
+  createChannel: jest.fn(),
+  onForegroundEvent: jest.fn(),
+  onBackgroundEvent: jest.fn(),
+  incrementBadgeCount: jest.fn(),
+  decrementBadgeCount: jest.fn(),
+  setBadgeCount: jest.fn(),
+  getBadgeCount: jest.fn(),
+  getInitialNotification: jest.fn(),
+  openNotificationSettings: jest.fn(),
+  displayNotification: jest.fn(),
+  AndroidImportance: {
+    DEFAULT: 'default',
+    HIGH: 'high',
+    LOW: 'low',
+    MIN: 'min',
+    NONE: 'none',
+  },
+  AuthorizationStatus: {
+    AUTHORIZED: 'authorized',
+    DENIED: 'denied',
+    NOT_DETERMINED: 'not_determined',
+    PROVISIONAL: 'provisional',
+  },
+  EventType: {
+    DELIVERED: 'delivered',
+    PRESS: 'press',
+    DISMISSED: 'dismissed',
+  },
+}));
+jest.mock('react-native', () => ({
+  Linking: { openSettings: jest.fn() },
+  Platform: { OS: 'ios', Version: 33 },
+  Alert: { alert: jest.fn() },
+}));
+jest.mock('../settings', () => ({
+  mmStorage: {
+    getLocal: jest.fn(),
+    saveLocal: jest.fn(),
+  },
+}));
+jest.mock('../../../store', () => ({
+  store: {
+    dispatch: jest.fn(),
+  },
+}));
+jest.mock('../../../util/Logger', () => ({
+  error: jest.fn(),
+  log: jest.fn(),
+}));
+
+describe('NotificationsService - getBlockedNotifications', () => {
+  const arrangeMocks = () => {
+    const mockGetNotificationSettings = jest
+      .mocked(notifee.getNotificationSettings)
+      .mockResolvedValue({
+        authorizationStatus: AuthorizationStatus.AUTHORIZED,
+      } as NotificationSettings);
+
+    const mockGetChannels = jest.mocked(notifee.getChannels);
+    const mockChannels: NativeAndroidChannel[] = [
+      { id: '1', blocked: true } as NativeAndroidChannel,
+      { id: '2', blocked: true } as NativeAndroidChannel,
+      { id: '3', blocked: true } as NativeAndroidChannel,
+    ];
+    mockGetChannels.mockResolvedValue(mockChannels);
+
+    return { mockGetNotificationSettings, mockGetChannels, mockChannels };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('gets default blocked channels', async () => {
+    const mocks = arrangeMocks();
+    mocks.mockGetNotificationSettings.mockResolvedValue({
+      authorizationStatus: AuthorizationStatus.DENIED,
+    } as NotificationSettings);
+
+    const result = await NotificationService.getBlockedNotifications();
+    const expectedChannels = notificationChannels;
+    expectedChannels.forEach((c) => {
+      expect(result.has(c.id)).toBe(true);
+    });
+  });
+
+  it('gets notifee blocked channels', async () => {
+    const mocks = arrangeMocks();
+
+    const result = await NotificationService.getBlockedNotifications();
+    const expectedChannels = mocks.mockChannels;
+    expectedChannels.forEach((c) => {
+      expect(result.has(c.id as ChannelId)).toBe(true);
+    });
+  });
+
+  it('returns an empty map if error is thrown', async () => {
+    const mocks = arrangeMocks();
+    mocks.mockGetNotificationSettings.mockRejectedValue(
+      new Error('TEST ERROR'),
+    );
+
+    const result = await NotificationService.getBlockedNotifications();
+    expect(result.size).toBe(0);
+  });
+});
+
+describe('getPushPermission', () => {
+  const arrangeMocks = () => {
+    const mockGetAllPermissions = jest.spyOn(
+      NotificationService,
+      'getAllPermissions',
+    );
+    return { mockGetAllPermissions };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns the push permission from getAllPermissions', async () => {
+    const mocks = arrangeMocks();
+    mocks.mockGetAllPermissions.mockResolvedValue({ permission: 'authorized' });
+    expect(await getPushPermission()).toBe('authorized');
+    mocks.mockGetAllPermissions.mockResolvedValue({ permission: 'denied' });
+    expect(await getPushPermission()).toBe('denied');
+  });
+});
+
+describe('isPushPermissionGranted', () => {
+  const arrangeMocks = (status: string) =>
+    jest.mocked(notifee.getNotificationSettings).mockResolvedValue({
+      authorizationStatus: status,
+    } as unknown as NotificationSettings);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each([
+    { status: AuthorizationStatus.AUTHORIZED, expected: true },
+    { status: AuthorizationStatus.PROVISIONAL, expected: true },
+    { status: AuthorizationStatus.DENIED, expected: false },
+    { status: AuthorizationStatus.NOT_DETERMINED, expected: false },
+  ])(
+    'returns $expected when status is $status',
+    async ({ status, expected }) => {
+      arrangeMocks(status as unknown as string);
+      expect(await isPushPermissionGranted()).toBe(expected);
+    },
+  );
+
+  it('returns false when getNotificationSettings throws', async () => {
+    jest
+      .mocked(notifee.getNotificationSettings)
+      .mockRejectedValue(new Error('TEST ERROR'));
+    expect(await isPushPermissionGranted()).toBe(false);
+  });
+});
+
+describe('getPushPermissionStatus', () => {
+  const arrangeMocks = (status: string) =>
+    jest.mocked(notifee.getNotificationSettings).mockResolvedValue({
+      authorizationStatus: status,
+    } as unknown as NotificationSettings);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each([
+    { status: AuthorizationStatus.AUTHORIZED, expected: 'granted' },
+    { status: AuthorizationStatus.PROVISIONAL, expected: 'granted' },
+    { status: AuthorizationStatus.NOT_DETERMINED, expected: 'promptable' },
+    { status: AuthorizationStatus.DENIED, expected: 'denied' },
+  ])(
+    'returns $expected when status is $status',
+    async ({ status, expected }) => {
+      arrangeMocks(status as unknown as string);
+
+      const result = await getPushPermissionStatus();
+
+      expect(result).toBe(expected);
+    },
+  );
+
+  it('returns denied when getNotificationSettings throws', async () => {
+    jest
+      .mocked(notifee.getNotificationSettings)
+      .mockRejectedValue(new Error('TEST ERROR'));
+
+    const result = await getPushPermissionStatus();
+
+    expect(result).toBe('denied');
+  });
+});
+
+describe('isPushPermissionPromptable', () => {
+  const arrangeMocks = (status: string) =>
+    jest.mocked(notifee.getNotificationSettings).mockResolvedValue({
+      authorizationStatus: status,
+    } as unknown as NotificationSettings);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.mocked(Platform).OS = 'ios';
+  });
+
+  it.each([
+    { status: AuthorizationStatus.AUTHORIZED, expected: false },
+    { status: AuthorizationStatus.PROVISIONAL, expected: false },
+    { status: AuthorizationStatus.NOT_DETERMINED, expected: true },
+    { status: AuthorizationStatus.DENIED, expected: false },
+  ])(
+    'returns $expected when status is $status',
+    async ({ status, expected }) => {
+      arrangeMocks(status as unknown as string);
+      expect(await isPushPermissionPromptable()).toBe(expected);
+    },
+  );
+
+  it.each([
+    { status: AuthorizationStatus.AUTHORIZED, expected: false },
+    { status: AuthorizationStatus.DENIED, expected: true },
+  ])(
+    'returns $expected on android when status is $status',
+    async ({ status, expected }) => {
+      jest.mocked(Platform).OS = 'android';
+      arrangeMocks(status as unknown as string);
+      expect(await isPushPermissionPromptable()).toBe(expected);
+    },
+  );
+
+  it('returns false when getNotificationSettings throws', async () => {
+    jest
+      .mocked(notifee.getNotificationSettings)
+      .mockRejectedValue(new Error('TEST ERROR'));
+    expect(await isPushPermissionPromptable()).toBe(false);
+  });
+});
+
+describe('canOsPromptForPushPermission', () => {
+  // `Platform.Version` is exposed as a getter, so it has to be redefined rather
+  // than assigned.
+  const setPlatformVersion = (version: number | string) =>
+    Object.defineProperty(Platform, 'Version', {
+      get: () => version,
+      configurable: true,
+    });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.mocked(Platform).OS = 'ios';
+    setPlatformVersion(33);
+  });
+
+  afterEach(() => {
+    // Leaving `OS` as android would break unrelated suites below.
+    jest.mocked(Platform).OS = 'ios';
+  });
+
+  it.each(['ios', 'macos', 'windows'] as const)(
+    'returns true on %s regardless of version',
+    (platform) => {
+      jest.mocked(Platform).OS = platform;
+      setPlatformVersion(15);
+      expect(canOsPromptForPushPermission()).toBe(true);
+    },
+  );
+
+  it.each([
+    { version: 28, expected: false, label: 'Android 9 (P)' },
+    { version: 29, expected: false, label: 'Android 10 (Q)' },
+    { version: 30, expected: false, label: 'Android 11' },
+    { version: 31, expected: false, label: 'Android 12' },
+    { version: 32, expected: false, label: 'Android 12L' },
+    { version: 33, expected: true, label: 'Android 13' },
+    { version: 34, expected: true, label: 'Android 14' },
+  ])('returns $expected on $label (API $version)', ({ version, expected }) => {
+    jest.mocked(Platform).OS = 'android';
+    setPlatformVersion(version);
+    expect(canOsPromptForPushPermission()).toBe(expected);
+  });
+
+  it('handles a stringified Android version', () => {
+    jest.mocked(Platform).OS = 'android';
+    setPlatformVersion('31');
+    expect(canOsPromptForPushPermission()).toBe(false);
+  });
+});
+
+describe('NotificationService - getAllPermissions', () => {
+  const arrangeMocks = () => {
+    const mockCreateChannel = jest
+      .mocked(notifee.createChannel)
+      .mockImplementation(async (c) => c.id);
+    const mockRequestPermisssion = jest
+      .mocked(notifee.requestPermission)
+      .mockResolvedValue({
+        authorizationStatus: AuthorizationStatus.AUTHORIZED,
+      } as NotificationSettings);
+
+    // Mock Block Permission Requests
+    const mockGetNotificationSettings = jest
+      .mocked(notifee.getNotificationSettings)
+      .mockResolvedValue({
+        authorizationStatus: AuthorizationStatus.AUTHORIZED,
+      } as NotificationSettings);
+
+    // Mock Request Permission
+    const mockRequestPushNotificationPermission = jest
+      .spyOn(NotificationService, 'requestPushNotificationsPermission')
+      .mockResolvedValue(false);
+
+    return {
+      mockCreateChannel,
+      mockRequestPermisssion,
+      mockGetNotificationSettings,
+      mockRequestPushNotificationPermission,
+    };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns authorised permission', async () => {
+    arrangeMocks();
+    const result = await NotificationService.getAllPermissions();
+    expect(result.permission).toBe('authorized');
+  });
+
+  it('returns denied permission', async () => {
+    const mocks = arrangeMocks();
+    mocks.mockRequestPermisssion.mockResolvedValue({
+      authorizationStatus: AuthorizationStatus.DENIED,
+    } as NotificationSettings);
+    mocks.mockGetNotificationSettings.mockResolvedValue({
+      authorizationStatus: AuthorizationStatus.DENIED,
+    } as NotificationSettings);
+
+    const result = await NotificationService.getAllPermissions();
+    expect(result.permission).toBe('denied');
+  });
+});
+
+describe('NotificationService - isDeviceNotificationEnabled', () => {
+  const arrangeMocks = () => {
+    const mockGetNotificationSettings = jest
+      .mocked(notifee.getNotificationSettings)
+      .mockResolvedValue({
+        authorizationStatus: AuthorizationStatus.AUTHORIZED,
+      } as NotificationSettings);
+
+    const mockDispatch = jest.spyOn(store, 'dispatch');
+
+    return { mockGetNotificationSettings, mockDispatch };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('dispatches state update on authorisation check', async () => {
+    const mocks = arrangeMocks();
+
+    const act = async () => {
+      const result = await NotificationService.isDeviceNotificationEnabled();
+      return result;
+    };
+
+    // Act/Assert - notifee authorised
+    expect(await act()).toBe(true);
+    expect(mocks.mockDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ deviceNotificationEnabled: true }),
+    );
+
+    mocks.mockGetNotificationSettings.mockReset();
+    mocks.mockDispatch.mockReset();
+    mocks.mockGetNotificationSettings.mockResolvedValue({
+      authorizationStatus: AuthorizationStatus.DENIED,
+    } as NotificationSettings);
+
+    // Act/Assert - notifee unauthorised
+    expect(await act()).toBe(false);
+    expect(mocks.mockDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ deviceNotificationEnabled: false }),
+    );
+  });
+});
+
+describe('NotificationService - alertPrompt buttons', () => {
+  it('resolves when pressing the buttons', () => {
+    const mockResolve = jest.fn();
+    const result = NotificationService.defaultButtons(mockResolve);
+
+    result[0].onPress();
+    expect(mockResolve).toHaveBeenCalledWith(false);
+
+    mockResolve.mockReset();
+
+    result[1].onPress();
+    expect(mockResolve).toHaveBeenCalledWith(true);
+  });
+});
+
+describe('NotificationService - openSystemSettings', () => {
+  const arrangeMocks = () => {
+    const mockLinkingSettings = jest.spyOn(Linking, 'openSettings');
+    const mockNotifeeSettings = jest.spyOn(notifee, 'openNotificationSettings');
+    return {
+      mockLinkingSettings,
+      mockNotifeeSettings,
+    };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('performs IOS settings naviation', async () => {
+    const mocks = arrangeMocks();
+    await NotificationService.openSystemSettings();
+    expect(mocks.mockLinkingSettings).toHaveBeenCalled();
+    expect(mocks.mockNotifeeSettings).not.toHaveBeenCalled();
+  });
+
+  it('performs Android settings naviation', async () => {
+    const mocks = arrangeMocks();
+    Platform.OS = 'android';
+    await NotificationService.openSystemSettings();
+    expect(mocks.mockLinkingSettings).not.toHaveBeenCalled();
+    expect(mocks.mockNotifeeSettings).toHaveBeenCalled();
+  });
+});
+
+describe('NotificationService - handleNotificationPress', () => {
+  const arrangeMocks = () => {
+    const mockDecrementBadge = jest.spyOn(
+      NotificationService,
+      'decrementBadgeCount',
+    );
+    const mockCancelTriggerNotification = jest.spyOn(
+      NotificationService,
+      'cancelTriggerNotification',
+    );
+    const mockEvent: EventDetail = {
+      notification: {
+        id: '1',
+      },
+    };
+    const mockHandler = jest.fn();
+    return {
+      mockDecrementBadge,
+      mockCancelTriggerNotification,
+      mockEvent,
+      mockHandler,
+    };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('handles pressing a notification', async () => {
+    const mocks = arrangeMocks();
+    await NotificationService.handleNotificationPress({
+      detail: mocks.mockEvent,
+      callback: mocks.mockHandler,
+    });
+
+    expect(mocks.mockDecrementBadge).toHaveBeenCalled();
+    expect(mocks.mockCancelTriggerNotification).toHaveBeenCalled();
+    expect(mocks.mockHandler).toHaveBeenCalled();
+  });
+});
+
+describe('NotificationService - handleNotificationEvent', () => {
+  const arrangeMocks = () => {
+    const mockIncrementBadge = jest.spyOn(
+      NotificationService,
+      'incrementBadgeCount',
+    );
+    const mockDecrementBadge = jest.spyOn(
+      NotificationService,
+      'decrementBadgeCount',
+    );
+    const mockCancelTriggerNotification = jest.spyOn(
+      NotificationService,
+      'cancelTriggerNotification',
+    );
+    const mockEvent: EventDetail = {
+      notification: {
+        id: '1',
+      },
+    };
+    const mockHandler = jest.fn();
+
+    return {
+      mockIncrementBadge,
+      mockDecrementBadge,
+      mockCancelTriggerNotification,
+      mockEvent,
+      mockHandler,
+    };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('handles a notification delivered event', async () => {
+    const mocks = arrangeMocks();
+    await NotificationService.handleNotificationEvent({
+      type: EventType.DELIVERED,
+      detail: mocks.mockEvent,
+      callback: mocks.mockHandler,
+    });
+
+    expect(mocks.mockIncrementBadge).toHaveBeenCalled();
+    expect(mocks.mockDecrementBadge).not.toHaveBeenCalled();
+  });
+
+  it('handles a notification click event', async () => {
+    const mocks = arrangeMocks();
+    await NotificationService.handleNotificationEvent({
+      type: EventType.PRESS,
+      detail: mocks.mockEvent,
+      callback: mocks.mockHandler,
+    });
+
+    expect(mocks.mockIncrementBadge).not.toHaveBeenCalled();
+    expect(mocks.mockDecrementBadge).toHaveBeenCalled();
+    expect(mocks.mockCancelTriggerNotification).toHaveBeenCalled();
+  });
+});
+
+describe('NotificationService - displayNotification', () => {
+  const arrangeMocks = () => {
+    const mockNotifeeDisplayNotification = jest.spyOn(
+      notifee,
+      'displayNotification',
+    );
+    return {
+      mockNotifeeDisplayNotification,
+    };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('calls notifee display notification method', async () => {
+    const mocks = arrangeMocks();
+    const notification = {
+      id: 'Test Id',
+      title: 'Test Title',
+      body: 'Test Body',
+      data: { myTestData: 'HelloWorld' },
+    };
+
+    await NotificationService.displayNotification(notification);
+
+    expect(mocks.mockNotifeeDisplayNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: notification.id,
+        title: notification.title,
+        body: notification.body,
+        data: { dataStr: JSON.stringify(notification.data) },
+        android: expect.objectContaining({
+          smallIcon: 'ic_notification_small',
+        }),
+      }),
+    );
+    const displayCall = mocks.mockNotifeeDisplayNotification.mock.calls[0][0];
+    expect(displayCall.android).not.toHaveProperty('largeIcon');
+    expect(displayCall.android?.pressAction?.id).toBe(PressActionId.OPEN_HOME);
+  });
+
+  it('omits Notifee data when notification data is undefined', async () => {
+    const mocks = arrangeMocks();
+
+    await NotificationService.displayNotification({ title: 'Test Title' });
+
+    expect(mocks.mockNotifeeDisplayNotification).toHaveBeenCalledWith(
+      expect.not.objectContaining({ data: expect.anything() }),
+    );
+  });
+
+  it('keeps display failures non-throwing by default', async () => {
+    const error = new Error('display failed');
+    jest.mocked(notifee.displayNotification).mockRejectedValueOnce(error);
+
+    const result = NotificationService.displayNotification({
+      title: 'Test Title',
+    });
+
+    await expect(result).resolves.toBeUndefined();
+  });
+
+  it('propagates display failures when requested', async () => {
+    const error = new Error('display failed');
+    jest.mocked(notifee.displayNotification).mockRejectedValueOnce(error);
+
+    const result = NotificationService.displayNotification({
+      title: 'Test Title',
+      throwOnError: true,
+    });
+
+    await expect(result).rejects.toThrow('display failed');
+  });
+});
+
+describe('requestPushPermissions', () => {
+  const arrangeMocks = (permission: 'authorized' | 'denied') => {
+    const mockGetAllPermissions = jest
+      .spyOn(NotificationService, 'getAllPermissions')
+      .mockResolvedValue({ permission });
+    const mockDispatch = jest.spyOn(store, 'dispatch');
+
+    return { mockGetAllPermissions, mockDispatch };
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('records the OS push prompt request so the onboarding checklist stops nudging', async () => {
+    const mocks = arrangeMocks('authorized');
+
+    const result = await requestPushPermissions();
+
+    expect(result).toBe(true);
+    expect(mocks.mockGetAllPermissions).toHaveBeenCalledWith(true);
+    expect(mocks.mockDispatch).toHaveBeenCalledWith(
+      markPushNotificationOsPromptRequested(),
+    );
+  });
+
+  it('records the request even when the user denies OS permission', async () => {
+    const mocks = arrangeMocks('denied');
+
+    const result = await requestPushPermissions();
+
+    expect(result).toBe(false);
+    expect(mocks.mockDispatch).toHaveBeenCalledWith(
+      markPushNotificationOsPromptRequested(),
+    );
+  });
+
+  it('does not record the request when the permission flow throws before asking the OS', async () => {
+    jest
+      .spyOn(NotificationService, 'getAllPermissions')
+      .mockRejectedValue(new Error('Timeout'));
+    const mockDispatch = jest.spyOn(store, 'dispatch');
+
+    await expect(requestPushPermissions()).rejects.toThrow('Timeout');
+
+    expect(mockDispatch).not.toHaveBeenCalledWith(
+      markPushNotificationOsPromptRequested(),
+    );
+  });
+});

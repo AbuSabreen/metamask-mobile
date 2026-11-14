@@ -1,840 +1,2299 @@
 import React from 'react';
-import { Limits, Payment } from '@consensys/on-ramp-sdk';
-import { act, fireEvent, screen } from '@testing-library/react-native';
-import { BN } from 'ethereumjs-util';
-import { renderScreen } from '../../../../../util/test/renderWithProvider';
-import BuildQuote from './BuildQuote';
-import useRegions from '../../hooks/useRegions';
-import { RampSDK } from '../../sdk';
+import { fireEvent, act, waitFor, within } from '@testing-library/react-native';
+import BuildQuote, {
+  createBuildQuoteNavDetails,
+  isBailedOrderStatus,
+} from './BuildQuote';
+import { BUILD_QUOTE_TEST_IDS } from './BuildQuote.testIds';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import initialRootState from '../../../../../util/test/initial-root-state';
+import { BuildQuoteSelectors } from '../../Aggregator/Views/BuildQuote/BuildQuote.testIds';
 import Routes from '../../../../../constants/navigation/Routes';
-import initialBackgroundState from '../../../../../util/test/initial-background-state.json';
-import useCryptoCurrencies from '../../hooks/useCryptoCurrencies';
-import useFiatCurrencies from '../../hooks/useFiatCurrencies';
-import usePaymentMethods from '../../hooks/usePaymentMethods';
-import useGasPriceEstimation from '../../hooks/useGasPriceEstimation';
-import {
-  mockCryptoCurrenciesData,
-  mockFiatCurrenciesData,
-  mockPaymentMethods,
-  mockRegionsData,
-} from './BuildQuote.constants';
-import useLimits from '../../hooks/useLimits';
-import useAddressBalance from '../../../../hooks/useAddressBalance/useAddressBalance';
-import useBalance from '../../hooks/useBalance';
-import { toTokenMinimalUnit } from '../../../../../util/number';
-import { RampType } from '../../../../../reducers/fiatOrders/types';
-import { NATIVE_ADDRESS } from '../../../../../constants/on-ramp';
+import { useNavigation } from '@react-navigation/native';
+import { RampsOrderStatus } from '@metamask/ramps-controller';
+import { TextColor } from '@metamask/design-system-react-native';
 
-const getByRoleButton = (name?: string | RegExp) =>
-  screen.getByRole('button', { name });
-
-function render(Component: React.ComponentType) {
-  return renderScreen(
-    Component,
-    {
-      name: Routes.RAMP.BUILD_QUOTE,
-    },
-    {
-      state: {
-        engine: {
-          backgroundState: initialBackgroundState,
-        },
-      },
-    },
-  );
-}
-
-const mockSetOptions = jest.fn();
-const mockNavigate = jest.fn();
-const mockGoBack = jest.fn();
-const mockReset = jest.fn();
-const mockPop = jest.fn();
-const mockTrackEvent = jest.fn();
-
-jest.mock('@react-navigation/native', () => {
-  const actualReactNavigation = jest.requireActual('@react-navigation/native');
+jest.mock('../../../../Base/Keypad', () => {
+  const ReactActual = jest.requireActual('react');
+  const { View, Button } = jest.requireActual('react-native');
   return {
-    ...actualReactNavigation,
-    useNavigation: () => ({
-      navigate: mockNavigate,
-      setOptions: mockSetOptions.mockImplementation(
-        actualReactNavigation.useNavigation().setOptions,
-      ),
-      goBack: mockGoBack,
-      reset: mockReset,
-      dangerouslyGetParent: () => ({
-        pop: mockPop,
-      }),
-    }),
+    __esModule: true,
+    default: ({ onChange }: { onChange: (d: unknown) => void }) =>
+      ReactActual.createElement(View, { testID: 'mock-keypad' }, [
+        ReactActual.createElement(Button, {
+          key: 'keypad',
+          testID: 'keypad-trigger-string',
+          title: 'Keypad',
+          onPress: () =>
+            onChange({
+              value: '250',
+              valueAsNumber: 250,
+              pressedKey: '0',
+            }),
+        }),
+        ReactActual.createElement(Button, {
+          key: 'empty',
+          testID: 'keypad-trigger-empty',
+          title: 'Empty',
+          onPress: () =>
+            onChange({
+              value: '',
+              valueAsNumber: 0,
+              pressedKey: '0',
+            }),
+        }),
+        ReactActual.createElement(Button, {
+          key: 'value',
+          testID: 'keypad-trigger-with-value-as-number',
+          title: 'WithValueAsNumber',
+          onPress: () =>
+            onChange({
+              value: '99.99',
+              valueAsNumber: 42,
+              pressedKey: '0',
+            }),
+        }),
+        ReactActual.createElement(Button, {
+          key: 'grouped-value',
+          testID: 'keypad-trigger-grouped-value',
+          title: 'GroupedValue',
+          onPress: () =>
+            onChange({
+              value: '1234.56',
+              valueAsNumber: 1234.56,
+              pressedKey: '0',
+            }),
+        }),
+        ReactActual.createElement(Button, {
+          key: 'back',
+          testID: 'keypad-trigger-back',
+          title: 'Back',
+          onPress: () =>
+            onChange({
+              value: '10',
+              valueAsNumber: 10,
+              pressedKey: 'back',
+            }),
+        }),
+      ]),
+    Keys: { Back: 'back' },
   };
 });
 
-const mockQueryGetCountries = jest.fn();
-const mockClearUnsupportedRegion = jest.fn();
+jest.mock('../../components/QuickAmounts', () => {
+  const ReactActual = jest.requireActual('react');
+  const { View, Button } = jest.requireActual('react-native');
+  return ({ onAmountPress }: { onAmountPress: (amount: number) => void }) =>
+    ReactActual.createElement(
+      View,
+      { testID: 'mock-quick-amounts' },
+      ReactActual.createElement(Button, {
+        testID: 'quick-amount-50',
+        title: '50',
+        onPress: () => onAmountPress(50),
+      }),
+    );
+});
 
-const mockUseRegionsInitialValues: Partial<ReturnType<typeof useRegions>> = {
-  data: mockRegionsData,
-  isFetching: false,
-  error: null,
-  query: mockQueryGetCountries,
-  selectedRegion: mockRegionsData[0],
-  unsupportedRegion: undefined,
-  clearUnsupportedRegion: mockClearUnsupportedRegion,
-};
-
-let mockUseRegionsValues: Partial<ReturnType<typeof useRegions>> = {
-  ...mockUseRegionsInitialValues,
-};
-jest.mock('../../hooks/useRegions', () => jest.fn(() => mockUseRegionsValues));
-
-const mockGetCryptoCurrencies = jest.fn();
-
-const mockUseCryptoCurrenciesInitialValues: Partial<
-  ReturnType<typeof useCryptoCurrencies>
-> = {
-  cryptoCurrencies: mockCryptoCurrenciesData,
-  errorCryptoCurrencies: null,
-  isFetchingCryptoCurrencies: false,
-  queryGetCryptoCurrencies: mockGetCryptoCurrencies,
-};
-
-let mockUseCryptoCurrenciesValues: Partial<
-  ReturnType<typeof useCryptoCurrencies>
-> = {
-  ...mockUseCryptoCurrenciesInitialValues,
-};
-jest.mock('../../hooks/useCryptoCurrencies', () =>
-  jest.fn(() => mockUseCryptoCurrenciesValues),
-);
-
-const mockGetFiatCurrencies = jest.fn();
-const mockGetDefaultFiatCurrencies = jest.fn();
-
-const mockUseFiatCurrenciesInitialValues: Partial<
-  ReturnType<typeof useFiatCurrencies>
-> = {
-  defaultFiatCurrency: mockFiatCurrenciesData[0],
-  queryDefaultFiatCurrency: mockGetDefaultFiatCurrencies,
-  fiatCurrencies: mockFiatCurrenciesData,
-  queryGetFiatCurrencies: mockGetFiatCurrencies,
-  errorFiatCurrency: null,
-  isFetchingFiatCurrency: false,
-  currentFiatCurrency: mockFiatCurrenciesData[0],
-};
-
-let mockUseFiatCurrenciesValues: Partial<ReturnType<typeof useFiatCurrencies>> =
-  {
-    ...mockUseFiatCurrenciesInitialValues,
+jest.mock('@react-navigation/native', () => {
+  const ReactActual = jest.requireActual('react');
+  const actual = jest.requireActual('@react-navigation/native');
+  return {
+    ...actual,
+    useNavigation: jest.fn(),
+    useIsFocused: jest.fn(() => true),
+    useFocusEffect: (callback: () => void | (() => void)) => {
+      ReactActual.useEffect(() => {
+        const cleanup = callback();
+        return typeof cleanup === 'function' ? cleanup : undefined;
+      }, [callback]);
+    },
   };
-jest.mock('../../hooks/useFiatCurrencies', () =>
-  jest.fn(() => mockUseFiatCurrenciesValues),
-);
-
-const mockQueryGetPaymentMethods = jest.fn();
-
-const mockUsePaymentMethodsInitialValues: Partial<
-  ReturnType<typeof usePaymentMethods>
-> = {
-  data: mockPaymentMethods as Payment[],
-  isFetching: false,
-  error: null,
-  query: mockQueryGetPaymentMethods,
-  currentPaymentMethod: mockPaymentMethods[0] as Payment,
-};
-
-let mockUsePaymentMethodsValues = {
-  ...mockUsePaymentMethodsInitialValues,
-};
-
-jest.mock('../../hooks/usePaymentMethods', () =>
-  jest.fn(() => mockUsePaymentMethodsValues),
-);
-
-const MAX_LIMIT = 4;
-const VALID_AMOUNT = 3;
-const MIN_LIMIT = 2;
-const mockUseLimitsInitialValues: Partial<ReturnType<typeof useLimits>> = {
-  limits: {
-    minAmount: MIN_LIMIT,
-    maxAmount: MAX_LIMIT,
-    feeDynamicRate: 1,
-    feeFixedRate: 1,
-    quickAmounts: [100, 500, 1000],
-  },
-  isAmountBelowMinimum: jest
-    .fn()
-    .mockImplementation((amount) => amount < MIN_LIMIT),
-  isAmountAboveMaximum: jest
-    .fn()
-    .mockImplementation((amount) => amount > MAX_LIMIT),
-  isAmountValid: jest.fn(),
-};
-
-let mockUseLimitsValues = {
-  ...mockUseLimitsInitialValues,
-};
-
-jest.mock('../../hooks/useLimits', () => jest.fn(() => mockUseLimitsValues));
-
-const mockUseAddressBalanceInitialValue: ReturnType<typeof useAddressBalance> =
-  {
-    addressBalance: '5.36385 ETH',
-  };
-
-jest.mock('../../../../hooks/useAddressBalance/useAddressBalance', () =>
-  jest.fn(() => mockUseAddressBalanceInitialValue),
-);
-
-const mockUseBalanceInitialValue: Partial<ReturnType<typeof useBalance>> = {
-  balanceFiat: '$27.02',
-  balanceBN: toTokenMinimalUnit('5.36385', 18) as BN,
-};
-
-let mockUseBalanceValues: Partial<ReturnType<typeof useBalance>> = {
-  ...mockUseBalanceInitialValue,
-};
-
-jest.mock('../../hooks/useBalance', () => jest.fn(() => mockUseBalanceValues));
-
-const mockSetSelectedRegion = jest.fn();
-const mockSetSelectedPaymentMethodId = jest.fn();
-const mockSetSelectedAsset = jest.fn();
-const mockSetSelectedFiatCurrencyId = jest.fn();
-
-const mockUseRampSDKInitialValues: Partial<RampSDK> = {
-  selectedPaymentMethodId: mockPaymentMethods[0].id,
-  selectedRegion: mockRegionsData[0],
-  setSelectedRegion: mockSetSelectedRegion,
-  selectedAsset: mockCryptoCurrenciesData[0],
-  setSelectedAsset: mockSetSelectedAsset,
-  selectedFiatCurrencyId: mockFiatCurrenciesData[0].id,
-  setSelectedFiatCurrencyId: mockSetSelectedFiatCurrencyId,
-  selectedChainId: '1',
-  selectedNetworkName: 'Ethereum',
-  sdkError: undefined,
-  setSelectedPaymentMethodId: mockSetSelectedPaymentMethodId,
-  isBuy: true,
-  isSell: false,
-};
-
-let mockUseRampSDKValues: Partial<RampSDK> = {
-  ...mockUseRampSDKInitialValues,
-};
-
-jest.mock('../../sdk', () => ({
-  ...jest.requireActual('../../sdk'),
-  useRampSDK: () => mockUseRampSDKValues,
-}));
-
-let mockUseParamsValues: {
-  showBack?: boolean;
-} = {
-  showBack: undefined,
-};
-
-const mockUseGasPriceEstimationInitialValue: ReturnType<
-  typeof useGasPriceEstimation
-> = {
-  estimatedGasFee: toTokenMinimalUnit(
-    '0.01',
-    mockUseRampSDKInitialValues.selectedAsset?.decimals || 18,
-  ) as BN,
-};
-
-let mockUseGasPriceEstimationValue: ReturnType<typeof useGasPriceEstimation> =
-  mockUseGasPriceEstimationInitialValue;
-
-jest.mock('../../hooks/useGasPriceEstimation', () =>
-  jest.fn(() => mockUseGasPriceEstimationValue),
-);
+});
 
 jest.mock('../../../../../util/navigation/navUtils', () => ({
-  ...jest.requireActual('../../../../../util/navigation/navUtils'),
-  useParams: jest.fn(() => mockUseParamsValues),
+  useParams: jest.fn(),
+  createNavigationDetails:
+    (name: string, screen?: string) => (params?: object) => [
+      name,
+      screen ? { screen, params } : params,
+    ],
+  navigateWithDetails: (
+    navigation: { navigate: (...args: unknown[]) => void },
+    details: unknown[],
+  ) => navigation.navigate(...details),
+  resetWithRoutes: (
+    navigation: { reset: (state: unknown) => void },
+    state: unknown,
+  ) => navigation.reset(state),
 }));
 
-jest.mock('../../hooks/useAnalytics', () => () => mockTrackEvent);
+jest.mock('../../hooks/useRampsController', () => ({
+  useRampsController: jest.fn(),
+}));
 
-describe('BuildQuote View', () => {
-  afterEach(() => {
-    mockNavigate.mockClear();
-    mockGoBack.mockClear();
-    mockSetOptions.mockClear();
-    mockReset.mockClear();
-    mockPop.mockClear();
-    mockTrackEvent.mockClear();
-    (mockUseRampSDKInitialValues.setSelectedRegion as jest.Mock).mockClear();
+jest.mock('../../hooks/useRampsQuotes', () => ({
+  useRampsQuotes: jest.fn(),
+}));
+
+jest.mock('../../hooks/useContinueWithQuote', () => ({
+  useContinueWithQuote: jest.fn(),
+}));
+
+jest.mock('../../../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(),
+}));
+
+jest.mock('../../hooks/useRampAccountAddress', () => ({
+  __esModule: true,
+  default: () => '0x1234567890123456789012345678901234567890',
+}));
+
+jest.mock('../../hooks/useTokenNetworkInfo', () => ({
+  useTokenNetworkInfo: () => (chainId: string) => ({
+    networkName: chainId === 'eip155:1' ? 'Ethereum Mainnet' : 'Unknown',
+    chainId,
+  }),
+}));
+
+jest.mock('../../../../hooks/useStyles', () => ({
+  useStyles: () => ({ styles: {} }),
+}));
+
+jest.mock('../../../../hooks/useFormatters', () => ({
+  useFormatters: () => ({
+    formatCurrency: (value: number) => `$${value.toFixed(2)}`,
+  }),
+}));
+
+jest.mock('../../../../hooks/useDebouncedValue', () => ({
+  useDebouncedValue: jest.fn((value: unknown) => value),
+}));
+
+jest.mock('../../../../../util/deviceCapability', () => ({
+  getHardwareTier: jest.fn(() => 'HIGH'),
+}));
+
+jest.mock('../../../../../hooks/useNetworkTier', () => ({
+  useNetworkTier: jest.fn(() => 'WIFI'),
+}));
+
+const mockUseRampsController = jest.requireMock(
+  '../../hooks/useRampsController',
+).useRampsController as jest.Mock;
+
+const mockUseRampsQuotes = jest.requireMock('../../hooks/useRampsQuotes')
+  .useRampsQuotes as jest.Mock;
+
+const mockUseContinueWithQuote = jest.requireMock(
+  '../../hooks/useContinueWithQuote',
+).useContinueWithQuote as jest.Mock;
+
+const mockUseParams = jest.requireMock(
+  '../../../../../util/navigation/navUtils',
+).useParams as jest.Mock;
+
+const mockUseAnalytics = jest.requireMock(
+  '../../../../hooks/useAnalytics/useAnalytics',
+).useAnalytics as jest.Mock;
+
+const mockUseDebouncedValue = jest.requireMock(
+  '../../../../hooks/useDebouncedValue',
+).useDebouncedValue as jest.Mock;
+
+const mockTrackEvent = jest.fn();
+const mockCreateEventBuilder = jest.fn();
+const mockAddProperties = jest.fn();
+const mockBuild = jest.fn();
+const mockNavigationReset = jest.fn();
+const mockNavigate = jest.fn();
+const mockGoBack = jest.fn();
+const mockGetBuyWidgetData = jest.fn();
+const mockAddOrder = jest.fn();
+const mockGetOrderFromCallback = jest.fn();
+const mockAddPrecreatedOrder = jest.fn();
+const mockContinueWithQuote = jest.fn();
+
+const WIDGET_PROVIDER_QUOTE = {
+  provider: 'moonpay',
+  id: 'quote-1',
+  inputAmount: 100,
+  inputCurrency: 'USD',
+  outputAmount: '0.05',
+  outputCurrency: { symbol: 'ETH', assetId: 'eip155:1/slip44:60' },
+  quote: {
+    buyWidget: { browser: 'IN_APP_OS_BROWSER' as const },
+    buyURL: 'https://widget.example.com/checkout',
+  },
+};
+
+const WIDGET_PROVIDER = {
+  id: 'moonpay',
+  name: 'MoonPay',
+  supportedCryptoCurrencies: { 'eip155:1/slip44:60': true },
+  links: [],
+};
+
+const NATIVE_PROVIDER = {
+  id: 'transak',
+  name: 'Transak',
+  supportedCryptoCurrencies: { 'eip155:1/slip44:60': true },
+  links: [],
+};
+
+const SELECTED_TOKEN = {
+  assetId: 'eip155:1/slip44:60',
+  chainId: 'eip155:1',
+  symbol: 'ETH',
+};
+
+const SELECTED_PAYMENT_METHOD = {
+  id: '/payments/debit-credit-card',
+  name: 'Debit/Credit Card',
+  isManualBankTransfer: false,
+  paymentType: 'debit-credit-card',
+  icons: [] as const,
+};
+
+const USER_REGION = {
+  country: {
+    currency: 'USD',
+    isoCode: 'US',
+    defaultAmount: 100,
+    quickAmounts: [50, 100, 200],
+  },
+  regionCode: 'us-ca',
+};
+
+const CIRCUIT_BREAKER_MESSAGE =
+  'This service is temporarily unavailable. Try again in about 30 minutes.';
+
+const buildProviderWithLimits = (limits: {
+  minAmount: number;
+  maxAmount: number;
+  feeFixedRate?: number;
+  feeDynamicRate?: number;
+}) => ({
+  ...WIDGET_PROVIDER,
+  limits: {
+    fiat: {
+      usd: {
+        [SELECTED_PAYMENT_METHOD.id]: {
+          feeFixedRate: 0,
+          feeDynamicRate: 0,
+          ...limits,
+        },
+      },
+    },
+  },
+});
+
+const defaultQuotesHookResult = (options?: unknown) =>
+  options
+    ? {
+        data: { success: [WIDGET_PROVIDER_QUOTE] },
+        loading: false,
+        error: null,
+      }
+    : {
+        data: null,
+        loading: false,
+        error: null,
+      };
+
+describe('isBailedOrderStatus', () => {
+  it('returns true for Precreated, IdExpired, Unknown', () => {
+    expect(isBailedOrderStatus(RampsOrderStatus.Precreated)).toBe(true);
+    expect(isBailedOrderStatus(RampsOrderStatus.IdExpired)).toBe(true);
+    expect(isBailedOrderStatus(RampsOrderStatus.Unknown)).toBe(true);
   });
 
+  it('returns false for other statuses', () => {
+    expect(isBailedOrderStatus(RampsOrderStatus.Pending)).toBe(false);
+    expect(isBailedOrderStatus(RampsOrderStatus.Completed)).toBe(false);
+  });
+
+  it('returns false for null or undefined', () => {
+    expect(isBailedOrderStatus(undefined)).toBe(false);
+    expect(isBailedOrderStatus(null as unknown as RampsOrderStatus)).toBe(
+      false,
+    );
+  });
+});
+
+describe('createBuildQuoteNavDetails', () => {
+  it('returns token selection route with amount input screen', () => {
+    const result = createBuildQuoteNavDetails();
+    expect(result[0]).toBe(Routes.RAMP.TOKEN_SELECTION);
+    expect(result[1].screen).toBe(Routes.RAMP.TOKEN_SELECTION_ROOT);
+    expect(result[1].params.screen).toBe(Routes.RAMP.AMOUNT_INPUT);
+    expect(result[1].params.params).toBeUndefined();
+  });
+
+  it('passes params when provided', () => {
+    const result = createBuildQuoteNavDetails({
+      assetId: 'eip155:1/slip44:60',
+      nativeFlowError: 'error',
+    });
+    expect(result[1].params.params).toEqual({
+      assetId: 'eip155:1/slip44:60',
+      nativeFlowError: 'error',
+    });
+  });
+});
+
+const mockSetSelectedProvider = jest.fn();
+const mockSetSelectedProviderForAsset = jest.fn();
+
+const buildRampsControllerResult = (overrides = {}) => ({
+  userRegion: USER_REGION,
+  providers: [WIDGET_PROVIDER, NATIVE_PROVIDER],
+  selectedProvider: WIDGET_PROVIDER,
+  setSelectedProvider: mockSetSelectedProvider,
+  setSelectedProviderForAsset: mockSetSelectedProviderForAsset,
+  selectedToken: SELECTED_TOKEN,
+  paymentMethods: [SELECTED_PAYMENT_METHOD],
+  getBuyWidgetData: mockGetBuyWidgetData,
+  addPrecreatedOrder: mockAddPrecreatedOrder,
+  addOrder: mockAddOrder,
+  getOrderFromCallback: mockGetOrderFromCallback,
+  paymentMethodsLoading: false,
+  paymentMethodsFetching: false,
+  paymentMethodsStatus: 'success',
+  selectedPaymentMethod: SELECTED_PAYMENT_METHOD,
+  ...overrides,
+});
+
+const EMBEDDED_CHECKOUT_OVERLAY_TEST_ID = 'mock-embedded-checkout-overlay';
+const mockRenderEmbeddedCheckoutOverlay = jest.fn(
+  ({ interactive }: { interactive: boolean }) => {
+    const ReactActual = jest.requireActual('react');
+    const { View } = jest.requireActual('react-native');
+    return ReactActual.createElement(View, {
+      testID: EMBEDDED_CHECKOUT_OVERLAY_TEST_ID,
+      accessibilityState: { disabled: !interactive },
+    });
+  },
+);
+const mockEmbeddedCheckoutDefaults: {
+  phase: 'inactive' | 'preparing' | 'ready' | 'settling';
+  renderOverlay: typeof mockRenderEmbeddedCheckoutOverlay | null;
+  error: string | null;
+} = {
+  phase: 'inactive',
+  renderOverlay: null,
+  error: null,
+};
+let mockEmbeddedCheckout = { ...mockEmbeddedCheckoutDefaults };
+
+jest.mock('../../hooks/useEmbeddedCheckout', () => ({
+  __esModule: true,
+  default: () => mockEmbeddedCheckout,
+}));
+
+describe('BuildQuote', () => {
   beforeEach(() => {
-    mockUseRampSDKValues = {
-      ...mockUseRampSDKInitialValues,
-    };
-    mockUseRegionsValues = {
-      ...mockUseRegionsInitialValues,
-    };
-    mockUseCryptoCurrenciesValues = {
-      ...mockUseCryptoCurrenciesInitialValues,
-    };
-    mockUseFiatCurrenciesValues = {
-      ...mockUseFiatCurrenciesInitialValues,
-    };
-    mockUsePaymentMethodsValues = {
-      ...mockUsePaymentMethodsInitialValues,
-    };
-    mockUseLimitsValues = {
-      ...mockUseLimitsInitialValues,
-    };
-    mockUseParamsValues = {
-      showBack: undefined,
-    };
-    mockUseGasPriceEstimationValue = {
-      ...mockUseGasPriceEstimationInitialValue,
-    };
-  });
-
-  //
-  // RENDER & SDK TESTS
-  //
-  it('renders correctly', async () => {
-    render(BuildQuote);
-    expect(screen.toJSON()).toMatchSnapshot();
-
-    mockUseRampSDKValues.isBuy = false;
-    mockUseRampSDKValues.isSell = true;
-    render(BuildQuote);
-    expect(screen.toJSON()).toMatchSnapshot();
-  });
-
-  it('renders correctly when sdkError is present', async () => {
-    mockUseRampSDKValues = {
-      ...mockUseRampSDKInitialValues,
-      sdkError: new Error('sdkError'),
-    };
-    render(BuildQuote);
-    expect(screen.toJSON()).toMatchSnapshot();
-
-    mockUseRampSDKValues = {
-      ...mockUseRampSDKInitialValues,
-      isBuy: false,
-      isSell: true,
-      sdkError: new Error('sdkError in sell'),
-    };
-    render(BuildQuote);
-    expect(screen.toJSON()).toMatchSnapshot();
-  });
-
-  it('navigates to home when clicking sdKError button', async () => {
-    mockUseRampSDKValues = {
-      ...mockUseRampSDKInitialValues,
-      sdkError: new Error('sdkError'),
-    };
-    render(BuildQuote);
-    fireEvent.press(
-      screen.getByRole('button', { name: 'Return to Home Screen' }),
+    jest.clearAllMocks();
+    mockEmbeddedCheckout = { ...mockEmbeddedCheckoutDefaults };
+    mockUseParams.mockReturnValue({});
+    mockUseRampsController.mockReturnValue(buildRampsControllerResult());
+    mockUseDebouncedValue.mockImplementation((value: unknown) => value);
+    mockUseRampsQuotes.mockImplementation((options) =>
+      defaultQuotesHookResult(options),
     );
-    expect(mockPop).toBeCalledTimes(1);
-
-    mockPop.mockReset();
-
-    mockUseRampSDKValues = {
-      ...mockUseRampSDKInitialValues,
-      isBuy: false,
-      isSell: true,
-      sdkError: new Error('sdkError in sell'),
-    };
-    render(BuildQuote);
-    fireEvent.press(
-      screen.getByRole('button', { name: 'Return to Home Screen' }),
-    );
-    expect(mockPop).toBeCalledTimes(1);
-  });
-
-  it('calls setOptions when rendering', async () => {
-    render(BuildQuote);
-    expect(mockSetOptions).toBeCalledTimes(1);
-
-    mockSetOptions.mockReset();
-
-    mockUseRampSDKValues.isBuy = false;
-    mockUseRampSDKValues.isSell = true;
-    render(BuildQuote);
-    expect(mockSetOptions).toBeCalledTimes(1);
-  });
-
-  it('navigates and tracks event on cancel button press', async () => {
-    render(BuildQuote);
-    fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
-    expect(mockPop).toHaveBeenCalled();
-    expect(mockTrackEvent).toBeCalledWith('ONRAMP_CANCELED', {
-      chain_id_destination: '1',
-      location: 'Amount to Buy Screen',
+    mockUseContinueWithQuote.mockReturnValue({
+      continueWithQuote: mockContinueWithQuote,
     });
+    mockUseAnalytics.mockReturnValue({
+      trackEvent: mockTrackEvent,
+      createEventBuilder: mockCreateEventBuilder,
+    });
+    mockCreateEventBuilder.mockReturnValue({
+      addProperties: mockAddProperties,
+      build: mockBuild,
+    });
+    mockAddProperties.mockReturnValue({ build: mockBuild });
 
-    mockPop.mockReset();
-    mockTrackEvent.mockReset();
-
-    mockUseRampSDKValues.isBuy = false;
-    mockUseRampSDKValues.isSell = true;
-    mockUseRampSDKValues.rampType = RampType.SELL;
-    render(BuildQuote);
-    fireEvent.press(screen.getByRole('button', { name: 'Cancel' }));
-    expect(mockPop).toHaveBeenCalled();
-    expect(mockTrackEvent).toBeCalledWith('OFFRAMP_CANCELED', {
-      chain_id_source: '1',
-      location: 'Amount to Sell Screen',
+    (useNavigation as jest.Mock).mockReturnValue({
+      reset: mockNavigationReset,
+      setParams: jest.fn(),
+      navigate: mockNavigate,
+      goBack: mockGoBack,
     });
   });
 
-  describe('Regions data', () => {
-    it('renders the loading page when regions are loading', async () => {
-      mockUseRegionsValues = {
-        ...mockUseRegionsInitialValues,
-        isFetching: true,
-      };
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
+  describe('updateAmount', () => {
+    it('renders the currency symbol in the hero font', () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      const amountInput = getByTestId(BuildQuoteSelectors.AMOUNT_INPUT);
+      const currencySymbol = within(amountInput).getByText('$');
+
+      expect(currencySymbol).toHaveStyle({ fontFamily: 'GrotzecCond-Bold' });
     });
 
-    it('renders an error page when there is a region error', async () => {
-      mockUseRegionsValues = {
-        ...mockUseRegionsInitialValues,
-        error: 'Test error',
-      };
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
+    it('updates amount from string input (empty string maps to "0")', async () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-empty'));
+      });
+
+      const amountInput = getByTestId(BuildQuoteSelectors.AMOUNT_INPUT);
+      expect(amountInput).toHaveTextContent('$0');
     });
 
-    it('queries region data when error CTA is clicked', async () => {
-      mockUseRegionsValues = {
-        ...mockUseRegionsInitialValues,
-        error: 'Test error',
-      };
-      render(BuildQuote);
-      fireEvent.press(screen.getByRole('button', { name: 'Try again' }));
-      expect(mockQueryGetCountries).toBeCalledTimes(1);
+    it('updates amount from string input with parsed valueAsNumber', async () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-string'));
+      });
+
+      const amountInput = getByTestId(BuildQuoteSelectors.AMOUNT_INPUT);
+      expect(amountInput).toHaveTextContent('$250');
     });
 
-    it('calls setSelectedRegion when selecting a region', async () => {
-      render(BuildQuote);
-      await act(async () =>
-        fireEvent.press(
-          getByRoleButton(mockUseRegionsValues.selectedRegion?.emoji),
+    it('uses valueAsNumber when provided with string input', async () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-with-value-as-number'));
+      });
+
+      const amountInput = getByTestId(BuildQuoteSelectors.AMOUNT_INPUT);
+      expect(amountInput).toHaveTextContent('$99.99');
+    });
+
+    it('groups integer digits while preserving the keypad decimal separator', async () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-grouped-value'));
+      });
+
+      expect(getByTestId(BuildQuoteSelectors.AMOUNT_INPUT)).toHaveTextContent(
+        '$1,234.56',
+      );
+    });
+
+    it('clears rampsError when amount is updated', async () => {
+      mockUseParams.mockReturnValue({ nativeFlowError: 'Some error' });
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+      const amountInput = getByTestId(BuildQuoteSelectors.AMOUNT_INPUT);
+
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-string'));
+      });
+
+      expect(
+        amountInput.findAll(
+          ({ props }) => props.color === TextColor.ErrorDefault,
         ),
-      );
-      await act(async () =>
-        fireEvent.press(getByRoleButton(mockRegionsData[1].name)),
-      );
-      expect(mockSetSelectedRegion).toHaveBeenCalledWith(mockRegionsData[1]);
+      ).toHaveLength(0);
+    });
+
+    it('clears amount to 0 when Back key pressed and keyboard not dirty', async () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-back'));
+      });
+
+      const amountInput = getByTestId(BuildQuoteSelectors.AMOUNT_INPUT);
+      expect(amountInput).toHaveTextContent('$0');
+    });
+
+    it('updates amount when Back key pressed and keyboard is dirty', async () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-string'));
+      });
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-back'));
+      });
+
+      const amountInput = getByTestId(BuildQuoteSelectors.AMOUNT_INPUT);
+      expect(amountInput).toHaveTextContent('$10');
     });
   });
 
-  describe('Crypto Currency Data', () => {
-    it('renders the loading page when cryptos are loading', async () => {
-      mockUseCryptoCurrenciesValues = {
-        ...mockUseCryptoCurrenciesInitialValues,
-        isFetchingCryptoCurrencies: true,
-      };
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
-    });
+  describe('handleSettingsPress', () => {
+    it('navigates to settings modal and tracks analytics', () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
 
-    it('renders a special error page if crypto currencies are not available', async () => {
-      mockUseCryptoCurrenciesValues = {
-        ...mockUseCryptoCurrenciesInitialValues,
-        cryptoCurrencies: [],
-      };
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
+      fireEvent.press(getByTestId('build-quote-settings-button'));
 
-      mockUseRampSDKValues.isBuy = false;
-      mockUseRampSDKValues.isSell = true;
-      mockUseRampSDKValues.rampType = RampType.SELL;
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
-    });
-
-    it('renders an error page when there is a cryptos error', async () => {
-      mockUseCryptoCurrenciesValues = {
-        ...mockUseCryptoCurrenciesInitialValues,
-        errorCryptoCurrencies: 'Test error',
-      };
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
-    });
-
-    it('queries crypto data when error CTA is clicked', async () => {
-      mockUseCryptoCurrenciesValues = {
-        ...mockUseCryptoCurrenciesInitialValues,
-        errorCryptoCurrencies: 'Test error',
-      };
-      render(BuildQuote);
-      fireEvent.press(screen.getByRole('button', { name: 'Try again' }));
-      expect(mockGetCryptoCurrencies).toBeCalledTimes(1);
-    });
-
-    it('calls setSelectedAsset when selecting a crypto', async () => {
-      render(BuildQuote);
-      fireEvent.press(getByRoleButton(mockCryptoCurrenciesData[0].name));
-      fireEvent.press(getByRoleButton(mockCryptoCurrenciesData[1].name));
-      expect(mockSetSelectedAsset).toHaveBeenCalledWith(
-        mockCryptoCurrenciesData[1],
+      expect(mockNavigate).toHaveBeenCalled();
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: expect.stringContaining('Settings'),
+        }),
       );
     });
   });
 
-  describe('Payment Method Data', () => {
-    it('renders the loading page when payment methods are loading', async () => {
-      mockUsePaymentMethodsValues = {
-        ...mockUsePaymentMethodsInitialValues,
-        isFetching: true,
-      };
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
-    });
+  describe('handleBackPress', () => {
+    it('calls goBack and tracks analytics', () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
 
-    it('renders an error page when there is a payment method error', async () => {
-      mockUsePaymentMethodsValues = {
-        ...mockUsePaymentMethodsInitialValues,
-        error: 'Test error',
-      };
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
-    });
+      fireEvent.press(getByTestId('build-quote-back-button'));
 
-    it('queries for payment methods when error CTA is clicked', async () => {
-      mockUsePaymentMethodsValues = {
-        ...mockUsePaymentMethodsInitialValues,
-        error: 'Test error',
-      };
-      render(BuildQuote);
-      fireEvent.press(screen.getByRole('button', { name: 'Try again' }));
-      expect(mockQueryGetPaymentMethods).toBeCalledTimes(1);
-    });
-
-    it('calls setSelectedPaymentMethodId when selecting a payment method', async () => {
-      render(BuildQuote);
-      fireEvent.press(getByRoleButton(mockPaymentMethods[0].name));
-      fireEvent.press(getByRoleButton(mockPaymentMethods[1].name));
-      expect(mockSetSelectedPaymentMethodId).toHaveBeenCalledWith(
-        mockPaymentMethods[1]?.id,
+      expect(mockGoBack).toHaveBeenCalled();
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: expect.stringContaining('Back'),
+        }),
       );
     });
   });
 
-  describe('Fiat Currency Data', () => {
-    it('renders the loading page when fiats are loading', async () => {
-      mockUseFiatCurrenciesValues = {
-        ...mockUseFiatCurrenciesInitialValues,
-        isFetchingFiatCurrency: true,
-      };
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
-    });
+  describe('handlePaymentPillPress', () => {
+    it('navigates to payment selection modal and tracks analytics', () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
 
-    it('renders an error page when there is a fiat error', async () => {
-      mockUseFiatCurrenciesValues = {
-        ...mockUseFiatCurrenciesInitialValues,
-        errorFiatCurrency: 'Test error',
-      };
-      render(BuildQuote);
-      expect(screen.toJSON()).toMatchSnapshot();
-    });
+      fireEvent.press(getByTestId('build-quote-payment-pill'));
 
-    it('queries for fiats when error CTA is clicked', async () => {
-      mockUseFiatCurrenciesValues = {
-        ...mockUseFiatCurrenciesInitialValues,
-        errorFiatCurrency: 'Test error',
-      };
-      render(BuildQuote);
-      fireEvent.press(screen.getByRole('button', { name: 'Try again' }));
-      expect(mockGetFiatCurrencies).toBeCalledTimes(1);
-    });
-
-    it('calls setSelectedFiatCurrencyId when selecting a new fiat', async () => {
-      render(BuildQuote);
-      fireEvent.press(getByRoleButton(mockFiatCurrenciesData[0].symbol));
-      fireEvent.press(getByRoleButton(mockFiatCurrenciesData[1].symbol));
-      expect(mockSetSelectedFiatCurrencyId).toHaveBeenCalledWith(
-        mockFiatCurrenciesData[1]?.id,
+      expect(mockNavigate).toHaveBeenCalled();
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: expect.stringContaining('Payment'),
+        }),
       );
     });
   });
 
-  describe('Amount to buy input', () => {
-    it('updates the amount input', async () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-      const validAmount = VALID_AMOUNT.toString();
-      const symbol =
-        mockUseFiatCurrenciesValues.currentFiatCurrency?.denomSymbol;
-      fireEvent.press(getByRoleButton(`${symbol}${initialAmount}`));
-      fireEvent.press(getByRoleButton(validAmount));
-      expect(getByRoleButton(`${symbol}${validAmount}`)).toBeTruthy();
-    });
+  describe('handleQuickAmountPress', () => {
+    it('keeps the attribution row mounted when the amount is cleared', async () => {
+      const { getByTestId, queryByTestId } = renderWithProvider(
+        <BuildQuote />,
+        {
+          state: initialRootState,
+        },
+      );
 
-    it('updates the amount input with quick amount buttons', async () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-      const quickAmount =
-        mockUseLimitsInitialValues?.limits?.quickAmounts?.[0].toString();
-      const symbol =
-        mockUseFiatCurrenciesValues.currentFiatCurrency?.denomSymbol;
-      fireEvent.press(getByRoleButton(`${symbol}${initialAmount}`));
-      fireEvent.press(getByRoleButton(`${symbol}${quickAmount}`));
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-empty'));
+      });
+
       expect(
-        screen.queryAllByRole('button', { name: `${symbol}${quickAmount}` }),
-      ).toHaveLength(2);
+        getByTestId(BUILD_QUOTE_TEST_IDS.ACTION_MESSAGE_PLACEHOLDER),
+      ).toBeOnTheScreen();
+      expect(getByTestId('mock-quick-amounts')).toBeOnTheScreen();
+      expect(
+        queryByTestId(BuildQuoteSelectors.CONTINUE_BUTTON),
+      ).not.toBeOnTheScreen();
     });
 
-    it('validates the max limit', () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-      const invalidMaxAmount = (MAX_LIMIT + 1).toString();
-      const denomSymbol =
-        mockUseFiatCurrenciesValues.currentFiatCurrency?.denomSymbol;
-      fireEvent.press(getByRoleButton(`${denomSymbol}${initialAmount}`));
-      fireEvent.press(getByRoleButton(invalidMaxAmount));
-      expect(
-        screen.getByText(`Maximum deposit is ${denomSymbol}${MAX_LIMIT}`),
-      ).toBeTruthy();
-    });
+    it('tracks RAMPS_QUICK_AMOUNT_CLICKED when quick amount pressed', async () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
 
-    it('validates the min limit', () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-      const invalidMinAmount = (MIN_LIMIT - 1).toString();
-      const denomSymbol =
-        mockUseFiatCurrenciesValues.currentFiatCurrency?.denomSymbol;
-      fireEvent.press(getByRoleButton(`${denomSymbol}${initialAmount}`));
-      fireEvent.press(getByRoleButton(invalidMinAmount));
-      expect(
-        screen.getByText(`Minimum deposit is ${denomSymbol}${MIN_LIMIT}`),
-      ).toBeTruthy();
+      await act(async () => {
+        fireEvent.press(getByTestId('keypad-trigger-empty'));
+      });
+      await act(async () => {
+        fireEvent.press(getByTestId('quick-amount-50'));
+      });
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: expect.stringContaining('Quick Amount'),
+        }),
+      );
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amount: 50,
+          currency_source: 'USD',
+          location: 'Amount Input',
+        }),
+      );
     });
   });
 
-  describe('Amount to sell input', () => {
+  describe('client-side buy limits', () => {
+    it('shows an above-max inline error and skips quote fetching', () => {
+      const providerWithLimits = buildProviderWithLimits({
+        minAmount: 10,
+        maxAmount: 80,
+      });
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({
+          providers: [providerWithLimits, NATIVE_PROVIDER],
+          selectedProvider: providerWithLimits,
+        }),
+      );
+
+      const { getByText, getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText('Maximum purchase is $80.00')).toBeOnTheScreen();
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith(null);
+
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton).toBeDisabled();
+    });
+
+    it('debounces the visible limit error while keeping quote validation immediate', () => {
+      const providerWithLimits = buildProviderWithLimits({
+        minAmount: 120,
+        maxAmount: 1000,
+      });
+      let debouncedLimitError: string | null = null;
+      mockUseDebouncedValue.mockImplementation((value: unknown) =>
+        typeof value === 'number' ? value : debouncedLimitError,
+      );
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({
+          providers: [providerWithLimits, NATIVE_PROVIDER],
+          selectedProvider: providerWithLimits,
+        }),
+      );
+
+      const { queryByText, getByTestId, rerender } = renderWithProvider(
+        <BuildQuote />,
+        {
+          state: initialRootState,
+        },
+      );
+
+      expect(queryByText('Minimum purchase is $120.00')).not.toBeOnTheScreen();
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith(null);
+
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(
+        continueButton.props.isDisabled ??
+          continueButton.props.disabled ??
+          continueButton.props.accessibilityState?.disabled,
+      ).toBe(true);
+
+      debouncedLimitError = 'Minimum purchase is $120.00';
+      rerender(<BuildQuote />);
+
+      expect(queryByText('Minimum purchase is $120.00')).toBeOnTheScreen();
+    });
+
+    it('clears the visible limit error immediately once the amount is no longer invalid', () => {
+      const providerWithLimits = buildProviderWithLimits({
+        minAmount: 10,
+        maxAmount: 80,
+      });
+      const debouncedLimitError: string | null = 'Maximum purchase is $80.00';
+      mockUseDebouncedValue.mockImplementation((value: unknown) =>
+        typeof value === 'number' ? value : debouncedLimitError,
+      );
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({
+          providers: [providerWithLimits, NATIVE_PROVIDER],
+          selectedProvider: providerWithLimits,
+        }),
+      );
+
+      const { getByText, queryByText, getByTestId } = renderWithProvider(
+        <BuildQuote />,
+        {
+          state: initialRootState,
+        },
+      );
+
+      fireEvent.press(getByTestId('keypad-trigger-string'));
+
+      expect(getByText('Maximum purchase is $80.00')).toBeOnTheScreen();
+
+      fireEvent.press(getByTestId('keypad-trigger-back'));
+
+      expect(queryByText('Maximum purchase is $80.00')).not.toBeOnTheScreen();
+    });
+
+    it('suppresses stale provider limit errors while the debounced quote amount catches up', () => {
+      const providerWithLimits = buildProviderWithLimits({
+        minAmount: 20,
+        maxAmount: 1000,
+      });
+      let debouncedAmount = 12;
+      const staleDebouncedLimitError = 'Minimum purchase is $20.00';
+      mockUseParams.mockReturnValue({ amount: 123 });
+      mockUseDebouncedValue.mockImplementation((value: unknown) =>
+        typeof value === 'number' ? debouncedAmount : staleDebouncedLimitError,
+      );
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({
+          providers: [providerWithLimits, NATIVE_PROVIDER],
+          selectedProvider: providerWithLimits,
+        }),
+      );
+      mockUseRampsQuotes.mockImplementation((options) => {
+        if (!options) {
+          return defaultQuotesHookResult(options);
+        }
+
+        return (options as { amount: number }).amount === 12
+          ? {
+              data: {
+                success: [],
+                error: [
+                  {
+                    provider: 'moonpay',
+                    error: 'Minimum purchase is 20 USD',
+                  },
+                ],
+              },
+              loading: false,
+              error: null,
+            }
+          : defaultQuotesHookResult(options);
+      });
+
+      const { queryByText, rerender } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith({
+        assetId: 'eip155:1/slip44:60',
+        amount: 12,
+        walletAddress: '0x1234567890123456789012345678901234567890',
+        redirectUrl:
+          'https://on-ramp-content.api.cx.metamask.io/regions/fake-callback',
+        paymentMethods: ['/payments/debit-credit-card'],
+        providers: ['moonpay'],
+      });
+      expect(queryByText('Minimum purchase is $20.00')).not.toBeOnTheScreen();
+      expect(queryByText('Minimum purchase is 20 USD')).not.toBeOnTheScreen();
+
+      debouncedAmount = 123;
+      rerender(<BuildQuote />);
+
+      expect(queryByText('Minimum purchase is 20 USD')).not.toBeOnTheScreen();
+      expect(queryByText('Powered by MoonPay')).toBeOnTheScreen();
+    });
+    it('fetches quotes normally when the amount is within provider limits', () => {
+      const providerWithLimits = buildProviderWithLimits({
+        minAmount: 50,
+        maxAmount: 200,
+      });
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({
+          providers: [providerWithLimits, NATIVE_PROVIDER],
+          selectedProvider: providerWithLimits,
+        }),
+      );
+
+      renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith({
+        assetId: 'eip155:1/slip44:60',
+        amount: 100,
+        walletAddress: '0x1234567890123456789012345678901234567890',
+        redirectUrl:
+          'https://on-ramp-content.api.cx.metamask.io/regions/fake-callback',
+        paymentMethods: ['/payments/debit-credit-card'],
+        providers: ['moonpay'],
+      });
+    });
+
+    it('keeps quote fetch enabled while debounce settles after returning to a valid range', () => {
+      const providerWithLimits = buildProviderWithLimits({
+        minAmount: 10,
+        maxAmount: 200,
+      });
+      let debouncedAmount = 100;
+      mockUseDebouncedValue.mockImplementation((value: unknown) =>
+        typeof value === 'number' ? debouncedAmount : value,
+      );
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({
+          providers: [providerWithLimits, NATIVE_PROVIDER],
+          selectedProvider: providerWithLimits,
+        }),
+      );
+
+      const { getByTestId, getByText, queryByText, rerender } =
+        renderWithProvider(<BuildQuote />, {
+          state: initialRootState,
+        });
+
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith({
+        assetId: 'eip155:1/slip44:60',
+        amount: 100,
+        walletAddress: '0x1234567890123456789012345678901234567890',
+        redirectUrl:
+          'https://on-ramp-content.api.cx.metamask.io/regions/fake-callback',
+        paymentMethods: ['/payments/debit-credit-card'],
+        providers: ['moonpay'],
+      });
+
+      fireEvent.press(getByTestId('keypad-trigger-string'));
+
+      expect(getByText('Maximum purchase is $200.00')).toBeOnTheScreen();
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith(null);
+
+      debouncedAmount = 250;
+      rerender(<BuildQuote />);
+
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith(null);
+
+      fireEvent.press(getByTestId('keypad-trigger-back'));
+
+      // Amount 10 is valid — quote fetch stays enabled with
+      // stale debounced params so the UI does not flash.
+      expect(queryByText('Maximum purchase is $200.00')).not.toBeOnTheScreen();
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith({
+        assetId: 'eip155:1/slip44:60',
+        amount: 250,
+        walletAddress: '0x1234567890123456789012345678901234567890',
+        redirectUrl:
+          'https://on-ramp-content.api.cx.metamask.io/regions/fake-callback',
+        paymentMethods: ['/payments/debit-credit-card'],
+        providers: ['moonpay'],
+      });
+
+      debouncedAmount = 10;
+      rerender(<BuildQuote />);
+
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith({
+        assetId: 'eip155:1/slip44:60',
+        amount: 10,
+        walletAddress: '0x1234567890123456789012345678901234567890',
+        redirectUrl:
+          'https://on-ramp-content.api.cx.metamask.io/regions/fake-callback',
+        paymentMethods: ['/payments/debit-credit-card'],
+        providers: ['moonpay'],
+      });
+    });
+
+    it('treats amount equal to minAmount as valid (inclusive lower bound)', () => {
+      const providerWithLimits = buildProviderWithLimits({
+        minAmount: 50,
+        maxAmount: 200,
+      });
+      mockUseParams.mockReturnValue({ amount: 50 });
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({
+          providers: [providerWithLimits, NATIVE_PROVIDER],
+          selectedProvider: providerWithLimits,
+        }),
+      );
+
+      const { queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(queryByText(/Minimum purchase/)).not.toBeOnTheScreen();
+      expect(queryByText(/Maximum purchase/)).not.toBeOnTheScreen();
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith({
+        assetId: 'eip155:1/slip44:60',
+        amount: 50,
+        walletAddress: '0x1234567890123456789012345678901234567890',
+        redirectUrl:
+          'https://on-ramp-content.api.cx.metamask.io/regions/fake-callback',
+        paymentMethods: ['/payments/debit-credit-card'],
+        providers: ['moonpay'],
+      });
+    });
+
+    it('treats amount equal to maxAmount as valid (inclusive upper bound)', () => {
+      const providerWithLimits = buildProviderWithLimits({
+        minAmount: 50,
+        maxAmount: 200,
+      });
+      mockUseParams.mockReturnValue({ amount: 200 });
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({
+          providers: [providerWithLimits, NATIVE_PROVIDER],
+          selectedProvider: providerWithLimits,
+        }),
+      );
+
+      const { queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(queryByText(/Minimum purchase/)).not.toBeOnTheScreen();
+      expect(queryByText(/Maximum purchase/)).not.toBeOnTheScreen();
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith({
+        assetId: 'eip155:1/slip44:60',
+        amount: 200,
+        walletAddress: '0x1234567890123456789012345678901234567890',
+        redirectUrl:
+          'https://on-ramp-content.api.cx.metamask.io/regions/fake-callback',
+        paymentMethods: ['/payments/debit-credit-card'],
+        providers: ['moonpay'],
+      });
+    });
+
+    it('does not crash when provider has no limits field', () => {
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({
+          providers: [WIDGET_PROVIDER, NATIVE_PROVIDER],
+          selectedProvider: WIDGET_PROVIDER,
+        }),
+      );
+
+      const { queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(queryByText(/Minimum purchase/)).not.toBeOnTheScreen();
+      expect(queryByText(/Maximum purchase/)).not.toBeOnTheScreen();
+      expect(mockUseRampsQuotes).toHaveBeenLastCalledWith({
+        assetId: 'eip155:1/slip44:60',
+        amount: 100,
+        walletAddress: '0x1234567890123456789012345678901234567890',
+        redirectUrl:
+          'https://on-ramp-content.api.cx.metamask.io/regions/fake-callback',
+        paymentMethods: ['/payments/debit-credit-card'],
+        providers: ['moonpay'],
+      });
+    });
+  });
+
+  describe('quoteFetchError', () => {
+    it('tracks RAMPS_QUOTE_ERROR and shows BannerAlert when quote fetch fails', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: null,
+        loading: false,
+        error: new Error('Quote fetch failed'),
+      });
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: expect.stringContaining('Quote Error'),
+        }),
+      );
+      expect(
+        getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON),
+      ).toBeOnTheScreen();
+    });
+
+    it('shows the localized circuit breaker fallback for quote fetch errors', () => {
+      const circuitBreakerError = Object.assign(
+        new Error('Execution prevented because the circuit breaker is open'),
+        { errorKey: 'CIRCUIT_BREAKER_OPEN' },
+      );
+      mockUseRampsQuotes.mockReturnValue({
+        data: null,
+        loading: false,
+        error: circuitBreakerError,
+      });
+
+      const { getByText, queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText(CIRCUIT_BREAKER_MESSAGE)).toBeOnTheScreen();
+      expect(
+        queryByText('Execution prevented because the circuit breaker is open'),
+      ).not.toBeOnTheScreen();
+      expect(mockAddProperties).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error_message: CIRCUIT_BREAKER_MESSAGE,
+        }),
+      );
+    });
+
+    it('removes the quote fetch banner after quote fetching recovers', () => {
+      const quoteFetchError = new Error('Quote fetch failed');
+      let quotesHookResult: {
+        data: { success: (typeof WIDGET_PROVIDER_QUOTE)[] } | null;
+        loading: boolean;
+        error: Error | null;
+      } = {
+        data: null,
+        loading: false,
+        error: quoteFetchError,
+      };
+      mockUseRampsQuotes.mockImplementation(() => quotesHookResult);
+
+      const { queryByText, rerender } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(queryByText('Quote fetch failed')).toBeOnTheScreen();
+
+      quotesHookResult = {
+        data: { success: [WIDGET_PROVIDER_QUOTE] },
+        loading: false,
+        error: null,
+      };
+      rerender(<BuildQuote />);
+
+      expect(queryByText('Quote fetch failed')).not.toBeOnTheScreen();
+    });
+  });
+
+  describe('provider quote error (out-of-bounds / limits)', () => {
+    it('shows provider error message when quotes response has errors and no successful quotes', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [],
+          error: [
+            {
+              provider: 'moonpay',
+              error: 'Minimum order amount is $30.00 USD',
+            },
+          ],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText('Minimum order amount is $30.00 USD')).toBeOnTheScreen();
+    });
+
+    it('shows generic no-quotes error via TruncatedError when quotes response has errors without messages', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [],
+          error: [{ provider: 'moonpay' }],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByText, getByLabelText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(
+        getByText(/problem fetching quotes|No providers available/i),
+      ).toBeOnTheScreen();
+      // Generic errors still use TruncatedError with info icon
+      expect(getByLabelText('View error details')).toBeOnTheScreen();
+    });
+
+    it('disables continue button when provider returns a limit error', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [],
+          error: [
+            {
+              provider: 'moonpay',
+              error: 'Maximum order amount is $10,000 USD',
+            },
+          ],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton).toBeDisabled();
+    });
+
+    it('renders provider limit error as plain text without info icon', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [],
+          error: [
+            {
+              provider: 'moonpay',
+              error: 'Minimum order amount is $30.00 USD',
+            },
+          ],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByText, queryByLabelText } = renderWithProvider(
+        <BuildQuote />,
+        {
+          state: initialRootState,
+        },
+      );
+
+      expect(getByText('Minimum order amount is $30.00 USD')).toBeOnTheScreen();
+      // Provider limit errors are plain text — no info icon or modal
+      expect(queryByLabelText('View error details')).not.toBeOnTheScreen();
+    });
+
+    it('shows change-provider option for generic errors without provider message', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [],
+          error: [{ provider: 'moonpay' }],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByLabelText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      fireEvent.press(getByLabelText('View error details'));
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          params: expect.objectContaining({
+            showChangeProvider: true,
+          }),
+        }),
+      );
+    });
+
+    it('does not navigate to error details modal for provider limit errors', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [],
+          error: [
+            {
+              provider: 'moonpay',
+              error: 'Minimum order amount is $30.00 USD',
+            },
+          ],
+        },
+        loading: false,
+        error: null,
+      });
+
+      renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      // No info icon to press — limit errors are plain text
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          screen: expect.stringContaining('Error'),
+        }),
+      );
+    });
+
+    it('shows first provider error when multiple providers return errors', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [],
+          error: [
+            {
+              provider: 'moonpay',
+              error: 'Minimum order amount is $30.00 USD',
+            },
+            {
+              provider: 'transak',
+              error: 'Amount too low for this provider',
+            },
+          ],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByText, queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText('Minimum order amount is $30.00 USD')).toBeOnTheScreen();
+      expect(
+        queryByText('Amount too low for this provider'),
+      ).not.toBeOnTheScreen();
+    });
+
+    it('does not show provider error when some quotes succeed', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [WIDGET_PROVIDER_QUOTE],
+          error: [
+            {
+              provider: 'transak',
+              error: 'Minimum order amount is $30.00 USD',
+            },
+          ],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(
+        queryByText('Minimum order amount is $30.00 USD'),
+      ).not.toBeOnTheScreen();
+      expect(queryByText(/encountered an error/i)).not.toBeOnTheScreen();
+    });
+
+    it('does not show provider error while quotes are loading', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [],
+          error: [
+            {
+              provider: 'moonpay',
+              error: 'Minimum order amount is $30.00 USD',
+            },
+          ],
+        },
+        loading: true,
+        error: null,
+      });
+
+      const { queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(
+        queryByText('Minimum order amount is $30.00 USD'),
+      ).not.toBeOnTheScreen();
+    });
+  });
+
+  describe('handleContinuePress wiring', () => {
+    it('calls continueWithQuote with the selected quote and { amount, assetId }', async () => {
+      mockContinueWithQuote.mockResolvedValue(undefined);
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON));
+      });
+
+      expect(mockContinueWithQuote).toHaveBeenCalledTimes(1);
+      expect(mockContinueWithQuote).toHaveBeenCalledWith(
+        WIDGET_PROVIDER_QUOTE,
+        { amount: 100, assetId: 'eip155:1/slip44:60' },
+      );
+    });
+
+    it('fires RAMPS_CONTINUE_BUTTON_CLICKED before calling continueWithQuote', async () => {
+      mockContinueWithQuote.mockResolvedValue(undefined);
+      const callOrder: string[] = [];
+      mockCreateEventBuilder.mockImplementation((category) => {
+        const cat =
+          typeof category === 'object' && category !== null
+            ? (category as { category?: string }).category
+            : undefined;
+        if (cat === 'Ramps Continue Button Clicked') {
+          callOrder.push('analytics');
+        }
+        return { addProperties: mockAddProperties, build: mockBuild };
+      });
+      mockContinueWithQuote.mockImplementation(async () => {
+        callOrder.push('continueWithQuote');
+      });
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON));
+      });
+
+      expect(callOrder).toEqual(['analytics', 'continueWithQuote']);
+    });
+
+    it('surfaces continueWithQuote rejection as the rampsError banner text', async () => {
+      mockContinueWithQuote.mockRejectedValue(
+        new Error('An unexpected error occurred.'),
+      );
+
+      const { getByTestId, getByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON));
+      });
+
+      expect(getByText('An unexpected error occurred.')).toBeOnTheScreen();
+    });
+
+    it('does not call continueWithQuote when selectedProvider is null', async () => {
+      mockUseRampsController.mockReturnValue(
+        buildRampsControllerResult({ selectedProvider: null }),
+      );
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      await act(async () => {
+        fireEvent.press(getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON));
+      });
+
+      expect(mockContinueWithQuote).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('auto-select provider when none selected', () => {
+    it('selects the first provider that supports the token', () => {
+      mockUseRampsController.mockReturnValue({
+        userRegion: USER_REGION,
+        providers: [WIDGET_PROVIDER, NATIVE_PROVIDER],
+        selectedProvider: null,
+        setSelectedProvider: mockSetSelectedProvider,
+        selectedToken: SELECTED_TOKEN,
+        paymentMethods: [SELECTED_PAYMENT_METHOD],
+        getBuyWidgetData: mockGetBuyWidgetData,
+        addPrecreatedOrder: mockAddPrecreatedOrder,
+        addOrder: mockAddOrder,
+        getOrderFromCallback: mockGetOrderFromCallback,
+        paymentMethodsLoading: false,
+        paymentMethodsFetching: false,
+        paymentMethodsStatus: 'success',
+        selectedPaymentMethod: SELECTED_PAYMENT_METHOD,
+      });
+
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+
+      expect(mockSetSelectedProvider).toHaveBeenCalledWith(WIDGET_PROVIDER, {
+        autoSelected: true,
+      });
+    });
+
+    it('does not auto-select when a provider is already selected', () => {
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+
+      expect(mockSetSelectedProvider).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-select when providers list is empty', () => {
+      mockUseRampsController.mockReturnValue({
+        userRegion: USER_REGION,
+        providers: [],
+        selectedProvider: null,
+        setSelectedProvider: mockSetSelectedProvider,
+        selectedToken: SELECTED_TOKEN,
+        paymentMethods: [],
+        getBuyWidgetData: mockGetBuyWidgetData,
+        addPrecreatedOrder: mockAddPrecreatedOrder,
+        addOrder: mockAddOrder,
+        getOrderFromCallback: mockGetOrderFromCallback,
+        paymentMethodsLoading: false,
+        paymentMethodsFetching: false,
+        paymentMethodsStatus: 'success',
+        selectedPaymentMethod: null,
+      });
+
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+
+      expect(mockSetSelectedProvider).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-select when no token is selected', () => {
+      mockUseRampsController.mockReturnValue({
+        userRegion: USER_REGION,
+        providers: [WIDGET_PROVIDER, NATIVE_PROVIDER],
+        selectedProvider: null,
+        setSelectedProvider: mockSetSelectedProvider,
+        selectedToken: null,
+        paymentMethods: [],
+        getBuyWidgetData: mockGetBuyWidgetData,
+        addPrecreatedOrder: mockAddPrecreatedOrder,
+        addOrder: mockAddOrder,
+        getOrderFromCallback: mockGetOrderFromCallback,
+        paymentMethodsLoading: false,
+        paymentMethodsFetching: false,
+        paymentMethodsStatus: 'success',
+        selectedPaymentMethod: null,
+      });
+
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+
+      expect(mockSetSelectedProvider).not.toHaveBeenCalled();
+    });
+
+    it('skips providers that do not support the token', () => {
+      const unsupportedProvider = {
+        id: 'banxa',
+        name: 'Banxa',
+        supportedCryptoCurrencies: { 'eip155:1/erc20:0xother': true },
+        links: [],
+      };
+
+      mockUseRampsController.mockReturnValue({
+        userRegion: USER_REGION,
+        providers: [unsupportedProvider, NATIVE_PROVIDER],
+        selectedProvider: null,
+        setSelectedProvider: mockSetSelectedProvider,
+        selectedToken: SELECTED_TOKEN,
+        paymentMethods: [SELECTED_PAYMENT_METHOD],
+        getBuyWidgetData: mockGetBuyWidgetData,
+        addPrecreatedOrder: mockAddPrecreatedOrder,
+        addOrder: mockAddOrder,
+        getOrderFromCallback: mockGetOrderFromCallback,
+        paymentMethodsLoading: false,
+        paymentMethodsFetching: false,
+        paymentMethodsStatus: 'success',
+        selectedPaymentMethod: SELECTED_PAYMENT_METHOD,
+      });
+
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+
+      expect(mockSetSelectedProvider).toHaveBeenCalledWith(NATIVE_PROVIDER, {
+        autoSelected: true,
+      });
+    });
+
+    it('does not auto-select when no provider supports the token', () => {
+      const unsupportedProvider = {
+        id: 'banxa',
+        name: 'Banxa',
+        supportedCryptoCurrencies: { 'eip155:1/erc20:0xother': true },
+        links: [],
+      };
+
+      mockUseRampsController.mockReturnValue({
+        userRegion: USER_REGION,
+        providers: [unsupportedProvider],
+        selectedProvider: null,
+        setSelectedProvider: mockSetSelectedProvider,
+        selectedToken: SELECTED_TOKEN,
+        paymentMethods: [],
+        getBuyWidgetData: mockGetBuyWidgetData,
+        addPrecreatedOrder: mockAddPrecreatedOrder,
+        addOrder: mockAddOrder,
+        getOrderFromCallback: mockGetOrderFromCallback,
+        paymentMethodsLoading: false,
+        paymentMethodsFetching: false,
+        paymentMethodsStatus: 'success',
+        selectedPaymentMethod: null,
+      });
+
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+
+      expect(mockSetSelectedProvider).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-select when screen is not focused', () => {
+      const mockUseIsFocused = jest.requireMock('@react-navigation/native')
+        .useIsFocused as jest.Mock;
+      mockUseIsFocused.mockReturnValue(false);
+
+      mockUseRampsController.mockReturnValue({
+        userRegion: USER_REGION,
+        providers: [WIDGET_PROVIDER],
+        selectedProvider: null,
+        setSelectedProvider: mockSetSelectedProvider,
+        selectedToken: SELECTED_TOKEN,
+        paymentMethods: [SELECTED_PAYMENT_METHOD],
+        getBuyWidgetData: mockGetBuyWidgetData,
+        addPrecreatedOrder: mockAddPrecreatedOrder,
+        addOrder: mockAddOrder,
+        getOrderFromCallback: mockGetOrderFromCallback,
+        paymentMethodsLoading: false,
+        paymentMethodsFetching: false,
+        paymentMethodsStatus: 'success',
+        selectedPaymentMethod: SELECTED_PAYMENT_METHOD,
+      });
+
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+
+      expect(mockSetSelectedProvider).not.toHaveBeenCalled();
+
+      mockUseIsFocused.mockReturnValue(true);
+    });
+  });
+
+  describe('Token unavailable for provider', () => {
+    const TOKEN_ASSET = 'eip155:1/slip44:60';
+
+    const transakProvider = {
+      id: '/providers/transak',
+      name: 'Transak',
+      supportedCryptoCurrencies: { [TOKEN_ASSET]: true },
+      links: [],
+    };
+
+    const mockUnavailableController = (overrides: Record<string, unknown>) => {
+      mockUseRampsController.mockReturnValue({
+        userRegion: USER_REGION,
+        providers: [transakProvider, WIDGET_PROVIDER],
+        selectedProvider: transakProvider,
+        setSelectedProvider: mockSetSelectedProvider,
+        setSelectedProviderForAsset: mockSetSelectedProviderForAsset,
+        selectedToken: SELECTED_TOKEN,
+        paymentMethods: [],
+        getBuyWidgetData: mockGetBuyWidgetData,
+        addPrecreatedOrder: mockAddPrecreatedOrder,
+        addOrder: mockAddOrder,
+        getOrderFromCallback: mockGetOrderFromCallback,
+        paymentMethodsLoading: false,
+        paymentMethodsFetching: false,
+        paymentMethodsStatus: 'success',
+        selectedPaymentMethod: null,
+        ...overrides,
+      });
+    };
+
     beforeEach(() => {
-      mockUseRampSDKValues.isBuy = false;
-      mockUseRampSDKValues.isSell = true;
+      jest.useFakeTimers();
+      mockUseParams.mockReturnValue({ assetId: TOKEN_ASSET });
+      mockSetSelectedProviderForAsset.mockReset();
     });
 
-    it('updates the amount input', async () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-      const validAmount = VALID_AMOUNT.toString();
-      const symbol = mockUseRampSDKValues.selectedAsset?.symbol;
-      fireEvent.press(getByRoleButton(`${initialAmount} ${symbol}`));
-      fireEvent.press(getByRoleButton(validAmount));
-      expect(getByRoleButton(`${validAmount} ${symbol}`)).toBeTruthy();
+    afterEach(() => {
+      jest.useRealTimers();
     });
 
-    it('validates the max limit', () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-      const invalidMaxAmount = (MAX_LIMIT + 1).toString();
-      const symbol = mockUseRampSDKValues.selectedAsset?.symbol;
-      fireEvent.press(getByRoleButton(`${initialAmount} ${symbol}`));
-      fireEvent.press(getByRoleButton(invalidMaxAmount));
-      expect(
-        screen.getByText('Enter a smaller amount to continue'),
-      ).toBeTruthy();
+    it('navigates to token unavailable modal after debounce when payment methods are empty', () => {
+      mockUnavailableController({ providers: [transakProvider] });
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'RampModals',
+        expect.objectContaining({
+          screen: 'RampTokenNotAvailableModal',
+          params: expect.objectContaining({ assetId: TOKEN_ASSET }),
+        }),
+      );
     });
 
-    it('validates the min limit', () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-      const invalidMinAmount = (MIN_LIMIT - 1).toString();
-      const symbol = mockUseRampSDKValues.selectedAsset?.symbol;
-      fireEvent.press(getByRoleButton(`${initialAmount} ${symbol}`));
-      fireEvent.press(getByRoleButton(invalidMinAmount));
-      expect(
-        screen.getByText('Enter a larger amount to continue'),
-      ).toBeTruthy();
+    it('does not navigate while payment methods are still fetching', () => {
+      mockUnavailableController({ paymentMethodsFetching: true });
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        'RampModals',
+        expect.objectContaining({
+          screen: 'RampTokenNotAvailableModal',
+        }),
+      );
     });
 
-    it('validates the insufficient balance', () => {
-      mockUseLimitsValues.limits = {
-        ...mockUseLimitsValues.limits,
-        maxAmount: 10,
-      } as Limits;
-
-      mockUseBalanceValues.balanceBN = toTokenMinimalUnit(
-        '5',
-        mockUseRampSDKValues.selectedAsset?.decimals || 18,
-      ) as BN;
-      render(BuildQuote);
-      const initialAmount = '0';
-      const overBalanceAmout = '6';
-      const symbol = mockUseRampSDKValues.selectedAsset?.symbol;
-      fireEvent.press(getByRoleButton(`${initialAmount} ${symbol}`));
-      fireEvent.press(getByRoleButton(overBalanceAmout));
-      expect(
-        screen.getByText('This amount is higher than your balance'),
-      ).toBeTruthy();
+    it('does not navigate before payment methods status is success', () => {
+      mockUnavailableController({ paymentMethodsStatus: 'loading' });
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        'RampModals',
+        expect.objectContaining({
+          screen: 'RampTokenNotAvailableModal',
+        }),
+      );
     });
 
-    it('updates the amount input with quick amount buttons', async () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-
-      mockUseBalanceValues.balanceBN = toTokenMinimalUnit(
-        '1',
-        mockUseRampSDKValues.selectedAsset?.decimals || 18,
-      ) as BN;
-      const symbol = mockUseRampSDKValues.selectedAsset?.symbol;
-      fireEvent.press(getByRoleButton(`${initialAmount} ${symbol}`));
-      fireEvent.press(getByRoleButton('25%'));
-      expect(getByRoleButton(`0.25 ${symbol}`)).toBeTruthy();
-
-      fireEvent.press(getByRoleButton(`0.25 ${symbol}`));
-      fireEvent.press(getByRoleButton('MAX'));
-      expect(getByRoleButton(`1 ${symbol}`)).toBeTruthy();
+    it('does not navigate when payment methods returned', () => {
+      mockUnavailableController({
+        paymentMethods: [SELECTED_PAYMENT_METHOD],
+      });
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        'RampModals',
+        expect.objectContaining({
+          screen: 'RampTokenNotAvailableModal',
+        }),
+      );
     });
 
-    it('updates the amount input up to the max considering gas for native asset', async () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-      const quickAmount = 'MAX';
-      mockUseRampSDKValues = {
-        ...mockUseRampSDKInitialValues,
-        isBuy: false,
-        isSell: true,
-        selectedAsset: {
-          ...mockCryptoCurrenciesData[0],
-          address: NATIVE_ADDRESS,
+    it('passes buyFlowOrigin to token unavailable modal params', () => {
+      mockUseParams.mockReturnValue({
+        assetId: TOKEN_ASSET,
+        buyFlowOrigin: 'tokenInfo' as const,
+      });
+      mockUnavailableController({ providers: [transakProvider] });
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'RampModals',
+        expect.objectContaining({
+          screen: 'RampTokenNotAvailableModal',
+          params: expect.objectContaining({
+            assetId: TOKEN_ASSET,
+            buyFlowOrigin: 'tokenInfo',
+          }),
+        }),
+      );
+    });
+
+    it('does not open payment selection when token unavailable disables pill', () => {
+      mockUnavailableController({ providers: [transakProvider] });
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      mockNavigate.mockClear();
+      fireEvent.press(getByTestId('build-quote-payment-pill'));
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        'RampModals',
+        expect.objectContaining({
+          screen: 'RampPaymentSelectionModal',
+        }),
+      );
+    });
+
+    it('switches to another supporting provider when current has empty payment methods', () => {
+      mockSetSelectedProviderForAsset.mockReturnValue(false);
+      mockUnavailableController({
+        selectedProvider: transakProvider,
+        providers: [transakProvider, WIDGET_PROVIDER],
+      });
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      expect(mockSetSelectedProviderForAsset).toHaveBeenCalledWith(TOKEN_ASSET);
+      expect(mockSetSelectedProvider).toHaveBeenCalledWith(WIDGET_PROVIDER, {
+        autoSelected: true,
+      });
+      expect(mockNavigate).not.toHaveBeenCalledWith(
+        'RampModals',
+        expect.objectContaining({
+          screen: 'RampTokenNotAvailableModal',
+        }),
+      );
+    });
+
+    it('navigates when token is missing from supportedCryptoCurrencies', () => {
+      const banxaProvider = {
+        id: '/providers/banxa',
+        name: 'Banxa',
+        supportedCryptoCurrencies: {
+          // TOKEN_ASSET is NOT in the map — treated as unsupported
+          'eip155:1/erc20:0xsomeother': true,
+        },
+        links: [],
+      };
+      mockUnavailableController({
+        selectedProvider: banxaProvider,
+        providers: [banxaProvider],
+      });
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'RampModals',
+        expect.objectContaining({
+          screen: 'RampTokenNotAvailableModal',
+        }),
+      );
+    });
+
+    it('re-navigates when provider id changes', () => {
+      const providerA = {
+        id: '/providers/a',
+        name: 'A',
+        supportedCryptoCurrencies: { [TOKEN_ASSET]: true },
+        links: [],
+      };
+      mockUnavailableController({
+        selectedProvider: providerA,
+        providers: [providerA],
+      });
+      const { rerender } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      expect(mockNavigate).toHaveBeenCalled();
+      mockNavigate.mockClear();
+      const providerB = {
+        id: '/providers/b',
+        name: 'B',
+        supportedCryptoCurrencies: { [TOKEN_ASSET]: true },
+        links: [],
+      };
+      mockUnavailableController({
+        selectedProvider: providerB,
+        providers: [providerB],
+      });
+      rerender(<BuildQuote />);
+      act(() => {
+        jest.advanceTimersByTime(650);
+      });
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'RampModals',
+        expect.objectContaining({
+          screen: 'RampTokenNotAvailableModal',
+        }),
+      );
+    });
+
+    describe('auto-switch when current provider does not support selected token', () => {
+      const BTC_ASSET = 'eip155:1/slip44:0';
+
+      const paypalProvider = {
+        id: '/providers/paypal',
+        name: 'PayPal',
+        supportedCryptoCurrencies: { [TOKEN_ASSET]: true, [BTC_ASSET]: false },
+        links: [],
+      };
+
+      const coinbaseProvider = {
+        id: '/providers/coinbase',
+        name: 'Coinbase',
+        supportedCryptoCurrencies: { [TOKEN_ASSET]: true, [BTC_ASSET]: true },
+        links: [],
+      };
+
+      const autoSelectedState = {
+        ...initialRootState,
+        engine: {
+          ...initialRootState.engine,
+          backgroundState: {
+            ...initialRootState.engine.backgroundState,
+            RampsController: {
+              ...initialRootState.engine.backgroundState.RampsController,
+              providerAutoSelected: true,
+            },
+          },
         },
       };
 
-      mockUseBalanceValues = {
-        balance: '1',
-        balanceFiat: '$1.00',
-        balanceBN: toTokenMinimalUnit(
-          '1',
-          mockUseRampSDKValues.selectedAsset?.decimals || 18,
-        ) as BN,
-      };
-      mockUseGasPriceEstimationValue = {
-        estimatedGasFee: toTokenMinimalUnit(
-          '0.27',
-          mockUseRampSDKValues.selectedAsset?.decimals || 18,
-        ) as BN,
-      };
-      const symbol = mockUseRampSDKValues.selectedAsset?.symbol;
-      fireEvent.press(getByRoleButton(`${initialAmount} ${symbol}`));
-      fireEvent.press(getByRoleButton(quickAmount));
-      expect(getByRoleButton(`0.73 ${symbol}`)).toBeTruthy();
+      it('auto-switches to a supporting provider instead of showing the modal', () => {
+        mockUnavailableController({
+          selectedProvider: paypalProvider,
+          providers: [paypalProvider, coinbaseProvider],
+          selectedToken: {
+            assetId: BTC_ASSET,
+            chainId: 'eip155:1',
+            symbol: 'BTC',
+          },
+        });
+        mockUseParams.mockReturnValue({ assetId: BTC_ASSET });
+        mockSetSelectedProviderForAsset.mockReturnValue(true);
+
+        renderWithProvider(<BuildQuote />, { state: autoSelectedState });
+        act(() => {
+          jest.advanceTimersByTime(650);
+        });
+
+        expect(mockSetSelectedProviderForAsset).toHaveBeenCalledWith(BTC_ASSET);
+        expect(mockNavigate).not.toHaveBeenCalledWith(
+          'RampModals',
+          expect.objectContaining({
+            screen: 'RampTokenNotAvailableModal',
+          }),
+        );
+      });
+
+      it('falls back to modal when no provider supports the token', () => {
+        mockUnavailableController({
+          selectedProvider: paypalProvider,
+          providers: [paypalProvider],
+          selectedToken: {
+            assetId: BTC_ASSET,
+            chainId: 'eip155:1',
+            symbol: 'BTC',
+          },
+        });
+        mockUseParams.mockReturnValue({ assetId: BTC_ASSET });
+
+        renderWithProvider(<BuildQuote />, { state: autoSelectedState });
+        act(() => {
+          jest.advanceTimersByTime(650);
+        });
+
+        expect(mockSetSelectedProviderForAsset).toHaveBeenCalledWith(BTC_ASSET);
+        expect(mockNavigate).toHaveBeenCalledWith(
+          'RampModals',
+          expect.objectContaining({
+            screen: 'RampTokenNotAvailableModal',
+          }),
+        );
+      });
+
+      it('auto-switches even when provider was manually selected', () => {
+        mockUnavailableController({
+          selectedProvider: paypalProvider,
+          providers: [paypalProvider, coinbaseProvider],
+          selectedToken: {
+            assetId: BTC_ASSET,
+            chainId: 'eip155:1',
+            symbol: 'BTC',
+          },
+        });
+        mockUseParams.mockReturnValue({ assetId: BTC_ASSET });
+        mockSetSelectedProviderForAsset.mockReturnValue(true);
+
+        renderWithProvider(<BuildQuote />, { state: initialRootState });
+        act(() => {
+          jest.advanceTimersByTime(650);
+        });
+
+        expect(mockSetSelectedProviderForAsset).toHaveBeenCalledWith(BTC_ASSET);
+        expect(mockNavigate).not.toHaveBeenCalledWith(
+          'RampModals',
+          expect.objectContaining({
+            screen: 'RampTokenNotAvailableModal',
+          }),
+        );
+      });
+
+      it('skips quote fetch while the current provider does not support the selected token', () => {
+        mockUnavailableController({
+          selectedProvider: paypalProvider,
+          providers: [paypalProvider, coinbaseProvider],
+          selectedToken: {
+            assetId: BTC_ASSET,
+            chainId: 'eip155:1',
+            symbol: 'BTC',
+          },
+          selectedPaymentMethod: SELECTED_PAYMENT_METHOD,
+          paymentMethods: [SELECTED_PAYMENT_METHOD],
+        });
+        mockUseParams.mockReturnValue({ assetId: BTC_ASSET });
+
+        renderWithProvider(<BuildQuote />, { state: initialRootState });
+
+        expect(mockUseRampsQuotes).toHaveBeenLastCalledWith(null);
+      });
+
+      it('does not render "Powered by" for the outgoing provider while the token is unavailable', () => {
+        mockUnavailableController({
+          selectedProvider: paypalProvider,
+          providers: [paypalProvider, coinbaseProvider],
+          selectedToken: {
+            assetId: BTC_ASSET,
+            chainId: 'eip155:1',
+            symbol: 'BTC',
+          },
+          selectedPaymentMethod: SELECTED_PAYMENT_METHOD,
+          paymentMethods: [SELECTED_PAYMENT_METHOD],
+        });
+        mockUseParams.mockReturnValue({ assetId: BTC_ASSET });
+        // No quotes response yet — isolates the isTokenUnavailable gate from
+        // the hasGenericNoQuotes branch so this test exercises the gate directly.
+        mockUseRampsQuotes.mockReturnValue({
+          data: null,
+          loading: false,
+          error: null,
+        });
+
+        const { queryByText } = renderWithProvider(<BuildQuote />, {
+          state: initialRootState,
+        });
+
+        expect(queryByText('Powered by PayPal')).not.toBeOnTheScreen();
+      });
+
+      it('shows Continue button as loading (not just disabled) while the switch is pending', () => {
+        mockUnavailableController({
+          selectedProvider: paypalProvider,
+          providers: [paypalProvider, coinbaseProvider],
+          selectedToken: {
+            assetId: BTC_ASSET,
+            chainId: 'eip155:1',
+            symbol: 'BTC',
+          },
+          selectedPaymentMethod: SELECTED_PAYMENT_METHOD,
+          paymentMethods: [SELECTED_PAYMENT_METHOD],
+        });
+        mockUseParams.mockReturnValue({ assetId: BTC_ASSET });
+        mockUseRampsQuotes.mockReturnValue({
+          data: null,
+          loading: false,
+          error: null,
+        });
+
+        const { getByTestId } = renderWithProvider(<BuildQuote />, {
+          state: initialRootState,
+        });
+
+        const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+        expect(continueButton.props.accessibilityState?.busy).toBe(true);
+      });
     });
 
-    it('updates the amount input up to the percentage considering gas', async () => {
-      render(BuildQuote);
-      const initialAmount = '0';
-      mockUseRampSDKValues = {
-        ...mockUseRampSDKInitialValues,
-        isBuy: false,
-        isSell: true,
-        selectedAsset: {
-          ...mockCryptoCurrenciesData[0],
-          address: NATIVE_ADDRESS,
+    describe('Powered by during controller sync gap', () => {
+      it('does not render "Powered by" while nav params assetId does not match controller-selected token', () => {
+        // Simulates the window where the user navigated back to BuildQuote with
+        // a new nav params.assetId but the controller has not yet updated
+        // selectedToken. tokenStateIsSettled is false during this render.
+        mockUseParams.mockReturnValue({ assetId: 'eip155:1/slip44:999' });
+
+        const { queryByText, getByTestId } = renderWithProvider(
+          <BuildQuote />,
+          {
+            state: initialRootState,
+          },
+        );
+
+        expect(queryByText('Powered by MoonPay')).not.toBeOnTheScreen();
+        expect(
+          getByTestId(BUILD_QUOTE_TEST_IDS.ACTION_MESSAGE_PLACEHOLDER),
+        ).toBeOnTheScreen();
+      });
+
+      it('shows Continue button as loading while nav params have not caught up to controller-selected token', () => {
+        mockUseParams.mockReturnValue({ assetId: 'eip155:1/slip44:999' });
+
+        const { getByTestId } = renderWithProvider(<BuildQuote />, {
+          state: initialRootState,
+        });
+
+        const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+        expect(continueButton.props.accessibilityState?.busy).toBe(true);
+      });
+    });
+  });
+
+  describe('selectedQuote matching', () => {
+    const noQuotesErrorPattern =
+      /We encountered a problem fetching quotes from/i;
+
+    it('shows Powered by text when quote provider matches selected provider', () => {
+      const { getByText, queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText('Powered by MoonPay')).toBeOnTheScreen();
+      expect(queryByText(noQuotesErrorPattern)).not.toBeOnTheScreen();
+    });
+
+    it('shows no-quotes error when quote provider does not match selected provider', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [{ ...WIDGET_PROVIDER_QUOTE, provider: 'other-provider' }],
         },
-      };
+        loading: false,
+        error: null,
+      });
 
-      mockUseBalanceValues = {
-        balance: '1',
-        balanceFiat: '$1.00',
-        balanceBN: toTokenMinimalUnit(
-          '1',
-          mockUseRampSDKValues.selectedAsset?.decimals || 18,
-        ) as BN,
-      };
-      mockUseGasPriceEstimationValue = {
-        estimatedGasFee: toTokenMinimalUnit(
-          '0.27',
-          mockUseRampSDKValues.selectedAsset?.decimals || 18,
-        ) as BN,
-      };
-      const symbol = mockUseRampSDKValues.selectedAsset?.symbol;
-      fireEvent.press(getByRoleButton(`${initialAmount} ${symbol}`));
-      fireEvent.press(getByRoleButton('75%'));
-      expect(getByRoleButton(`0.73 ${symbol}`)).toBeTruthy();
+      const { getByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
 
-      fireEvent.press(getByRoleButton(`0.73 ${symbol}`));
-      fireEvent.press(getByRoleButton('50%'));
-      expect(getByRoleButton(`0.5 ${symbol}`)).toBeTruthy();
+      expect(getByText(noQuotesErrorPattern)).toBeOnTheScreen();
+    });
+
+    it('shows no-quotes error when quotes response has no entries', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: { success: [] },
+        loading: false,
+        error: null,
+      });
+
+      const { getByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText(noQuotesErrorPattern)).toBeOnTheScreen();
+    });
+
+    it('does not show error when quotes are still loading', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: null,
+        loading: true,
+        error: null,
+      });
+
+      const { queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(queryByText(noQuotesErrorPattern)).not.toBeOnTheScreen();
+    });
+
+    it('continue button is disabled when no matching quote', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [{ ...WIDGET_PROVIDER_QUOTE, provider: 'other-provider' }],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton.props.accessibilityState?.disabled).toBe(true);
+    });
+
+    it('continue button is enabled when quote matches', () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton.props.accessibilityState?.disabled).not.toBe(true);
+    });
+
+    it('finds matching quote even if it is not the first in the array', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [
+            { ...WIDGET_PROVIDER_QUOTE, provider: 'other-provider' },
+            WIDGET_PROVIDER_QUOTE,
+          ],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByText, queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText('Powered by MoonPay')).toBeOnTheScreen();
+      expect(queryByText(noQuotesErrorPattern)).not.toBeOnTheScreen();
     });
   });
 
-  //
-  // SUBMIT BUTTON TEST
-  //
-  it('Directs the user to the quotes page with correct parameters', () => {
-    render(BuildQuote);
+  describe('selectedQuote matching', () => {
+    const noQuotesErrorPattern =
+      /We encountered a problem fetching quotes from/i;
 
-    const submitBtn = getByRoleButton('Get quotes');
-    expect(submitBtn).toBeTruthy();
-    expect(submitBtn.props.disabled).toBe(true);
+    it('shows Powered by text when quote provider matches selected provider', () => {
+      const { getByText, queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
 
-    const initialAmount = '0';
-    const validAmount = VALID_AMOUNT.toString();
-    const denomSymbol =
-      mockUseFiatCurrenciesValues.currentFiatCurrency?.denomSymbol;
-    fireEvent.press(getByRoleButton(`${denomSymbol}${initialAmount}`));
-    fireEvent.press(getByRoleButton(validAmount));
-    fireEvent.press(getByRoleButton('Done'));
-    expect(submitBtn.props.disabled).toBe(false);
-
-    fireEvent.press(submitBtn);
-
-    expect(mockNavigate).toHaveBeenCalledWith(Routes.RAMP.QUOTES, {
-      amount: VALID_AMOUNT,
-      asset: mockUseRampSDKValues.selectedAsset,
-      fiatCurrency: mockUseFiatCurrenciesValues.currentFiatCurrency,
+      expect(getByText('Powered by MoonPay')).toBeOnTheScreen();
+      expect(queryByText(noQuotesErrorPattern)).not.toBeOnTheScreen();
     });
 
-    expect(mockTrackEvent).toHaveBeenCalledWith('ONRAMP_QUOTES_REQUESTED', {
-      amount: VALID_AMOUNT,
-      currency_source: mockUseFiatCurrenciesValues?.currentFiatCurrency?.symbol,
-      currency_destination: mockUseRampSDKValues?.selectedAsset?.symbol,
-      payment_method_id: mockUsePaymentMethodsValues.currentPaymentMethod?.id,
-      chain_id_destination: '1',
-      location: 'Amount to Buy Screen',
+    it('shows no-quotes error when quote provider does not match selected provider', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [{ ...WIDGET_PROVIDER_QUOTE, provider: 'other-provider' }],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText(noQuotesErrorPattern)).toBeOnTheScreen();
+    });
+
+    it('shows no-quotes error when quotes response has no entries', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: { success: [] },
+        loading: false,
+        error: null,
+      });
+
+      const { getByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText(noQuotesErrorPattern)).toBeOnTheScreen();
+    });
+
+    it('does not show error when quotes are still loading', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: null,
+        loading: true,
+        error: null,
+      });
+
+      const { queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(queryByText(noQuotesErrorPattern)).not.toBeOnTheScreen();
+    });
+
+    it('continue button is disabled when no matching quote', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [{ ...WIDGET_PROVIDER_QUOTE, provider: 'other-provider' }],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton.props.accessibilityState?.disabled).toBe(true);
+    });
+
+    it('continue button is enabled when quote matches', () => {
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton.props.accessibilityState?.disabled).not.toBe(true);
+    });
+
+    it('finds matching quote even if it is not the first in the array', () => {
+      mockUseRampsQuotes.mockReturnValue({
+        data: {
+          success: [
+            { ...WIDGET_PROVIDER_QUOTE, provider: 'other-provider' },
+            WIDGET_PROVIDER_QUOTE,
+          ],
+        },
+        loading: false,
+        error: null,
+      });
+
+      const { getByText, queryByText } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByText('Powered by MoonPay')).toBeOnTheScreen();
+      expect(queryByText(noQuotesErrorPattern)).not.toBeOnTheScreen();
     });
   });
 
-  it('Directs the user to the sell quotes page with correct parameters', () => {
-    mockUseRampSDKValues.isBuy = false;
-    mockUseRampSDKValues.isSell = true;
-    render(BuildQuote);
+  describe('embedded checkout', () => {
+    it('replaces Continue with the embedded checkout once it is ready', () => {
+      mockEmbeddedCheckout = {
+        phase: 'ready',
+        renderOverlay: mockRenderEmbeddedCheckoutOverlay,
+        error: null,
+      };
 
-    const submitBtn = getByRoleButton('Get quotes');
-    expect(submitBtn).toBeTruthy();
-    expect(submitBtn.props.disabled).toBe(true);
+      const { getByTestId, queryByTestId, queryByText } = renderWithProvider(
+        <BuildQuote />,
+        { state: initialRootState },
+      );
 
-    const initialAmount = '0';
-    const validAmount = VALID_AMOUNT.toString();
-    const symbol = mockUseRampSDKValues.selectedAsset?.symbol;
-    fireEvent.press(getByRoleButton(`${initialAmount} ${symbol}`));
-    fireEvent.press(getByRoleButton(validAmount));
-    fireEvent.press(getByRoleButton('Done'));
-    expect(submitBtn.props.disabled).toBe(false);
-
-    fireEvent.press(submitBtn);
-
-    expect(mockNavigate).toHaveBeenCalledWith(Routes.RAMP.QUOTES, {
-      amount: validAmount,
-      asset: mockUseRampSDKValues.selectedAsset,
-      fiatCurrency: mockUseFiatCurrenciesValues.currentFiatCurrency,
+      expect(getByTestId(EMBEDDED_CHECKOUT_OVERLAY_TEST_ID)).toBeOnTheScreen();
+      expect(queryByTestId(BuildQuoteSelectors.CONTINUE_BUTTON)).toBeNull();
+      expect(queryByText('Powered by MoonPay')).toBeNull();
     });
 
-    expect(mockTrackEvent).toHaveBeenCalledWith('OFFRAMP_QUOTES_REQUESTED', {
-      amount: VALID_AMOUNT,
-      currency_source: mockUseRampSDKValues?.selectedAsset?.symbol,
-      currency_destination:
-        mockUseFiatCurrenciesValues?.currentFiatCurrency?.symbol,
-      payment_method_id: mockUsePaymentMethodsValues.currentPaymentMethod?.id,
-      chain_id_source: '1',
-      location: 'Amount to Sell Screen',
+    it('lets the embedded checkout take taps only when the quote can continue', () => {
+      mockEmbeddedCheckout = {
+        phase: 'ready',
+        renderOverlay: mockRenderEmbeddedCheckoutOverlay,
+        error: null,
+      };
+
+      renderWithProvider(<BuildQuote />, { state: initialRootState });
+
+      expect(mockRenderEmbeddedCheckoutOverlay).toHaveBeenCalledWith({
+        interactive: true,
+      });
+    });
+
+    it('shows Continue in a loading state while the checkout is preparing', () => {
+      mockEmbeddedCheckout = {
+        phase: 'preparing',
+        renderOverlay: null,
+        error: null,
+      };
+
+      const { getByTestId, getByText, queryByTestId } = renderWithProvider(
+        <BuildQuote />,
+        { state: initialRootState },
+      );
+
+      expect(queryByTestId(EMBEDDED_CHECKOUT_OVERLAY_TEST_ID)).toBeNull();
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton.props.accessibilityState?.disabled).toBe(true);
+      expect(getByText('Powered by MoonPay')).toBeOnTheScreen();
+    });
+
+    it('mounts the checkout behind a loading Continue while it is preparing with a URL', () => {
+      mockEmbeddedCheckout = {
+        phase: 'preparing',
+        renderOverlay: mockRenderEmbeddedCheckoutOverlay,
+        error: null,
+      };
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      expect(getByTestId(EMBEDDED_CHECKOUT_OVERLAY_TEST_ID)).toBeOnTheScreen();
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton.props.accessibilityState?.disabled).toBe(true);
+    });
+
+    it('covers the checkout with a processing state while payment settles', () => {
+      mockEmbeddedCheckout = {
+        phase: 'settling',
+        renderOverlay: mockRenderEmbeddedCheckoutOverlay,
+        error: null,
+      };
+
+      const { getByTestId } = renderWithProvider(<BuildQuote />, {
+        state: initialRootState,
+      });
+
+      // The checkout stays mounted for order events, hidden behind our own
+      // state, so the provider's post-authorization repaint is never visible.
+      expect(getByTestId(EMBEDDED_CHECKOUT_OVERLAY_TEST_ID)).toBeOnTheScreen();
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton.props.accessibilityState?.disabled).toBe(true);
+      // The spinner is mocked in Jest, so the loading label is asserted
+      // through the accessibility label the button derives from it.
+      expect(continueButton.props.accessibilityLabel).toBe('Processing');
+    });
+
+    it('shows the provider reason and restores Continue when the checkout is unpurchasable', () => {
+      mockEmbeddedCheckout = {
+        phase: 'inactive',
+        renderOverlay: null,
+        error:
+          'This item is not available for purchase with Crossmint at this moment',
+      };
+
+      const { getByTestId, getByText, queryByTestId } = renderWithProvider(
+        <BuildQuote />,
+        { state: initialRootState },
+      );
+
+      expect(queryByTestId(EMBEDDED_CHECKOUT_OVERLAY_TEST_ID)).toBeNull();
+      expect(
+        getByText(
+          'This item is not available for purchase with Crossmint at this moment',
+        ),
+      ).toBeOnTheScreen();
+      const continueButton = getByTestId(BuildQuoteSelectors.CONTINUE_BUTTON);
+      expect(continueButton.props.accessibilityState?.disabled).toBe(false);
     });
   });
 });

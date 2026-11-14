@@ -1,13 +1,288 @@
-import { Hex } from '@metamask/utils';
+import {
+  queryOptions,
+  useQuery,
+  type QueryClient,
+} from '@tanstack/react-query';
+import { getAssetId } from '@metamask/assets-controllers';
+import { formatChainIdToCaip } from '@metamask/bridge-controller';
+import { parseCaipAssetType, type Hex } from '@metamask/utils';
+import type { TokenI } from '../UI/Tokens/types';
 import { getDecimalChainId } from '../../util/networks';
-import { useState, useEffect } from 'react';
+import { TraceName, endTrace, trace } from '../../util/trace';
+import { PRICE_API_BASE_URL } from '../../constants/urls';
+import { usePriceApiHost } from '../UI/TokenDetails/context/PriceApiHostContext';
 
-export type TimePeriod = '1d' | '1w' | '7d' | '1m' | '3m' | '1y' | '3y';
+export type TimePeriod =
+  | '1h'
+  | '1d'
+  | '1w'
+  | '7d'
+  | '1m'
+  | '3m'
+  | '1y'
+  | '3y'
+  | 'all';
 
 export type TokenPrice = [string, number];
 
-const placeholderPrices = Array(289).fill(['0', 0] as TokenPrice);
+export const DEFAULT_HISTORICAL_TIME_PERIOD: TimePeriod = '1d';
+
+const HISTORICAL_PRICES_FETCH_TIMEOUT_MS = 3000;
+const QUERY_STALE_TIME_MS = 30_000;
+
+const HISTORICAL_PRICE_PLACEHOLDER: TokenPrice[] = Array(289).fill([
+  '0',
+  0,
+] as TokenPrice);
+
+const HOURS = 3_600_000;
+const DAYS = 24 * HOURS;
+
+const EXPECTED_DURATION_MS: Record<TimePeriod, number | null> = {
+  '1h': 1 * HOURS,
+  '1d': 1 * DAYS,
+  '1w': 7 * DAYS,
+  '7d': 7 * DAYS,
+  '1m': 30 * DAYS,
+  '3m': 90 * DAYS,
+  '1y': 365 * DAYS,
+  '3y': 3 * 365 * DAYS,
+  all: null,
+};
+
+const MIN_COVERAGE_RATIO = 0.1;
+
+export function hasInsufficientTimeCoverage(
+  prices: TokenPrice[],
+  timePeriod: TimePeriod,
+): boolean {
+  const expectedMs = EXPECTED_DURATION_MS[timePeriod];
+  if (expectedMs === null || prices.length < 2) return false;
+
+  const firstTs = Number(prices[0][0]);
+  const lastTs = Number(prices[prices.length - 1][0]);
+  const actualSpanMs = Math.abs(lastTs - firstTs);
+
+  return actualSpanMs < expectedMs * MIN_COVERAGE_RATIO;
+}
+
+export interface HistoricalPricesRequest {
+  assetChainId: string;
+  assetAddress: string;
+  address: string;
+  chainId: Hex;
+  timePeriod: TimePeriod;
+  vsCurrency: string;
+  from?: number;
+  to?: number;
+  /** Price API origin. Omitted means prod. */
+  baseUrl?: string;
+}
+
+interface HistoricalPricesResult {
+  prices: TokenPrice[];
+  hasInsufficientCoverage: boolean;
+  apiDurationMs: number;
+}
+
+interface HistoricalPricesFetchError extends Error {
+  apiDurationMs: number;
+}
+
+const isAbortError = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error != null &&
+  'name' in error &&
+  (error as { name: string }).name === 'AbortError';
+
+const buildHistoricalPricesUrl = (request: HistoricalPricesRequest): string => {
+  const isNonEvmAsset =
+    formatChainIdToCaip(request.assetChainId as Hex) === request.assetChainId;
+
+  let caipChainId: string;
+  let assetIdentifier: string;
+
+  if (isNonEvmAsset) {
+    caipChainId = request.assetChainId;
+    assetIdentifier = request.assetAddress.split('/')[1];
+  } else {
+    const caipAssetType = getAssetId({
+      chainId: request.chainId,
+      tokenAddress: request.assetAddress,
+    });
+    if (caipAssetType) {
+      const parsedCaipAsset = parseCaipAssetType(caipAssetType);
+      caipChainId = parsedCaipAsset.chainId;
+      assetIdentifier = `${parsedCaipAsset.assetNamespace}:${parsedCaipAsset.assetReference}`;
+    } else {
+      caipChainId = `eip155:${getDecimalChainId(request.chainId)}`;
+      assetIdentifier = `erc20:${request.address}`;
+    }
+  }
+
+  const uri = new URL(
+    `${
+      request.baseUrl ?? PRICE_API_BASE_URL
+    }/v3/historical-prices/${caipChainId}/${assetIdentifier}`,
+  );
+  uri.searchParams.set(
+    'timePeriod',
+    request.timePeriod === '1w' ? '7d' : request.timePeriod,
+  );
+  uri.searchParams.set('vsCurrency', request.vsCurrency);
+  if (request.from && request.to) {
+    uri.searchParams.set('from', request.from.toString());
+    uri.searchParams.set('to', request.to.toString());
+  }
+  return uri.toString();
+};
+
+const fetchHistoricalPrices = async (
+  request: HistoricalPricesRequest,
+  signal?: AbortSignal,
+): Promise<HistoricalPricesResult> => {
+  const fetchStart = Date.now();
+  const url = buildHistoricalPricesUrl(request);
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    trace({
+      name: TraceName.FetchHistoricalPrices,
+      data: { uri: url },
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error('Historical prices fetch timeout')),
+        HISTORICAL_PRICES_FETCH_TIMEOUT_MS,
+      );
+    });
+
+    const response = await Promise.race([
+      fetch(url, { signal }),
+      timeoutPromise,
+    ]);
+
+    endTrace({ name: TraceName.FetchHistoricalPrices });
+
+    if (response.status === 204) {
+      return {
+        prices: [],
+        hasInsufficientCoverage: true,
+        apiDurationMs: Date.now() - fetchStart,
+      };
+    }
+
+    const data: { prices: TokenPrice[] } = await response.json();
+    const sortedPrices = [...data.prices].sort(
+      (a, b) => Number(a[0]) - Number(b[0]),
+    );
+    return {
+      prices: sortedPrices,
+      hasInsufficientCoverage: hasInsufficientTimeCoverage(
+        sortedPrices,
+        request.timePeriod,
+      ),
+      apiDurationMs: Date.now() - fetchStart,
+    };
+  } catch (error: unknown) {
+    if (signal?.aborted || isAbortError(error)) {
+      throw error;
+    }
+    throw Object.assign(
+      error instanceof Error ? error : new Error('Unknown error'),
+      { apiDurationMs: Date.now() - fetchStart },
+    );
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
+export const historicalPricesQueryOptions = (
+  request: HistoricalPricesRequest,
+) =>
+  queryOptions({
+    queryKey: [
+      'token-details',
+      'historical-prices',
+      request.chainId,
+      request.address,
+      request.assetChainId,
+      request.assetAddress,
+      request.timePeriod,
+      request.vsCurrency,
+      request.from ?? null,
+      request.to ?? null,
+      // Keyed by host so a non-prod response never surfaces under the prod
+      // entry, or the other way round.
+      request.baseUrl ?? PRICE_API_BASE_URL,
+    ],
+    queryFn: ({ signal }) => fetchHistoricalPrices(request, signal),
+    retry: false,
+    staleTime: QUERY_STALE_TIME_MS,
+  });
+
+const toHistoricalPricesRequest = ({
+  asset,
+  address,
+  chainId,
+  timePeriod,
+  from,
+  to,
+  vsCurrency,
+  baseUrl,
+}: {
+  asset: Pick<TokenI, 'address' | 'chainId'>;
+  address: string;
+  chainId: Hex;
+  timePeriod: TimePeriod;
+  from?: number;
+  to?: number;
+  vsCurrency: string;
+  baseUrl?: string;
+}): HistoricalPricesRequest => ({
+  assetChainId: String(asset.chainId ?? ''),
+  assetAddress: asset.address,
+  address,
+  chainId,
+  timePeriod,
+  vsCurrency,
+  from,
+  to,
+  baseUrl,
+});
+
+/**
+ * @param baseUrl - Price API origin. Passed explicitly rather than read from
+ * context because this runs outside the React tree, and it has to match what
+ * the hook will ask for or the warmed entry is never read.
+ */
+export const prefetchHistoricalPrices = (
+  queryClient: QueryClient,
+  token: Pick<TokenI, 'address' | 'chainId'>,
+  vsCurrency: string,
+  baseUrl?: string,
+): void => {
+  queryClient
+    .query(
+      historicalPricesQueryOptions(
+        toHistoricalPricesRequest({
+          asset: token,
+          address: String(token.address ?? ''),
+          chainId: token.chainId as Hex,
+          timePeriod: DEFAULT_HISTORICAL_TIME_PERIOD,
+          vsCurrency,
+          baseUrl,
+        }),
+      ),
+    )
+    .catch(() => undefined);
+};
+
 const useTokenHistoricalPrices = ({
+  asset,
   address,
   chainId,
   timePeriod,
@@ -15,6 +290,7 @@ const useTokenHistoricalPrices = ({
   to,
   vsCurrency,
 }: {
+  asset: TokenI;
   address: string;
   chainId: Hex;
   timePeriod: TimePeriod;
@@ -25,43 +301,37 @@ const useTokenHistoricalPrices = ({
   data: TokenPrice[] | undefined;
   isLoading: boolean;
   error: Error | undefined;
+  hasInsufficientCoverage: boolean;
+  apiDurationMs: number | undefined;
 } => {
-  const [prices, setPrices] = useState<TokenPrice[]>(placeholderPrices);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<Error>();
-  useEffect(() => {
-    const fetchPrices = async () => {
-      setIsLoading(true);
-      try {
-        const baseUri = 'https://price.api.cx.metamask.io/v1';
-        const uri = new URL(
-          `${baseUri}/chains/${getDecimalChainId(
-            chainId,
-          )}/historical-prices/${address}`,
-        );
-        uri.searchParams.set(
-          'timePeriod',
-          timePeriod === '1w' ? '7d' : timePeriod,
-        );
-        uri.searchParams.set('vsCurrency', vsCurrency);
-        if (from && to) {
-          uri.searchParams.set('from', from.toString());
-          uri.searchParams.set('to', to.toString());
-        }
+  const baseUrl = usePriceApiHost();
 
-        const response = await fetch(uri.toString());
-        const data: { prices: TokenPrice[] } = await response.json();
+  const query = useQuery(
+    historicalPricesQueryOptions(
+      toHistoricalPricesRequest({
+        asset,
+        address,
+        chainId,
+        timePeriod,
+        vsCurrency,
+        from,
+        to,
+        baseUrl,
+      }),
+    ),
+  );
 
-        setPrices(data.prices as TokenPrice[]);
-      } catch (e: any) {
-        setError(e);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    fetchPrices();
-  }, [address, chainId, timePeriod, from, to, vsCurrency]);
-  return { data: prices, isLoading, error };
+  const payload = query.data;
+
+  return {
+    data: payload?.prices ?? HISTORICAL_PRICE_PLACEHOLDER,
+    isLoading: query.isPending,
+    error: query.error ?? undefined,
+    hasInsufficientCoverage: payload?.hasInsufficientCoverage ?? false,
+    apiDurationMs:
+      payload?.apiDurationMs ??
+      (query.error as HistoricalPricesFetchError | null)?.apiDurationMs,
+  };
 };
 
 export default useTokenHistoricalPrices;

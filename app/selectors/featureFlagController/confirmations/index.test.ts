@@ -1,0 +1,965 @@
+import { cloneDeep } from 'lodash';
+import {
+  TransactionMeta,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import {
+  selectMetaMaskPayFlags,
+  selectMetaMaskPayTokensFlags,
+  BUFFER_STEP_DEFAULT,
+  BUFFER_INITIAL_DEFAULT,
+  ATTEMPTS_MAX_DEFAULT,
+  SLIPPAGE_DEFAULT,
+  BUFFER_SUBSEQUENT_DEFAULT,
+  STX_DISABLED_DEFAULT,
+  selectNonZeroUnusedApprovalsAllowList,
+  selectPayQuoteConfig,
+  selectMetaMaskPayFiatFlags,
+  PAY_FIAT_ENABLED_TRANSACTION_TYPES,
+  PAY_FIAT_MAX_DELAY_MINUTES_FOR_PAYMENT_METHODS,
+  selectPayHardwareConfig,
+  PAY_ENABLE_DEPOSIT_WALLET_WITHDRAW_DEFAULT,
+  PAY_ENABLE_MONEY_ACCOUNT_TRANSACTIONS_DEFAULT,
+  PAY_DEFAULT_PAY_SELECTED_SECTION_DEFAULT,
+  PAY_HARDWARE_ENABLED_DEFAULT,
+  selectDepositLimits,
+  PAY_DEPOSIT_LIMITS_DEFAULT,
+  PAY_PREFILLED_AMOUNT_DEFAULT,
+  selectPrefilledAmountConfig,
+  PreferredToken,
+  getPreferredTokensForTransactionType,
+  selectRelayFixedSpread,
+  selectRelayAtomicMaxEnabled,
+  selectPerpsMoneyAccountNoFeeRouteEnabled,
+} from '.';
+import mockedEngine from '../../../core/__mocks__/MockedEngine';
+import { mockedEmptyFlagsState, mockedUndefinedFlagsState } from '../mocks';
+import { RootState } from '../../../reducers';
+
+jest.mock('../../../core/Engine', () => ({
+  init: () => mockedEngine.init(),
+}));
+
+describe('selectRelayAtomicMaxEnabled', () => {
+  it.each([
+    [undefined, false],
+    [{}, false],
+    [{ default: true }, true],
+    [{ default: false }, false],
+    [
+      {
+        default: true,
+        transactionTypes: { [TransactionType.moneyAccountDeposit]: false },
+      },
+      false,
+    ],
+    [
+      { transactionTypes: { [TransactionType.moneyAccountDeposit]: true } },
+      true,
+    ],
+    [{ transactionTypes: { [TransactionType.perpsDeposit]: true } }, false],
+  ])('resolves %j to %s', (atomicMaxEnabled, expected) => {
+    const state = mergeStateForAtomicMax(atomicMaxEnabled);
+
+    const result = selectRelayAtomicMaxEnabled(state, {
+      type: TransactionType.moneyAccountDeposit,
+    } as TransactionMeta);
+
+    expect(result).toBe(expected);
+  });
+
+  it('matches nested transaction types', () => {
+    const state = mergeStateForAtomicMax({
+      transactionTypes: { [TransactionType.moneyAccountDeposit]: true },
+    });
+
+    const result = selectRelayAtomicMaxEnabled(state, {
+      type: TransactionType.batch,
+      nestedTransactions: [{ type: TransactionType.moneyAccountDeposit }],
+    } as TransactionMeta);
+
+    expect(result).toBe(true);
+  });
+
+  it('uses the default without a transaction', () => {
+    const state = mergeStateForAtomicMax({ default: true });
+
+    expect(selectRelayAtomicMaxEnabled(state)).toBe(true);
+  });
+
+  function mergeStateForAtomicMax(
+    atomicMaxEnabled:
+      | {
+          default?: boolean;
+          transactionTypes?: Partial<Record<TransactionType, boolean>>;
+        }
+      | undefined,
+  ): RootState {
+    return {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              confirmations_pay_extended: {
+                payStrategies: { relay: { atomicMaxEnabled } },
+              },
+            },
+          },
+        },
+      },
+    } as unknown as RootState;
+  }
+});
+
+describe('MetaMask Pay Feature Flags', () => {
+  it('returns default buffer step if not in feature flags', () => {
+    expect(selectMetaMaskPayFlags(mockedEmptyFlagsState).bufferStep).toEqual(
+      BUFFER_STEP_DEFAULT,
+    );
+  });
+
+  it('returns default buffer initial if not in feature flags', () => {
+    expect(selectMetaMaskPayFlags(mockedEmptyFlagsState).bufferInitial).toEqual(
+      BUFFER_INITIAL_DEFAULT,
+    );
+  });
+
+  it('returns default buffer subsequent if not in feature flags', () => {
+    expect(
+      selectMetaMaskPayFlags(mockedEmptyFlagsState).bufferSubsequent,
+    ).toEqual(BUFFER_SUBSEQUENT_DEFAULT);
+  });
+
+  it('returns default attempts max if not in feature flags', () => {
+    expect(selectMetaMaskPayFlags(mockedEmptyFlagsState).attemptsMax).toEqual(
+      ATTEMPTS_MAX_DEFAULT,
+    );
+  });
+
+  it('returns default slippage if not in feature flags', () => {
+    expect(selectMetaMaskPayFlags(mockedEmptyFlagsState).slippage).toEqual(
+      SLIPPAGE_DEFAULT,
+    );
+  });
+
+  it('returns buffer step from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay: {
+          bufferStep: 1.234,
+        },
+      };
+
+    expect(selectMetaMaskPayFlags(state).bufferStep).toEqual(1.234);
+  });
+
+  it('returns initial buffer from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay: {
+          bufferInitial: 2.345,
+        },
+      };
+
+    expect(selectMetaMaskPayFlags(state).bufferInitial).toEqual(2.345);
+  });
+
+  it('returns subsequent buffer from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay: {
+          bufferSubsequent: 5.678,
+        },
+      };
+
+    expect(selectMetaMaskPayFlags(state).bufferSubsequent).toEqual(5.678);
+  });
+
+  it('returns max attempts from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay: {
+          attemptsMax: 3,
+        },
+      };
+
+    expect(selectMetaMaskPayFlags(state).attemptsMax).toEqual(3);
+  });
+
+  it('returns slippage from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay: {
+          slippage: 0.123,
+        },
+      };
+
+    expect(selectMetaMaskPayFlags(state).slippage).toEqual(0.123);
+  });
+
+  it('returns default stxDisabled if not in feature flags', () => {
+    expect(selectMetaMaskPayFlags(mockedEmptyFlagsState).stxDisabled).toEqual(
+      STX_DISABLED_DEFAULT,
+    );
+  });
+
+  it('returns stxDisabled from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay: {
+          stxDisabled: true,
+        },
+      };
+
+    expect(selectMetaMaskPayFlags(state).stxDisabled).toEqual(true);
+  });
+});
+
+describe('Non-Zero Unused Approvals Allow List', () => {
+  const mockedStateWithAllowList = {
+    engine: {
+      backgroundState: {
+        RemoteFeatureFlagController: {
+          remoteFeatureFlags: {
+            nonZeroUnusedApprovals: [
+              'https://example.com',
+              'https://another-example.com',
+            ],
+          },
+          cacheTimestamp: 0,
+        },
+      },
+    },
+  };
+
+  const mockedStateWithoutAllowList = {
+    engine: {
+      backgroundState: {
+        RemoteFeatureFlagController: {
+          remoteFeatureFlags: {
+            nonZeroUnusedApprovals: [],
+          },
+          cacheTimestamp: 0,
+        },
+      },
+    },
+  };
+
+  it('returns the allow list when set in remote feature flags', () => {
+    const result = selectNonZeroUnusedApprovalsAllowList(
+      mockedStateWithAllowList,
+    );
+    expect(result).toEqual([
+      'https://example.com',
+      'https://another-example.com',
+    ]);
+  });
+
+  it('returns an empty array when the list is empty in remote feature flags', () => {
+    const result = selectNonZeroUnusedApprovalsAllowList(
+      mockedStateWithoutAllowList,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('handles cases where RemoteFeatureFlagController is undefined', () => {
+    const undefinedFeatureFlagState = {
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: undefined,
+        },
+      },
+    };
+
+    const result = selectNonZeroUnusedApprovalsAllowList(
+      undefinedFeatureFlagState,
+    );
+    expect(result).toEqual([]);
+  });
+});
+
+describe('selectPayQuoteConfig', () => {
+  function stateWithFlags(flags: Record<string, unknown>) {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      { confirmations_pay_post_quote: flags };
+    return state;
+  }
+
+  const baseFlags = {
+    default: { enabled: true, tokens: { '0x1': ['0xaaa'] } },
+    overrides: {
+      predictWithdraw: {
+        enabled: true,
+        tokens: { '0x89': ['0xbbb'] },
+      },
+      perpsWithdraw: { enabled: false },
+    },
+  };
+
+  it('returns default config when no transaction type is provided', () => {
+    const state = stateWithFlags(baseFlags);
+    const result = selectPayQuoteConfig(state as unknown as RootState);
+    expect(result.enabled).toBe(true);
+    expect(result.tokens).toEqual({ '0x1': ['0xaaa'] });
+  });
+
+  it('returns default config when transaction type does not exist in overrides', () => {
+    const state = stateWithFlags(baseFlags);
+    const result = selectPayQuoteConfig(
+      state as unknown as RootState,
+      'unknownType',
+    );
+    expect(result.enabled).toBe(true);
+    expect(result.tokens).toEqual({ '0x1': ['0xaaa'] });
+  });
+
+  it('uses override value when transaction type matches', () => {
+    const state = stateWithFlags(baseFlags);
+    const result = selectPayQuoteConfig(
+      state as unknown as RootState,
+      'predictWithdraw',
+    );
+    expect(result.tokens).toEqual({ '0x89': ['0xbbb'] });
+    expect(result.enabled).toBe(true);
+  });
+
+  it('falls back to default for properties not defined in override', () => {
+    const state = stateWithFlags(baseFlags);
+    const result = selectPayQuoteConfig(
+      state as unknown as RootState,
+      'perpsWithdraw',
+    );
+    expect(result.enabled).toBe(false);
+    expect(result.tokens).toEqual({ '0x1': ['0xaaa'] });
+  });
+
+  it('inherits enabled from default when override omits enabled', () => {
+    const state = stateWithFlags({
+      default: { enabled: true, tokens: { '0x1': ['0xaaa'] } },
+      overrides: {
+        predictWithdraw: { tokens: { '0x89': ['0xbbb'] } },
+      },
+    });
+    const result = selectPayQuoteConfig(
+      state as unknown as RootState,
+      'predictWithdraw',
+    );
+    expect(result.enabled).toBe(true);
+    expect(result.tokens).toEqual({ '0x89': ['0xbbb'] });
+  });
+
+  it('returns disabled default when flag is missing', () => {
+    const result = selectPayQuoteConfig(
+      mockedEmptyFlagsState as unknown as RootState,
+    );
+    expect(result).toEqual({ enabled: false, tokens: undefined });
+  });
+});
+
+describe('selectMetaMaskPayTokensFlags (confirmations_pay_tokens)', () => {
+  const preferredTokensMock: PreferredToken[] = [
+    { address: '0xtoken1', chainId: '0x1', successRate: 0.95 },
+    { address: '0xtoken2', chainId: '0x89', successRate: 0.8 },
+  ];
+
+  it('returns empty preferred tokens when confirmations_pay_tokens is missing', () => {
+    const result = selectMetaMaskPayTokensFlags(mockedEmptyFlagsState);
+
+    expect(result.preferredTokens).toEqual({ default: [], overrides: {} });
+  });
+
+  it('returns default empty blockedTokens when confirmations_pay_tokens is missing', () => {
+    const result = selectMetaMaskPayTokensFlags(mockedEmptyFlagsState);
+
+    expect(result.blockedTokens).toEqual({
+      default: { chainIds: [], tokens: [] },
+      overrides: {},
+    });
+  });
+
+  it('returns blockedTokens with overrides from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_tokens: {
+          blockedTokens: {
+            default: { chainIds: ['0xa4b1'], tokens: [] },
+            overrides: {
+              perpsDeposit: {
+                chainIds: [],
+                tokens: [{ address: '0xabc', chainId: '0x1' }],
+              },
+            },
+          },
+        },
+      };
+
+    const result = selectMetaMaskPayTokensFlags(state);
+    expect(result.blockedTokens.default.chainIds).toEqual(['0xa4b1']);
+    expect(result.blockedTokens.overrides.perpsDeposit).toEqual({
+      chainIds: [],
+      tokens: [{ address: '0xabc', chainId: '0x1' }],
+    });
+  });
+
+  it('returns default minimumRequiredTokenBalance of 0 when not in feature flags', () => {
+    const result = selectMetaMaskPayTokensFlags(mockedEmptyFlagsState);
+
+    expect(result.minimumRequiredTokenBalance).toBe(0);
+  });
+
+  it('returns preferredTokens with overrides from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_tokens: {
+          preferredTokens: {
+            default: [],
+            overrides: {
+              perpsDeposit: preferredTokensMock,
+            },
+          },
+        },
+      };
+
+    const result = selectMetaMaskPayTokensFlags(state);
+    expect(result.preferredTokens.overrides.perpsDeposit).toEqual(
+      preferredTokensMock,
+    );
+    expect(result.preferredTokens.default).toEqual([]);
+  });
+
+  it('returns preferredTokens default from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_tokens: {
+          preferredTokens: {
+            default: preferredTokensMock,
+            overrides: {},
+          },
+        },
+      };
+
+    const result = selectMetaMaskPayTokensFlags(state);
+    expect(result.preferredTokens.default).toEqual(preferredTokensMock);
+    expect(result.preferredTokens.overrides).toEqual({});
+  });
+
+  it('returns minimumRequiredTokenBalance from feature flag', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_tokens: {
+          minimumRequiredTokenBalance: 10,
+        },
+      };
+
+    const result = selectMetaMaskPayTokensFlags(state);
+    expect(result.minimumRequiredTokenBalance).toBe(10);
+  });
+});
+
+describe('getPreferredTokensForTransactionType', () => {
+  const defaultTokens: PreferredToken[] = [
+    { address: '0xdefault', chainId: '0x1', successRate: 90 },
+  ];
+
+  const perpsTokens: PreferredToken[] = [
+    { address: '0xperps1', chainId: '0x1', successRate: 95 },
+    { address: '0xperps2', chainId: '0xa4b1', successRate: 92 },
+  ];
+
+  const config = {
+    default: defaultTokens,
+    overrides: {
+      perpsDeposit: perpsTokens,
+    },
+  };
+
+  it('returns override tokens when transaction type has an override', () => {
+    expect(
+      getPreferredTokensForTransactionType(config, 'perpsDeposit'),
+    ).toEqual(perpsTokens);
+  });
+
+  it('returns default tokens when transaction type has no override', () => {
+    expect(
+      getPreferredTokensForTransactionType(config, 'predictDeposit'),
+    ).toEqual(defaultTokens);
+  });
+
+  it('returns default tokens when transaction type is undefined', () => {
+    expect(getPreferredTokensForTransactionType(config, undefined)).toEqual(
+      defaultTokens,
+    );
+  });
+});
+
+describe('selectMetaMaskPayFiatFlags', () => {
+  it('returns defaults when flag is absent', () => {
+    expect(selectMetaMaskPayFiatFlags(mockedEmptyFlagsState)).toEqual({
+      enabledTransactionTypes: PAY_FIAT_ENABLED_TRANSACTION_TYPES,
+      maxDelayMinutesForPaymentMethods:
+        PAY_FIAT_MAX_DELAY_MINUTES_FOR_PAYMENT_METHODS,
+    });
+  });
+
+  it('returns enabledTransactionTypes from flag value', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_fiat: {
+          enabledTransactionTypes: ['simpleSend', 'swap'],
+        },
+      };
+
+    expect(selectMetaMaskPayFiatFlags(state)).toEqual({
+      enabledTransactionTypes: ['simpleSend', 'swap'],
+      maxDelayMinutesForPaymentMethods:
+        PAY_FIAT_MAX_DELAY_MINUTES_FOR_PAYMENT_METHODS,
+    });
+  });
+
+  it('returns maxDelayMinutesForPaymentMethods from flag value', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_fiat: {
+          maxDelayMinutesForPaymentMethods: 30,
+        },
+      };
+
+    expect(selectMetaMaskPayFiatFlags(state)).toEqual({
+      enabledTransactionTypes: PAY_FIAT_ENABLED_TRANSACTION_TYPES,
+      maxDelayMinutesForPaymentMethods: 30,
+    });
+  });
+});
+
+describe('selectPayHardwareConfig', () => {
+  function stateWithHardwareFlags(flags: Record<string, unknown>) {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      { confirmations_pay_hardware: flags };
+    return state;
+  }
+
+  const baseFlags = {
+    default: { enabled: false },
+    overrides: {
+      [TransactionType.musdConversion]: { enabled: true },
+      [TransactionType.moneyAccountDeposit]: { enabled: true },
+    },
+  };
+
+  it('returns disabled default when flag is absent', () => {
+    expect(
+      selectPayHardwareConfig(mockedEmptyFlagsState as unknown as RootState),
+    ).toEqual({ enabled: PAY_HARDWARE_ENABLED_DEFAULT });
+  });
+
+  it('returns default config when no transaction type is provided', () => {
+    const state = stateWithHardwareFlags(baseFlags);
+
+    expect(selectPayHardwareConfig(state as unknown as RootState)).toEqual({
+      enabled: false,
+    });
+  });
+
+  it('returns default config when transaction type does not exist in overrides', () => {
+    const state = stateWithHardwareFlags(baseFlags);
+
+    expect(
+      selectPayHardwareConfig(
+        state as unknown as RootState,
+        TransactionType.perpsDeposit,
+      ).enabled,
+    ).toBe(false);
+  });
+
+  it('uses override value when transaction type matches', () => {
+    const state = stateWithHardwareFlags(baseFlags);
+
+    expect(
+      selectPayHardwareConfig(
+        state as unknown as RootState,
+        TransactionType.moneyAccountDeposit,
+      ).enabled,
+    ).toBe(true);
+  });
+
+  it('inherits enabled from default when override omits enabled', () => {
+    const state = stateWithHardwareFlags({
+      default: { enabled: true },
+      overrides: { [TransactionType.moneyAccountDeposit]: {} },
+    });
+
+    expect(
+      selectPayHardwareConfig(
+        state as unknown as RootState,
+        TransactionType.moneyAccountDeposit,
+      ).enabled,
+    ).toBe(true);
+  });
+
+  it('disables a single type while default is enabled', () => {
+    const state = stateWithHardwareFlags({
+      default: { enabled: true },
+      overrides: {
+        [TransactionType.moneyAccountDeposit]: { enabled: false },
+      },
+    });
+
+    expect(
+      selectPayHardwareConfig(
+        state as unknown as RootState,
+        TransactionType.moneyAccountDeposit,
+      ).enabled,
+    ).toBe(false);
+  });
+});
+
+describe('selectMetaMaskPayFlags extended flags', () => {
+  it('returns default enableDepositWalletWithdraw when flag is absent', () => {
+    expect(
+      selectMetaMaskPayFlags(mockedEmptyFlagsState).enableDepositWalletWithdraw,
+    ).toEqual(PAY_ENABLE_DEPOSIT_WALLET_WITHDRAW_DEFAULT);
+  });
+
+  it('returns enableDepositWalletWithdraw from flag value', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_extended: { enableDepositWalletWithdraw: true },
+      };
+
+    expect(selectMetaMaskPayFlags(state).enableDepositWalletWithdraw).toEqual(
+      true,
+    );
+  });
+
+  it('returns default enableMoneyAccountTransactions when flag is absent', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+
+    expect(
+      selectMetaMaskPayFlags(state).enableMoneyAccountTransactions,
+    ).toEqual(PAY_ENABLE_MONEY_ACCOUNT_TRANSACTIONS_DEFAULT);
+  });
+
+  it('returns enableMoneyAccountTransactions from flag value', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_extended: {
+          enableMoneyAccountTransactions: {
+            perpsDeposit: true,
+            perpsWithdraw: true,
+            predictDeposit: true,
+            predictWithdraw: true,
+          },
+        },
+      };
+
+    expect(
+      selectMetaMaskPayFlags(state).enableMoneyAccountTransactions,
+    ).toEqual({
+      perpsDeposit: true,
+      perpsWithdraw: true,
+      predictDeposit: true,
+      predictWithdraw: true,
+    });
+  });
+
+  describe('defaultPaySelectedSection', () => {
+    it('returns default (undefined) when remote flag is absent', () => {
+      const state = cloneDeep(mockedEmptyFlagsState);
+
+      expect(selectMetaMaskPayFlags(state).defaultPaySelectedSection).toEqual(
+        PAY_DEFAULT_PAY_SELECTED_SECTION_DEFAULT,
+      );
+    });
+
+    it('returns per-type object when remote flag is set', () => {
+      const state = cloneDeep(mockedEmptyFlagsState);
+      state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+        {
+          confirmations_pay_extended: {
+            defaultPaySelectedSection: {
+              perpsWithdraw: 'money-account',
+              predictWithdraw: 'money-account',
+            },
+          },
+        };
+
+      expect(selectMetaMaskPayFlags(state).defaultPaySelectedSection).toEqual({
+        perpsWithdraw: 'money-account',
+        predictWithdraw: 'money-account',
+      });
+    });
+  });
+
+  describe('selectDepositLimits', () => {
+    it('returns default empty map when remote flag is absent', () => {
+      const state = cloneDeep(mockedEmptyFlagsState);
+
+      expect(selectDepositLimits(state as unknown as RootState)).toEqual(
+        PAY_DEPOSIT_LIMITS_DEFAULT,
+      );
+    });
+
+    it('returns all deposit limits from flag value', () => {
+      const state = cloneDeep(mockedEmptyFlagsState);
+      state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+        {
+          confirmations_pay_extended: {
+            depositLimit: {
+              moneyAccountDeposit: 100000,
+            },
+          },
+        };
+
+      expect(selectDepositLimits(state as unknown as RootState)).toEqual({
+        moneyAccountDeposit: 100000,
+      });
+    });
+
+    it('returns multiple deposit type limits', () => {
+      const state = cloneDeep(mockedEmptyFlagsState);
+      state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+        {
+          confirmations_pay_extended: {
+            depositLimit: {
+              moneyAccountDeposit: 100000,
+              perpsDeposit: 25000,
+            },
+          },
+        };
+
+      expect(selectDepositLimits(state as unknown as RootState)).toEqual({
+        moneyAccountDeposit: 100000,
+        perpsDeposit: 25000,
+      });
+    });
+  });
+});
+
+describe('selectPerpsMoneyAccountNoFeeRouteEnabled', () => {
+  const perpsRoute = ['monad', 'musd', 'hyperliquid', 'hypercore_usdc'];
+
+  function stateWithFixedSpread(flag: unknown) {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_relay_fixed_spread: flag,
+      };
+
+    return state as unknown as RootState;
+  }
+
+  it('returns true when the perps route is listed', () => {
+    expect(
+      selectPerpsMoneyAccountNoFeeRouteEnabled(
+        stateWithFixedSpread({
+          chains: { monad: '0x8f', hyperliquid: '0x539' },
+          tokens: {
+            musd: '0xaca92e438df0b2401ff60da7e4337b687a2435da',
+            hypercore_usdc: '0x00000000000000000000000000000000',
+          },
+          routes: [['eth', 'eth_usdc', 'monad', 'musd'], perpsRoute],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('returns true when the flag is a JSON string containing the route', () => {
+    expect(
+      selectPerpsMoneyAccountNoFeeRouteEnabled(
+        stateWithFixedSpread(
+          JSON.stringify({
+            routes: [perpsRoute],
+          }),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('returns false when the flag is absent', () => {
+    expect(
+      selectPerpsMoneyAccountNoFeeRouteEnabled(
+        mockedEmptyFlagsState as unknown as RootState,
+      ),
+    ).toBe(false);
+  });
+
+  it('returns false when other routes are listed without the perps route', () => {
+    expect(
+      selectPerpsMoneyAccountNoFeeRouteEnabled(
+        stateWithFixedSpread({
+          routes: [['eth', 'eth_usdc', 'monad', 'musd']],
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('returns false when the route aliases do not match exactly', () => {
+    expect(
+      selectPerpsMoneyAccountNoFeeRouteEnabled(
+        stateWithFixedSpread({
+          routes: [['monad', 'musd', 'hyperliquid', 'hypercore_usdt']],
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('selectRelayFixedSpread', () => {
+  let consoleWarnSpy: jest.SpyInstance;
+
+  const ETH_USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+  const ETH_MUSD = '0xaca92e438df0b2401ff60da7e4337b687a2435da';
+
+  const samplePayload = {
+    chains: { eth: '0x1' },
+    tokens: { eth_usdc: ETH_USDC, musd: ETH_MUSD },
+    routes: [['eth', 'eth_usdc', 'eth', 'musd']],
+  };
+
+  const expectedRoute = {
+    sourceChain: '0x1',
+    sourceToken: ETH_USDC,
+    targetChain: '0x1',
+    targetToken: ETH_MUSD,
+  };
+
+  beforeEach(() => {
+    consoleWarnSpy = jest
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    consoleWarnSpy.mockRestore();
+  });
+
+  it('returns parsed routes when remote object is valid', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_relay_fixed_spread: samplePayload,
+      };
+
+    expect(selectRelayFixedSpread(state).routes).toEqual([expectedRoute]);
+  });
+
+  it('parses remote value provided as a JSON string', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_relay_fixed_spread: JSON.stringify(samplePayload),
+      };
+
+    expect(selectRelayFixedSpread(state).routes).toEqual([expectedRoute]);
+  });
+
+  it('warns and returns empty when remote is structurally invalid', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_relay_fixed_spread: { routes: 'not-an-array' },
+      };
+
+    expect(selectRelayFixedSpread(state)).toEqual({ routes: [] });
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('produced invalid structure'),
+    );
+  });
+
+  it('returns empty routes when remote flag is absent', () => {
+    expect(selectRelayFixedSpread(mockedEmptyFlagsState)).toEqual({
+      routes: [],
+    });
+    expect(consoleWarnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('selectPrefilledAmountConfig', () => {
+  it('returns default (enabled: false) when no flags are set', () => {
+    expect(
+      selectPrefilledAmountConfig(
+        mockedEmptyFlagsState as unknown as RootState,
+      ),
+    ).toEqual(PAY_PREFILLED_AMOUNT_DEFAULT.default);
+  });
+
+  it('returns override config when transaction type has an override', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_extended: {
+          prefilledAmount: {
+            default: { enabled: false },
+            overrides: {
+              moneyAccountDeposit: { enabled: true },
+            },
+          },
+        },
+      };
+
+    expect(
+      selectPrefilledAmountConfig(
+        state as unknown as RootState,
+        'moneyAccountDeposit',
+      ),
+    ).toEqual({ enabled: true });
+  });
+
+  it('falls back to default when transaction type has no override', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_extended: {
+          prefilledAmount: {
+            default: { enabled: true },
+            overrides: {},
+          },
+        },
+      };
+
+    expect(
+      selectPrefilledAmountConfig(state as unknown as RootState, 'unknownType'),
+    ).toEqual({ enabled: true });
+  });
+
+  it('returns default when no transaction type is provided', () => {
+    const state = cloneDeep(mockedEmptyFlagsState);
+    state.engine.backgroundState.RemoteFeatureFlagController.remoteFeatureFlags =
+      {
+        confirmations_pay_extended: {
+          prefilledAmount: {
+            default: { enabled: true },
+            overrides: {
+              moneyAccountDeposit: { enabled: false },
+            },
+          },
+        },
+      };
+
+    expect(selectPrefilledAmountConfig(state as unknown as RootState)).toEqual({
+      enabled: true,
+    });
+  });
+});

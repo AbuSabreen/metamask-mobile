@@ -1,22 +1,44 @@
 import { createSelector } from 'reselect';
-import { ProviderConfig } from '@metamask/network-controller';
+import { CaipChainId } from '@metamask/utils';
 import {
   getNetworkNameFromProviderConfig,
   getNetworkImageSource,
 } from '../util/networks';
-import { selectProviderConfig } from './networkController';
+import { ProviderConfig, selectProviderConfig } from './networkController';
+import {
+  selectIsEvmNetworkSelected,
+  selectSelectedNonEvmNetworkChainId,
+  selectSelectedNonEvmNetworkName,
+} from './multichainNetworkController';
+import { getNonEvmNetworkImageSourceByChainId } from '../util/networks/customNetworks';
 
 export const selectNetworkName = createSelector(
   selectProviderConfig,
-  (providerConfig: ProviderConfig) =>
-    getNetworkNameFromProviderConfig(providerConfig),
+  selectIsEvmNetworkSelected,
+  selectSelectedNonEvmNetworkName,
+  (
+    providerConfig: ProviderConfig,
+    isEvmSelected: boolean,
+    nonEvmNetworkName: string,
+  ) =>
+    !isEvmSelected
+      ? nonEvmNetworkName
+      : getNetworkNameFromProviderConfig(providerConfig),
 );
 
 export const selectNetworkImageSource = createSelector(
   selectProviderConfig,
-  (providerConfig: ProviderConfig) =>
-    getNetworkImageSource({
-      networkType: providerConfig.type,
-      chainId: providerConfig.chainId,
-    }),
+  selectIsEvmNetworkSelected,
+  selectSelectedNonEvmNetworkChainId,
+  (
+    providerConfig: ProviderConfig,
+    isEvmSelected: boolean,
+    nonEvmNetworkChainId: CaipChainId,
+  ) =>
+    !isEvmSelected
+      ? getNonEvmNetworkImageSourceByChainId(nonEvmNetworkChainId)
+      : getNetworkImageSource({
+          networkType: providerConfig?.type,
+          chainId: providerConfig.chainId,
+        }),
 );

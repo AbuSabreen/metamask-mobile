@@ -1,0 +1,79 @@
+import { MetaMetricsEvents } from '../../core/Analytics';
+import { IMetaMetricsEvent, JsonMap, TdpVersion } from './analytics.types';
+
+export enum ActionLocation {
+  HOME = 'home',
+  ASSET_DETAILS = 'asset details',
+  NAVBAR = 'navbar',
+  /** Wallet home post-onboarding checklist (TMCU-680). */
+  ONBOARDING_CHECKLIST = 'onboarding_checklist',
+}
+
+export enum ActionButtonType {
+  BUY = 'buy',
+  SWAP = 'swap',
+  SEND = 'send',
+  RECEIVE = 'receive',
+  SELL = 'sell',
+  PERPS = 'perps',
+  PREDICT = 'predict',
+  BATCH_SWAP = 'batch_swap',
+  TRADERS = 'traders',
+}
+
+/**
+ * The position of the button in the action button for remote config use and a/b testing.
+ * Supports up to 8 slots for the homepage 2×4 action-button grid AB test (TMCU-1103).
+ */
+export enum ActionPosition {
+  FIRST_POSITION = 0,
+  SECOND_POSITION = 1,
+  THIRD_POSITION = 2,
+  FOURTH_POSITION = 3,
+  FIFTH_POSITION = 4,
+  SIXTH_POSITION = 5,
+  SEVENTH_POSITION = 6,
+  EIGHTH_POSITION = 7,
+}
+
+/**
+ * Properties for action button tracking
+ *
+ * @property action_name - The action that was clicked from the home page or asset details page
+ * @property action_position - The position of the button in the action button for remote config use and a/b testing (optional, omitted for navbar)
+ * @property button_label - The label of the button - i18n string
+ * @property location - The location of the button (home, asset details, navbar)
+ * @property tdp_version - Token Details page version. Only set by the Token Details below-chart Buy/Send/Receive buttons (`'v2'` legacy, `'v3'` V1). Omitted for all other callers (home, navbar, etc.).
+ */
+export interface ActionButtonProperties extends JsonMap {
+  action_name: ActionButtonType;
+  action_position?: ActionPosition;
+  button_label: string;
+  location?: ActionLocation;
+  tdp_version?: TdpVersion;
+}
+
+/**
+ * Track action button click with new consolidated event.
+ * Generic over the event type so callers using AnalyticsEventBuilder
+ * (AnalyticsTrackingEvent) are accepted without a lossy union parameter.
+ *
+ * @param trackEvent - trackEvent function from useAnalytics
+ * @param createEventBuilder - createEventBuilder function from AnalyticsEventBuilder
+ * @param properties - Button properties
+ */
+export const trackActionButtonClick = <TEvent>(
+  trackEvent: (event: TEvent) => void,
+  createEventBuilder: (event: IMetaMetricsEvent) => {
+    addProperties: (properties: ActionButtonProperties) => {
+      build: () => TEvent;
+    };
+  },
+  properties: ActionButtonProperties,
+) => {
+  trackEvent(
+    createEventBuilder(MetaMetricsEvents.ACTION_BUTTON_CLICKED)
+      .addProperties(properties)
+      .build(),
+  );
+};

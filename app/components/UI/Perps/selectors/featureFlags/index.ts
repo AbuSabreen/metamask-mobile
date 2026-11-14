@@ -1,0 +1,609 @@
+import { createSelector } from 'reselect';
+import {
+  selectFeatureFlagThresholdGroups,
+  selectRemoteFeatureFlags,
+} from '../../../../../selectors/featureFlagController';
+import {
+  VersionGatedFeatureFlag,
+  validatedVersionGatedFeatureFlag,
+} from '../../../../../util/remoteFeatureFlag';
+import { resolveABTestAssignment } from '../../../../../util/abTest';
+import {
+  SOCIAL_V1_AB_KEY,
+  SocialV1Variant,
+} from '../../../../Views/SocialLeaderboard/SocialV1View/abTestConfig';
+import type { RootState } from '../../../../../reducers';
+import { hasProperty } from '@metamask/utils';
+import { parseAllowlistAssets } from '../../utils/parseAllowlistAssets';
+import { isLighterProviderEnabled } from '../../utils/lighterFeatureFlags';
+
+export const selectPerpsEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const localFlag = process.env.MM_PERPS_ENABLED === 'true';
+    const remoteFlag =
+      remoteFeatureFlags?.perpsPerpTradingEnabled as unknown as VersionGatedFeatureFlag;
+
+    // Fallback to local flag if remote flag is not available
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? localFlag;
+  },
+);
+
+export const selectPerpsServiceInterruptionBannerEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const localFlag =
+      process.env.MM_PERPS_SERVICE_INTERRUPTION_BANNER_ENABLED === 'true';
+    const remoteFlag =
+      remoteFeatureFlags?.perpsPerpTradingServiceInterruptionBannerEnabled as unknown as VersionGatedFeatureFlag;
+
+    // Fallback to local flag if remote flag is not available
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? localFlag;
+  },
+);
+
+export const selectPerpsGtmOnboardingModalEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const localFlag = process.env.MM_PERPS_GTM_MODAL_ENABLED === 'true';
+    const remoteFlag =
+      remoteFeatureFlags?.perpsPerpGtmOnboardingModalEnabled as unknown as VersionGatedFeatureFlag;
+
+    // Fallback to local flag if remote flag is not available
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? localFlag;
+  },
+);
+
+/**
+ * Selector for Order Book feature flag
+ * Controls visibility of the Order Book navigation in Market Details view
+ *
+ * @returns boolean - true if Order Book should be shown, false otherwise
+ */
+export const selectPerpsOrderBookEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    // Default to false if no flag is set (disabled by default)
+    const localFlag = process.env.MM_PERPS_ORDER_BOOK_ENABLED === 'true';
+    const remoteFlag =
+      remoteFeatureFlags?.perpsOrderBookEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? localFlag;
+  },
+);
+
+/**
+ * Client-config / Redux key for Chase orders.
+ * LaunchDarkly key (kebab-case): `perps-mobile-chase`.
+ */
+export const PERPS_MOBILE_CHASE_FLAG_KEY = 'perpsMobileChase' as const;
+
+/** Chase is default-off and may only be exposed to supported app versions. */
+export const selectPerpsMobileChaseEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag = remoteFeatureFlags?.[
+      PERPS_MOBILE_CHASE_FLAG_KEY
+    ] as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Client-config / Redux key for the Perps advanced chart feature flag.
+ * LaunchDarkly key (kebab-case): `perps-advanced-chart-enabled-v2`
+ */
+export const PERPS_ADVANCED_CHART_ENABLED_FLAG_KEY =
+  'perpsAdvancedChartEnabledV2' as const;
+
+/**
+ * Selector for Perps advanced chart feature flag.
+ * Controls whether market detail and fullscreen charts use the shared AdvancedChart
+ * (TradingView) instead of the Lightweight Charts WebView.
+ *
+ * @returns boolean - true if advanced chart should be shown, false otherwise
+ */
+export const selectPerpsAdvancedChartEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag = remoteFeatureFlags?.[
+      PERPS_ADVANCED_CHART_ENABLED_FLAG_KEY
+    ] as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Client-config / Redux key for the Perps show full asset names feature flag.
+ * LaunchDarkly key (kebab-case): `perps-show-full-asset-names`
+ */
+export const PERPS_SHOW_FULL_ASSET_NAMES_FLAG_KEY =
+  'perpsShowFullAssetNames' as const;
+
+/**
+ * Selector for showing full asset names in Perps market row lists.
+ * When enabled, vertical market lists display the full asset name (e.g. "Bitcoin")
+ * instead of the ticker symbol (e.g. "BTC").
+ *
+ * @returns boolean - true if full asset names should be shown, false otherwise.
+ */
+export const selectPerpsShowFullAssetNamesFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag = remoteFeatureFlags?.[
+      PERPS_SHOW_FULL_ASSET_NAMES_FLAG_KEY
+    ] as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for Related Markets rail feature flag.
+ * Controls visibility of the discovery rail on Perps market details.
+ *
+ * @returns boolean - true if the related markets rail should be shown.
+ */
+export const selectPerpsRelatedMarketsEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    // Default to false if no flag is set (disabled by default)
+    const localFlag = process.env.MM_PERPS_RELATED_MARKETS_ENABLED === 'true';
+    const remoteFlag =
+      remoteFeatureFlags?.perpsRelatedMarkets as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? localFlag;
+  },
+);
+
+/**
+ * Selector for Perps Close Position order-type selector feature flag.
+ * Controls visibility of the Market/Limit order-type selector on the close
+ * position screen. Defaults to false (disabled by default) so it can be
+ * rolled out and rolled back independently of the release.
+ *
+ * @returns boolean - true if the close-position order-type selector should be shown, false otherwise
+ */
+export const selectPerpsClosePositionLimitOrderEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsClosePositionLimitOrderEnabled as unknown as VersionGatedFeatureFlag;
+
+    // Default to false if no flag is set (disabled by default)
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for Recently Viewed rail feature flag.
+ * Controls visibility of the "Recently viewed" markets rail on the Perps
+ * market list screen.
+ *
+ * @returns boolean - true if the recently viewed rail should be shown.
+ */
+export const selectPerpsRecentlyViewedEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    // Default to false if no flag is set (disabled by default)
+    const localFlag = process.env.MM_PERPS_RECENTLY_VIEWED_ENABLED === 'true';
+    const remoteFlag =
+      remoteFeatureFlags?.perpsRecentlyViewedEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? localFlag;
+  },
+);
+
+/**
+ * Selector for HIP-3 configuration version
+ * Used by ConnectionManager to detect when HIP-3 config changes and trigger reconnection
+ *
+ * @param state - Redux root state
+ * @returns number - Version increments when HIP-3 config changes
+ */
+export const selectHip3ConfigVersion = createSelector(
+  (state: RootState) => state?.engine?.backgroundState?.PerpsController,
+  (perpsController) => perpsController?.hip3ConfigVersion ?? 0,
+);
+
+/**
+ * Selector for Perps Feedback feature flag
+ * Controls visibility of the "Give feedback" button on Perps home screen
+ *
+ * @returns boolean - true if feedback button should be shown, false otherwise
+ */
+export const selectPerpsFeedbackEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const localFlag = process.env.MM_PERPS_FEEDBACK_ENABLED === 'true';
+    const remoteFlag =
+      remoteFeatureFlags?.perpsFeedbackEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? localFlag;
+  },
+);
+
+/**
+ * Selector for Perps Trade With Any Token feature flag
+ * Controls visibility of the deposit flow in PerpsOrderView
+ * When enabled, allows users to trade with any token by depositing first
+ *
+ * @returns boolean - true if trade with any token is enabled, false otherwise
+ */
+export const selectPerpsTradeWithAnyTokenEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const localFlag =
+      process.env.MM_PERPS_TRADE_WITH_ANY_TOKEN_ENABLED === 'true';
+    const remoteFlag =
+      remoteFeatureFlags?.perpsTradeWithAnyTokenIsEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? localFlag;
+  },
+);
+
+/**
+ * Selector for Perps Pay With Any Token allowlist assets.
+ * When non-empty, only tokens matching "chainId.address" entries in this list
+ * are shown in the pay-with modal (in addition to the Perps balance option).
+ * Env MM_PERPS_PAY_WITH_ANY_TOKEN_ALLOWLIST_ASSETS overrides the remote flag.
+ *
+ * If the remote LaunchDarkly value fails to parse (wrong format), returns []
+ * so that the app falls back to allowing all tokens instead of blocking.
+ *
+ * @returns string[] - Normalized "chainId.address" entries (lowercase)
+ */
+export const selectPerpsPayWithAnyTokenAllowlistAssets = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags): string[] => {
+    const envValue =
+      process.env.MM_PERPS_PAY_WITH_ANY_TOKEN_ALLOWLIST_ASSETS ?? '';
+    const localList = parseAllowlistAssets(envValue);
+    if (localList.length > 0) {
+      return localList;
+    }
+    if (
+      remoteFeatureFlags &&
+      hasProperty(remoteFeatureFlags, 'perpsPayWithAnyTokenAllowlistAssets')
+    ) {
+      return parseAllowlistAssets(
+        remoteFeatureFlags.perpsPayWithAnyTokenAllowlistAssets,
+      );
+    }
+    return [];
+  },
+);
+
+/**
+ * Selector for Perps Products section feature flag
+ * Controls visibility of the category pills grid on Perps home screen
+ *
+ * @returns boolean - true if Products section should be shown, false otherwise
+ */
+export const selectPerpsProductsEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsProductsEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for Perps Competition Banner feature flag
+ * Controls visibility of the competition promotion banner on Perps home screen
+ *
+ * @returns boolean - true if competition banner should be shown, false otherwise
+ */
+export const selectPerpsCompetitionBannerEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsCompetitionBannerEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for Perps Top Movers feature flag
+ * Controls visibility of the Top Movers (Gainers/Losers) section on the Perps home screen
+ *
+ * @returns boolean - true if Top Movers section should be shown, false otherwise
+ */
+export const selectPerpsTopMoversEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsTopMoversEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for Perps Recently Added feature flag.
+ * Controls visibility of the Recently Added section on the Perps home screen,
+ * independently of the Terminal backend flag that supplies `listedAt` data.
+ *
+ * @returns boolean - true if the Recently Added section should be shown, false otherwise
+ */
+export const selectPerpsRecentlyAddedEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsRecentlyAddedEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for Perps Watchlist redesign feature flag
+ * Controls whether the redesigned Watchlist UI (empty state, suggested markets,
+ * show-more/less, tappable header, animations, 10-asset limit) and the
+ * watchlist filter pill in the markets list are shown.
+ * When disabled, falls back to the pre-redesign plain watchlist list.
+ *
+ * @returns boolean - true if redesigned watchlist should be shown, false otherwise
+ */
+export const selectPerpsWatchlistEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsWatchlistV2Enabled as unknown as VersionGatedFeatureFlag;
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for the Perps Pro mode feature flag.
+ * Controls whether the reusable Lite/Pro mode toggle (Trade menu, Perps home
+ * header, Market header) and the Pro-mode entry points are shown.
+ * When disabled, the toggle is hidden and the app behaves as Lite-only.
+ *
+ * @returns boolean - true if Pro mode UI should be shown, false otherwise
+ */
+export const selectPerpsProModeEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsProModeEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for triggered order types in the Perps Pro order form.
+ * Defaults to false so triggered types can be rolled out independently.
+ *
+ * @returns boolean - true if triggered order types can be shown, false otherwise
+ */
+export const selectPerpsProTriggeredOrdersEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsProTriggeredOrdersEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Client-config / Redux key for the Pro open-position margin preview.
+ * LaunchDarkly key (kebab-case): `perps-position-modify-preview-enabled`.
+ */
+export const PERPS_POSITION_MODIFY_PREVIEW_ENABLED_FLAG_KEY =
+  'perpsPositionModifyPreviewEnabled' as const;
+
+/**
+ * Selector for before→after margin (and liquidation) on the Pro order form
+ * when an isolated position is already open, including leverage changes.
+ * Defaults to false so the preview can be rolled out and rolled back
+ * independently of Pro mode.
+ *
+ * @returns boolean - true if the position-modify preview should be shown
+ */
+export const selectPerpsPositionModifyPreviewEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag = remoteFeatureFlags?.[
+      PERPS_POSITION_MODIFY_PREVIEW_ENABLED_FLAG_KEY
+    ] as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Client-config / Redux key for social features inside Perps.
+ * LaunchDarkly key (camelCase, same as the client key): `perpsSocialEnabled`.
+ */
+export const PERPS_SOCIAL_ENABLED_FLAG_KEY = 'perpsSocialEnabled' as const;
+
+export const selectPerpsSocialEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag = remoteFeatureFlags?.[
+      PERPS_SOCIAL_ENABLED_FLAG_KEY
+    ] as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+export const selectIsPerpsSocialEnabled = createSelector(
+  selectPerpsSocialEnabledFlag,
+  selectRemoteFeatureFlags,
+  selectFeatureFlagThresholdGroups,
+  (isPerpsSocialFlagEnabled, remoteFeatureFlags, thresholdGroups) =>
+    isPerpsSocialFlagEnabled &&
+    resolveABTestAssignment(
+      remoteFeatureFlags,
+      SOCIAL_V1_AB_KEY,
+      Object.values(SocialV1Variant),
+      thresholdGroups,
+    ).variantName === SocialV1Variant.Treatment,
+);
+
+/**
+ * Client-config / Redux key for the Pro Scale order feature flag.
+ * LaunchDarkly key (kebab-case): `perps-mobile-scale`.
+ */
+export const PERPS_MOBILE_SCALE_FLAG_KEY = 'perpsMobileScale' as const;
+
+/**
+ * Selector for Scale orders in the Perps Pro order form.
+ * Defaults to false so entry and placement can be rolled back without hiding
+ * already-resting child limit orders from either Lite or Pro order lists.
+ *
+ * @returns boolean - true if Scale order entry and placement are enabled
+ */
+export const selectPerpsMobileScaleEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag = remoteFeatureFlags?.[
+      PERPS_MOBILE_SCALE_FLAG_KEY
+    ] as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for Hyperliquid TWAP placement in the Perps Pro order form.
+ * Defaults to false so strategy placement can be rolled out independently.
+ *
+ * LaunchDarkly key: `perps-mobile-twap`
+ *
+ * @returns boolean - true if TWAP placement can be shown, false otherwise
+ */
+export const PERPS_MOBILE_TWAP_FLAG_KEY = 'perpsMobileTwap' as const;
+
+export const selectPerpsProTwapEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag = remoteFeatureFlags?.[
+      PERPS_MOBILE_TWAP_FLAG_KEY
+    ] as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for Terminal Backend feature flag.
+ * Controls whether market-data calls route through the MetaMask Terminal API
+ * (with HyperLiquid fallback) or go directly to HyperLiquid.
+ *
+ * @returns boolean - true if Terminal API should be used, false otherwise
+ */
+export const selectPerpsTerminalBackendEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsTerminalBackendEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for default pay token when no perps balance feature flag.
+ * When enabled: preselect allowlist token with highest balance in Pay row when user has no perps balance,
+ * and show "Add funds" CTA on market details when no token can be preselected.
+ * When disabled: no default token preselection and no Add funds CTA (legacy behavior).
+ * Controlled only by remote flag; when remote is missing or invalid, defaults to true.
+ *
+ * @returns boolean - true if feature is enabled, false otherwise
+ */
+export const selectPerpsDefaultPayTokenWhenNoBalanceEnabledFlag =
+  createSelector(selectRemoteFeatureFlags, (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsDefaultPayTokenWhenNoBalanceEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? true;
+  });
+
+/**
+ * Client-config / Redux key for the Cross margin feature flag.
+ * LaunchDarkly key (kebab-case): `perps-cross-margin-enabled`.
+ */
+export const PERPS_CROSS_MARGIN_ENABLED_FLAG_KEY =
+  'perpsCrossMarginEnabled' as const;
+
+/**
+ * Selector for Cross margin support on existing positions.
+ * When enabled: Cross positions show the Cross badge, the shared-collateral
+ * liquidation explanation and a non-editable "Position margin used" label.
+ * When disabled: Cross positions fall back to the isolated presentation.
+ * Defaults to false so Cross margin can be rolled out and rolled back
+ * independently of Pro mode.
+ *
+ * @returns boolean - true if Cross margin display is enabled, false otherwise
+ */
+export const selectPerpsCrossMarginEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.[PERPS_CROSS_MARGIN_ENABLED_FLAG_KEY];
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Selector for the Lighter venue provider (TAT-3766 POC).
+ * Controls whether Lighter appears in the provider/network selector.
+ *
+ * Remote flag wins when valid; falls back to the local env gate so the POC
+ * stays switchable on a dev machine without a LaunchDarkly entry.
+ *
+ * LaunchDarkly key (kebab-case): `perps-lighter-provider-enabled`.
+ *
+ * @returns boolean - true if the Lighter provider should be selectable
+ */
+export const selectPerpsLighterProviderEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    // Default to false if no flag is set (disabled by default)
+    const localFlag = isLighterProviderEnabled();
+    const remoteFlag =
+      remoteFeatureFlags?.perpsLighterProviderEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? localFlag;
+  },
+);
+
+export const selectPerpsPriceAlertsEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag =
+      remoteFeatureFlags?.perpsPriceAlertsEnabled as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);
+
+/**
+ * Client-config key for perps percent-change price alerts.
+ * Defaults to false so percent-change alerts can be rolled out independently
+ * from threshold price alerts.
+ */
+export const PERPS_PRICE_ALERTS_PERCENT_CHANGE_ENABLED_FLAG_KEY =
+  'perpsPriceAlertsPercentChangeEnabled' as const;
+
+export const selectPerpsPriceAlertsPercentChangeEnabledFlag = createSelector(
+  selectRemoteFeatureFlags,
+  (remoteFeatureFlags) => {
+    const remoteFlag = remoteFeatureFlags?.[
+      PERPS_PRICE_ALERTS_PERCENT_CHANGE_ENABLED_FLAG_KEY
+    ] as unknown as VersionGatedFeatureFlag;
+
+    return validatedVersionGatedFeatureFlag(remoteFlag) ?? false;
+  },
+);

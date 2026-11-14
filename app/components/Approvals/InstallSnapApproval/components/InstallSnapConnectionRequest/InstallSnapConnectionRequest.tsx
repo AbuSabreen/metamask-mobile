@@ -1,20 +1,12 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
 import React, { useMemo } from 'react';
-import { ImageSourcePropType, View } from 'react-native';
+import { View } from 'react-native';
 import { InstallSnapFlowProps } from '../../InstallSnapApproval.types';
 import styleSheet from '../../InstallSnapApproval.styles';
 import { strings } from '../../../../../../locales/i18n';
 import SheetHeader from '../../../../../component-library/components/Sheet/SheetHeader';
-import Text, {
-  TextVariant,
-} from '../../../../../component-library/components/Texts/Text';
 import TagUrl from '../../../../../component-library/components/Tags/TagUrl';
 import { getUrlObj, prefixUrlWithProtocol } from '../../../../../util/browser';
 import { IconName } from '../../../../../component-library/components/Icons/Icon';
-import Cell, {
-  CellVariant,
-} from '../../../../../component-library/components/Cells/Cell';
-import { AvatarVariant } from '../../../../../component-library/components/Avatars/Avatar';
 import {
   ButtonSize,
   ButtonVariants,
@@ -29,15 +21,19 @@ import {
   SNAP_INSTALL_CONNECT,
   SNAP_INSTALL_CONNECTION_REQUEST,
 } from './InstallSnapConnectionRequest.constants';
+import { useFavicon } from '../../../../hooks/useFavicon';
+import { SnapAvatar } from '../../../../Snaps/SnapAvatar/SnapAvatar';
+import { Text, TextVariant } from '@metamask/design-system-react-native';
 
 const InstallSnapConnectionRequest = ({
   approvalRequest,
+  snapId,
   snapName,
   onConfirm,
   onCancel,
 }: Pick<
   InstallSnapFlowProps,
-  'approvalRequest' | 'onConfirm' | 'onCancel' | 'snapName'
+  'approvalRequest' | 'onConfirm' | 'onCancel' | 'snapId' | 'snapName'
 >) => {
   const { styles } = useStyles(styleSheet, {});
 
@@ -46,10 +42,7 @@ const InstallSnapConnectionRequest = ({
     [approvalRequest.origin],
   );
 
-  const favicon: ImageSourcePropType = useMemo(() => {
-    const iconUrl = `https://api.faviconkit.com/${origin}/50`;
-    return { uri: iconUrl };
-  }, [origin]);
+  const { faviconURI: favicon } = useFavicon(origin);
 
   const urlWithProtocol = prefixUrlWithProtocol(origin);
 
@@ -85,22 +78,18 @@ const InstallSnapConnectionRequest = ({
           label={urlWithProtocol}
           iconName={secureIcon}
         />
+        <SnapAvatar
+          snapId={snapId}
+          snapName={snapName}
+          style={styles.snapAvatar}
+        />
         <SheetHeader title={strings('install_snap.title')} />
-        <Text style={styles.description} variant={TextVariant.BodyMD}>
+        <Text style={styles.description} variant={TextVariant.BodyMd}>
           {strings('install_snap.description', {
             origin,
             snap: snapName,
           })}
         </Text>
-        <Cell
-          style={styles.snapCell}
-          variant={CellVariant.Display}
-          title={snapName}
-          avatarProps={{
-            variant: AvatarVariant.Icon,
-            name: IconName.Snaps,
-          }}
-        />
         <View style={styles.actionContainer}>
           <BottomSheetFooter
             buttonsAlignment={ButtonsAlignment.Horizontal}
@@ -113,4 +102,3 @@ const InstallSnapConnectionRequest = ({
 };
 
 export default React.memo(InstallSnapConnectionRequest);
-///: END:ONLY_INCLUDE_IF

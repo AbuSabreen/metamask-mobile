@@ -2,12 +2,22 @@
 import { ActionType, Action } from '../../actions/security';
 import { SecuritySettingsState } from '../../actions/security/state';
 
+export interface SecurityState {
+  allowLoginWithRememberMe: boolean;
+  dataCollectionForMarketing: boolean | null;
+  isNFTAutoDetectionModalViewed: boolean;
+  osAuthEnabled: boolean;
+  shouldShowConsentSheet: boolean;
+  dataSharingPreference: boolean | null;
+}
+
 export const initialState: Readonly<SecuritySettingsState> = {
   allowLoginWithRememberMe: false,
-  automaticSecurityChecksEnabled: false,
-  hasUserSelectedAutomaticSecurityCheckOption: false,
-  isAutomaticSecurityChecksModalOpen: false,
   dataCollectionForMarketing: null,
+  isNFTAutoDetectionModalViewed: false,
+  osAuthEnabled: true, // Default to enabled (biometric-first)
+  shouldShowConsentSheet: true,
+  dataSharingPreference: null,
 };
 
 const securityReducer = (
@@ -20,25 +30,30 @@ const securityReducer = (
         ...state,
         allowLoginWithRememberMe: action.enabled,
       };
-    case ActionType.SET_AUTOMATIC_SECURITY_CHECKS:
+    case ActionType.SET_NFT_AUTO_DETECTION_MODAL_OPEN:
       return {
         ...state,
-        automaticSecurityChecksEnabled: action.enabled,
-      };
-    case ActionType.USER_SELECTED_AUTOMATIC_SECURITY_CHECKS_OPTION:
-      return {
-        ...state,
-        hasUserSelectedAutomaticSecurityCheckOption: action.selected,
-      };
-    case ActionType.SET_AUTOMATIC_SECURITY_CHECKS_MODAL_OPEN:
-      return {
-        ...state,
-        isAutomaticSecurityChecksModalOpen: action.open,
+        isNFTAutoDetectionModalViewed: action.open,
       };
     case ActionType.SET_DATA_COLLECTION_FOR_MARKETING:
       return {
         ...state,
         dataCollectionForMarketing: action.enabled,
+      };
+    case ActionType.SET_OS_AUTH_ENABLED:
+      return {
+        ...state,
+        osAuthEnabled: action.enabled,
+      };
+    case ActionType.SET_SHOULD_SHOW_CONSENT_SHEET:
+      return {
+        ...state,
+        shouldShowConsentSheet: action.shouldShow,
+      };
+    case ActionType.SET_DATA_SHARING_PREFERENCE:
+      return {
+        ...state,
+        dataSharingPreference: action.preference,
       };
     default:
       return state;

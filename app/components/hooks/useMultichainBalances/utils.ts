@@ -1,0 +1,148 @@
+/* eslint-disable arrow-body-style */
+import { InternalAccount } from '@metamask/keyring-internal-api';
+import {
+  getMultichainNetworkAggregatedBalance,
+  MultichainNetworkAggregatedBalance,
+} from '../../../selectors/multichain';
+import { isEvmAccountType } from '@metamask/keyring-api';
+import {
+  MultichainAssetsControllerState,
+  MultichainAssetsRatesControllerState,
+  MultichainBalancesControllerState,
+} from '@metamask/assets-controllers';
+import { formatWithThreshold } from '../../../util/assets';
+import I18n from '../../../../locales/i18n';
+import Engine from '../../../core/Engine';
+import { SupportedCaipChainId } from '@metamask/multichain-network-controller';
+import { TotalFiatBalancesCrossChains } from '../useGetTotalFiatBalanceCrossChains';
+import { isTestNet } from '../../../util/networks';
+import type { AggregatedBalance } from './useMultichainBalances.types';
+
+// Production balance calculation (EVM)
+const getEvmBalance = (
+  account: InternalAccount,
+  isOriginalNativeEvmTokenSymbol: boolean,
+  totalFiatBalancesCrossEvmChain: TotalFiatBalancesCrossChains,
+  currentCurrency: string,
+) => {
+  const balance = Engine.getTotalEvmFiatAccountBalance(account);
+  let total;
+
+  if (isOriginalNativeEvmTokenSymbol) {
+    total =
+      totalFiatBalancesCrossEvmChain[account?.address as string]
+        ?.totalFiatBalance ?? 0;
+  } else {
+    total =
+      totalFiatBalancesCrossEvmChain[account?.address as string]
+        ?.totalTokenFiat ?? 0;
+  }
+
+  const displayBalance = formatWithThreshold(total, 0, I18n.locale, {
+    style: 'currency',
+    currency: currentCurrency.toUpperCase(),
+  });
+
+  return {
+    displayBalance,
+    totalFiatBalance: total,
+    totalNativeTokenBalance: balance?.totalNativeTokenBalance,
+    nativeTokenUnit: balance?.ticker,
+  };
+};
+
+const getMultiChainFiatBalance = (
+  balance: number | undefined,
+  currency: string,
+) => {
+  if (balance === undefined) return '0';
+  return formatWithThreshold(balance, 0, I18n.locale, {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+  });
+};
+
+const getNonEvmDisplayBalance = (
+  nonEvmAccountBalance: MultichainNetworkAggregatedBalance,
+  shouldShowFiat: boolean,
+  currentCurrency: string,
+) => {
+  if (!shouldShowFiat || nonEvmAccountBalance.totalBalanceFiat === undefined) {
+    if (!nonEvmAccountBalance.totalNativeTokenBalance) {
+      return '0';
+    }
+    return `${nonEvmAccountBalance.totalNativeTokenBalance.amount} ${nonEvmAccountBalance.totalNativeTokenBalance.unit}`;
+  }
+
+  return getMultiChainFiatBalance(
+    nonEvmAccountBalance.totalBalanceFiat,
+    currentCurrency,
+  );
+};
+
+export const getShouldShowAggregatedPercentage = (
+  chainId: SupportedCaipChainId,
+) => {
+  return !isTestNet(chainId);
+};
+
+export const getAggregatedBalance = (
+  account: InternalAccount,
+): AggregatedBalance => {
+  const balance = Engine.getTotalEvmFiatAccountBalance(account);
+  return {
+    ethFiat: balance?.ethFiat ?? 0,
+    tokenFiat: balance?.tokenFiat ?? 0,
+    tokenFiat1dAgo: balance?.tokenFiat1dAgo ?? 0,
+    ethFiat1dAgo: balance?.ethFiat1dAgo ?? 0,
+  };
+};
+
+export const getAccountBalanceData = (
+  account: InternalAccount,
+  currentCurrency: string,
+  totalFiatBalancesCrossEvmChain: TotalFiatBalancesCrossChains,
+  isOriginalNativeEvmTokenSymbol: boolean,
+  multichainBalances: MultichainBalancesControllerState['balances'],
+  multichainAssets: MultichainAssetsControllerState['accountsAssets'],
+  multichainAssetsRates: MultichainAssetsRatesControllerState['conversionRates'],
+  shouldShowFiat: boolean,
+): {
+  displayBalance: string;
+  totalFiatBalance: number | undefined;
+  totalNativeTokenBalance: string | undefined;
+  nativeTokenUnit: string;
+} => {
+  if (!isEvmAccountType(account.type)) {
+    const nonEvmAccountBalance = getMultichainNetworkAggregatedBalance(
+      account,
+      multichainBalances,
+      multichainAssets,
+      multichainAssetsRates,
+    );
+    return {
+      displayBalance: getNonEvmDisplayBalance(
+        nonEvmAccountBalance,
+        shouldShowFiat,
+        currentCurrency,
+      ),
+      totalFiatBalance: nonEvmAccountBalance.totalBalanceFiat,
+      totalNativeTokenBalance:
+        nonEvmAccountBalance.totalNativeTokenBalance?.amount,
+      nativeTokenUnit: nonEvmAccountBalance.totalNativeTokenBalance?.unit || '',
+    };
+  }
+  const evmAccountBalance = getEvmBalance(
+    account,
+    isOriginalNativeEvmTokenSymbol,
+    totalFiatBalancesCrossEvmChain,
+    currentCurrency,
+  );
+  return {
+    displayBalance: evmAccountBalance.displayBalance,
+    totalFiatBalance: evmAccountBalance.totalFiatBalance,
+    totalNativeTokenBalance:
+      evmAccountBalance.totalNativeTokenBalance?.toString() || '0',
+    nativeTokenUnit: evmAccountBalance.nativeTokenUnit || '',
+  };
+};

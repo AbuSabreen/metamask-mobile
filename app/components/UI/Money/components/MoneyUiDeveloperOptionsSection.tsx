@@ -1,0 +1,255 @@
+import React, { useCallback } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+
+import { useTheme } from '../../../../util/theme';
+import {
+  clearMoneyEarnBannerDismissedTokens,
+  setMoneyOnboardingSeen,
+  setMoneySplashSeen,
+  setOnboardingStepperStep,
+} from '../../../../actions/user';
+import {
+  selectMoneyEarnBannerDismissedTokens,
+  selectMoneyOnboardingSeen,
+  selectMoneySplashSeen,
+} from '../../../../reducers/user/selectors';
+import { selectPrimaryMoneyAccount } from '../../../../selectors/moneyAccountController';
+import { useStyles } from '../../../../component-library/hooks';
+import {
+  Box,
+  Text,
+  TextColor,
+  TextVariant,
+  Button,
+  ButtonVariant,
+  ButtonSize,
+} from '@metamask/design-system-react-native';
+import styleSheet from '../../../Views/Settings/DeveloperOptions/DeveloperOptions.styles';
+import ClipboardManager from '../../../../core/ClipboardManager';
+import { STEPPER_IDS } from '../hooks/useOnboardingStep';
+import Routes from '../../../../constants/navigation/Routes';
+import { selectMoneyOnboardingStepperAnimationEnabled } from '../../../../selectors/featureFlagController/moneyAccount';
+import {
+  MONEY_HOME_CARD_DEV_OVERRIDES,
+  setMoneyHomeCardDevOverride,
+  useMoneyHomeCardDevOverride,
+} from '../hooks/moneyHomeCardDevOverride';
+
+export const MoneyUiDeveloperOptionsSection = () => {
+  const dispatch = useDispatch();
+  const theme = useTheme();
+  const { styles } = useStyles(styleSheet, { theme });
+  const navigation = useNavigation<AppNavigationProp>();
+
+  const hasSeenMoneyOnboarding = useSelector(selectMoneyOnboardingSeen);
+  const hasSeenMoneySplash = useSelector(selectMoneySplashSeen);
+  const isOnboardingEnabled = useSelector(
+    selectMoneyOnboardingStepperAnimationEnabled,
+  );
+  const primaryMoneyAccount = useSelector(selectPrimaryMoneyAccount);
+  const moneyAccountAddress = primaryMoneyAccount?.address;
+  const earnBannerDismissedTokens = useSelector(
+    selectMoneyEarnBannerDismissedTokens,
+  );
+  const earnBannerDismissedCount = Object.keys(
+    earnBannerDismissedTokens,
+  ).length;
+  const homeCardOverride = useMoneyHomeCardDevOverride();
+
+  const handleResetOnboardingSeenState = useCallback(() => {
+    dispatch(setMoneyOnboardingSeen(false));
+  }, [dispatch]);
+
+  const handleResetSplashSeenState = useCallback(() => {
+    dispatch(setMoneySplashSeen(false));
+  }, [dispatch]);
+
+  const handleResetOnboardingStepperStep = useCallback(() => {
+    dispatch(setOnboardingStepperStep(STEPPER_IDS.MONEY, 0));
+  }, [dispatch]);
+
+  const handleCopyAddress = useCallback(async () => {
+    if (moneyAccountAddress) {
+      await ClipboardManager.setString(moneyAccountAddress);
+    }
+  }, [moneyAccountAddress]);
+
+  const handlePreviewFirstTimeDepositAnimation = useCallback(() => {
+    navigation.navigate(Routes.MONEY.FIRST_TIME_DEPOSIT);
+  }, [navigation]);
+
+  const handleClearEarnBannerDismissals = useCallback(() => {
+    dispatch(clearMoneyEarnBannerDismissedTokens());
+  }, [dispatch]);
+
+  return (
+    <Box twClassName="gap-2">
+      <Box>
+        <Text variant={TextVariant.HeadingLg} style={styles.heading}>
+          {'Money UI'}
+        </Text>
+        <Text
+          color={TextColor.TextAlternative}
+          variant={TextVariant.BodyMd}
+          style={styles.desc}
+        >
+          {`Onboarding enabled: ${String(isOnboardingEnabled)}`}
+        </Text>
+        <Text
+          color={TextColor.TextAlternative}
+          variant={TextVariant.BodyMd}
+          style={styles.desc}
+        >
+          {`Onboarding seen: ${String(hasSeenMoneyOnboarding)}`}
+        </Text>
+        <Button
+          variant={ButtonVariant.Secondary}
+          style={styles.accessory}
+          size={ButtonSize.Lg}
+          onPress={handleResetOnboardingSeenState}
+          isFullWidth
+        >
+          {'Reset onboarding screen'}
+        </Button>
+      </Box>
+      <Box>
+        <Text
+          color={TextColor.TextAlternative}
+          variant={TextVariant.BodyMd}
+          style={styles.desc}
+        >
+          {`Splash seen: ${String(hasSeenMoneySplash)}`}
+        </Text>
+        <Button
+          variant={ButtonVariant.Secondary}
+          style={styles.accessory}
+          size={ButtonSize.Lg}
+          onPress={handleResetSplashSeenState}
+          isFullWidth
+        >
+          {'Reset splash screen'}
+        </Button>
+      </Box>
+      <Box>
+        <Text
+          color={TextColor.TextAlternative}
+          variant={TextVariant.BodyMd}
+          style={styles.desc}
+        >
+          {`Money Account Address: ${moneyAccountAddress ?? 'N/A'}`}
+        </Text>
+        <Button
+          variant={ButtonVariant.Secondary}
+          style={styles.accessory}
+          size={ButtonSize.Lg}
+          onPress={handleCopyAddress}
+          isDisabled={!moneyAccountAddress}
+          isFullWidth
+        >
+          {'Copy Money Account Address'}
+        </Button>
+      </Box>
+      <Box>
+        <Text
+          color={TextColor.TextAlternative}
+          variant={TextVariant.BodyMd}
+          style={styles.desc}
+        >
+          {'Reset Money home onboarding stepper'}
+        </Text>
+        <Button
+          variant={ButtonVariant.Secondary}
+          style={styles.accessory}
+          size={ButtonSize.Lg}
+          onPress={handleResetOnboardingStepperStep}
+          isFullWidth
+        >
+          {'Reset onboarding stepper'}
+        </Button>
+      </Box>
+      <Box>
+        <Text
+          color={TextColor.TextAlternative}
+          variant={TextVariant.BodyMd}
+          style={styles.desc}
+        >
+          {'Preview first-time deposit animation'}
+        </Text>
+        <Button
+          variant={ButtonVariant.Secondary}
+          style={styles.accessory}
+          size={ButtonSize.Lg}
+          onPress={handlePreviewFirstTimeDepositAnimation}
+          isFullWidth
+        >
+          {'View animation'}
+        </Button>
+      </Box>
+      {__DEV__ && (
+        <Box>
+          <Text
+            color={TextColor.TextAlternative}
+            variant={TextVariant.BodyMd}
+            style={styles.desc}
+          >
+            {`Home card override: ${homeCardOverride?.label ?? 'Live routing'}`}
+          </Text>
+          <Text
+            color={TextColor.TextAlternative}
+            variant={TextVariant.BodyMd}
+            style={styles.desc}
+          >
+            {
+              'Eligible means a VBA-supported region. Pick a row, then open the Money tab. Dismiss on the KYC decision card falls through to Add funds or the card step.'
+            }
+          </Text>
+          <Button
+            variant={ButtonVariant.Secondary}
+            style={styles.accessory}
+            size={ButtonSize.Lg}
+            onPress={() => setMoneyHomeCardDevOverride(null)}
+            isFullWidth
+          >
+            {'Use live routing'}
+          </Button>
+          {MONEY_HOME_CARD_DEV_OVERRIDES.map((entry) => (
+            <Button
+              key={entry.id}
+              variant={
+                homeCardOverride?.id === entry.id
+                  ? ButtonVariant.Primary
+                  : ButtonVariant.Secondary
+              }
+              style={styles.accessory}
+              size={ButtonSize.Lg}
+              onPress={() => setMoneyHomeCardDevOverride(entry)}
+              isFullWidth
+            >
+              {entry.label}
+            </Button>
+          ))}
+        </Box>
+      )}
+      <Box>
+        <Text
+          color={TextColor.TextAlternative}
+          variant={TextVariant.BodyMd}
+          style={styles.desc}
+        >
+          {`Earn banners dismissed: ${earnBannerDismissedCount}`}
+        </Text>
+        <Button
+          variant={ButtonVariant.Secondary}
+          style={styles.accessory}
+          size={ButtonSize.Lg}
+          onPress={handleClearEarnBannerDismissals}
+          isFullWidth
+        >
+          {'Clear Earn banner dismissals'}
+        </Button>
+      </Box>
+    </Box>
+  );
+};

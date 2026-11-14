@@ -1,31 +1,125 @@
+import { DEFAULT_SERVER_URL } from '@metamask/sdk-communication-layer';
 import { CoreTypes } from '@walletconnect/types';
 import Device from '../util/device';
-import { DEFAULT_SERVER_URL } from '@metamask/sdk-communication-layer';
+import {
+  ADD_SOLANA_ACCOUNT_PRIVACY_POLICY_URL,
+  CONNECTIVITY_ISSUES_URL,
+  HIGH_GAS_FEES_URL,
+  LEARN_MORE_URL,
+  METAMASK_SUPPORT_URL,
+  MISSING_TOKENS_URL,
+  MM_ANDROID_BUNDLE_ID,
+  MM_UNIVERSAL_LINK_HOST,
+  MONEY_LANDING_URL,
+  MULTICHAIN_ACCOUNTS_URL,
+  MUSD_LEARN_MORE_URL,
+  MUSD_PRICE_URL,
+  PRIVACY_BEST_PRACTICES_URL,
+  PROFILE_SYNC_URL,
+  SMART_ACCOUNTS_URL,
+  SMART_TXS_URL,
+  SWAP_ISSUES_URL,
+  TESTNET_ETH_SCAMS_URL,
+  TOKEN_BALANCE_URL,
+  WHY_TRANSACTION_TAKE_TIME_URL,
+} from '../constants/urls';
 
 const DEVELOPMENT = 'development';
-const PORTFOLIO_URL =
-  process.env.MM_PORTFOLIO_URL || 'https://portfolio.metamask.io';
+
+// Keep portfolio navigation pinned to the website host (not API hosts).
+const PORTFOLIO_URL = 'https://portfolio.metamask.io';
+
+const SECURITY_ALERTS_API_URL =
+  process.env.SECURITY_ALERTS_API_URL ??
+  'https://security-alerts.api.cx.metamask.io';
+
+const PRICE_ALERTS_API_URL =
+  process.env.PRICE_ALERTS_API_URL ?? 'https://price-alerts.api.cx.metamask.io';
 
 export default {
   IS_DEV: process.env?.NODE_ENV === DEVELOPMENT,
+  METAMASK_BUILD_TYPE: process.env.METAMASK_BUILD_TYPE,
   DEFAULT_LOCK_TIMEOUT: 30000,
-  DEFAULT_SEARCH_ENGINE: 'DuckDuckGo',
+  DEFAULT_SEARCH_ENGINE: 'Brave',
   TX_CHECK_BACKGROUND_FREQUENCY: 30000,
   IPFS_OVERRIDE_PARAM: 'mm_override',
-  IPFS_DEFAULT_GATEWAY_URL: 'https://cloudflare-ipfs.com/ipfs/',
-  IPNS_DEFAULT_GATEWAY_URL: 'https://cloudflare-ipfs.com/ipns/',
+  IPFS_DEFAULT_GATEWAY_URL: 'https://dweb.link/ipfs/',
+  IPNS_DEFAULT_GATEWAY_URL: 'https://gateway.pinata.cloud/ipns/',
   SWARM_DEFAULT_GATEWAY_URL: 'https://swarm-gateways.net/bzz:/',
   supportedTLDs: ['eth', 'xyz', 'test'],
   MAX_PUSH_NOTIFICATION_PROMPT_TIMES: 2,
+  SECURITY_ALERTS_API: {
+    URL: SECURITY_ALERTS_API_URL,
+  },
+  PRICE_ALERTS_API: {
+    URL: PRICE_ALERTS_API_URL,
+  },
   PORTFOLIO: {
     URL: PORTFOLIO_URL,
   },
   BRIDGE: {
     ACTIVE: true,
     URL: `${PORTFOLIO_URL}/bridge`,
+    PRICE_IMPACT_WARNING_THRESHOLD: 0.05,
+    PRICE_IMPACT_ERROR_THRESHOLD: 0.25,
+    // Check app/components/UI/Bridge/types.ts
+    // for interface definition.
+    SLIPPAGE_CONFIG: {
+      __default__: {
+        input_step: 0.1,
+        max_amount: 100,
+        min_amount: 0,
+        input_max_decimals: 2,
+        lower_allowed_slippage_threshold: {
+          messageId: 'bridge.exceeding_lower_slippage_error',
+          value: 0.1,
+          inclusive: true,
+        },
+        lower_suggested_slippage_threshold: {
+          messageId: 'bridge.exceeding_lower_slippage_warning',
+          value: 0.5,
+          inclusive: false,
+        },
+        upper_suggested_slippage_threshold: {
+          messageId: 'bridge.exceeding_upper_slippage_warning',
+          value: 5,
+          inclusive: false,
+        },
+        upper_allowed_slippage_threshold: {
+          messageId: 'bridge.exceeding_upper_slippage_error',
+          value: 100,
+          inclusive: false,
+        },
+        default_slippage_options: ['0.5', '2', '3'],
+        has_custom_slippage_option: true,
+      },
+      'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': {
+        'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': {
+          default_slippage_options: ['auto', '0.5', '2'],
+        },
+      },
+    },
   },
   STAKE: {
     URL: `${PORTFOLIO_URL}/stake`,
+  },
+  EXPLORE_TOKENS: {
+    URL: `${PORTFOLIO_URL}/explore/tokens?MetaMaskEntry=mobile`,
+  },
+  CARD: {
+    URL: 'https://card.metamask.io',
+    WEB_URL: {
+      DEV: 'https://ew2foxdev-card.foxcard.io',
+      UAT: 'https://ew2foxuat-card.foxcard.io',
+      PRD: 'https://card.metamask.io',
+    },
+    TRAVEL_URL: 'https://travel.metamask.io/access',
+    CARD_TOS_URL:
+      'https://www.baanxuk.com/docs/CL-Platform-Terms-of-Use-2026.pdf',
+    CARD_FEES_URL:
+      'https://support.metamask.io/manage-crypto/metamask-card/limits-and-fees/',
+    PASSWORD_RESET_PATH: '/account/password/request',
+    LOGIN_PATH: '/account/login',
   },
   CONNEXT: {
     HUB_EXCHANGE_CEILING_TOKEN: 69,
@@ -37,10 +131,20 @@ export default {
       1: '0xdfa6edAe2EC0cF1d4A60542422724A48195A5071',
     },
   },
-  MM_UNIVERSAL_LINK_HOST: 'metamask.app.link',
+  MM_UNIVERSAL_LINK_HOST,
+  MM_UNIVERSAL_LINK_HOST_ALTERNATE: 'metamask-alternate.app.link',
+  MM_UNIVERSAL_LINK_TEST_APP_HOST: 'metamask.test-app.link',
+  MM_UNIVERSAL_LINK_TEST_APP_HOST_ALTERNATE: 'metamask-alternate.test-app.link',
+  MM_IO_UNIVERSAL_LINK_HOST: 'link.metamask.io',
+  MM_IO_UNIVERSAL_LINK_TEST_HOST: 'link-test.metamask.io',
+  MM_COM_UNIVERSAL_LINK_HOST: 'link.metamask.com',
+  MM_COM_UNIVERSAL_LINK_TEST_HOST: 'link-test.metamask.com',
   MM_DEEP_ITMS_APP_LINK: 'https://metamask.app.link/skAH3BaF99',
+  MM_DEEP_LINK_PUBLIC_KEY_X: 'PxxYwxHYnfdrHyG9LPws2330ffAYE9a4CDD6Wx9ZwGs',
+  MM_DEEP_LINK_PUBLIC_KEY_Y: 'w4ZtTHFnWyNkbgXglqJOoc-1OA5ZC4kW4GYU_QIeBNA',
   SAI_ADDRESS: '0x89d24A6b4CcB1B6fAA2625fE562bDD9a23260359',
-  HOMEPAGE_URL: process.env.MM_HOMEPAGE || 'https://home.metamask.io/',
+  HOMEPAGE_URL: 'https://portfolio.metamask.io/explore?MetaMaskEntry=mobile/',
+  OLD_HOMEPAGE_URL_HOST: 'home.metamask.io',
   SHORT_HOMEPAGE_URL: 'MetaMask.io',
   ZERO_ADDRESS: '0x0000000000000000000000000000000000000000',
   USER_AGENT: Device.isAndroid()
@@ -55,9 +159,14 @@ export default {
     POLLING_FREQUENCY: 10000,
   },
   DEEPLINKS: {
+    ORIGIN_CAROUSEL: 'carousel',
     ORIGIN_DEEPLINK: 'deeplink',
     ORIGIN_QR_CODE: 'qr-code',
     ORIGIN_NOTIFICATION: 'notifications',
+    ORIGIN_IN_APP_BROWSER: 'in-app-browser',
+    ORIGIN_PUSH_NOTIFICATION: 'push-notification',
+    ORIGIN_BRAZE: 'braze',
+    ORIGIN_PERPS_OUTREACH: 'perps-outreach',
   },
   WALLET_CONNECT: {
     //One day in hours
@@ -69,7 +178,9 @@ export default {
       name: 'MetaMask Wallet',
       description: 'MetaMask Wallet Integration',
       url: 'https://metamask.io/',
-      icons: [],
+      icons: [
+        'https://raw.githubusercontent.com/MetaMask/metamask-mobile/main/logo.png',
+      ],
       redirect: {
         native: 'metamask://',
         universal: 'https://metamask.app.link/',
@@ -81,8 +192,12 @@ export default {
     ONLY_MAINNET: true,
     CLIENT_ID: 'mobile',
     LIVENESS_POLLING_FREQUENCY: 5 * 60 * 1000,
-    POLL_COUNT_LIMIT: 3,
+    POLL_COUNT_LIMIT: 4,
     DEFAULT_SLIPPAGE: 2,
+    DEFAULT_SLIPPAGE_STABLECOINS: 0.5,
+    DEFAULT_SLIPPAGE_BRIDGE: 2,
+    DEFAULT_SLIPPAGE_SOLANA: undefined,
+    DEFAULT_SLIPPAGE_RWA: undefined,
     CACHE_AGGREGATOR_METADATA_THRESHOLD: 5 * 60 * 1000,
     CACHE_TOKENS_THRESHOLD: 5 * 60 * 1000,
     CACHE_TOP_ASSETS_THRESHOLD: 5 * 60 * 1000,
@@ -102,30 +217,75 @@ export default {
       ACH_DARK:
         'https://on-ramp.dev-api.cx.metamask.io/assets/ACHBankTransfer@3x.png',
     },
-    TERMS_AND_CONDITIONS: 'https://legal.consensys.io/metamask/terms-of-use/',
-    PRIVACY_POLICY: 'https://consensys.io/privacy-policy',
+    TERMS_AND_CONDITIONS: 'https://metamask.com/terms-of-use',
+    TERMS_OF_USE: 'https://metamask.io/terms',
+    PRIVACY_POLICY: 'https://metamask.com/privacy-notice',
+    PROFILE_SYNC: PROFILE_SYNC_URL,
     DATA_RETENTION_UPDATE:
       'https://consensys.net/blog/news/consensys-data-retention-update/',
-    CONNECTIVITY_ISSUES:
-      'https://metamask.zendesk.com/hc/en-us/articles/360059386712',
-    NFT: 'https://metamask.zendesk.com/hc/en-us/articles/360058238591-NFT-tokens-in-MetaMask-wallet',
-    SECURITY:
-      'https://metamask.zendesk.com/hc/en-us/articles/360015489591-Basic-Safety-and-Security-Tips-for-MetaMask',
-    TOKEN_BALANCE:
-      'https://metamask.zendesk.com/hc/en-us/articles/360028059272-What-to-do-when-your-balance-of-ETH-and-or-ERC20-tokens-is-incorrect-inaccurate',
-    WHY_TRANSACTION_TAKE_TIME:
-      'https://community.metamask.io/t/what-is-gas-why-do-transactions-take-so-long/3172',
-    WHAT_IS_ETH_SIGN_AND_WHY_IS_IT_A_RISK:
-      'https://support.metamask.io/hc/articles/14764161421467',
-    TESTNET_ETH_SCAMS:
-      'https://support.metamask.io/hc/en-us/articles/11836891903003-Testnet-ETH-scams',
+    CONNECTIVITY_ISSUES: CONNECTIVITY_ISSUES_URL,
+    SECURITY: LEARN_MORE_URL,
+    TOKEN_BALANCE: TOKEN_BALANCE_URL,
+    WHY_TRANSACTION_TAKE_TIME: WHY_TRANSACTION_TAKE_TIME_URL,
+    TESTNET_ETH_SCAMS: TESTNET_ETH_SCAMS_URL,
     WHAT_IS_SRP:
       'https://community.metamask.io/t/what-is-a-secret-recovery-phrase-and-how-to-keep-your-crypto-wallet-secure/3440',
-    PRIVACY_POLICY_2024: 'https://consensys.io/privacy-policy',
-    PRIVACY_BEST_PRACTICES:
-      'https://support.metamask.io/privacy-and-security/privacy-best-practices',
-    SMART_TXS:
-      'https://support.metamask.io/transactions-and-gas/transactions/smart-transactions/',
+    PRIVACY_POLICY_2024: 'https://metamask.com/privacy-notice',
+    PRIVACY_BEST_PRACTICES: PRIVACY_BEST_PRACTICES_URL,
+    SMART_TXS: SMART_TXS_URL,
+    SMART_ACCOUNTS: SMART_ACCOUNTS_URL,
+    STAKING_RISK_DISCLOSURE: 'https://consensys.io/staking-risk-disclosures',
+    EARN_RISK_DISCLOSURE: 'https://consensys.io/earn-risk-disclosures',
+    ADD_SOLANA_ACCOUNT_PRIVACY_POLICY: ADD_SOLANA_ACCOUNT_PRIVACY_POLICY_URL,
+    TERMS_OF_USE_URL: 'https://metamask.com/terms-of-use',
+    PRIVACY_NOTICE: 'https://metamask.com/privacy-notice',
+    MULTICHAIN_ACCOUNTS: MULTICHAIN_ACCOUNTS_URL,
+    MUSD_CONVERSION_BONUS_TERMS_OF_USE:
+      'https://metamask.io/musd-bonus-terms-of-use',
+    MUSD_LEARN_MORE: MUSD_LEARN_MORE_URL,
+    MONEY_LANDING: MONEY_LANDING_URL,
+    MUSD_PRICE: MUSD_PRICE_URL,
+  },
+  DECODING_API_URL:
+    process.env.DECODING_API_URL ||
+    'https://signature-insights.api.cx.metamask.io/v1',
+  DIGEST_API_URL:
+    process.env.DIGEST_API_URL ?? 'https://digest.api.cx.metamask.io/api/v1',
+  SOCIAL_API_URL:
+    process.env.SOCIAL_API_URL ?? 'https://social.api.cx.metamask.io',
+  // Rewards/Baanx: GH Actions use builds.yml (env set per build). Fallback mapping for local when env not set.
+  REWARDS_API_URL: {
+    DEV: 'https://rewards.dev-api.cx.metamask.io',
+    UAT: 'https://rewards.uat-api.cx.metamask.io',
+    PRD: 'https://rewards.api.cx.metamask.io',
+  },
+  // Rewards Money: GH Actions use builds.yml (env set per build). Fallback
+  // mapping for local when env not set. Point at a local backend with
+  // REWARDS_MONEY_API_URL.
+  REWARDS_MONEY_API_URL: {
+    DEV: 'https://rewards-money.dev-api.cx.metamask.io',
+    UAT: 'https://rewards-money.uat-api.cx.metamask.io',
+    PRD: 'https://rewards-money.api.cx.metamask.io',
+  },
+  BAANX_API_URL: {
+    DEV: 'https://foxdev2-ag.foxcard.io',
+    UAT: 'https://dev.api.baanx.com',
+    PRD: 'https://api.baanx.com',
+  },
+  // MetaMask Card API (CX) — proxies provider endpoints (e.g. Immersve supported-regions).
+  // GH Actions use builds.yml (env set per build). Fallback mapping for local when env not set.
+  CARD_API_URL: {
+    DEV: 'https://card.dev-api.cx.metamask.io',
+    UAT: 'https://card.uat-api.cx.metamask.io',
+    PRD: 'https://card.api.cx.metamask.io',
+  },
+  IMMERSVE_API_URL: {
+    DEV: 'https://test.immersve.com',
+    PRD: 'https://api.immersve.com',
+  },
+  IMMERSVE_SECURE_API_URL: {
+    DEV: 'https://test-sec.immersve.com',
+    PRD: 'https://api-sec.immersve.com',
   },
   ERRORS: {
     INFURA_BLOCKED_MESSAGE:
@@ -148,28 +308,24 @@ export default {
     RANGE: 'range',
   },
   REVIEW_PROMPT: {
-    HIGH_GAS_FEES:
-      'https://metamask.zendesk.com/hc/en-us/articles/360058751211-Why-my-gas-fees-are-so-high',
-    MISSING_TOKENS:
-      'https://metamask.zendesk.com/hc/en-us/articles/360015489031-How-to-add-unlisted-tokens-custom-tokens-in-MetaMask',
-    SWAP_ISSUES:
-      'https://metamask.zendesk.com/hc/en-us/articles/360060329612-Error-fetching-quote',
-    SUPPORT: 'https://support.metamask.io',
+    HIGH_GAS_FEES: HIGH_GAS_FEES_URL,
+    MISSING_TOKENS: MISSING_TOKENS_URL,
+    SWAP_ISSUES: SWAP_ISSUES_URL,
+    SUPPORT: METAMASK_SUPPORT_URL,
   },
   BUNDLE_IDS: {
     IOS: 'io.metamask.MetaMask',
-    ANDROID: 'io.metamask',
+    ANDROID: MM_ANDROID_BUNDLE_ID,
   },
   LEAST_SUPPORTED_ANDROID_API_LEVEL: 29,
   ADD_CUSTOM_NETWORK_POPULAR_TAB_ID: 'popular-tab',
   ADD_CUSTOM_NETWORK_CUSTOM_TAB_ID: 'custom-tab',
   REQUEST_SOURCES: {
     SDK_REMOTE_CONN: 'MetaMask-SDK-Remote-Conn',
+    MM_CONNECT: 'MetaMask-Connect',
     WC: 'WalletConnect',
     WC2: 'WalletConnectV2',
     IN_APP_BROWSER: 'In-App-Browser',
-    SDK_ANDROID: 'MetaMask-SDK-Android',
-    SDK_IOS: 'MetaMask-SDK-IOS',
   },
   MM_SDK: {
     SDK_CONNECTIONS: 'sdkConnections',
@@ -180,6 +336,7 @@ export default {
     SERVER_URL: process.env.SDK_COMMLAYER_URL ?? DEFAULT_SERVER_URL,
     PLATFORM: 'metamask-mobile',
     SDK_REMOTE_ORIGIN: 'MMSDKREMOTE::',
+    SDK_CONNECT_V2_ORIGIN: 'MMSDKCONNECTV2::',
     UNKNOWN_PARAM: 'UNKNOWN',
   },
   CANCEL_RATE: 'Transactions (Cancel)',
@@ -187,17 +344,12 @@ export default {
   NETWORK_STATE_CHANGE_EVENT: 'NetworkController:stateChange',
   NETWORK_DID_CHANGE_EVENT: 'NetworkController:networkDidChange',
   KEYRING_STATE_CHANGE_EVENT: 'KeyringController:stateChange',
-  TOKEN_LIST_STATE_CHANGE_EVENT: 'TokenListController:stateChange',
-  ETH_SIGN_ERROR: 'eth_sign requires 32 byte message hash',
   TERMS_OF_USE: {
     TERMS_DISPLAYED: 'ToU Displayed',
     TERMS_ACCEPTED: 'ToU Accepted',
-    TERMS_OF_USE_URL_WITHOUT_COOKIES:
-      'https://legal.consensys.io/plain/terms-of-use/',
+    TERMS_OF_USE_URL_WITHOUT_COOKIES: 'https://metamask.com/terms-of-use',
   },
   FAVICON_CACHE_MAX_SIZE: 100,
-  PPOM_INITIALISATION_STATE_CHANGE_EVENT:
-    'PPOMController:initialisationStateChangeEvent',
   BASIC_FUNCTIONALITY_BLOCK_LIST: [
     'token-api',
     'token.api',
@@ -206,9 +358,20 @@ export default {
     'price-api',
     'price.api',
     'phishing-detection',
+    'dapp-scanning',
     'infura.io',
     'static.metafi',
     'static.cx',
     'config-api.metamask.io/featureFlags',
   ],
+  FEATURE_FLAGS_API: {
+    BASE_URL: 'https://client-config.api.cx.metamask.io',
+    VERSION: 'v1',
+    DEFAULT_FETCH_INTERVAL: 15 * 60 * 1000, // 15 minutes
+  },
+  TOKEN_DISCOVERY_BROWSER_ENABLED:
+    process.env.TOKEN_DISCOVERY_BROWSER_ENABLED === 'true',
+  EIP_7702_PUBLIC_KEY: '0x3c7a1cCCe462e96D186B8ca9a1BCB2010C3dABa3',
+  DELEGATION_MANAGER_ADDRESS: '0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3',
+  GASLESS_7702_ENFORCER_ADDRESS: '0x00e0251aaA263dfE3B3541B758A82D1CBA1c3B6D',
 } as const;

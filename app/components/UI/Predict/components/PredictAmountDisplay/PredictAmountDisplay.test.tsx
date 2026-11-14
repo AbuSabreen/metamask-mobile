@@ -1,0 +1,491 @@
+import { fireEvent, render } from '@testing-library/react-native';
+import React from 'react';
+import { Platform, StyleSheet, Text } from 'react-native';
+import { mockTheme } from '../../../../../util/theme';
+import { PerpsAmountDisplaySelectorsIDs } from '../../../Perps/Perps.testIds';
+import PredictAmountDisplay from './PredictAmountDisplay';
+
+jest.mock('../../../../../util/theme', () => {
+  const actual = jest.requireActual('../../../../../util/theme');
+  return {
+    ...actual,
+    useTheme: jest.fn(() => actual.mockTheme),
+  };
+});
+
+const getAmountGlyphs = (amountLabel: ReturnType<typeof render>['root']) =>
+  amountLabel.findAllByType(Text);
+
+describe('PredictAmountDisplay', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  describe('Rendering', () => {
+    it('renders the amount in Grotzec Cond Bold', () => {
+      const { getByTestId, getByText } = render(
+        <PredictAmountDisplay amount="1000" />,
+      );
+      const amountGlyphs = getAmountGlyphs(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL),
+      );
+
+      expect(StyleSheet.flatten(getByText('$').props.style)).toEqual(
+        expect.objectContaining({ fontFamily: 'GrotzecCond-Bold' }),
+      );
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({ fontFamily: 'GrotzecCond-Bold' }),
+        );
+      });
+    });
+
+    it('displays amount with dollar sign', () => {
+      const amount = '1000';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+
+      expect(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.CONTAINER),
+      ).toHaveTextContent('$1000');
+    });
+
+    it('displays $0 when amount is empty string', () => {
+      const emptyAmount = '';
+
+      const { getByTestId } = render(
+        <PredictAmountDisplay amount={emptyAmount} />,
+      );
+
+      expect(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.CONTAINER),
+      ).toHaveTextContent('$0');
+    });
+
+    it('renders container with correct test ID', () => {
+      const amount = '100';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+
+      expect(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.CONTAINER),
+      ).toBeOnTheScreen();
+    });
+
+    it('displays decimal amounts correctly', () => {
+      const amount = '1234.56';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+
+      expect(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.CONTAINER),
+      ).toHaveTextContent('$1234.56');
+    });
+  });
+
+  describe('User Interactions', () => {
+    it('calls onPress handler when amount is pressed', () => {
+      const onPressMock = jest.fn();
+      const amount = '1000';
+
+      const { getByRole } = render(
+        <PredictAmountDisplay amount={amount} onPress={onPressMock} />,
+      );
+      fireEvent.press(getByRole('button', { name: '$1000' }));
+
+      expect(onPressMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('handles press without error when onPress is not provided', () => {
+      const amount = '1000';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+
+      expect(() =>
+        fireEvent.press(
+          getByTestId(PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL),
+        ),
+      ).not.toThrow();
+    });
+  });
+
+  describe('Active State', () => {
+    it('displays cursor when isActive is true', () => {
+      const amount = '1000';
+
+      const { getByTestId } = render(
+        <PredictAmountDisplay amount={amount} isActive />,
+      );
+
+      expect(getByTestId('cursor')).toBeOnTheScreen();
+    });
+
+    it('hides cursor when isActive is false', () => {
+      const amount = '1000';
+
+      const { queryByTestId } = render(
+        <PredictAmountDisplay amount={amount} isActive={false} />,
+      );
+
+      expect(queryByTestId('cursor')).toBeNull();
+    });
+
+    it('hides cursor by default when isActive is not specified', () => {
+      const amount = '1000';
+
+      const { queryByTestId } = render(
+        <PredictAmountDisplay amount={amount} />,
+      );
+
+      expect(queryByTestId('cursor')).toBeNull();
+    });
+  });
+
+  describe('Error State', () => {
+    it('applies error text color when hasError is true', () => {
+      const amount = '1000';
+
+      const { getByTestId } = render(
+        <PredictAmountDisplay amount={amount} hasError />,
+      );
+      const amountGlyphs = getAmountGlyphs(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL),
+      );
+
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({ color: mockTheme.colors.error.default }),
+        );
+      });
+    });
+
+    it('applies default text color when hasError is false', () => {
+      const amount = '1000';
+
+      const { getByTestId } = render(
+        <PredictAmountDisplay amount={amount} hasError={false} />,
+      );
+
+      const amountText = getByTestId(
+        PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL,
+      );
+      const amountGlyphs = getAmountGlyphs(amountText);
+
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({ color: mockTheme.colors.text.default }),
+        );
+      });
+    });
+
+    it('applies default text color when hasError is not specified', () => {
+      const amount = '1000';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+
+      const amountText = getByTestId(
+        PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL,
+      );
+      const amountGlyphs = getAmountGlyphs(amountText);
+
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({ color: mockTheme.colors.text.default }),
+        );
+      });
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('handles zero amount', () => {
+      const amount = '0';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+
+      expect(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.CONTAINER),
+      ).toHaveTextContent('$0');
+    });
+
+    it('handles large numbers', () => {
+      const amount = '1000000';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+
+      expect(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.CONTAINER),
+      ).toHaveTextContent('$1000000');
+    });
+
+    it('handles very small decimal amounts', () => {
+      const amount = '0.01';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+
+      expect(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.CONTAINER),
+      ).toHaveTextContent('$0.01');
+    });
+
+    it('handles undefined amount', () => {
+      const { getByTestId } = render(
+        <PredictAmountDisplay amount={undefined as unknown as string} />,
+      );
+
+      expect(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.CONTAINER),
+      ).toHaveTextContent('$0');
+    });
+  });
+
+  describe('Font Size Adjustments', () => {
+    it('applies largest font size for short amounts up to 8 characters', () => {
+      const amount = '1234.5';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+      const amountText = getByTestId(
+        PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL,
+      );
+      const amountGlyphs = getAmountGlyphs(amountText);
+
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({
+            fontSize: 64,
+            lineHeight: 64,
+          }),
+        );
+      });
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).not.toHaveProperty(
+          'paddingHorizontal',
+        );
+      });
+    });
+
+    it('applies medium-large font size for amounts with 9-10 characters', () => {
+      const amount = '12345.67';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+      const amountText = getByTestId(
+        PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL,
+      );
+      const amountGlyphs = getAmountGlyphs(amountText);
+
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({
+            fontSize: 48,
+            lineHeight: 48,
+          }),
+        );
+      });
+    });
+
+    it('applies medium font size for amounts with 11-12 characters', () => {
+      const amount = '123456.789';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+      const amountText = getByTestId(
+        PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL,
+      );
+      const amountGlyphs = getAmountGlyphs(amountText);
+
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({
+            fontSize: 32,
+            lineHeight: 32,
+          }),
+        );
+      });
+    });
+
+    it('applies small-medium font size for amounts with 13-14 characters', () => {
+      const amount = '1234567.8901';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+      const amountText = getByTestId(
+        PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL,
+      );
+      const amountGlyphs = getAmountGlyphs(amountText);
+
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({
+            fontSize: 24,
+            lineHeight: 24,
+          }),
+        );
+      });
+    });
+
+    it('applies small font size for amounts with 15-18 characters', () => {
+      const amount = '1234567890.1234';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+      const amountText = getByTestId(
+        PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL,
+      );
+      const amountGlyphs = getAmountGlyphs(amountText);
+
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({
+            fontSize: 18,
+            lineHeight: 18,
+          }),
+        );
+      });
+    });
+
+    it('applies smallest font size for amounts with more than 18 characters', () => {
+      const amount = '12345678901234567.89';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+      const amountText = getByTestId(
+        PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL,
+      );
+      const amountGlyphs = getAmountGlyphs(amountText);
+
+      expect(amountGlyphs).not.toHaveLength(0);
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({
+            fontSize: 12,
+            lineHeight: 12,
+          }),
+        );
+      });
+    });
+  });
+
+  describe('Animation Behavior', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('starts cursor animation when isActive becomes true', () => {
+      const amount = '1000';
+      const { getByTestId, rerender } = render(
+        <PredictAmountDisplay amount={amount} isActive={false} />,
+      );
+
+      rerender(<PredictAmountDisplay amount={amount} isActive />);
+
+      expect(getByTestId('cursor')).toBeOnTheScreen();
+    });
+
+    it('stops cursor animation when isActive becomes false', () => {
+      const amount = '1000';
+      const { queryByTestId, rerender } = render(
+        <PredictAmountDisplay amount={amount} isActive />,
+      );
+
+      rerender(<PredictAmountDisplay amount={amount} isActive={false} />);
+
+      expect(queryByTestId('cursor')).toBeNull();
+    });
+
+    it('renders cursor with correct animation styles when active', () => {
+      const amount = '1000';
+
+      const { getByTestId } = render(
+        <PredictAmountDisplay amount={amount} isActive />,
+      );
+      const cursor = getByTestId('cursor');
+
+      expect(cursor).toHaveStyle({
+        backgroundColor: mockTheme.colors.text.muted,
+        height: Math.round(64 * 0.95),
+        marginHorizontal: 0,
+        width: 1,
+        transform: [
+          {
+            translateY: Math.round(
+              64 * (Platform.OS === 'android' ? 0.02 : -0.04),
+            ),
+          },
+        ],
+      });
+    });
+  });
+
+  describe('Component Composition', () => {
+    it('allows pressing when onPress is provided', () => {
+      const onPressMock = jest.fn();
+      const amount = '1000';
+
+      const { getByRole } = render(
+        <PredictAmountDisplay amount={amount} onPress={onPressMock} />,
+      );
+      fireEvent.press(getByRole('button'));
+
+      expect(onPressMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders correctly when onPress is not provided', () => {
+      const amount = '1000';
+
+      const { getByTestId } = render(<PredictAmountDisplay amount={amount} />);
+      const container = getByTestId(PerpsAmountDisplaySelectorsIDs.CONTAINER);
+
+      expect(container).toBeOnTheScreen();
+    });
+  });
+
+  describe('Combined States', () => {
+    it('displays cursor and error color together when both isActive and hasError are true', () => {
+      const amount = '1000';
+
+      const { getByTestId } = render(
+        <PredictAmountDisplay amount={amount} isActive hasError />,
+      );
+
+      const amountGlyphs = getAmountGlyphs(
+        getByTestId(PerpsAmountDisplaySelectorsIDs.AMOUNT_LABEL),
+      );
+
+      expect(getByTestId('cursor')).toBeOnTheScreen();
+      amountGlyphs.forEach((glyph) => {
+        expect(StyleSheet.flatten(glyph.props.style)).toEqual(
+          expect.objectContaining({ color: mockTheme.colors.error.default }),
+        );
+      });
+    });
+
+    it('handles onPress with isActive and hasError simultaneously', () => {
+      const onPressMock = jest.fn();
+      const amount = '1000';
+
+      const { getByRole } = render(
+        <PredictAmountDisplay
+          amount={amount}
+          onPress={onPressMock}
+          isActive
+          hasError
+        />,
+      );
+      fireEvent.press(getByRole('button'));
+
+      expect(onPressMock).toHaveBeenCalledTimes(1);
+    });
+  });
+});

@@ -1,4 +1,4 @@
-/* eslint-disable import/prefer-default-export */
+/* eslint-disable import-x/prefer-default-export */
 import type { Action as ReduxAction } from 'redux';
 
 export enum ActionType {
@@ -7,6 +7,11 @@ export enum ActionType {
   USER_SELECTED_AUTOMATIC_SECURITY_CHECKS_OPTION = 'USER_SELECTED_AUTOMATIC_SECURITY_CHECKS_OPTION',
   SET_AUTOMATIC_SECURITY_CHECKS_MODAL_OPEN = 'SET_AUTOMATIC_SECURITY_CHECKS_MODAL_OPEN',
   SET_DATA_COLLECTION_FOR_MARKETING = 'SET_DATA_COLLECTION_FOR_MARKETING',
+  SET_NFT_AUTO_DETECTION_MODAL_OPEN = 'SET_NFT_AUTO_DETECTION_MODAL_OPEN',
+  SET_MULTI_RPC_MIGRATION_MODAL_OPEN = 'SET_MULTI_RPC_MIGRATION_MODAL_OPEN',
+  SET_OS_AUTH_ENABLED = 'SET_OS_AUTH_ENABLED',
+  SET_SHOULD_SHOW_CONSENT_SHEET = 'SET_SHOULD_SHOW_CONSENT_SHEET',
+  SET_DATA_SHARING_PREFERENCE = 'SET_DATA_SHARING_PREFERENCE',
 }
 
 export interface AllowLoginWithRememberMeUpdated
@@ -14,32 +19,49 @@ export interface AllowLoginWithRememberMeUpdated
   enabled: boolean;
 }
 
-export interface AutomaticSecurityChecks
-  extends ReduxAction<ActionType.SET_AUTOMATIC_SECURITY_CHECKS> {
-  enabled: boolean;
+export interface SetNftAutoDetectionModalOpen
+  extends ReduxAction<ActionType.SET_NFT_AUTO_DETECTION_MODAL_OPEN> {
+  open: boolean;
 }
 
-export interface UserSelectedAutomaticSecurityChecksOptions
-  extends ReduxAction<ActionType.USER_SELECTED_AUTOMATIC_SECURITY_CHECKS_OPTION> {
-  selected: boolean;
-}
-
-export interface SetAutomaticSecurityChecksModalOpen
-  extends ReduxAction<ActionType.SET_AUTOMATIC_SECURITY_CHECKS_MODAL_OPEN> {
+export interface SetMultiRpcMigrationModalOpen
+  extends ReduxAction<ActionType.SET_MULTI_RPC_MIGRATION_MODAL_OPEN> {
   open: boolean;
 }
 
 export interface SetDataCollectionForMarketing
   extends ReduxAction<ActionType.SET_DATA_COLLECTION_FOR_MARKETING> {
   enabled: boolean;
+  /**
+   * Updates the Redux preference without copying it into AnalyticsController.
+   * Used when a failed controller write must not record a new consent decision.
+   */
+  skipControllerSync?: boolean;
+}
+
+export interface SetOsAuthEnabled
+  extends ReduxAction<ActionType.SET_OS_AUTH_ENABLED> {
+  enabled: boolean;
+}
+
+export interface SetShouldShowConsentSheet
+  extends ReduxAction<ActionType.SET_SHOULD_SHOW_CONSENT_SHEET> {
+  shouldShow: boolean;
+}
+
+export interface SetDataSharingPreference
+  extends ReduxAction<ActionType.SET_DATA_SHARING_PREFERENCE> {
+  preference: boolean;
 }
 
 export type Action =
   | AllowLoginWithRememberMeUpdated
-  | AutomaticSecurityChecks
-  | UserSelectedAutomaticSecurityChecksOptions
-  | SetAutomaticSecurityChecksModalOpen
-  | SetDataCollectionForMarketing;
+  | SetDataCollectionForMarketing
+  | SetNftAutoDetectionModalOpen
+  | SetMultiRpcMigrationModalOpen
+  | SetOsAuthEnabled
+  | SetShouldShowConsentSheet
+  | SetDataSharingPreference;
 
 export const setAllowLoginWithRememberMe = (
   enabled: boolean,
@@ -48,27 +70,44 @@ export const setAllowLoginWithRememberMe = (
   enabled,
 });
 
-export const setAutomaticSecurityChecks = (
-  enabled: boolean,
-): AutomaticSecurityChecks => ({
-  type: ActionType.SET_AUTOMATIC_SECURITY_CHECKS,
-  enabled,
-});
-
-export const userSelectedAutomaticSecurityChecksOptions =
-  (): UserSelectedAutomaticSecurityChecksOptions => ({
-    type: ActionType.USER_SELECTED_AUTOMATIC_SECURITY_CHECKS_OPTION,
-    selected: true,
-  });
-
-export const setAutomaticSecurityChecksModalOpen = (
+export const setNftAutoDetectionModalOpen = (
   open: boolean,
-): SetAutomaticSecurityChecksModalOpen => ({
-  type: ActionType.SET_AUTOMATIC_SECURITY_CHECKS_MODAL_OPEN,
+): SetNftAutoDetectionModalOpen => ({
+  type: ActionType.SET_NFT_AUTO_DETECTION_MODAL_OPEN,
   open,
 });
 
-export const setDataCollectionForMarketing = (enabled: boolean) => ({
+export const setMultiRpcMigrationModalOpen = (
+  open: boolean,
+): SetMultiRpcMigrationModalOpen => ({
+  type: ActionType.SET_MULTI_RPC_MIGRATION_MODAL_OPEN,
+  open,
+});
+
+export const setDataCollectionForMarketing = (
+  enabled: boolean,
+  options?: { skipControllerSync?: boolean },
+): SetDataCollectionForMarketing => ({
   type: ActionType.SET_DATA_COLLECTION_FOR_MARKETING,
   enabled,
+  ...(options?.skipControllerSync ? { skipControllerSync: true } : {}),
+});
+
+export const setOsAuthEnabled = (enabled: boolean): SetOsAuthEnabled => ({
+  type: ActionType.SET_OS_AUTH_ENABLED,
+  enabled,
+});
+
+export const setShouldShowConsentSheet = (
+  shouldShow: boolean,
+): SetShouldShowConsentSheet => ({
+  type: ActionType.SET_SHOULD_SHOW_CONSENT_SHEET,
+  shouldShow,
+});
+
+export const setDataSharingPreference = (
+  preference: boolean,
+): SetDataSharingPreference => ({
+  type: ActionType.SET_DATA_SHARING_PREFERENCE,
+  preference,
 });

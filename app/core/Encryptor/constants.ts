@@ -20,10 +20,12 @@ export enum KeyDerivationIteration {
 /**
  * Used as a "tag" to identify the underlying encryption library.
  *
- * When no tag is speficied, this means our "forked" encryption library has been used.
+ * When no tag is specified, this means our "forked" encryption library has been used.
  */
 export const ENCRYPTION_LIBRARY = {
   original: 'original',
+  forked: 'forked',
+  quickCrypto: 'quick-crypto',
 };
 
 /**

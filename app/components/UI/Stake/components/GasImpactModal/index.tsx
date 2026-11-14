@@ -1,0 +1,194 @@
+import React, { useCallback, useRef } from 'react';
+import { formatEther } from 'ethers/lib/utils';
+import { useSelector } from 'react-redux';
+import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { View } from 'react-native';
+
+import { selectSelectedInternalAccountByScope } from '../../../../../selectors/multichainAccounts/accounts';
+import BottomSheet, {
+  BottomSheetRef,
+} from '../../../../../component-library/components/BottomSheets/BottomSheet';
+import Text, {
+  TextColor,
+  TextVariant,
+} from '../../../../../component-library/components/Texts/Text';
+import BottomSheetFooter, {
+  ButtonsAlignment,
+} from '../../../../../component-library/components/BottomSheets/BottomSheetFooter';
+import {
+  ButtonProps,
+  ButtonSize,
+  ButtonVariants,
+} from '../../../../../component-library/components/Buttons/Button/Button.types';
+import styleSheet from './GasImpactModal.styles';
+import { useStyles } from '../../../../hooks/useStyles';
+import Routes from '../../../../../constants/navigation/Routes';
+import { GasImpactModalRouteParams } from './GasImpactModal.types';
+import { strings } from '../../../../../../locales/i18n';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import { EVENT_LOCATIONS, EVENT_PROVIDERS } from '../../constants/events';
+import usePoolStakedDeposit from '../../hooks/usePoolStakedDeposit';
+import { EVM_SCOPE } from '../../../Earn/constants/networks';
+import BottomSheetHeaderGlass from '../../../../../component-library/components-temp/BottomSheetHeaderGlass';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+export const GAS_IMPACT_MODAL_CLOSE_BUTTON_TEST_ID =
+  'gas-impact-modal-close-button';
+
+const GasImpactModal = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const route =
+    useRoute<RouteProp<{ params: GasImpactModalRouteParams }, 'params'>>();
+  const { styles } = useStyles(styleSheet, {});
+  // TODO: Remove dead code as we are not using the legacy confirmations anymore
+  const isStakingDepositRedesignedEnabled = true;
+  const { attemptDepositTransaction } = usePoolStakedDeposit();
+  const selectedAccount = useSelector(selectSelectedInternalAccountByScope)(
+    EVM_SCOPE,
+  );
+  const { navigate } = useNavigation<AppNavigationProp>();
+
+  const { trackEvent, createEventBuilder } = useAnalytics();
+
+  const sheetRef = useRef<BottomSheetRef>(null);
+
+  const {
+    amountWei,
+    annualRewardRate,
+    annualRewardsFiat,
+    annualRewardsETH,
+    amountFiat,
+    estimatedGasFee,
+    estimatedGasFeePercentage,
+    chainId,
+  } = route.params;
+
+  const metricsEvent = useCallback(
+    (
+      eventName:
+        | typeof MetaMetricsEvents.STAKE_GAS_COST_IMPACT_CANCEL_CLICKED
+        | typeof MetaMetricsEvents.STAKE_GAS_COST_IMPACT_PROCEEDED_CLICKED,
+    ) => {
+      trackEvent(
+        createEventBuilder(eventName)
+          .addProperties({
+            selected_provider: EVENT_PROVIDERS.CONSENSYS,
+            location: EVENT_LOCATIONS.GAS_IMPACT_MODAL,
+            tokens_to_stake_native_value: formatEther(amountWei),
+            tokens_to_stake_usd_value: amountFiat,
+            estimated_gas_fee: estimatedGasFee,
+            estimated_gas_percentage_of_deposit: estimatedGasFeePercentage,
+          })
+          .build(),
+      );
+    },
+    [
+      amountFiat,
+      amountWei,
+      createEventBuilder,
+      estimatedGasFee,
+      estimatedGasFeePercentage,
+      trackEvent,
+    ],
+  );
+
+  const handleClose = () => {
+    metricsEvent(MetaMetricsEvents.STAKE_GAS_COST_IMPACT_CANCEL_CLICKED);
+    sheetRef.current?.onCloseBottomSheet();
+  };
+
+  const handleNavigateToStakeReviewScreen = useCallback(async () => {
+    const amountWeiString = amountWei.toString();
+
+    if (isStakingDepositRedesignedEnabled) {
+      if (!attemptDepositTransaction) return;
+
+      try {
+        await attemptDepositTransaction(
+          amountWeiString,
+          selectedAccount?.address as string,
+        );
+        navigate('StakeScreens', {
+          screen: Routes.FULL_SCREEN_CONFIRMATIONS.REDESIGNED_CONFIRMATIONS,
+        });
+      } catch (error) {
+        console.error(error);
+      }
+    } else {
+      navigate('StakeScreens', {
+        screen: Routes.STAKING.STAKE_CONFIRMATION,
+        params: {
+          amountWei: amountWeiString,
+          amountFiat,
+          annualRewardsETH,
+          annualRewardsFiat,
+          annualRewardRate,
+          chainId,
+        },
+      });
+    }
+    metricsEvent(MetaMetricsEvents.STAKE_GAS_COST_IMPACT_PROCEEDED_CLICKED);
+  }, [
+    amountWei,
+    isStakingDepositRedesignedEnabled,
+    metricsEvent,
+    attemptDepositTransaction,
+    selectedAccount?.address,
+    navigate,
+    amountFiat,
+    annualRewardsETH,
+    annualRewardsFiat,
+    annualRewardRate,
+    chainId,
+  ]);
+
+  const footerButtons: ButtonProps[] = [
+    {
+      variant: ButtonVariants.Secondary,
+      label: (
+        <Text variant={TextVariant.BodyMDMedium} color={TextColor.Primary}>
+          {strings('stake.cancel')}
+        </Text>
+      ),
+      size: ButtonSize.Lg,
+      onPress: handleClose,
+    },
+    {
+      variant: ButtonVariants.Primary,
+      label: (
+        <Text variant={TextVariant.BodyMDMedium} color={TextColor.Inverse}>
+          {strings('stake.proceed_anyway')}
+        </Text>
+      ),
+      labelTextVariant: TextVariant.BodyMDMedium,
+      size: ButtonSize.Lg,
+      onPress: handleNavigateToStakeReviewScreen,
+    },
+  ];
+
+  return (
+    <BottomSheet ref={sheetRef}>
+      <View style={styles.container}>
+        <BottomSheetHeaderGlass
+          isGlass={isGlassHeader}
+          onClose={handleClose}
+          closeButtonProps={{ testID: GAS_IMPACT_MODAL_CLOSE_BUTTON_TEST_ID }}
+        >
+          {strings('stake.gas_cost_impact')}
+        </BottomSheetHeaderGlass>
+        <Text style={styles.content}>
+          {strings('stake.gas_cost_impact_warning', { percentOverDeposit: 30 })}
+        </Text>
+        <BottomSheetFooter
+          buttonsAlignment={ButtonsAlignment.Horizontal}
+          buttonPropsArray={footerButtons}
+          style={styles.footer}
+        />
+      </View>
+    </BottomSheet>
+  );
+};
+
+export default GasImpactModal;

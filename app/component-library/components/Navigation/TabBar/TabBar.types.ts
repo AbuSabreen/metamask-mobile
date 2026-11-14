@@ -1,12 +1,9 @@
 // Third party dependencies.
 import {
-  BottomTabBarOptions,
   BottomTabBarProps,
-} from '@react-navigation/bottom-tabs';
-import {
-  BottomTabDescriptor,
   BottomTabNavigationOptions,
-} from '@react-navigation/bottom-tabs/lib/typescript/src/types';
+} from '@react-navigation/bottom-tabs';
+import { TabNavigationState, ParamListBase } from '@react-navigation/native';
 
 // External dependencies.
 import { IconName } from '../../Icons/Icon';
@@ -18,8 +15,13 @@ export enum TabBarIconKey {
   Wallet = 'Wallet',
   Browser = 'Browser',
   Actions = 'Actions',
+  Trade = 'Trade',
   Activity = 'Activity',
   Setting = 'Setting',
+  Rewards = 'Rewards',
+  Trending = 'Trending',
+  Money = 'Money',
+  Social = 'Social',
 }
 
 /**
@@ -29,28 +31,30 @@ export type IconByTabBarIconKey = {
   [key in TabBarIconKey]: IconName;
 };
 
-interface ExtendedBottomTabDescriptor extends BottomTabDescriptor {
-  options: BottomTabNavigationOptions & {
-    tabBarIconKey: TabBarIconKey;
-    callback: () => void;
-    rootScreenName: string;
-  };
+export interface ExtendedBottomTabNavigationOptions
+  extends BottomTabNavigationOptions {
+  tabBarIconKey: TabBarIconKey;
+  callback?: () => void;
+  rootScreenName: string;
+  isSelected?: (rootScreenName: string) => boolean;
+  isHidden?: boolean;
+  showNewBadge?: boolean;
+  /**
+   * Callback fired when leaving this tab (switching to another tab).
+   * Useful for cleanup actions like ending analytics sessions.
+   */
+  onLeave?: () => void;
 }
 
-type TabBarOptions = BottomTabBarOptions & {
-  descriptors: {
-    [key: string]: ExtendedBottomTabDescriptor;
-  };
-};
+export interface ExtendedBottomTabDescriptor {
+  options: ExtendedBottomTabNavigationOptions;
+}
 
 /**
  * TabBar component props.
  */
-export type TabBarProps = BottomTabBarProps<TabBarOptions>;
-
-/**
- * Style sheet input parameters.
- */
-export interface TabBarStyleSheetVars {
-  bottomInset: number;
+export interface TabBarProps {
+  state: TabNavigationState<ParamListBase>;
+  descriptors: Record<string, ExtendedBottomTabDescriptor>;
+  navigation: BottomTabBarProps['navigation'];
 }

@@ -1,309 +1,242 @@
 import React, { useState, useEffect } from 'react';
-import {
-  ScrollView,
-  TouchableOpacity,
-  Text,
-  View,
-  SafeAreaView,
-  StyleSheet,
-  BackHandler,
-} from 'react-native';
+import { ScrollView, BackHandler, Image } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import PropTypes from 'prop-types';
-import { fontStyles } from '../../../styles/common';
-import StyledButton from '../../UI/StyledButton';
-import OnboardingProgress from '../../UI/OnboardingProgress';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  Box,
+  BoxAlignItems,
+  ButtonSize,
+  Text,
+  TextVariant,
+  TextColor,
+} from '@metamask/design-system-react-native';
+import FooterGlass from '../../../component-library/components-temp/FooterGlass';
 import { strings } from '../../../../locales/i18n';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
 import AndroidBackHandler from '../AndroidBackHandler';
 import Device from '../../../util/device';
-import SeedphraseModal from '../../UI/SeedphraseModal';
-import { getOnboardingNavbarOptions } from '../../UI/Navbar';
-import scaling from '../../../util/scaling';
 import Engine from '../../../core/Engine';
-import { ONBOARDING_WIZARD } from '../../../constants/storage';
-import { CHOOSE_PASSWORD_STEPS } from '../../../constants/onboarding';
-import SkipAccountSecurityModal from '../../UI/SkipAccountSecurityModal';
-import SeedPhraseVideo from '../../UI/SeedPhraseVideo';
 import { connect } from 'react-redux';
-import setOnboardingWizardStep from '../../../actions/wizard';
+import { saveOnboardingEvent as saveEvent } from '../../../actions/onboarding';
 import { MetaMetricsEvents } from '../../../core/Analytics';
-
-import DefaultPreference from 'react-native-default-preference';
 import { useTheme } from '../../../util/theme';
-import { ManualBackUpStepsSelectorsIDs } from '../../../../e2e/selectors/Onboarding/ManualBackUpSteps.selectors';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { ManualBackUpStepsSelectorsIDs } from '../ManualBackupStep1/ManualBackUpSteps.testIds';
 import trackOnboarding from '../../../util/metrics/TrackOnboarding/trackOnboarding';
-import Routes from '../../../../app/constants/navigation/Routes';
+import Routes from '../../../constants/navigation/Routes';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
+import SRPDesignLight from '../../../images/secure_wallet_light.png';
+import SRPDesignDark from '../../../images/secure_wallet_dark.png';
+import { CommonActions, useNavigation } from '@react-navigation/native';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import {
+  AccountType,
+  ONBOARDING_SUCCESS_FLOW,
+} from '../../../constants/onboarding';
+import { TraceName, endTrace } from '../../../util/trace';
+import { AppThemeKey } from '../../../util/theme/models';
+import { OnboardingScreenIds } from '../../../hooks/performance/onboardingPerformanceIds';
+import { useScreenPerformance } from '../../../hooks/performance/useScreenPerformance';
 
-const createStyles = (colors) =>
-  StyleSheet.create({
-    mainWrapper: {
-      backgroundColor: colors.background.default,
-      flex: 1,
-    },
-    scrollviewWrapper: {
-      flexGrow: 1,
-    },
-    wrapper: {
-      flex: 1,
-      padding: 20,
-      paddingTop: 0,
-      paddingBottom: 0,
-    },
-    content: {
-      alignItems: 'center',
-      justifyContent: 'flex-start',
-      flex: 1,
-      marginBottom: 10,
-    },
-    title: {
-      fontSize: 24,
-      marginBottom: 24,
-      color: colors.text.default,
-      textAlign: 'center',
-      ...fontStyles.bold,
-    },
-    text: {
-      marginTop: 32,
-      justifyContent: 'center',
-    },
-    label: {
-      lineHeight: scaling.scale(20),
-      fontSize: scaling.scale(14),
-      color: colors.text.default,
-      textAlign: 'center',
-      ...fontStyles.normal,
-    },
-    buttonWrapper: {
-      flex: 1,
-      justifyContent: 'flex-end',
-    },
-    bold: {
-      ...fontStyles.bold,
-    },
-    blue: {
-      color: colors.primary.default,
-    },
-    remindLaterText: {
-      textAlign: 'center',
-      fontSize: 15,
-      lineHeight: 20,
-      color: colors.primary.default,
-      ...fontStyles.normal,
-    },
-    remindLaterSubText: {
-      textAlign: 'center',
-      fontSize: 11,
-      lineHeight: 20,
-      color: colors.text.alternative,
-      ...fontStyles.normal,
-    },
-    startSubText: {
-      textAlign: 'center',
-      fontSize: 11,
-      marginTop: 12,
-      color: colors.text.alternative,
-      ...fontStyles.normal,
-    },
-    remindLaterContainer: {
-      marginBottom: 34,
-    },
-    remindLaterButton: {
-      elevation: 10,
-      zIndex: 10,
-    },
-    ctaContainer: {
-      marginBottom: 30,
-    },
+const AccountBackupStep1 = (props) => {
+  const [hasFunds, setHasFunds] = useState(false);
+  const { themeAppearance } = useTheme();
+  const { isEnabled: isAnalyticsEnabled } = useAnalytics();
+  const tw = useTailwind();
+
+  useScreenPerformance({
+    screenId: OnboardingScreenIds.ACCOUNT_BACKUP,
+    contentReady: true,
+    isEmpty: false,
   });
 
-/**
- * View that's shown during the first step of
- * the backup seed phrase flow
- */
-const AccountBackupStep1 = (props) => {
-  const { navigation, route } = props;
-  const [showRemindLaterModal, setRemindLaterModal] = useState(false);
-  const [showWhatIsSeedphraseModal, setWhatIsSeedphraseModal] = useState(false);
-  const [skipCheckbox, setToggleSkipCheckbox] = useState(false);
-  const [hasFunds, setHasFunds] = useState(false);
-  const { colors } = useTheme();
-  const styles = createStyles(colors);
-
   const track = (event, properties) => {
-    trackOnboarding(event, properties);
+    const eventBuilder = AnalyticsEventBuilder.createEventBuilder(event);
+    eventBuilder.addProperties(properties);
+    trackOnboarding(eventBuilder.build(), props.saveOnboardingEvent);
   };
 
+  const navigation = useNavigation();
+
   useEffect(() => {
-    navigation.setOptions({
-      ...getOnboardingNavbarOptions(
-        route,
-        // eslint-disable-next-line react/display-name
-        { headerLeft: () => <View /> },
-        colors,
-      ),
-      gesturesEnabled: false,
-    });
-  }, [navigation, route, colors]);
+    if (Engine.hasFunds()) setHasFunds(true);
 
-  useEffect(
-    () => {
-      // Check if user has funds
-      if (Engine.hasFunds()) setHasFunds(true);
+    const hardwareBackPress = () => true;
+    const backHandlerSubscription = BackHandler.addEventListener(
+      'hardwareBackPress',
+      hardwareBackPress,
+    );
 
-      // Disable back press
-      const hardwareBackPress = () => true;
-
-      // Add event listener
-      BackHandler.addEventListener('hardwareBackPress', hardwareBackPress);
-
-      // Remove event listener on cleanup
-      return () => {
-        BackHandler.removeEventListener('hardwareBackPress', hardwareBackPress);
-      };
-    },
-    [], // Run only when component mounts
-  );
+    return () => {
+      backHandlerSubscription.remove();
+    };
+  }, []);
 
   const goNext = () => {
-    props.navigation.navigate('AccountBackupStep1B', { ...props.route.params });
+    navigation.navigate('ManualBackupStep1', {
+      ...props.route.params,
+    });
     track(MetaMetricsEvents.WALLET_SECURITY_STARTED);
+  };
+
+  const skip = async () => {
+    track(MetaMetricsEvents.WALLET_SECURITY_SKIP_CONFIRMED);
+    const resetAction = CommonActions.reset({
+      index: 1,
+      routes: [
+        {
+          name: Routes.ONBOARDING.SUCCESS_FLOW,
+          params: {
+            screen: Routes.ONBOARDING.SUCCESS,
+            params: {
+              ...props.route.params,
+              successFlow: ONBOARDING_SUCCESS_FLOW.NO_BACKED_UP_SRP,
+            },
+          },
+        },
+      ],
+    });
+    endTrace({ name: TraceName.OnboardingNewSrpCreateWallet });
+    endTrace({ name: TraceName.OnboardingJourneyOverall });
+
+    if (isAnalyticsEnabled()) {
+      navigation.dispatch(resetAction);
+    } else {
+      navigation.navigate('OptinMetrics', {
+        onContinue: () => {
+          navigation.dispatch(resetAction);
+        },
+        accountType: AccountType.Metamask,
+      });
+    }
   };
 
   const showRemindLater = () => {
     if (hasFunds) return;
 
-    setRemindLaterModal(true);
+    navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.SHEET.SKIP_ACCOUNT_SECURITY_MODAL,
+      params: {
+        onConfirm: skip,
+        onCancel: () => {
+          track(MetaMetricsEvents.WALLET_SECURITY_SKIP_CANCELED);
+          goNext();
+        },
+      },
+    });
     track(MetaMetricsEvents.WALLET_SECURITY_SKIP_INITIATED);
   };
 
-  const toggleSkipCheckbox = () =>
-    skipCheckbox ? setToggleSkipCheckbox(false) : setToggleSkipCheckbox(true);
-
-  const hideRemindLaterModal = () => {
-    setToggleSkipCheckbox(false);
-    setRemindLaterModal(false);
-  };
-
-  const secureNow = () => {
-    hideRemindLaterModal();
-    goNext();
-  };
-
-  const skip = async () => {
-    hideRemindLaterModal();
-    track(MetaMetricsEvents.WALLET_SECURITY_SKIP_CONFIRMED);
-    // Get onboarding wizard state
-    const onboardingWizard = await DefaultPreference.get(ONBOARDING_WIZARD);
-    !onboardingWizard && props.setOnboardingWizardStep(1);
-    props.navigation.reset({
-      index: 1,
-      routes: [{ name: Routes.ONBOARDING.SUCCESS }],
+  const showWhatIsSeedphrase = () => {
+    track(MetaMetricsEvents.SRP_DEFINITION_CLICKED, {
+      location: 'account_backup_step_1',
+    });
+    navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+      screen: Routes.SHEET.SEEDPHRASE_MODAL,
     });
   };
 
-  const showWhatIsSeedphrase = () => setWhatIsSeedphraseModal(true);
-
-  const hideWhatIsSeedphrase = () => setWhatIsSeedphraseModal(false);
-
   return (
-    <SafeAreaView style={styles.mainWrapper}>
+    <SafeAreaView
+      style={tw.style('flex-1 bg-default')}
+      edges={{ top: 'additive', bottom: 'additive' }}
+    >
       <ScrollView
-        contentContainerStyle={styles.scrollviewWrapper}
-        style={styles.mainWrapper}
+        contentContainerStyle={tw.style('flex-grow')}
+        style={tw.style('flex-1 bg-default')}
         testID={ManualBackUpStepsSelectorsIDs.PROTECT_CONTAINER}
       >
-        <View style={styles.wrapper}>
-          <OnboardingProgress steps={CHOOSE_PASSWORD_STEPS} currentStep={1} />
-          <View style={styles.content}>
-            <Text style={styles.title}>
+        <Box twClassName="flex-1 px-4 pt-2">
+          <Text variant={TextVariant.BodyMd} color={TextColor.TextAlternative}>
+            {strings('manual_backup_step_1.steps', {
+              currentStep: 2,
+              totalSteps: 3,
+            })}
+          </Text>
+          <Box alignItems={BoxAlignItems.Center} twClassName="flex-1 mb-2.5">
+            <Text
+              variant={TextVariant.DisplayMd}
+              color={TextColor.TextDefault}
+              twClassName="text-left self-start mb-4"
+            >
               {strings('account_backup_step_1.title')}
             </Text>
-            <SeedPhraseVideo onClose={skip} />
-            <View style={styles.text}>
-              <Text style={styles.label}>
-                {strings('account_backup_step_1.info_text_1_1')}{' '}
-                <Text style={styles.blue} onPress={showWhatIsSeedphrase}>
-                  {strings('account_backup_step_1.info_text_1_2')}
-                </Text>{' '}
-                {strings('account_backup_step_1.info_text_1_3')}{' '}
-                <Text style={styles.bold}>
-                  {strings('account_backup_step_1.info_text_1_4')}
-                </Text>
-              </Text>
-            </View>
-          </View>
-          <View style={styles.buttonWrapper}>
-            {!hasFunds && (
-              <View style={styles.remindLaterContainer}>
-                <TouchableOpacity
-                  style={styles.remindLaterButton}
-                  onPress={showRemindLater}
-                  hitSlop={{ top: 10, left: 10, bottom: 10, right: 10 }}
-                >
-                  <Text
-                    style={styles.remindLaterText}
-                    testID={
-                      ManualBackUpStepsSelectorsIDs.REMIND_ME_LATER_BUTTON
-                    }
-                  >
-                    {strings('account_backup_step_1.remind_me_later')}
-                  </Text>
-                </TouchableOpacity>
-                <Text style={styles.remindLaterSubText}>
-                  {strings('account_backup_step_1.remind_me_later_subtext')}
-                </Text>
-              </View>
-            )}
-            <View style={styles.ctaContainer}>
-              <StyledButton
-                containerStyle={styles.button}
-                type={'confirm'}
-                onPress={goNext}
+            <Image
+              source={
+                themeAppearance === AppThemeKey.dark
+                  ? SRPDesignDark
+                  : SRPDesignLight
+              }
+              style={tw.style('w-[250px] h-[250px] mx-auto')}
+            />
+            <Text
+              variant={TextVariant.BodyMd}
+              color={TextColor.TextAlternative}
+              twClassName="mt-8 self-start"
+            >
+              {strings('account_backup_step_1.info_text_1_1')}{' '}
+              <Text
+                variant={TextVariant.BodyMd}
+                color={TextColor.PrimaryDefault}
+                onPress={showWhatIsSeedphrase}
+                testID={ManualBackUpStepsSelectorsIDs.SEEDPHRASE_LINK}
               >
-                {strings('account_backup_step_1.cta_text')}
-              </StyledButton>
-              <Text style={styles.startSubText}>
-                {strings('account_backup_step_1.cta_subText')}
-              </Text>
-            </View>
-          </View>
-        </View>
+                {strings('account_backup_step_1.info_text_1_2')}
+              </Text>{' '}
+              {strings('account_backup_step_1.info_text_1_3')}{' '}
+            </Text>
+
+            <Text
+              variant={TextVariant.BodyMd}
+              color={TextColor.TextAlternative}
+              twClassName="self-start mt-4"
+            >
+              {strings('account_backup_step_1.info_text_1_4')}
+            </Text>
+          </Box>
+
+          <FooterGlass
+            twClassName="px-0 mt-auto justify-end py-2"
+            primaryButtonProps={{
+              children: strings('account_backup_step_1.cta_text'),
+              onPress: goNext,
+              size: ButtonSize.Lg,
+            }}
+            secondaryButtonProps={
+              !hasFunds
+                ? {
+                    children: strings('account_backup_step_1.remind_me_later'),
+                    onPress: showRemindLater,
+                    size: ButtonSize.Lg,
+                    testID:
+                      ManualBackUpStepsSelectorsIDs.REMIND_ME_LATER_BUTTON,
+                  }
+                : undefined
+            }
+          />
+        </Box>
       </ScrollView>
       {Device.isAndroid() && (
         <AndroidBackHandler customBackPress={showRemindLater} />
       )}
-      <SkipAccountSecurityModal
-        modalVisible={showRemindLaterModal}
-        onCancel={secureNow}
-        onConfirm={skip}
-        skipCheckbox={skipCheckbox}
-        onPress={hideRemindLaterModal}
-        toggleSkipCheckbox={toggleSkipCheckbox}
-      />
-      <SeedphraseModal
-        showWhatIsSeedphraseModal={showWhatIsSeedphraseModal}
-        hideWhatIsSeedphrase={hideWhatIsSeedphrase}
-      />
     </SafeAreaView>
   );
 };
 
+const mapDispatchToProps = (dispatch) => ({
+  saveOnboardingEvent: (...eventArgs) => dispatch(saveEvent(eventArgs)),
+});
+
 AccountBackupStep1.propTypes = {
   /**
-  /* navigation object required to push and pop other views
-  */
-  navigation: PropTypes.object,
-  /**
-   * Object that represents the current route info like params passed to it
+   * Object that represents the current route info like params passed to it.
    */
   route: PropTypes.object,
   /**
-   * Action to set onboarding wizard step
+   * Action to save onboarding event.
    */
-  setOnboardingWizardStep: PropTypes.func,
+  saveOnboardingEvent: PropTypes.func,
 };
-
-const mapDispatchToProps = (dispatch) => ({
-  setOnboardingWizardStep: (step) => dispatch(setOnboardingWizardStep(step)),
-});
 
 export default connect(null, mapDispatchToProps)(AccountBackupStep1);

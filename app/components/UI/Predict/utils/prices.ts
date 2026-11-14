@@ -1,0 +1,165 @@
+import {
+  Side,
+  type GetPriceResponse,
+  type OrderPreview,
+  type PredictOutcomeToken,
+  type PriceUpdate,
+} from '../types';
+
+export const isValidPrice = (price: number | undefined): price is number =>
+  typeof price === 'number' && Number.isFinite(price) && price > 0;
+
+/**
+ * How many whole ticks the fresh price is worse than the price the user last
+ * confirmed, by side: a lower price is worse for a SELL (less received), a
+ * higher price is worse for a BUY (more paid). Better or equal prices are 0.
+ * The tick size comes from the fresh preview so finer books measure honestly.
+ */
+export const getPredictTicksWorse = ({
+  side,
+  referencePrice,
+  freshPrice,
+  tickSize,
+}: {
+  side: Side;
+  referencePrice: number;
+  freshPrice: number;
+  tickSize: number;
+}): number => {
+  if (!isValidPrice(referencePrice) || !isValidPrice(freshPrice)) {
+    return 0;
+  }
+  if (!Number.isFinite(tickSize) || tickSize <= 0) {
+    return 0;
+  }
+
+  const worseDelta =
+    side === Side.SELL
+      ? referencePrice - freshPrice
+      : freshPrice - referencePrice;
+  if (worseDelta <= 0) {
+    return 0;
+  }
+
+  // Epsilon guards against float drift on same-tick comparisons
+  // (e.g. 0.65 - 0.64 landing just under 0.01).
+  return Math.floor((worseDelta + Number.EPSILON) / tickSize);
+};
+
+export type PredictSellSubmitDecision = 'submit' | 'price_moved' | 'no_match';
+
+// Tolerance for float drift when comparing a fill price with the band floor.
+const BAND_FLOOR_EPSILON = 1e-9;
+
+/**
+ * Decides what a sell does with a freshly fetched preview, against the price
+ * the user approved.
+ *
+ * Returns 'price_moved' when the fresh price is more than one tick worse: the
+ * user must confirm the new price before anything is submitted.
+ *
+ * Returns 'no_match' when the full size cannot fill inside the slippage band.
+ * The band is measured from the approved price, or from the fresh price when
+ * it moved more than one tick (that is the price the user will confirm).
+ *
+ * Returns 'submit' when the fresh price is better, equal, or at most one tick
+ * worse, and the full size fills inside the band.
+ */
+export const getPredictSellSubmitDecision = ({
+  approvedPrice,
+  freshPreview,
+}: {
+  approvedPrice: number;
+  freshPreview: OrderPreview;
+}): PredictSellSubmitDecision => {
+  const { sharePrice, tickSize, slippage, worstFillPrice } = freshPreview;
+  const movedBeyondOneTick =
+    getPredictTicksWorse({
+      side: Side.SELL,
+      referencePrice: approvedPrice,
+      freshPrice: sharePrice,
+      tickSize,
+    }) > 1;
+  const bandReferencePrice = movedBeyondOneTick ? sharePrice : approvedPrice;
+  const bandFloor = bandReferencePrice * (1 - slippage);
+
+  if (
+    worstFillPrice === undefined ||
+    worstFillPrice + BAND_FLOOR_EPSILON < bandFloor
+  ) {
+    return 'no_match';
+  }
+  return movedBeyondOneTick ? 'price_moved' : 'submit';
+};
+
+/**
+ * Price to display on a BUY CTA from an already-priced token: the best ask
+ * (`buyPrice`) when present, otherwise the token's mid `price`. Use this for
+ * any "what you pay to buy" label so it never falls back to the odds mid on a
+ * wide-spread market.
+ */
+export const getDisplayBuyPrice = (
+  token: PredictOutcomeToken | undefined,
+): number | undefined => token?.buyPrice ?? token?.price;
+
+/**
+ * Price to display on a BUY CTA: the best ask (what the user actually pays).
+ * Precedence: live WS best ask > REST ask (`entry.buy`) > static token price.
+ */
+export const getPredictBuyPrice = (
+  token: PredictOutcomeToken | undefined,
+  livePrice: PriceUpdate | undefined,
+  restPrices: GetPriceResponse,
+): number | undefined => {
+  if (!token) {
+    return undefined;
+  }
+
+  if (isValidPrice(livePrice?.bestAsk)) {
+    return livePrice.bestAsk;
+  }
+
+  const restEntry = restPrices.results.find(
+    (result) => result.outcomeTokenId === token.id,
+  );
+  if (isValidPrice(restEntry?.entry.buy)) {
+    return restEntry.entry.buy;
+  }
+
+  return isValidPrice(token.price) ? token.price : undefined;
+};
+
+/**
+ * Mid price = the implied probability / quoted odds, i.e. `(bid + ask) / 2`.
+ * This is what should be shown as the outcome's "% chance" / odds, matching the
+ * chart and Polymarket. Distinct from {@link getPredictBuyPrice}, which is a
+ * tradeable price. On a wide-spread (illiquid) market the bid, mid and ask
+ * diverge sharply, so the odds must use the mid - not a tradeable side.
+ * Precedence: live WS mid > REST mid > static token price.
+ */
+export const getPredictMidPrice = (
+  token: PredictOutcomeToken | undefined,
+  livePrice: PriceUpdate | undefined,
+  restPrices: GetPriceResponse,
+): number | undefined => {
+  if (!token) {
+    return undefined;
+  }
+
+  if (isValidPrice(livePrice?.bestBid) && isValidPrice(livePrice?.bestAsk)) {
+    return (livePrice.bestBid + livePrice.bestAsk) / 2;
+  }
+
+  const restEntry = restPrices.results.find(
+    (result) => result.outcomeTokenId === token.id,
+  );
+  // entry.buy = ask, entry.sell = bid (see PolymarketProvider.getPrices).
+  if (
+    isValidPrice(restEntry?.entry.buy) &&
+    isValidPrice(restEntry?.entry.sell)
+  ) {
+    return (restEntry.entry.buy + restEntry.entry.sell) / 2;
+  }
+
+  return isValidPrice(token.price) ? token.price : undefined;
+};

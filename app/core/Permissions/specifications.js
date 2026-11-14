@@ -1,15 +1,14 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
 import {
   caveatSpecifications as snapsCaveatsSpecifications,
   endowmentCaveatSpecifications as snapsEndowmentCaveatSpecifications,
 } from '@metamask/snaps-rpc-methods';
-///: END:ONLY_INCLUDE_IF
+import { RestrictedMethods } from './constants';
 import {
-  constructPermission,
-  PermissionType,
-} from '@metamask/permission-controller';
-import { v1 as random } from 'uuid';
-import { CaveatTypes, RestrictedMethods } from './constants';
+  caip25CaveatBuilder,
+  Caip25CaveatType,
+  caip25EndowmentBuilder,
+  createCaip25Caveat,
+} from '@metamask/chain-agnostic-permission';
 
 /**
  * This file contains the specifications of the permissions and caveats
@@ -21,19 +20,17 @@ import { CaveatTypes, RestrictedMethods } from './constants';
  * The "keys" of all of permissions recognized by the PermissionController.
  * Permission keys and names have distinct meanings in the permission system.
  */
-const PermissionKeys = Object.freeze({
+export const PermissionKeys = Object.freeze({
   ...RestrictedMethods,
+  permittedChains: 'endowment:permitted-chains',
 });
 
 /**
  * Factory functions for all caveat types recognized by the
  * PermissionController.
  */
-const CaveatFactories = Object.freeze({
-  [CaveatTypes.restrictReturnedAccounts]: (accounts) => ({
-    type: CaveatTypes.restrictReturnedAccounts,
-    value: accounts,
-  }),
+export const CaveatFactories = Object.freeze({
+  [Caip25CaveatType]: createCaip25Caveat,
 });
 
 /**
@@ -51,180 +48,37 @@ const CaveatFactories = Object.freeze({
  * PermissionController.
  *
  * @param {{
- * getInternalAccounts: () => import('@metamask/keyring-api').InternalAccount[],
+ * listAccounts: () => import('@metamask/keyring-api').InternalAccount[],
+ * findNetworkClientIdByChainId: (chainId: `0x${string}`) => string,
+ * isNonEvmScopeSupported: (scope: import('@metamask/chain-agnostic-permission').InternalScopeString) => import('@metamask/utils').Json | unknown
+ * getNonEvmAccountAddresses: (scope: import('@metamask/chain-agnostic-permission').InternalScopeString) => import('@metamask/utils').CaipAccountId[] | unknown,
  * }} options - Options bag.
  */
-export const getCaveatSpecifications = ({ getInternalAccounts }) => ({
-  [CaveatTypes.restrictReturnedAccounts]: {
-    type: CaveatTypes.restrictReturnedAccounts,
-
-    decorator: (method, caveat) => async (args) => {
-      const permittedAccounts = [];
-      const allAccounts = await method(args);
-      caveat.value.forEach((address) => {
-        const addressToCompare = address.toLowerCase();
-        const isPermittedAccount = allAccounts.includes(addressToCompare);
-        if (isPermittedAccount) {
-          permittedAccounts.push(addressToCompare);
-        }
-      });
-      return permittedAccounts;
-    },
-
-    validator: (caveat, _origin, _target) =>
-      validateCaveatAccounts(caveat.value, getInternalAccounts),
-  },
-  ///: BEGIN:ONLY_INCLUDE_IF(snaps)
+export const getCaveatSpecifications = ({
+  listAccounts,
+  findNetworkClientIdByChainId,
+  isNonEvmScopeSupported,
+  getNonEvmAccountAddresses,
+}) => ({
+  [Caip25CaveatType]: caip25CaveatBuilder({
+    listAccounts,
+    findNetworkClientIdByChainId,
+    isNonEvmScopeSupported,
+    getNonEvmAccountAddresses,
+  }),
   ...snapsCaveatsSpecifications,
   ...snapsEndowmentCaveatSpecifications,
-  ///: END:ONLY_INCLUDE_IF
 });
 
 /**
  * Gets the specifications for all permissions that will be recognized by the
  * PermissionController.
  *
- * @param {{
- *   getAllAccounts: () => Promise<string[]>,
- *   getInternalAccounts: () => import('@metamask/keyring-api').InternalAccount[],
- *   captureKeyringTypesWithMissingIdentities: (internalAccounts?: import('@metamask/keyring-api').InternalAccount[], accounts?: string[]) => void,
- * }} options - Options bag.
- * @param options.getAllAccounts - A function that returns all Ethereum accounts
- * in the current MetaMask instance.
- * @param options.getInternalAccounts - A function that returns the
- * `AccountsController` internalAccount objects for all accounts in the current Metamask instance
- * @param options.captureKeyringTypesWithMissingIdentities - A function that
- * captures extra error information about the "Missing identity for address"
- * error.
- * current MetaMask instance.
  */
-export const getPermissionSpecifications = ({
-  getAllAccounts,
-  getInternalAccounts,
-  captureKeyringTypesWithMissingIdentities,
-}) => ({
-  [PermissionKeys.eth_accounts]: {
-    permissionType: PermissionType.RestrictedMethod,
-    targetName: PermissionKeys.eth_accounts,
-    allowedCaveats: [CaveatTypes.restrictReturnedAccounts],
-
-    factory: (permissionOptions, requestData) => {
-      if (Array.isArray(permissionOptions.caveats)) {
-        throw new Error(
-          `${PermissionKeys.eth_accounts} error: Received unexpected caveats. Any permitted caveats will be added automatically.`,
-        );
-      }
-
-      // This value will be further validated as part of the caveat.
-      if (!requestData.approvedAccounts) {
-        throw new Error(
-          `${PermissionKeys.eth_accounts} error: No approved accounts specified.`,
-        );
-      }
-
-      return constructPermission({
-        id: random(),
-        ...permissionOptions,
-        caveats: [
-          CaveatFactories[CaveatTypes.restrictReturnedAccounts](
-            requestData.approvedAccounts,
-          ),
-        ],
-      });
-    },
-
-    methodImplementation: async (_args) => {
-      const accounts = await getAllAccounts();
-      const internalAccounts = getInternalAccounts();
-
-      return accounts.sort((firstAddress, secondAddress) => {
-        const lowerCaseFirstAddress = firstAddress.toLowerCase();
-        const firstAccount = internalAccounts.find(
-          (internalAccount) =>
-            internalAccount.address.toLowerCase() === lowerCaseFirstAddress,
-        );
-
-        const lowerCaseSecondAddress = secondAddress.toLowerCase();
-        const secondAccount = internalAccounts.find(
-          (internalAccount) =>
-            internalAccount.address.toLowerCase() === lowerCaseSecondAddress,
-        );
-
-        if (!firstAccount) {
-          captureKeyringTypesWithMissingIdentities(internalAccounts, accounts);
-          throw new Error(`Missing identity for address: "${firstAddress}".`);
-        } else if (!secondAccount) {
-          captureKeyringTypesWithMissingIdentities(internalAccounts, accounts);
-          throw new Error(`Missing identity for address: "${secondAddress}".`);
-        } else if (
-          firstAccount.metadata.lastSelected ===
-          secondAccount.metadata.lastSelected
-        ) {
-          return 0;
-        } else if (firstAccount.metadata.lastSelected === undefined) {
-          return 1;
-        } else if (secondAccount.metadata.lastSelected === undefined) {
-          return -1;
-        }
-
-        return (
-          secondAccount.metadata.lastSelected -
-          firstAccount.metadata.lastSelected
-        );
-      });
-    },
-
-    validator: (permission, _origin, _target) => {
-      const { caveats } = permission;
-      if (
-        !caveats ||
-        caveats.length !== 1 ||
-        caveats[0].type !== CaveatTypes.restrictReturnedAccounts
-      ) {
-        throw new Error(
-          `${PermissionKeys.eth_accounts} error: Invalid caveats. There must be a single caveat of type "${CaveatTypes.restrictReturnedAccounts}".`,
-        );
-      }
-    },
-  },
+export const getPermissionSpecifications = () => ({
+  [caip25EndowmentBuilder.targetName]:
+    caip25EndowmentBuilder.specificationBuilder({}),
 });
-
-/**
- * Validates the accounts associated with a caveat. In essence, ensures that
- * the accounts value is an array of non-empty strings, and that each string
- * corresponds to a PreferencesController identity.
- *
- * @param {string[]} accounts - The accounts associated with the caveat.
- * @param {() => import('@metamask/keyring-api').InternalAccount[]} getInternalAccounts -
- * Gets all AccountsController InternalAccounts.
- */
-function validateCaveatAccounts(accounts, getInternalAccounts) {
-  if (!Array.isArray(accounts) || accounts.length === 0) {
-    throw new Error(
-      `${PermissionKeys.eth_accounts} error: Expected non-empty array of Ethereum addresses.`,
-    );
-  }
-
-  const internalAccounts = getInternalAccounts();
-  accounts.forEach((address) => {
-    if (!address || typeof address !== 'string') {
-      throw new Error(
-        `${PermissionKeys.eth_accounts} error: Expected an array of objects that contains an Ethereum addresses. Received: "${address}".`,
-      );
-    }
-    const lowerCaseAddress = address.toLowerCase();
-    if (
-      !internalAccounts.some(
-        (internalAccount) =>
-          internalAccount.address.toLowerCase() === lowerCaseAddress,
-      )
-    ) {
-      throw new Error(
-        `${PermissionKeys.eth_accounts} error: Received unrecognized address: "${address}".`,
-      );
-    }
-  });
-}
 
 /**
  * All unrestricted methods recognized by the PermissionController.
@@ -275,6 +129,7 @@ export const unrestrictedMethods = Object.freeze([
   // Define unrestricted methods below to bypass PermissionController. These are eventually handled by RPCMethodMiddleware (User facing RPC methods)
   'wallet_getPermissions',
   'wallet_requestPermissions',
+  'wallet_revokePermissions',
   'eth_getTransactionByHash',
   'eth_getTransactionByBlockHashAndIndex',
   'eth_getTransactionByBlockNumberAndIndex',
@@ -287,8 +142,6 @@ export const unrestrictedMethods = Object.freeze([
   'eth_coinbase',
   'parity_defaultAccount',
   'eth_sendTransaction',
-  'eth_signTransaction',
-  'eth_sign',
   'personal_sign',
   'personal_ecRecover',
   'parity_checkRequest',
@@ -298,12 +151,40 @@ export const unrestrictedMethods = Object.freeze([
   'web3_clientVersion',
   'wallet_scanQRCode',
   'wallet_watchAsset',
-  'metamask_removeFavorite',
   'metamask_showTutorial',
-  'metamask_showAutocomplete',
-  'metamask_injectHomepageScripts',
   'metamask_getProviderState',
   'metamask_logWeb3ShimUsage',
   'wallet_switchEthereumChain',
   'wallet_addEthereumChain',
+  'wallet_sendCalls',
+  'wallet_getCallsStatus',
+  'wallet_getCapabilities',
+  'wallet_getAllSnaps',
+  'wallet_getSnaps',
+  'wallet_requestSnaps',
+  'wallet_invokeSnap',
+  'wallet_invokeKeyring',
+  'snap_getClientStatus',
+  'snap_clearState',
+  'snap_endTrace',
+  'snap_getFile',
+  'snap_getState',
+  'snap_listEntropySources',
+  'snap_createInterface',
+  'snap_updateInterface',
+  'snap_getInterfaceState',
+  'snap_getInterfaceContext',
+  'snap_resolveInterface',
+  'snap_setState',
+  'snap_scheduleBackgroundEvent',
+  'snap_startTrace',
+  'snap_trackError',
+  'snap_trackEvent',
+  'snap_cancelBackgroundEvent',
+  'snap_getBackgroundEvents',
+  'snap_openWebSocket',
+  'snap_sendWebSocketMessage',
+  'snap_closeWebSocket',
+  'snap_getWebSockets',
+  'snap_messengerCall',
 ]);

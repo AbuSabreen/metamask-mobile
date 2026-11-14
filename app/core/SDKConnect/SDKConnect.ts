@@ -3,12 +3,11 @@ import Logger from '../../util/Logger';
 import AppConstants from '../AppConstants';
 
 import { OriginatorInfo } from '@metamask/sdk-communication-layer';
-import { NavigationContainerRef } from '@react-navigation/native';
+import {
+  NavigationContainerRef,
+  ParamListBase,
+} from '@react-navigation/native';
 import Engine from '../../core/Engine';
-import AndroidService from './AndroidSDK/AndroidService';
-import addDappConnection from './AndroidSDK/addDappConnection';
-import bindAndroidSDK from './AndroidSDK/bindAndroidSDK';
-import loadDappConnections from './AndroidSDK/loadDappConnections';
 import { Connection, ConnectionProps } from './Connection';
 import {
   approveHost,
@@ -33,6 +32,7 @@ import {
   updateSDKLoadingState,
 } from './StateManagement';
 import DevLogger from './utils/DevLogger';
+import NavigationService from '../NavigationService';
 
 export interface ConnectedSessions {
   [id: string]: Connection;
@@ -53,7 +53,7 @@ export interface approveHostProps {
 }
 
 export interface SDKConnectState {
-  navigation?: NavigationContainerRef;
+  navigation?: NavigationContainerRef<ParamListBase>;
   reconnected: boolean;
 
   // Track init status to ensure connection recovery priority and prevent double initialization.
@@ -70,7 +70,6 @@ export interface SDKConnectState {
   connections: SDKSessions;
   androidSDKStarted: boolean;
   androidSDKBound: boolean;
-  androidService?: AndroidService;
   deeplinkingServiceStarted: boolean;
   deeplinkingService?: DeeplinkProtocolService;
   dappConnections: SDKSessions;
@@ -107,7 +106,6 @@ export class SDKConnect {
     androidSDKStarted: false,
     androidSDKBound: false,
     deeplinkingServiceStarted: false,
-    androidService: undefined,
     deeplinkingService: undefined,
     connecting: {},
     approvedHosts: {},
@@ -128,8 +126,10 @@ export class SDKConnect {
     otherPublicKey,
     origin,
     protocolVersion,
+    originatorInfo,
     initialConnection,
     validUntil = Date.now() + DEFAULT_SESSION_TIMEOUT_MS,
+    hideReturnToApp,
   }: ConnectionProps) {
     return connectToChannel({
       id,
@@ -137,9 +137,11 @@ export class SDKConnect {
       otherPublicKey,
       protocolVersion,
       origin,
+      originatorInfo,
       validUntil,
       initialConnection,
       instance: this,
+      hideReturnToApp,
     });
   }
 
@@ -216,26 +218,28 @@ export class SDKConnect {
     return pause(this);
   }
 
+  // Android SDK disabled for security reasons (pm-security #532, #534)
   public async bindAndroidSDK() {
-    return bindAndroidSDK(this);
+    return;
   }
 
   public isAndroidSDKBound() {
-    return this.state.androidSDKBound;
+    return false;
   }
 
   async loadDappConnections(): Promise<{
     [id: string]: ConnectionProps;
   }> {
-    return loadDappConnections();
+    return {};
   }
 
   getAndroidConnections() {
-    return this.state.androidService?.getConnections();
+    return undefined;
   }
 
-  async addDappConnection(connection: ConnectionProps) {
-    return addDappConnection(connection, this);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async addDappConnection(_connection: ConnectionProps) {
+    return;
   }
 
   public async refreshChannel({ channelId }: { channelId: string }) {
@@ -351,14 +355,12 @@ export class SDKConnect {
     return this.state.connections;
   }
 
-  public async init({
-    navigation,
-    context,
-  }: {
-    navigation: NavigationContainerRef;
-    context?: string;
-  }) {
-    return init({ navigation, context, instance: this });
+  public static async init({ context }: { context?: string }) {
+    const navigation = NavigationService.navigation;
+    const instance = SDKConnect.getInstance();
+
+    await init({ navigation, context, instance });
+    await instance.postInit();
   }
 
   async postInit() {

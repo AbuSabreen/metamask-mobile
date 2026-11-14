@@ -2,6 +2,15 @@ import { Linking } from 'react-native';
 import isUrl from 'is-url';
 import Url from 'url-parse';
 import { regex, hasProtocol } from '../../util/regex';
+import AppConstants from '../../core/AppConstants';
+
+export type SearchEngine = 'Google' | 'DuckDuckGo' | 'Brave';
+
+export const SEARCH_ENGINE_URLS: Record<SearchEngine, string> = {
+  Google: 'https://www.google.com/search?q=',
+  DuckDuckGo: 'https://duckduckgo.com/?q=',
+  Brave: 'https://search.brave.com/search?q=',
+};
 
 /**
  * Returns URL prefixed with protocol
@@ -27,25 +36,42 @@ export const prefixUrlWithProtocol = (
  * @param defaultProtocol - Protocol string to append to URLs that have none
  * @returns - String corresponding to sanitized input depending if it's a search or url
  */
-export default function onUrlSubmit(
+/**
+ * Safely decode a URL string, returning the original if decoding fails
+ *
+ * @param url - String to decode
+ * @returns - Decoded URL string or original if decoding fails
+ */
+const safeDecodeUrl = (url: string): string => {
+  try {
+    return decodeURIComponent(url);
+  } catch (error) {
+    // re-assign the url to the original argument
+    // to be later evaluated by regex
+    return url;
+  }
+};
+
+export function processUrlForBrowser(
   input: string,
-  searchEngine = 'Google',
-  defaultProtocol = 'https://',
+  searchEngine: string = AppConstants.DEFAULT_SEARCH_ENGINE,
 ) {
+  const defaultProtocol = 'https://';
+
+  // Decode the URL first to handle URL-encoded characters
+  const decodedInput = safeDecodeUrl(input);
+
   //Check if it's a url or a keyword
-  if (!isUrl(input) && !input.match(regex.url)) {
+  if (!decodedInput.match(regex.url)) {
     // Add exception for localhost
     if (
-      !input.startsWith('http://localhost') &&
-      !input.startsWith('localhost')
+      !decodedInput.startsWith('http://localhost') &&
+      !decodedInput.startsWith('localhost')
     ) {
-      // In case of keywords we default to google search
-      let searchUrl =
-        'https://www.google.com/search?q=' + encodeURIComponent(input);
-      if (searchEngine === 'DuckDuckGo') {
-        searchUrl = 'https://duckduckgo.com/?q=' + encodeURIComponent(input);
-      }
-      return searchUrl;
+      const baseUrl =
+        SEARCH_ENGINE_URLS[searchEngine as SearchEngine] ??
+        SEARCH_ENGINE_URLS[AppConstants.DEFAULT_SEARCH_ENGINE];
+      return baseUrl + encodeURIComponent(input);
     }
   }
   return prefixUrlWithProtocol(input, defaultProtocol);
@@ -86,6 +112,8 @@ export function getHost(url: string, defaultProtocol = 'https://') {
  * @param error - Represents the error of handleIpfsContent
  * @returns - True if its a TLD, false if it's not
  */
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const isTLD = (hostname: string, error: any) =>
   (hostname.slice(-4) !== '.eth' &&
     error.toString().indexOf('is not standard') !== -1) ||
@@ -94,20 +122,82 @@ export const isTLD = (hostname: string, error: any) =>
 /**
  *
  * List of all protocols that our webview load unconditionally
+ *
  */
-export const protocolAllowList = ['about:', 'http:', 'https:'];
+export const protocolAllowList = [
+  'about:',
+  'http:',
+  'https:',
+  'file:',
+  'wc:',
+  'metamask:',
+  'ethereum:',
+  'dapp:',
+];
 
 /**
  *
  * List of all trusted protocols for OS Linker to handle
  */
 export const trustedProtocolToDeeplink = [
-  'wc:',
-  'metamask:',
-  'ethereum:',
-  'dapp:',
   'market:',
+  // app store deeplink
+  'itms-apps:',
 ];
+
+export const paymentProtocolList = ['paytmmp:', 'phonepe:', 'gpay:', 'upi:'];
+
+/**
+ * Handles payment protocol URLs by checking if they can be opened and opening them
+ * Logs appropriate messages for success/failure scenarios
+ *
+ * @param url - URL string to handle
+ * @param Logger - Logger instance for logging
+ * @returns Promise that resolves when the operation completes
+ */
+export const handlePaymentProtocolUrl = (
+  url: string,
+  Logger: {
+    log: (message: string) => void;
+    error: (error: Error, message: string) => void;
+  },
+): Promise<void> =>
+  Linking.canOpenURL(url)
+    .then((canOpen) => {
+      if (canOpen) {
+        return Linking.openURL(url);
+      }
+      Logger.log(`Cannot open URL: ${url} - payment app not installed`);
+      return Promise.resolve();
+    })
+    .catch((err: Error) => {
+      Logger.error(err, `Failed to open payment URL: ${url}`);
+    });
+
+/**
+ * Determines if a WebView should start loading a URL based on its protocol
+ * Payment protocol URLs are handled by the OS, other URLs load normally in WebView
+ *
+ * @param url - URL string to evaluate
+ * @param Logger - Logger instance for logging
+ * @returns boolean - true to allow WebView to load URL, false to prevent it
+ */
+export const shouldStartLoadWithRequest = (
+  url: string,
+  Logger: {
+    log: (message: string) => void;
+    error: (error: Error, message: string) => void;
+  },
+): boolean => {
+  const { protocol } = new Url(url);
+
+  if (paymentProtocolList.includes(protocol)) {
+    handlePaymentProtocolUrl(url, Logger);
+    return false;
+  }
+
+  return true;
+};
 
 /**
  * Returns translated warning message for the
@@ -121,7 +211,7 @@ export const trustedProtocolToDeeplink = [
  */
 export const getAlertMessage = (
   protocol: string,
-  i18nService: (id: string) => void,
+  i18nService: (id: string) => string,
 ) => {
   switch (protocol) {
     case 'tel:':
@@ -153,3 +243,46 @@ export const allowLinkOpen = (url: string) =>
     .catch((e) => {
       console.warn(`Error opening URL: ${e}`);
     });
+
+/**
+ * Appends search parameters to a URL and returns the complete URL string
+ *
+ * @param baseUrl - Base URL string or URL object
+ * @param params - Record of key-value pairs to append as search parameters
+ * @returns - String containing complete URL with appended parameters
+ */
+export const appendURLParams = (
+  baseUrl: string | URL,
+  params: Record<string, string | boolean | number>,
+): URL => {
+  const url = baseUrl instanceof URL ? baseUrl : new URL(baseUrl);
+
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.append(key, String(value));
+  });
+
+  return url;
+};
+
+/**
+ * Builds a Portfolio URL with standard parameters including user tracking consent
+ *
+ * @param baseUrl - Base Portfolio URL string
+ * @param userAcceptedTracking - User's basic usage data tracking consent state (true, false, or null)
+ * @param additionalParams - Optional additional parameters to append
+ * @returns - URL object with all parameters appended
+ */
+export const buildPortfolioUrl = (
+  baseUrl: string,
+  additionalParams?: Record<string, string | boolean | number>,
+): URL => {
+  const params: Record<string, string | boolean | number> = {
+    metamaskEntry: 'mobile',
+    ...additionalParams,
+  };
+
+  return appendURLParams(baseUrl, params);
+};
+
+export const isTokenDiscoveryBrowserEnabled = () =>
+  AppConstants.TOKEN_DISCOVERY_BROWSER_ENABLED;

@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useSelector } from 'react-redux';
 import {
   TouchableOpacity,
@@ -9,29 +15,31 @@ import {
   EmitterSubscription,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
 import Device from '../../../util/device';
-import AvatarAccount, {
-  AvatarAccountType,
-} from '../../../component-library/components/Avatars/Avatar/variants/AvatarAccount';
+import AvatarAccount from '../../../component-library/components/Avatars/Avatar/variants/AvatarAccount';
 import { AccountRightButtonProps } from './AccountRightButton.types';
 import Avatar, {
   AvatarVariant,
   AvatarSize,
 } from '../../../component-library/components/Avatars/Avatar';
-import { getDecimalChainId } from '../../../util/networks';
-import Badge, {
-  BadgeVariant,
-} from '../../../component-library/components/Badges/Badge';
-import BadgeWrapper from '../../../component-library/components/Badges/BadgeWrapper';
-import { selectProviderConfig } from '../../../selectors/networkController';
 import {
-  selectNetworkName,
-  selectNetworkImageSource,
-} from '../../../selectors/networkInfos';
+  getDecimalChainId,
+  getNetworkImageSource,
+} from '../../../util/networks';
 import Routes from '../../../constants/navigation/Routes';
+import { navigateWithDetails } from '../../../util/navigation/navUtils';
 import { MetaMetricsEvents } from '../../../core/Analytics';
-import { AccountOverviewSelectorsIDs } from '../../../../e2e/selectors/AccountOverview.selectors';
-import { useMetrics } from '../../../components/hooks/useMetrics';
+import { AccountOverviewSelectorsIDs } from './AccountOverview.testIds';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
+import { useNetworkInfo } from '../../../selectors/selectedNetworkController';
+import { selectEvmChainId } from '../../../selectors/networkController';
+import {
+  selectIsEvmNetworkSelected,
+  selectNonEvmNetworkConfigurationsByChainId,
+  selectSelectedNonEvmNetworkChainId,
+} from '../../../selectors/multichainNetworkController';
+import { selectAvatarAccountType } from '../../../selectors/settings';
 
 const styles = StyleSheet.create({
   leftButton: {
@@ -56,23 +64,28 @@ const styles = StyleSheet.create({
 const AccountRightButton = ({
   selectedAddress,
   onPress,
-  isNetworkVisible,
+  dappOrigin,
 }: AccountRightButtonProps) => {
   // Placeholder ref for dismissing keyboard. Works when the focused input is within a Webview.
   const placeholderInputRef = useRef<TextInput>(null);
-  const { navigate } = useNavigation();
-  const { trackEvent } = useMetrics();
+  const navigation = useNavigation<AppNavigationProp>();
+  const { trackEvent, createEventBuilder } = useAnalytics();
   const [isKeyboardVisible, setIsKeyboardVisible] = useState<boolean>(false);
 
-  const accountAvatarType = useSelector((state: any) =>
-    state.settings.useBlockieIcon
-      ? AvatarAccountType.Blockies
-      : AvatarAccountType.JazzIcon,
-  );
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const avatarAccountType = useSelector(selectAvatarAccountType);
   /**
    * Current network
    */
-  const providerConfig = useSelector(selectProviderConfig);
+  const chainId = useSelector(selectEvmChainId);
+  const selectedNonEvmNetworkChainId = useSelector(
+    selectSelectedNonEvmNetworkChainId,
+  );
+  const isEvmSelected = useSelector(selectIsEvmNetworkSelected);
+  const nonEvmNetworkConfigurations = useSelector(
+    selectNonEvmNetworkConfigurationsByChainId,
+  );
 
   const handleKeyboardVisibility = useCallback(
     (visibility: boolean) => () => {
@@ -114,31 +127,60 @@ const AccountRightButton = ({
 
   const handleButtonPress = useCallback(() => {
     dismissKeyboard();
-    if (!selectedAddress && isNetworkVisible) {
-      navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
-        screen: Routes.SHEET.NETWORK_SELECTOR,
-      });
-      trackEvent(MetaMetricsEvents.NETWORK_SELECTOR_PRESSED, {
-        chain_id: getDecimalChainId(providerConfig.chainId),
-      });
+    if (!selectedAddress) {
+      navigateWithDetails(navigation, [
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        {
+          screen: Routes.SHEET.NETWORK_SELECTOR,
+          params: {
+            chainId: isEvmSelected ? chainId : selectedNonEvmNetworkChainId,
+            ...(dappOrigin
+              ? {
+                  hostInfo: {
+                    metadata: {
+                      origin: dappOrigin,
+                    },
+                  },
+                }
+              : {}),
+          },
+        },
+      ]);
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.NETWORK_SELECTOR_PRESSED)
+          .addProperties({
+            chain_id: getDecimalChainId(chainId),
+          })
+          .build(),
+      );
     } else {
       onPress?.();
     }
   }, [
     dismissKeyboard,
     selectedAddress,
-    isNetworkVisible,
-    onPress,
-    navigate,
-    providerConfig.chainId,
+    navigation,
     trackEvent,
+    createEventBuilder,
+    chainId,
+    onPress,
+    selectedNonEvmNetworkChainId,
+    isEvmSelected,
+    dappOrigin,
   ]);
 
-  const networkName = useSelector(selectNetworkName);
-  const networkImageSource = useSelector(selectNetworkImageSource);
+  const { networkName, networkImageSource } = useNetworkInfo(
+    dappOrigin || undefined,
+  );
+
+  const nonEvmNetworkImageSource = useMemo(() => {
+    if (!isEvmSelected && selectedNonEvmNetworkChainId) {
+      return getNetworkImageSource({ chainId: selectedNonEvmNetworkChainId });
+    }
+  }, [isEvmSelected, selectedNonEvmNetworkChainId]);
 
   const renderAvatarAccount = () => (
-    <AvatarAccount type={accountAvatarType} accountAddress={selectedAddress} />
+    <AvatarAccount type={avatarAccountType} accountAddress={selectedAddress} />
   );
 
   return (
@@ -149,31 +191,27 @@ const AccountRightButton = ({
     >
       <TextInput style={styles.placeholderInput} ref={placeholderInputRef} />
       {selectedAddress ? (
-        isNetworkVisible ? (
-          <BadgeWrapper
-            badgeElement={
-              <Badge
-                variant={BadgeVariant.Network}
-                name={networkName}
-                imageSource={networkImageSource}
-              />
-            }
-          >
-            {renderAvatarAccount()}
-          </BadgeWrapper>
-        ) : (
-          renderAvatarAccount()
-        )
+        renderAvatarAccount()
       ) : (
         <Avatar
           variant={AvatarVariant.Network}
           size={AvatarSize.Md}
-          name={networkName}
-          imageSource={networkImageSource}
+          name={
+            isEvmSelected
+              ? networkName
+              : nonEvmNetworkConfigurations?.[selectedNonEvmNetworkChainId]
+                  ?.name
+          }
+          imageSource={
+            isEvmSelected ? networkImageSource : nonEvmNetworkImageSource
+          }
         />
       )}
     </TouchableOpacity>
   );
 };
 
-export default AccountRightButton;
+const AccountRightButtonMemoized = React.memo(AccountRightButton);
+AccountRightButtonMemoized.displayName = 'AccountRightButton';
+
+export default AccountRightButtonMemoized;

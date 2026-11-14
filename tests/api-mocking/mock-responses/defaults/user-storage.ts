@@ -1,0 +1,148 @@
+import { MockEventsObject } from '../../../framework';
+import { USER_STORAGE_FEATURE_NAMES } from '@metamask/profile-sync-controller/sdk';
+import {
+  USER_STORAGE_GROUPS_FEATURE_KEY,
+  USER_STORAGE_WALLETS_FEATURE_KEY,
+} from '@metamask/account-tree-controller';
+import { DEFAULT_FIXTURE_ACCOUNT_CHECKSUM } from '../../../framework/fixtures/FixtureBuilder';
+
+const accountsStorageUrl = `https://user-storage.api.cx.metamask.io/api/v1/userstorage/${USER_STORAGE_FEATURE_NAMES.accounts}`;
+
+const contactStorageUrl = `https://user-storage.api.cx.metamask.io/api/v1/userstorage/${USER_STORAGE_FEATURE_NAMES.addressBook}`;
+
+const multichainWalletsUrl = `https://user-storage.api.cx.metamask.io/api/v1/userstorage/${USER_STORAGE_WALLETS_FEATURE_KEY}`;
+
+const multichainGroupsUrl = `https://user-storage.api.cx.metamask.io/api/v1/userstorage/${USER_STORAGE_GROUPS_FEATURE_KEY}`;
+
+const assetsWatchlistUrl =
+  'https://user-storage.api.cx.metamask.io/api/v1/preferences/assets-watchlist';
+
+const notificationPreferencesUrl =
+  'https://user-storage.api.cx.metamask.io/api/v1/preferences/notifications';
+
+const notificationPreferences = {
+  walletActivity: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+    accounts: [
+      {
+        address: DEFAULT_FIXTURE_ACCOUNT_CHECKSUM,
+        enabled: true,
+      },
+    ],
+  },
+  // Feature announcements are controlled by marketing in-app preferences.
+  marketing: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: false,
+  },
+  perps: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+  },
+  socialAI: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+    txAmountLimit: 100,
+    mutedTraderProfileIds: [],
+  },
+  agenticCli: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+  },
+  priceAlerts: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+  },
+};
+
+export const USER_STORAGE_MOCK: MockEventsObject = {
+  GET: [
+    {
+      urlEndpoint: notificationPreferencesUrl,
+      responseCode: 200,
+      response: notificationPreferences,
+    },
+    {
+      urlEndpoint: contactStorageUrl,
+      responseCode: 200,
+      response: [],
+    },
+    {
+      urlEndpoint: accountsStorageUrl,
+      responseCode: 200,
+      response: [],
+    },
+    {
+      urlEndpoint: multichainWalletsUrl,
+      responseCode: 200,
+      response: [],
+    },
+    {
+      urlEndpoint: multichainGroupsUrl,
+      responseCode: 200,
+      response: [],
+    },
+    {
+      urlEndpoint: assetsWatchlistUrl,
+      responseCode: 200,
+      response: { assets: [], version: 1 },
+    },
+  ],
+  PUT: [
+    {
+      urlEndpoint: notificationPreferencesUrl,
+      responseCode: 200,
+      response: 'OK',
+    },
+    {
+      urlEndpoint:
+        /^https:\/\/user-storage\.api\.cx\.metamask\.io\/api\/v1\/userstorage\/accounts_v2\/[a-fA-F0-9]+$/,
+      responseCode: 200,
+      response: 'OK',
+    },
+    {
+      urlEndpoint: accountsStorageUrl,
+      responseCode: 200,
+      response: 'OK',
+    },
+    {
+      urlEndpoint:
+        /^https:\/\/user-storage\.api\.cx\.metamask\.io\/api\/v1\/userstorage\/addressBook\/[a-fA-F0-9]+$/,
+      responseCode: 200,
+      response: 'OK',
+    },
+    {
+      urlEndpoint: contactStorageUrl,
+      responseCode: 200,
+      response: [],
+    },
+    {
+      urlEndpoint:
+        /^https:\/\/user-storage\.api\.cx\.metamask\.io\/api\/v1\/userstorage\/multichain_accounts_wallets\/[a-fA-F0-9]+$/,
+      responseCode: 200,
+      response: 'OK',
+    },
+    {
+      urlEndpoint: multichainWalletsUrl,
+      responseCode: 200,
+      response: 'OK',
+    },
+    {
+      urlEndpoint:
+        /^https:\/\/user-storage\.api\.cx\.metamask\.io\/api\/v1\/userstorage\/multichain_accounts_groups\/[a-fA-F0-9]+$/,
+      responseCode: 200,
+      response: 'OK',
+    },
+    {
+      urlEndpoint: multichainGroupsUrl,
+      responseCode: 200,
+      response: 'OK',
+    },
+    {
+      urlEndpoint: assetsWatchlistUrl,
+      responseCode: 200,
+      response: 'OK',
+    },
+  ],
+};

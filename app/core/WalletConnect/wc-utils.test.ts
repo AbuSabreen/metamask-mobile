@@ -1,0 +1,665 @@
+import {
+  parseWalletConnectUri,
+  hideWCLoadingState,
+  showWCLoadingState,
+  isValidWCURI,
+  waitForNetworkModalOnboarding,
+  enrichCaveatValueForEip155,
+  getScopedPermissions,
+  networkModalOnboardingConfig,
+  getHostname,
+  normalizeDappUrl,
+  isValidUrl,
+  getUnverifiedRequestOrigin,
+  isEIP155RedirectMethodForChain,
+  isWalletConnectPermissionOrigin,
+} from './wc-utils';
+import type { Caip25CaveatValue } from '@metamask/chain-agnostic-permission';
+import {
+  selectEvmChainId,
+  selectNetworkConfigurationsByCaipChainId,
+} from '../../selectors/networkController';
+import type { WalletKitTypes } from '@reown/walletkit';
+import type {
+  NavigationContainerRef,
+  ParamListBase,
+} from '@react-navigation/native';
+import type { CaipChainId } from '@metamask/utils';
+import Routes from '../../../app/constants/navigation/Routes';
+// eslint-disable-next-line import-x/no-namespace
+import * as StoreModule from '../../../app/store';
+import DevLogger from '../SDKConnect/utils/DevLogger';
+
+// Mock dependencies
+
+jest.mock('../RPCMethods/RPCMethodMiddleware', () => ({
+  getRpcMethodMiddlewareHooks: jest.fn(),
+}));
+
+jest.mock('../../../app/store', () => {
+  const mockStore = {
+    getState: jest.fn(),
+  };
+  return {
+    store: mockStore,
+  };
+});
+
+jest.mock('../Permissions', () => ({
+  getPermittedAccounts: jest.fn().mockReturnValue(['0x123']),
+  getPermittedCaipChainIds: jest.fn().mockResolvedValue(['eip155:1']),
+  updatePermittedChains: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../../selectors/networkController', () => ({
+  selectNetworkConfigurations: jest.fn().mockReturnValue({}),
+  selectProviderConfig: jest
+    .fn()
+    .mockReturnValue({ chainId: '0x1' }) as jest.Mock,
+  selectEvmChainId: jest.fn().mockReturnValue('0x1'),
+  selectNetworkConfigurationsByCaipChainId: jest.fn().mockReturnValue({}),
+}));
+
+jest.mock('../../selectors/smartTransactionsController', () => ({
+  selectSmartTransactionsEnabled: () => false,
+}));
+
+jest.mock('../RPCMethods/lib/ethereum-chain-utils', () => ({
+  findExistingNetwork: jest.fn(),
+  switchToNetwork: jest.fn().mockResolvedValue(true),
+}));
+
+jest.mock('../SDKConnect/utils/DevLogger', () => ({
+  log: jest.fn(),
+}));
+
+jest.mock('qs', () => ({
+  parse: jest.fn((queryString: string) => {
+    if (!queryString) return {};
+    const params: { [key: string]: string } = {};
+    const pairs = queryString.slice(1).split('&');
+    pairs.forEach((pair) => {
+      const [key, value] = pair.split('=');
+      params[key] = value;
+    });
+    return params;
+  }),
+}));
+
+jest.mock('@walletconnect/utils', () => ({
+  parseRelayParams: jest.fn((params) =>
+    params.relayProtocol ? { protocol: params.relayProtocol } : undefined,
+  ),
+}));
+
+describe('WalletConnect Utils', () => {
+  let mockNavigation: jest.Mocked<NavigationContainerRef<ParamListBase>>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mockStore = (StoreModule as any).store;
+
+  beforeEach(() => {
+    mockNavigation = {
+      getCurrentRoute: jest.fn(),
+      navigate: jest.fn(),
+      goBack: jest.fn(),
+      canGoBack: jest.fn().mockReturnValue(true),
+    } as unknown as jest.Mocked<NavigationContainerRef<ParamListBase>>;
+
+    mockStore.getState.mockReturnValue({
+      networkOnboarded: {
+        networkOnboardedState: {},
+      },
+    });
+
+    jest.clearAllMocks();
+  });
+
+  describe('parseWalletConnectUri', () => {
+    it('parses v1 URI correctly', () => {
+      const uri = 'wc:topic@1?bridge=https://bridge&key=abc&handshakeTopic=xyz';
+      const result = parseWalletConnectUri(uri);
+      expect(result).toEqual({
+        protocol: 'wc',
+        topic: 'topic',
+        version: 1,
+        bridge: 'https://bridge',
+        key: 'abc',
+        handshakeTopic: 'xyz',
+        symKey: undefined,
+        relay: undefined,
+      });
+    });
+
+    it('parses v2 URI correctly', () => {
+      const uri = 'wc:topic@2?symKey=def&relayProtocol=irn';
+      const result = parseWalletConnectUri(uri);
+      expect(result).toEqual({
+        protocol: 'wc',
+        topic: 'topic',
+        version: 2,
+        symKey: 'def',
+        relay: { protocol: 'irn' },
+        bridge: undefined,
+        key: undefined,
+        handshakeTopic: undefined,
+      });
+    });
+  });
+
+  describe('hideWCLoadingState', () => {
+    it('navigates back from SDK_LOADING sheet', () => {
+      mockNavigation.getCurrentRoute.mockReturnValue({
+        name: Routes.SHEET.SDK_LOADING,
+        key: '123',
+      });
+      hideWCLoadingState({ navigation: mockNavigation });
+      expect(mockNavigation.goBack).toHaveBeenCalled();
+    });
+
+    it('navigates back from RETURN_TO_DAPP_NOTIFICATION', () => {
+      mockNavigation.getCurrentRoute.mockReturnValue({
+        name: Routes.SDK.RETURN_TO_DAPP_NOTIFICATION,
+        key: '123',
+      });
+      hideWCLoadingState({ navigation: mockNavigation });
+      expect(mockNavigation.goBack).toHaveBeenCalled();
+    });
+  });
+
+  describe('showWCLoadingState', () => {
+    it('navigates to SDK_LOADING sheet', () => {
+      showWCLoadingState({ navigation: mockNavigation });
+      expect(mockNavigation.navigate).toHaveBeenCalledWith(
+        Routes.MODAL.ROOT_MODAL_FLOW,
+        { screen: Routes.SHEET.SDK_LOADING },
+      );
+    });
+  });
+
+  describe('isValidWCURI', () => {
+    it('validates v1 URI correctly', () => {
+      const uri = 'wc:topic@1?bridge=https://bridge&key=abc&handshakeTopic=xyz';
+      expect(isValidWCURI(uri)).toBe(true);
+    });
+
+    it('validates v2 URI correctly', () => {
+      const uri = 'wc:topic@2?symKey=def&relayProtocol=irn';
+      expect(isValidWCURI(uri)).toBe(true);
+    });
+
+    it('returns false for invalid URI', () => {
+      const uri = 'wc:topic@1';
+      expect(isValidWCURI(uri)).toBe(false);
+    });
+
+    it('returns false for invalid version URI', () => {
+      const uri = 'wc:topic@5';
+      expect(isValidWCURI(uri)).toBe(false);
+    });
+  });
+
+  describe('waitForNetworkModalOnboarding', () => {
+    it('waits until network is onboarded', async () => {
+      mockStore.getState.mockReturnValueOnce({
+        networkOnboarded: {
+          networkOnboardedState: { '1': true },
+        },
+      });
+      await expect(
+        waitForNetworkModalOnboarding({ chainId: '1' }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('throws timeout error after max iterations', async () => {
+      networkModalOnboardingConfig.MAX_LOOP_COUNTER = 1;
+      mockStore.getState.mockReturnValue({
+        networkOnboarded: {
+          networkOnboardedState: { '1': false },
+        },
+      });
+      await expect(
+        waitForNetworkModalOnboarding({ chainId: '1' }),
+      ).rejects.toThrow('Timeout error');
+    });
+  });
+
+  describe('isEIP155RedirectMethodForChain', () => {
+    it('returns true for approved EIP-155 redirect methods', () => {
+      expect(
+        isEIP155RedirectMethodForChain({
+          scope: 'eip155:1',
+          method: 'eth_sendTransaction',
+        }),
+      ).toBe(true);
+      expect(
+        isEIP155RedirectMethodForChain({
+          scope: 'eip155:1',
+          method: 'wallet_switchEthereumChain',
+        }),
+      ).toBe(true);
+    });
+
+    it('includes EIP-5792 redirect methods', () => {
+      expect(
+        isEIP155RedirectMethodForChain({
+          scope: 'eip155:1',
+          method: 'wallet_sendCalls',
+        }),
+      ).toBe(true);
+      expect(
+        isEIP155RedirectMethodForChain({
+          scope: 'eip155:1',
+          method: 'wallet_getCallsStatus',
+        }),
+      ).toBe(false);
+      expect(
+        isEIP155RedirectMethodForChain({
+          scope: 'eip155:1',
+          method: 'wallet_getCapabilities',
+        }),
+      ).toBe(false);
+    });
+
+    it('returns false for scopes that only share the EIP-155 namespace prefix', () => {
+      expect(
+        isEIP155RedirectMethodForChain({
+          scope: 'eip155x:1' as CaipChainId,
+          method: 'eth_sendTransaction',
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe('enrichCaveatValueForEip155', () => {
+    const buildCaveatValue = (
+      optionalScopes: Caip25CaveatValue['optionalScopes'] = {
+        'wallet:eip155': { accounts: [] },
+      },
+    ): Caip25CaveatValue => ({
+      requiredScopes: {},
+      optionalScopes,
+      sessionProperties: {},
+      isMultichainOrigin: false,
+    });
+
+    beforeEach(() => {
+      (selectEvmChainId as unknown as jest.Mock).mockReturnValue('0x1');
+      (
+        selectNetworkConfigurationsByCaipChainId as unknown as jest.Mock
+      ).mockReturnValue({
+        'eip155:1': { name: 'Ethereum Mainnet' },
+        'eip155:137': { name: 'Polygon' },
+        'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': { name: 'Solana' },
+      });
+    });
+
+    it('seeds requested eip155 chains the wallet has configured', () => {
+      const result = enrichCaveatValueForEip155({
+        proposal: {
+          requiredNamespaces: {},
+          optionalNamespaces: {
+            eip155: {
+              chains: ['eip155:1', 'eip155:137'],
+              methods: ['eth_sendTransaction'],
+              events: ['chainChanged'],
+            },
+            tron: {
+              chains: ['tron:0x2b6653dc'],
+              methods: ['tron_signMessage'],
+              events: [],
+            },
+          },
+        },
+        caveatValue: buildCaveatValue({
+          'wallet:eip155': { accounts: [] },
+          'tron:728126428': { accounts: [] },
+        }),
+      });
+
+      expect(Object.keys(result.optionalScopes).sort()).toEqual([
+        'eip155:1',
+        'eip155:137',
+        'tron:728126428',
+        'wallet:eip155',
+      ]);
+      expect(result.optionalScopes['eip155:1']).toEqual({ accounts: [] });
+      expect(result.optionalScopes['eip155:137']).toEqual({ accounts: [] });
+    });
+
+    it('supports chain-scoped namespace keys (eip155:<reference>)', () => {
+      const result = enrichCaveatValueForEip155({
+        proposal: {
+          requiredNamespaces: {
+            'eip155:137': {
+              methods: ['eth_sendTransaction'],
+              events: ['chainChanged'],
+            },
+          },
+          optionalNamespaces: {},
+        },
+        caveatValue: buildCaveatValue(),
+      });
+
+      expect(result.optionalScopes['eip155:137']).toEqual({ accounts: [] });
+    });
+
+    it('filters out requested eip155 chains the wallet has not configured', () => {
+      const result = enrichCaveatValueForEip155({
+        proposal: {
+          requiredNamespaces: {},
+          optionalNamespaces: {
+            eip155: {
+              chains: ['eip155:1', 'eip155:999999'],
+              methods: ['eth_sendTransaction'],
+              events: ['chainChanged'],
+            },
+          },
+        },
+        caveatValue: buildCaveatValue(),
+      });
+
+      expect(result.optionalScopes['eip155:1']).toEqual({ accounts: [] });
+      expect(result.optionalScopes['eip155:999999']).toBeUndefined();
+    });
+
+    it('falls back to the wallet selected EVM chain when no requested eip155 chain is configured', () => {
+      (selectEvmChainId as unknown as jest.Mock).mockReturnValue('0x89');
+
+      const result = enrichCaveatValueForEip155({
+        proposal: {
+          requiredNamespaces: {},
+          optionalNamespaces: {
+            eip155: {
+              chains: ['eip155:999999'],
+              methods: ['eth_sendTransaction'],
+              events: ['chainChanged'],
+            },
+          },
+        },
+        caveatValue: buildCaveatValue(),
+      });
+
+      expect(result.optionalScopes['eip155:137']).toEqual({ accounts: [] });
+      expect(result.optionalScopes['eip155:999999']).toBeUndefined();
+    });
+
+    it('returns the caveat value unchanged when the proposal requests no eip155 chains', () => {
+      const caveatValue = buildCaveatValue({
+        'wallet:eip155': { accounts: [] },
+        'tron:728126428': { accounts: [] },
+      });
+
+      const result = enrichCaveatValueForEip155({
+        proposal: {
+          requiredNamespaces: {},
+          optionalNamespaces: {
+            tron: {
+              chains: ['tron:0x2b6653dc'],
+              methods: ['tron_signMessage'],
+              events: [],
+            },
+          },
+        },
+        caveatValue,
+      });
+
+      expect(result).toBe(caveatValue);
+    });
+  });
+
+  describe('getScopedPermissions', () => {
+    it('returns correct scoped permissions', async () => {
+      const result = await getScopedPermissions({ channelId: 'test' });
+      expect(result).toEqual({
+        eip155: {
+          chains: ['eip155:1'],
+          methods: expect.any(Array),
+          events: ['chainChanged', 'accountsChanged'],
+          accounts: ['eip155:1:0x123'],
+        },
+      });
+    });
+  });
+
+  describe('getHostname', () => {
+    it('returns empty string for null or undefined URI', () => {
+      expect(getHostname('')).toBe('');
+    });
+
+    it('returns protocol part for protocol-based URIs', () => {
+      expect(getHostname('wc:topic@1')).toBe('wc');
+      expect(getHostname('ethereum:0x123')).toBe('ethereum');
+      expect(getHostname('metamask:pay')).toBe('metamask');
+    });
+
+    it('handles errors gracefully and returns original URI', () => {
+      // Mock a scenario where uri.substring throws an error
+      const expectedError = new Error('Substring failed');
+      const maliciousUri = {
+        includes: () => false,
+        indexOf: () => 1,
+        substring: () => {
+          throw expectedError;
+        },
+        toString: () => 'malicious-uri',
+      };
+
+      expect(getHostname(maliciousUri as unknown as string)).toBe(maliciousUri);
+
+      // Verify that DevLogger.log was called with the error
+      expect(DevLogger.log).toHaveBeenCalledWith(
+        'Error in getHostname:',
+        expectedError,
+      );
+    });
+
+    it('handles standard URLs with hostname extraction', () => {
+      expect(getHostname('https://example.com/path')).toBe('example.com');
+      expect(
+        getHostname('http://subdomain.example.org:8080/path?query=1'),
+      ).toBe('subdomain.example.org');
+    });
+
+    it('falls back to manual parsing when URL parsing fails', () => {
+      // Create a URL with invalid characters that will fail URL parsing
+      const invalidUrl = 'wc:topic@1';
+      expect(getHostname(invalidUrl)).toBe('wc');
+    });
+
+    it('returns original URI when no protocol separator is found', () => {
+      const noProtocolUri = 'example-with-no-protocol';
+      expect(getHostname(noProtocolUri)).toBe(noProtocolUri);
+    });
+  });
+
+  describe('isValidUrl', () => {
+    it('returns false for null or undefined URL', () => {
+      expect(isValidUrl(null)).toBe(false);
+      expect(isValidUrl(undefined)).toBe(false);
+      expect(isValidUrl('')).toBe(false);
+    });
+
+    it('returns false for whitespace-only URL', () => {
+      expect(isValidUrl('   ')).toBe(false);
+      expect(isValidUrl('\t\n')).toBe(false);
+    });
+
+    it('returns true for valid URLs with https protocol', () => {
+      expect(isValidUrl('https://example.com')).toBe(true);
+      expect(isValidUrl('https://example.com/path?query=1')).toBe(true);
+    });
+
+    it('returns true for valid URLs with http protocol', () => {
+      expect(isValidUrl('http://example.com')).toBe(true);
+    });
+
+    it('returns false for URLs without protocol', () => {
+      expect(isValidUrl('example.com')).toBe(false);
+      expect(isValidUrl('example.com/path')).toBe(false);
+      expect(isValidUrl('subdomain.example.com')).toBe(false);
+    });
+
+    it('returns false for invalid URLs', () => {
+      expect(isValidUrl('not a valid url with spaces')).toBe(false);
+      expect(isValidUrl('://invalid')).toBe(false);
+    });
+
+    it('validates URLs with ports', () => {
+      expect(isValidUrl('https://example.com:8080')).toBe(true);
+      expect(isValidUrl('http://example.com:3000')).toBe(true);
+    });
+  });
+
+  describe('normalizeDappUrl', () => {
+    it('returns empty string for null or undefined URL', () => {
+      expect(normalizeDappUrl(null)).toBe('');
+      expect(normalizeDappUrl(undefined)).toBe('');
+      expect(normalizeDappUrl('')).toBe('');
+    });
+
+    it('returns empty string for whitespace-only URL', () => {
+      expect(normalizeDappUrl('   ')).toBe('');
+      expect(normalizeDappUrl('\t\n')).toBe('');
+    });
+
+    it('returns URL unchanged when it already has https protocol', () => {
+      expect(normalizeDappUrl('https://example.com')).toBe(
+        'https://example.com',
+      );
+      expect(normalizeDappUrl('https://example.com/path?query=1')).toBe(
+        'https://example.com/path?query=1',
+      );
+    });
+
+    it('returns URL unchanged when it already has http protocol', () => {
+      expect(normalizeDappUrl('http://example.com')).toBe('http://example.com');
+    });
+
+    it('adds https protocol to URL without protocol', () => {
+      expect(normalizeDappUrl('example.com')).toBe('https://example.com');
+      expect(normalizeDappUrl('example.com/path')).toBe(
+        'https://example.com/path',
+      );
+      expect(normalizeDappUrl('subdomain.example.com')).toBe(
+        'https://subdomain.example.com',
+      );
+    });
+
+    it('trims whitespace before processing', () => {
+      expect(normalizeDappUrl('  https://example.com  ')).toBe(
+        'https://example.com',
+      );
+      expect(normalizeDappUrl('  example.com  ')).toBe('https://example.com');
+    });
+
+    it('returns empty string for invalid URLs that cannot be normalized', () => {
+      // URLs that are invalid even after adding protocol
+      expect(normalizeDappUrl('not a valid url with spaces')).toBe('');
+      expect(normalizeDappUrl('://invalid')).toBe('');
+    });
+
+    it('normalizes URLs with ports', () => {
+      expect(normalizeDappUrl('https://example.com:8080')).toBe(
+        'https://example.com:8080',
+      );
+      expect(normalizeDappUrl('example.com:3000')).toBe(
+        'https://example.com:3000',
+      );
+    });
+
+    it('uses custom default protocol when provided', () => {
+      expect(normalizeDappUrl('example.com', 'http://')).toBe(
+        'http://example.com',
+      );
+    });
+  });
+
+  describe('getUnverifiedRequestOrigin', () => {
+    const defaultOrigin = 'https://dapp.example.com';
+
+    const makeRequest = (origin: unknown) =>
+      ({
+        verifyContext: { verified: { origin } },
+      }) as unknown as WalletKitTypes.SessionRequest;
+
+    it('returns the verified origin when it is a valid URL', () => {
+      expect(
+        getUnverifiedRequestOrigin(
+          makeRequest('https://some.example.com'),
+          defaultOrigin,
+        ),
+      ).toBe('https://some.example.com');
+    });
+
+    it('falls back to defaultOrigin when verified origin is an empty string', () => {
+      expect(getUnverifiedRequestOrigin(makeRequest(''), defaultOrigin)).toBe(
+        defaultOrigin,
+      );
+    });
+
+    it('falls back to defaultOrigin when verified origin is a non-URL string', () => {
+      expect(
+        getUnverifiedRequestOrigin(
+          makeRequest('a7c9f3e1b8d6c2f4e9a1b3d5c7e9f1a3'),
+          defaultOrigin,
+        ),
+      ).toBe(defaultOrigin);
+    });
+
+    it('falls back to defaultOrigin when verified origin is missing', () => {
+      expect(
+        getUnverifiedRequestOrigin(
+          {} as WalletKitTypes.SessionRequest,
+          defaultOrigin,
+        ),
+      ).toBe(defaultOrigin);
+    });
+
+    it('falls back to defaultOrigin when verifyContext is missing', () => {
+      expect(
+        getUnverifiedRequestOrigin(
+          {
+            verifyContext: undefined,
+          } as unknown as WalletKitTypes.SessionRequest,
+          defaultOrigin,
+        ),
+      ).toBe(defaultOrigin);
+    });
+
+    it('falls back to defaultOrigin when verified origin is a bare hostname (no protocol)', () => {
+      expect(
+        getUnverifiedRequestOrigin(
+          makeRequest('some.example.com'),
+          defaultOrigin,
+        ),
+      ).toBe(defaultOrigin);
+    });
+  });
+
+  describe('isWalletConnectPermissionOrigin', () => {
+    it('returns true when origin matches wc2Metadata pairing topic', () => {
+      const result = isWalletConnectPermissionOrigin('pairing-topic-1', {
+        id: 'pairing-topic-1',
+      });
+
+      expect(result).toBe(true);
+    });
+
+    it('returns false when stale wc2Metadata does not match in-app browser origin', () => {
+      const result = isWalletConnectPermissionOrigin('app.uniswap.org', {
+        id: 'stale-pairing-topic',
+        url: 'https://chikn.farm',
+      });
+
+      expect(result).toBe(false);
+    });
+
+    it('returns false when wc2Metadata id is empty', () => {
+      const result = isWalletConnectPermissionOrigin('pairing-topic-1', {
+        id: '',
+      });
+
+      expect(result).toBe(false);
+    });
+  });
+});

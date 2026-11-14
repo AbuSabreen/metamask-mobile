@@ -1,0 +1,956 @@
+import { capitalize } from 'lodash';
+import {
+  isLimitExecutionOrderType,
+  isTPSLOrder,
+  isTriggerOrderType,
+  type OrderParams,
+  type Order,
+  type OrderDirection,
+  type OrderType,
+  type PerpsDebugLogger,
+} from '@metamask/perps-controller';
+import BigNumber from 'bignumber.js';
+import I18n, { strings } from '../../../../../locales/i18n';
+import { Position } from '../hooks';
+import { resolveOrderDirection, isClosingOrder } from './orderDirection';
+
+/**
+ * Optional debug logger for order utility functions.
+ * When provided, enables detailed logging for debugging.
+ */
+export type OrderUtilsDebugLogger = PerpsDebugLogger | undefined;
+
+const FULL_POSITION_SIZE_TOLERANCE = new BigNumber('0.00000001');
+const ORDER_PRICE_MATCH_TOLERANCE = new BigNumber('0.00000001');
+const SYNTHETIC_TP_ID_SUFFIX = '-synthetic-tp';
+const SYNTHETIC_SL_ID_SUFFIX = '-synthetic-sl';
+const TRIGGER_CONDITION_PRICE_ABOVE = 'perps.order_details.price_above';
+const TRIGGER_CONDITION_PRICE_BELOW = 'perps.order_details.price_below';
+
+/**
+ * Parses a Perps price, returning null when absent or invalid.
+ *
+ * @param price - Price value from a controller order or transaction.
+ * @returns The positive numeric price, or null when unavailable.
+ */
+export const getValidPerpsPrice = (
+  price: string | number | null | undefined,
+): number | null => {
+  const parsed =
+    typeof price === 'number' ? price : Number.parseFloat(price ?? '');
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+/**
+ * Parses the trigger price from an order, returning null when absent or invalid.
+ * Use this instead of inline `Number.parseFloat(order.triggerPrice ?? '')` + validity checks.
+ */
+export const getValidTriggerPrice = (order: Order): number | null =>
+  getValidPerpsPrice(order.triggerPrice);
+
+/**
+ * Parses the execution/limit price from an order, returning null when absent or invalid.
+ */
+export const getValidOrderPrice = (order: Order): number | null =>
+  getValidPerpsPrice(order.price);
+
+/**
+ * Mark price is HyperLiquid's reference for the oracle price band. Falls back
+ * to the mid price when the mark price is missing or does not parse to a finite
+ * positive number, so a NaN reference cannot silently skip the band check in
+ * {@link isPriceOutsideDeviationBand}.
+ */
+export const resolveOracleReferencePrice = (
+  markPrice: string | undefined,
+  currentPrice: number,
+): number => {
+  const parsedMarkPrice = markPrice ? Number.parseFloat(markPrice) : Number.NaN;
+  return Number.isFinite(parsedMarkPrice) && parsedMarkPrice > 0
+    ? parsedMarkPrice
+    : currentPrice;
+};
+
+/**
+ * Applies a percentage offset to the current limit price, falling back to the
+ * market price when no limit price is set yet. Returns '' when there is no
+ * usable base price.
+ */
+export const calculateLimitPriceForPercentage = (
+  limitPrice: string,
+  currentPrice: number,
+  percentage: number,
+): string => {
+  const parsedLimitPrice = limitPrice
+    ? Number.parseFloat(limitPrice.replace(/[$,]/g, ''))
+    : 0;
+  const basePrice = parsedLimitPrice > 0 ? parsedLimitPrice : currentPrice;
+
+  if (!basePrice || basePrice === 0) {
+    return '';
+  }
+
+  return BigNumber(basePrice)
+    .multipliedBy(1 + percentage / 100)
+    .toString();
+};
+
+/**
+ * Whether an order price is outside HyperLiquid's allowed band relative to a
+ * reference (oracle/mark) price. HyperLiquid rejects orders whose price is more
+ * than `maxDeviation` away from the reference price ("oracleRejected").
+ *
+ * The check is ratio-based: the smaller of the order price and the reference
+ * price must be at least `(1 - maxDeviation)` of the larger one. Equivalently,
+ * the reference price can't be lower than `(1 - maxDeviation)` of the order
+ * price (blocks fat-fingered highs), and the order price can't be lower than
+ * `(1 - maxDeviation)` of the reference price (blocks fat-fingered lows).
+ *
+ * Returns false when either price is missing/invalid so callers don't block on
+ * incomplete data.
+ *
+ * @param price - The order (limit) price
+ * @param referencePrice - The reference price to compare against (oracle/mark)
+ * @param maxDeviation - Max allowed deviation as a decimal (e.g. 0.95 = 95%)
+ * @returns True when the order price is outside the allowed band
+ */
+export const isPriceOutsideDeviationBand = (
+  price: number,
+  referencePrice: number,
+  maxDeviation: number,
+): boolean => {
+  if (
+    !referencePrice ||
+    referencePrice <= 0 ||
+    !Number.isFinite(price) ||
+    price <= 0
+  ) {
+    return false;
+  }
+  const minPrice = Math.min(price, referencePrice);
+  const maxPrice = Math.max(price, referencePrice);
+  return minPrice < (1 - maxDeviation) * maxPrice;
+};
+
+/**
+ * Inclusive HyperLiquid price band around a reference price.
+ * `isPriceOutsideDeviationBand` is true exactly when `price` is outside this range.
+ *
+ * @param referencePrice - Oracle/mark used as the band center
+ * @param maxDeviation - Max allowed deviation as a decimal (e.g. 0.95 = 95%)
+ * @returns `{ min, max }` when the reference is usable, otherwise `undefined`
+ */
+export const getPriceDeviationBand = (
+  referencePrice: number,
+  maxDeviation: number,
+): { min: number; max: number } | undefined => {
+  if (
+    !referencePrice ||
+    referencePrice <= 0 ||
+    !Number.isFinite(referencePrice) ||
+    !Number.isFinite(maxDeviation) ||
+    maxDeviation <= 0 ||
+    maxDeviation >= 1
+  ) {
+    return undefined;
+  }
+  const ratio = 1 - maxDeviation;
+  return {
+    min: ratio * referencePrice,
+    max: referencePrice / ratio,
+  };
+};
+
+type OrderPriceLabelKey =
+  | 'perps.order.limit_price'
+  | 'perps.order.market_price';
+
+/**
+ * True for TP/SL (and other) trigger orders. Non-trigger limit/market orders may
+ * still carry a positive `triggerPrice`; do not treat that alone as a trigger.
+ */
+export const isTriggerOrder = (order: Order): boolean =>
+  Boolean(order.isTrigger || isTPSLOrder(order.detailedOrderType));
+
+export interface PerpsTransactionOrderLike {
+  type: 'limit' | 'market';
+  orderType?: OrderType;
+  detailedOrderType?: string;
+}
+
+/**
+ * Resolves the normalized order type for transaction-history data.
+ *
+ * @param order - Transaction order data, including legacy fields.
+ * @returns The normalized order type used by detail-row policies.
+ */
+export const resolvePerpsTransactionOrderType = (
+  order: PerpsTransactionOrderLike,
+): OrderType => {
+  // A normalized trigger type is authoritative. Ordinary market/limit values
+  // are legacy execution types and must not mask a detailed trigger label.
+  if (order.orderType && isTriggerOrderType(order.orderType)) {
+    return order.orderType;
+  }
+
+  const detailedOrderType = order.detailedOrderType?.toLowerCase() ?? '';
+
+  if (detailedOrderType.includes('take profit')) {
+    return detailedOrderType.includes('limit')
+      ? 'take_profit_limit'
+      : 'take_profit_market';
+  }
+
+  if (detailedOrderType.includes('stop')) {
+    return detailedOrderType.includes('limit') ? 'stop_limit' : 'stop_market';
+  }
+
+  return order.orderType ?? order.type;
+};
+
+export interface PerpsOrderPriceRowVisibility {
+  showTriggerPrice: boolean;
+  showLimitPrice: boolean;
+}
+
+/**
+ * Resolves which price rows belong in an order detail view.
+ *
+ * @param orderType - Normalized placement type for the order.
+ * @returns Visibility flags for trigger and limit price rows.
+ */
+export const getOrderPriceRowVisibility = (
+  orderType: OrderType | undefined,
+): PerpsOrderPriceRowVisibility => ({
+  showTriggerPrice: orderType !== undefined && isTriggerOrderType(orderType),
+  showLimitPrice:
+    orderType !== undefined && isLimitExecutionOrderType(orderType),
+});
+
+/**
+ * Resolves the execution price shown for an open order.
+ *
+ * Hyperliquid trigger-market orders carry a limit price as a slippage cap, but
+ * that cap is not a guaranteed execution price and must display as Market.
+ * Orders without a normalized `triggerOrderType` fall back to their detailed
+ * provider order type for backwards compatibility.
+ *
+ * @param order - Open order normalized by the Perps controller.
+ * @returns The display price and its localized label key.
+ */
+export const resolveOrderDisplayPriceAndLabel = (
+  order: Order,
+): { priceValue: number | null; labelKey: OrderPriceLabelKey } => {
+  const detailedOrderType = order.detailedOrderType ?? '';
+  const normalizedDetailedOrderType = detailedOrderType.toLowerCase();
+  const isTrigger = isTriggerOrder(order);
+  const hasDetailedLimitExecution =
+    normalizedDetailedOrderType.includes('limit');
+  const hasDetailedMarketExecution =
+    normalizedDetailedOrderType.includes('market');
+  const isLimitOrder =
+    order.triggerOrderType !== undefined
+      ? isLimitExecutionOrderType(order.triggerOrderType)
+      : hasDetailedLimitExecution ||
+        (!hasDetailedMarketExecution && order.orderType === 'limit');
+  const validOrderPrice = getValidOrderPrice(order);
+
+  if (isTrigger && !isLimitOrder) {
+    return {
+      priceValue: null,
+      labelKey: 'perps.order.market_price',
+    };
+  }
+
+  if (isLimitOrder) {
+    return {
+      priceValue: validOrderPrice,
+      labelKey: 'perps.order.limit_price',
+    };
+  }
+
+  return {
+    priceValue: validOrderPrice,
+    labelKey: 'perps.order.market_price',
+  };
+};
+
+const getAbsoluteOrderSize = (order: Order): BigNumber | null => {
+  const size = order.originalSize || order.size;
+  if (!size) {
+    return null;
+  }
+
+  const parsedSize = new BigNumber(size);
+  if (!parsedSize.isFinite() || parsedSize.lte(0)) {
+    return null;
+  }
+  return parsedSize.abs();
+};
+
+const getAbsolutePositionSize = (position?: Position): BigNumber | null => {
+  if (!position?.size) {
+    return null;
+  }
+
+  const parsedSize = new BigNumber(position.size);
+  if (!parsedSize.isFinite() || parsedSize.isZero()) {
+    return null;
+  }
+
+  return parsedSize.abs();
+};
+
+const getOrderTriggerPrice = (order: Order): BigNumber | null => {
+  const rawPrice = order.triggerPrice || order.price;
+  if (!rawPrice) {
+    return null;
+  }
+
+  const parsedPrice = new BigNumber(rawPrice);
+  if (!parsedPrice.isFinite() || parsedPrice.lte(0)) {
+    return null;
+  }
+
+  return parsedPrice;
+};
+
+const hasMatchingRealReduceOnlyTrigger = (
+  orders: Order[],
+  syntheticOrder: Order,
+): boolean => {
+  // TODO: Current matching is O(n) per synthetic row. If open-order volume grows
+  // significantly, precompute a parent-scoped lookup map to avoid O(n^2).
+  if (!syntheticOrder.parentOrderId) {
+    return false;
+  }
+
+  const parentOrder = orders.find(
+    (order) => order.orderId === syntheticOrder.parentOrderId,
+  );
+
+  return orders.some((order) => {
+    if (order.isSynthetic) {
+      return false;
+    }
+
+    const isSameParentByChildLink = Boolean(
+      order.parentOrderId &&
+        order.parentOrderId === syntheticOrder.parentOrderId,
+    );
+    const isSameParentByParentReference = Boolean(
+      parentOrder &&
+        (parentOrder.takeProfitOrderId === order.orderId ||
+          parentOrder.stopLossOrderId === order.orderId),
+    );
+
+    if (!isSameParentByChildLink && !isSameParentByParentReference) {
+      return false;
+    }
+
+    if (
+      order.symbol !== syntheticOrder.symbol ||
+      order.side !== syntheticOrder.side ||
+      order.reduceOnly !== true ||
+      order.isTrigger !== true
+    ) {
+      return false;
+    }
+
+    const existingOrderPrice = getOrderTriggerPrice(order);
+    const syntheticOrderPrice = getOrderTriggerPrice(syntheticOrder);
+
+    if (!existingOrderPrice || !syntheticOrderPrice) {
+      return false;
+    }
+
+    return existingOrderPrice
+      .minus(syntheticOrderPrice)
+      .abs()
+      .lte(ORDER_PRICE_MATCH_TOLERANCE);
+  });
+};
+
+const isClosingSideForPosition = (
+  order: Order,
+  position: Position,
+): boolean => {
+  const positionSize = new BigNumber(position.size ?? '0');
+  if (!positionSize.isFinite() || positionSize.isZero()) {
+    return false;
+  }
+
+  // For long positions, sell closes. For short positions, buy closes.
+  return positionSize.gt(0) ? order.side === 'sell' : order.side === 'buy';
+};
+
+export type TriggerConditionKey =
+  | typeof TRIGGER_CONDITION_PRICE_ABOVE
+  | typeof TRIGGER_CONDITION_PRICE_BELOW;
+
+export const inferTriggerConditionKey = (params: {
+  detailedOrderType?: string;
+  side: 'buy' | 'sell';
+  triggerPrice?: string;
+  price?: string;
+}): TriggerConditionKey | undefined => {
+  const { detailedOrderType, side, triggerPrice, price } = params;
+
+  const parsedTriggerPrice = Number.parseFloat(triggerPrice ?? '');
+  if (!Number.isFinite(parsedTriggerPrice) || parsedTriggerPrice <= 0) {
+    return undefined;
+  }
+
+  const normalizedDetailedOrderType = (detailedOrderType ?? '').toLowerCase();
+  const isTakeProfit = normalizedDetailedOrderType.includes('take profit');
+  const isStop = normalizedDetailedOrderType.includes('stop');
+
+  if ((isTakeProfit && side === 'sell') || (isStop && side === 'buy')) {
+    return TRIGGER_CONDITION_PRICE_ABOVE;
+  }
+
+  if ((isTakeProfit && side === 'buy') || (isStop && side === 'sell')) {
+    return TRIGGER_CONDITION_PRICE_BELOW;
+  }
+
+  const parsedPrice = Number.parseFloat(price ?? '');
+  const hasPrice = Number.isFinite(parsedPrice) && parsedPrice > 0;
+  if (hasPrice && parsedTriggerPrice !== parsedPrice) {
+    if (side === 'sell') {
+      return parsedTriggerPrice > parsedPrice
+        ? TRIGGER_CONDITION_PRICE_ABOVE
+        : TRIGGER_CONDITION_PRICE_BELOW;
+    }
+    return parsedTriggerPrice < parsedPrice
+      ? TRIGGER_CONDITION_PRICE_ABOVE
+      : TRIGGER_CONDITION_PRICE_BELOW;
+  }
+
+  return side === 'sell'
+    ? TRIGGER_CONDITION_PRICE_ABOVE
+    : TRIGGER_CONDITION_PRICE_BELOW;
+};
+
+/**
+ * Determines whether an order is associated with the full active position.
+ *
+ * Position association logic:
+ * 1. Order must be reduce-only.
+ * 2. Order and position must match symbol and closing side semantics.
+ * 3. Prefer native isPositionTpsl flag when available.
+ * 4. Fallback to full-size matching with decimal tolerance.
+ */
+export const isOrderAssociatedWithFullPosition = (
+  order: Order,
+  position?: Position,
+): boolean => {
+  if (!order.reduceOnly) {
+    return false;
+  }
+
+  // Provider-native flag is authoritative, even while position data is loading.
+  if (order.isPositionTpsl === true) {
+    return true;
+  }
+
+  if (!position) {
+    return false;
+  }
+
+  if (
+    order.symbol !== position.symbol ||
+    !isClosingSideForPosition(order, position)
+  ) {
+    return false;
+  }
+
+  // Only fall back to size matching when the provider did not send the flag.
+  if (order.isPositionTpsl === false) {
+    return false;
+  }
+
+  const orderSize = getAbsoluteOrderSize(order);
+  const positionSize = getAbsolutePositionSize(position);
+  if (!orderSize || !positionSize) {
+    return false;
+  }
+
+  return orderSize.minus(positionSize).abs().lte(FULL_POSITION_SIZE_TOLERANCE);
+};
+
+/**
+ * Determines whether an order should be shown in Market Details > Orders.
+ *
+ * All non-reduce-only orders are shown. Plain reduce-only orders (e.g. a limit
+ * close on a long position) are also shown, matching the home "Perpetuals"
+ * section. Only full-position TP/SL orders are hidden here, since they are
+ * surfaced in the position card's Auto-close section instead.
+ */
+export const shouldDisplayOrderInMarketDetailsOrders = (
+  order: Order,
+  position?: Position,
+): boolean => {
+  if (!order.reduceOnly) {
+    return true;
+  }
+
+  // Only TP/SL trigger orders are relocated to the Auto-close section. A plain
+  // limit-close order is a regular open order and must stay in the list even
+  // when it closes the full position.
+  if (!isTriggerOrder(order)) {
+    return true;
+  }
+
+  return !isOrderAssociatedWithFullPosition(order, position);
+};
+
+export const isSyntheticPlaceholderOrderId = (orderId: string): boolean =>
+  orderId.endsWith(SYNTHETIC_TP_ID_SUFFIX) ||
+  orderId.endsWith(SYNTHETIC_SL_ID_SUFFIX);
+
+export const isSyntheticOrderCancelable = (order: Order): boolean => {
+  if (!order.isSynthetic) {
+    return true;
+  }
+
+  return !isSyntheticPlaceholderOrderId(order.orderId);
+};
+
+/**
+ * Whether an open limit order has attached take-profit / stop-loss children
+ * that were set at placement. Size edits do not resize those children, so
+ * size editing is blocked when either is present.
+ */
+export const orderHasAttachedTpSl = (order: Order): boolean => {
+  const takeProfit = order.takeProfitPrice?.trim();
+  const stopLoss = order.stopLossPrice?.trim();
+  return Boolean(takeProfit) || Boolean(stopLoss);
+};
+
+/**
+ * Whether an open limit order can be edited in place (price) in Pro mode.
+ * Trigger/TP-SL rows and partially filled limits are excluded.
+ */
+export const isLimitOrderEditable = (order: Order): boolean => {
+  if (!isSyntheticOrderCancelable(order)) {
+    return false;
+  }
+
+  if (order.status !== 'open' || order.orderType !== 'limit') {
+    return false;
+  }
+
+  if (isTriggerOrder(order)) {
+    return false;
+  }
+
+  const filledSize = Number.parseFloat(order.filledSize ?? '0');
+  if (Number.isFinite(filledSize) && filledSize > 0) {
+    return false;
+  }
+
+  const originalSize = Number.parseFloat(
+    order.originalSize ?? order.size ?? '0',
+  );
+  const remainingSize = Number.parseFloat(
+    order.remainingSize ?? order.size ?? '0',
+  );
+  if (
+    Number.isFinite(originalSize) &&
+    Number.isFinite(remainingSize) &&
+    remainingSize < originalSize
+  ) {
+    return false;
+  }
+
+  return true;
+};
+
+/**
+ * Whether an open limit order's size can be edited in place in Pro mode.
+ * Orders with attached TP/SL are excluded: a size change would leave child
+ * trigger orders at the old size (trading-safety gap; TP/SL edit is out of
+ * scope for this flow).
+ */
+export const isLimitOrderSizeEditable = (order: Order): boolean =>
+  isLimitOrderEditable(order) && !orderHasAttachedTpSl(order);
+
+const buildSyntheticTriggerOrder = (
+  parentOrder: Order,
+  triggerType: 'tp' | 'sl',
+): Order | null => {
+  const triggerPrice =
+    triggerType === 'tp'
+      ? parentOrder.takeProfitPrice
+      : parentOrder.stopLossPrice;
+  const parsedTriggerPrice = new BigNumber(triggerPrice || '');
+  if (!parsedTriggerPrice.isFinite() || parsedTriggerPrice.lte(0)) {
+    return null;
+  }
+  const normalizedTriggerPrice = parsedTriggerPrice.toFixed();
+
+  const syntheticSide = parentOrder.side === 'buy' ? 'sell' : 'buy';
+  const isMarketParent =
+    parentOrder.orderType === 'market' ||
+    (parentOrder.detailedOrderType || '').toLowerCase().includes('market');
+  const syntheticOrderType = isMarketParent ? 'market' : 'limit';
+  const syntheticDetailedType =
+    triggerType === 'tp'
+      ? `Take Profit ${isMarketParent ? 'Market' : 'Limit'}`
+      : `Stop ${isMarketParent ? 'Market' : 'Limit'}`;
+  const size = parentOrder.originalSize || parentOrder.size;
+  if (!size) {
+    return null;
+  }
+  const existingChildOrderId =
+    triggerType === 'tp'
+      ? parentOrder.takeProfitOrderId
+      : parentOrder.stopLossOrderId;
+  const syntheticOrderIdSuffix =
+    triggerType === 'tp' ? SYNTHETIC_TP_ID_SUFFIX : SYNTHETIC_SL_ID_SUFFIX;
+  const syntheticOrderId =
+    existingChildOrderId && existingChildOrderId.trim().length > 0
+      ? existingChildOrderId
+      : `${parentOrder.orderId}${syntheticOrderIdSuffix}`;
+
+  return {
+    orderId: syntheticOrderId,
+    parentOrderId: parentOrder.orderId,
+    isSynthetic: true,
+    isPositionTpsl: false,
+    symbol: parentOrder.symbol,
+    side: syntheticSide,
+    orderType: syntheticOrderType,
+    size,
+    originalSize: size,
+    price: normalizedTriggerPrice,
+    filledSize: '0',
+    remainingSize: size,
+    status: 'open',
+    timestamp: parentOrder.timestamp,
+    detailedOrderType: syntheticDetailedType,
+    isTrigger: true,
+    reduceOnly: true,
+    triggerPrice: normalizedTriggerPrice,
+    providerId: parentOrder.providerId,
+  };
+};
+
+/**
+ * Builds display orders with synthetic TP/SL rows for untriggered parent orders.
+ *
+ * Synthetic rows are display-only and are not created when a real reduce-only
+ * trigger already exists with matching symbol, side, and trigger price.
+ */
+export const buildDisplayOrdersWithSyntheticTpsl = (
+  orders: Order[],
+): Order[] => {
+  if (!orders.length) {
+    return orders;
+  }
+
+  const displayOrders: Order[] = [];
+  const realOrderIds = new Set(orders.map((order) => order.orderId));
+
+  orders.forEach((order) => {
+    displayOrders.push(order);
+
+    if (order.isTrigger) {
+      return;
+    }
+
+    const syntheticTpOrder = buildSyntheticTriggerOrder(order, 'tp');
+    if (
+      syntheticTpOrder &&
+      !hasMatchingRealReduceOnlyTrigger(orders, syntheticTpOrder) &&
+      !realOrderIds.has(syntheticTpOrder.orderId) &&
+      !displayOrders.some(
+        (displayOrder) => displayOrder.orderId === syntheticTpOrder.orderId,
+      )
+    ) {
+      displayOrders.push(syntheticTpOrder);
+    }
+
+    const syntheticSlOrder = buildSyntheticTriggerOrder(order, 'sl');
+    if (
+      syntheticSlOrder &&
+      !hasMatchingRealReduceOnlyTrigger(orders, syntheticSlOrder) &&
+      !realOrderIds.has(syntheticSlOrder.orderId) &&
+      !displayOrders.some(
+        (displayOrder) => displayOrder.orderId === syntheticSlOrder.orderId,
+      )
+    ) {
+      displayOrders.push(syntheticSlOrder);
+    }
+  });
+
+  return displayOrders;
+};
+
+/**
+ * Get the order direction based on the side and position size
+ * @param side - The side of the order
+ * @param positionSize - The size of the position
+ * @returns The order direction ('long' or 'short') - raw string, translate in UI layer
+ */
+export const getOrderDirection = (
+  side: 'buy' | 'sell',
+  positionSize: string | undefined,
+): 'long' | 'short' => {
+  const hasPosition = !!positionSize;
+
+  // No existing position → direction depends only on side
+  if (!hasPosition) {
+    return side === 'buy' ? 'long' : 'short';
+  }
+
+  // Existing position → infer direction based on position size
+  if (positionSize && Number.parseFloat(positionSize) > 0) {
+    return 'long';
+  }
+
+  return 'short';
+};
+
+export const willFlipPosition = (
+  currentPosition: Position,
+  orderParams: OrderParams,
+): boolean => {
+  const currentPositionSize = Number.parseFloat(currentPosition.size);
+  const positionDirection = currentPositionSize > 0 ? 'long' : 'short';
+  const orderDirection = orderParams.isBuy ? 'long' : 'short';
+  const orderSize = Number.parseFloat(orderParams.size);
+
+  if (orderParams.reduceOnly === true) {
+    return false;
+  }
+
+  if (orderParams.orderType !== 'market') {
+    return false;
+  }
+
+  if (positionDirection === orderDirection) {
+    return false;
+  }
+
+  if (orderSize > Math.abs(currentPositionSize)) {
+    return true;
+  }
+
+  return false;
+};
+
+/**
+ * Returns the position direction ('long' | 'short') an order corresponds to.
+ *
+ * For orders classified as closing, the order side is the inverse of the
+ * position it acts on: a sell closes a long, a buy closes a short. Explicit
+ * `reduceOnly` metadata is authoritative; trigger status is only a fallback
+ * when that metadata is absent. Opening order sides map directly.
+ *
+ * @param order - The order object
+ * @returns The position direction the order corresponds to
+ */
+export const getOrderPositionDirection = (order: Order): OrderDirection =>
+  resolveOrderDirection(order.side, isClosingOrder(order));
+
+/**
+ * Resolves the raw order type token from provider data before i18n or
+ * title-casing. Prefers `detailedOrderType` when present; otherwise maps
+ * `orderType` to canonical limit/market tokens shared by label formatters.
+ */
+const resolveOrderTypeString = (order: Order): string => {
+  const detailedType = order.detailedOrderType?.trim();
+  if (detailedType) {
+    return detailedType;
+  }
+
+  return order.orderType === 'limit' ? 'limit' : 'market';
+};
+
+/**
+ * Formats a resolved order type token for compact UI pills with i18n for
+ * canonical limit/market types and title-casing for provider-specific names.
+ */
+const formatOrderTypeString = (typeString: string): string => {
+  const normalized = typeString.toLowerCase();
+  if (normalized === 'limit') {
+    return strings('perps.order.limit');
+  }
+  if (normalized === 'market') {
+    return strings('perps.order.market');
+  }
+  if (normalized === 'stop limit') {
+    return strings('perps.order.type.stop_limit.title');
+  }
+  if (normalized === 'stop market') {
+    return strings('perps.order.type.stop_market.title');
+  }
+  if (normalized === 'take profit limit') {
+    return strings('perps.order.type.take_profit_limit.title');
+  }
+  if (normalized === 'take profit market') {
+    return strings('perps.order.type.take_profit_market.title');
+  }
+
+  return capitalize(typeString);
+};
+
+const getLocalizedOrderDirectionLabel = (
+  order: Order,
+  isClosing: boolean,
+): string => {
+  const direction = resolveOrderDirection(order.side, isClosing);
+  const key = isClosing
+    ? direction === 'long'
+      ? 'perps.market.close_long'
+      : 'perps.market.close_short'
+    : direction === 'long'
+      ? 'perps.market.long_lowercase'
+      : 'perps.market.short_lowercase';
+  const label = strings(key);
+
+  // English close labels are capitalized as standalone copy but sentence case
+  // inline. Other locales retain their translated casing.
+  return isClosing && I18n.locale?.toLowerCase().startsWith('en')
+    ? label.toLocaleLowerCase('en')
+    : label;
+};
+
+/**
+ * Format an order label following the pattern: [Type] [Close?] [Direction]
+ *
+ * Examples:
+ * - Market Long
+ * - Market Close Long
+ * - Limit Short
+ * - Limit Close Short
+ * - Stop Market Close Long
+ * - Take Limit Close Short
+ *
+ * @param order - The order object
+ * @returns Formatted order label string
+ */
+export const formatOrderLabel = (order: Order): string => {
+  const { side } = order;
+
+  const isClosing = isClosingOrder(order);
+  const direction = resolveOrderDirection(side, isClosing);
+  const resolvedTypeString = resolveOrderTypeString(order);
+  const isTrigger = isTriggerOrder(order);
+  const typeString = isTrigger
+    ? formatOrderTypeString(resolvedTypeString)
+    : resolvedTypeString;
+  const localizedDirection = isTrigger
+    ? getLocalizedOrderDirectionLabel(order, isClosing)
+    : direction;
+
+  // Build the label: [Type] [Close?] [Direction]
+  const label = isTrigger
+    ? `${typeString} ${localizedDirection}`
+    : isClosing
+      ? `${typeString} close ${direction}`
+      : `${typeString} ${direction}`;
+
+  // Preserve the legacy Lite label path for ordinary market/limit orders.
+  return isTrigger ? label : capitalize(label);
+};
+
+/**
+ * Format just the order type portion of an order label (no direction/close).
+ *
+ * Examples: "Limit", "Stop market", "Take limit"
+ *
+ * @param order - The order object
+ * @returns Formatted order type string for compact UI pills
+ */
+export const formatOrderTypeLabel = (order: Order): string =>
+  formatOrderTypeString(resolveOrderTypeString(order));
+
+/**
+ * Get just the direction portion of an order label
+ * Used for compatibility with existing code that expects just "long" or "short"
+ *
+ * @param order - The order object
+ * @returns Direction string ("long" or "short" for opening, "Close Long" or "Close Short" for closing)
+ */
+export const getOrderLabelDirection = (order: Order): string => {
+  const isClosing = isClosingOrder(order);
+  const direction = resolveOrderDirection(order.side, isClosing);
+
+  if (isClosing) {
+    return direction === 'long' ? 'Close Long' : 'Close Short';
+  }
+
+  return direction;
+};
+
+export const getInlineOrderLabelDirection = (order: Order): string => {
+  const isClosing = isClosingOrder(order);
+  return getLocalizedOrderDirectionLabel(order, isClosing);
+};
+
+/**
+ * Determines if a limit order will likely be a maker or taker.
+ *
+ * Logic:
+ * 1. Validates price data freshness and market state
+ * 2. Market-executing orders are always taker
+ * 3. Limit orders that would execute immediately are taker
+ * 4. Limit orders that go into order book are maker
+ *
+ * @param params - Order parameters
+ * @param params.orderType - The order placement type
+ * @param params.limitPrice - The limit price for limit orders
+ * @param params.direction - The order direction (long or short)
+ * @param params.bestAsk - The best ask price from order book
+ * @param params.bestBid - The best bid price from order book
+ * @param params.symbol - The trading symbol for logging
+ * @param debugLogger - Optional debug logger for detailed logging
+ * @returns True if maker order, false if taker order
+ */
+export function determineMakerStatus(
+  params: {
+    orderType: OrderType;
+    limitPrice?: string;
+    direction: 'long' | 'short';
+    bestAsk?: number;
+    bestBid?: number;
+    symbol?: string;
+  },
+  debugLogger?: OrderUtilsDebugLogger,
+): boolean {
+  const { orderType, limitPrice, direction, bestAsk, bestBid, symbol } = params;
+  // Only an order that executes as a limit order can rest on the book and earn
+  // the maker fee. Market orders, and trigger orders that fire as market orders,
+  // are always taker.
+  if (!isLimitExecutionOrderType(orderType)) {
+    return false;
+  }
+
+  // Default to taker when limit price is not specified
+  if (!limitPrice || limitPrice === '') {
+    return false;
+  }
+
+  const limitPriceNum = Number.parseFloat(limitPrice);
+
+  if (Number.isNaN(limitPriceNum) || limitPriceNum <= 0) {
+    return false;
+  }
+
+  if (bestBid !== undefined && bestAsk !== undefined) {
+    if (direction === 'long') {
+      return limitPriceNum < bestAsk;
+    }
+
+    // Short direction
+    return limitPriceNum > bestBid;
+  }
+
+  // Default to taker when no bid/ask data is available
+  debugLogger?.log(
+    'Fee Calculation: No bid/ask data available, using conservative taker fee',
+    { symbol },
+  );
+  return false;
+}

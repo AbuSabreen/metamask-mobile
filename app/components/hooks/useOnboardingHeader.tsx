@@ -1,0 +1,43 @@
+import React, { useCallback, useLayoutEffect } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../core/NavigationService/types';
+import { IconName } from '../../component-library/components/Icons/Icon';
+import ButtonIcon from '../../component-library/components/Buttons/ButtonIcon';
+import { ButtonIconSizes } from '../../component-library/components/Buttons/ButtonIcon/ButtonIcon.types';
+import { Text, TextVariant } from '@metamask/design-system-react-native';
+
+const styles = {
+  backButtonContainer: {
+    marginLeft: 6,
+  },
+};
+
+export const useOnboardingHeader = (title: string) => {
+  const navigation = useNavigation<AppNavigationProp>();
+
+  const renderBackButton = useCallback(
+    () => (
+      <ButtonIcon
+        size={ButtonIconSizes.Md}
+        iconName={IconName.ArrowLeft}
+        accessibilityRole="button"
+        accessibilityLabel="back"
+        onPress={() => navigation.goBack()}
+        style={styles.backButtonContainer}
+      />
+    ),
+    [navigation],
+  );
+
+  const renderTitle = useCallback(
+    () => <Text variant={TextVariant.HeadingMd}>{title}</Text>,
+    [title],
+  );
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerLeft: renderBackButton,
+      headerTitle: renderTitle,
+    });
+  }, [navigation, renderBackButton, renderTitle]);
+};

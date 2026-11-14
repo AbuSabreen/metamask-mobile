@@ -1,0 +1,754 @@
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+import React from 'react';
+import renderWithProvider from '../../../../../../util/test/renderWithProvider';
+import { useTransactionDetails } from '../../../hooks/activity/useTransactionDetails';
+import {
+  TransactionMeta,
+  TransactionStatus,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import { TransactionDetailsSummary } from './transaction-details-summary';
+import { transactionIdMock } from '../../../__mocks__/controllers/transaction-controller-mock';
+
+jest.mock('../../../hooks/activity/useTransactionDetails');
+jest.mock('../../../hooks/activity/useIsMoneyAccountContext', () => ({
+  useIsMoneyAccountContext: jest.fn().mockReturnValue(false),
+}));
+
+jest.mock('./deposit-summary-line', () => ({
+  DepositSummaryLine: () => {
+    const ReactNative = require('react-native');
+
+    return <ReactNative.Text>DepositSummaryLine</ReactNative.Text>;
+  },
+}));
+
+jest.mock('./approval-summary-line', () => ({
+  ApprovalSummaryLine: () => {
+    const ReactNative = require('react-native');
+
+    return <ReactNative.Text>ApprovalSummaryLine</ReactNative.Text>;
+  },
+}));
+
+jest.mock('./receive-summary-line', () => ({
+  ReceiveSummaryLine: () => {
+    const ReactNative = require('react-native');
+
+    return <ReactNative.Text>ReceiveSummaryLine</ReactNative.Text>;
+  },
+}));
+
+jest.mock('./default-summary-line', () => ({
+  DefaultSummaryLine: () => {
+    const ReactNative = require('react-native');
+
+    return <ReactNative.Text>DefaultSummaryLine</ReactNative.Text>;
+  },
+}));
+
+jest.mock('./source-hash-summary-line', () => ({
+  SourceHashSummaryLine: () => {
+    const ReactNative = require('react-native');
+
+    return <ReactNative.Text>SourceHashSummaryLine</ReactNative.Text>;
+  },
+}));
+
+jest.mock('./fiat-order-summary-line', () => ({
+  FiatOrderSummaryLine: () => {
+    const ReactNative = require('react-native');
+
+    return <ReactNative.Text>FiatOrderSummaryLine</ReactNative.Text>;
+  },
+}));
+
+function render({
+  transactions,
+}: {
+  transactions: Partial<TransactionMeta>[];
+}) {
+  return renderWithProvider(<TransactionDetailsSummary />, {
+    state: {
+      engine: {
+        backgroundState: {
+          TransactionController: {
+            transactions,
+          },
+        },
+      },
+    },
+  });
+}
+
+const REQUIRED_TRANSACTION_ID_MOCK = '123-456';
+const REQUIRED_TRANSACTION_ID_2_MOCK = '789-012';
+const BATCH_ID_MOCK = '0x123';
+
+describe('TransactionDetailsSummary', () => {
+  const useTransactionDetailsMock = jest.mocked(useTransactionDetails);
+
+  beforeEach(() => {
+    jest.resetAllMocks();
+
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+      } as unknown as TransactionMeta,
+    });
+  });
+
+  it('routes relay deposit transactions to DepositSummaryLine', () => {
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.relayDeposit,
+        },
+      ],
+    });
+
+    expect(getByText('DepositSummaryLine')).toBeDefined();
+  });
+
+  it('routes approval transactions to ApprovalSummaryLine', () => {
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.tokenMethodApprove,
+        },
+      ],
+    });
+
+    expect(getByText('ApprovalSummaryLine')).toBeDefined();
+  });
+
+  it('routes receive types to ReceiveSummaryLine', () => {
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.perpsDeposit,
+        },
+      ],
+    });
+
+    expect(getByText('ReceiveSummaryLine')).toBeDefined();
+  });
+
+  it('routes moneyAccountDeposit to ReceiveSummaryLine', () => {
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.moneyAccountDeposit,
+        },
+      ],
+    });
+
+    expect(getByText('ReceiveSummaryLine')).toBeDefined();
+  });
+
+  it('routes unsupported types to DefaultSummaryLine', () => {
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.swap,
+        },
+      ],
+    });
+
+    expect(getByText('DefaultSummaryLine')).toBeDefined();
+  });
+
+  it('renders lines for required transactions', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+        requiredTransactionIds: [
+          REQUIRED_TRANSACTION_ID_MOCK,
+          REQUIRED_TRANSACTION_ID_2_MOCK,
+        ],
+      } as unknown as TransactionMeta,
+    });
+
+    const { getAllByText } = render({
+      transactions: [
+        {
+          id: REQUIRED_TRANSACTION_ID_MOCK,
+          chainId: '0x1',
+          type: TransactionType.swap,
+        },
+        {
+          id: REQUIRED_TRANSACTION_ID_2_MOCK,
+          chainId: '0x1',
+          type: TransactionType.swap,
+        },
+      ],
+    });
+
+    expect(getAllByText('DefaultSummaryLine')).toHaveLength(2);
+  });
+
+  it('renders lines for batch transactions', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+        batchId: BATCH_ID_MOCK,
+      } as unknown as TransactionMeta,
+    });
+
+    const { getAllByText } = render({
+      transactions: [
+        {
+          id: REQUIRED_TRANSACTION_ID_MOCK,
+          chainId: '0x1',
+          batchId: BATCH_ID_MOCK,
+          type: TransactionType.swap,
+        },
+        {
+          id: REQUIRED_TRANSACTION_ID_2_MOCK,
+          chainId: '0x1',
+          batchId: BATCH_ID_MOCK,
+          type: TransactionType.swap,
+        },
+      ],
+    });
+
+    expect(getAllByText('DefaultSummaryLine')).toHaveLength(2);
+  });
+
+  it('renders SourceHashSummaryLine when sourceHash exists and no deposit transactions', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+        chainId: '0x1',
+        type: TransactionType.perpsDeposit,
+        metamaskPay: {
+          sourceHash: '0xabc',
+          tokenAddress: '0x123',
+          chainId: '0x1',
+        },
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.perpsDeposit,
+        },
+      ],
+    });
+
+    expect(getByText('SourceHashSummaryLine')).toBeDefined();
+  });
+
+  it('does not render SourceHashSummaryLine when deposit transactions exist', () => {
+    const depositId = 'deposit-id';
+
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+        chainId: '0x1',
+        type: TransactionType.perpsDeposit,
+        requiredTransactionIds: [depositId],
+        metamaskPay: {
+          sourceHash: '0xabc',
+          tokenAddress: '0x123',
+          chainId: '0x1',
+        },
+      } as unknown as TransactionMeta,
+    });
+
+    const { queryByText } = render({
+      transactions: [
+        {
+          id: depositId,
+          chainId: '0x1',
+          type: TransactionType.relayDeposit,
+        },
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.perpsDeposit,
+        },
+      ],
+    });
+
+    expect(queryByText('SourceHashSummaryLine')).toBeNull();
+  });
+
+  it('skips non-relay child transactions for mUSD conversion parent', () => {
+    const sendId = 'send-id';
+    const receiveId = 'receive-id';
+
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+        chainId: '0x1',
+        type: TransactionType.musdConversion,
+        requiredTransactionIds: [sendId, receiveId],
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText, queryByText } = render({
+      transactions: [
+        {
+          id: sendId,
+          chainId: '0x1',
+          type: TransactionType.relayDeposit,
+        },
+        {
+          id: receiveId,
+          chainId: '0x1',
+          type: TransactionType.contractInteraction,
+        },
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.musdConversion,
+        },
+      ],
+    });
+
+    expect(getByText('DepositSummaryLine')).toBeDefined();
+    expect(getByText('ReceiveSummaryLine')).toBeDefined();
+    expect(queryByText('DefaultSummaryLine')).toBeNull();
+  });
+
+  it('renders "Summary" label', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+        chainId: '0x1',
+        type: TransactionType.simpleSend,
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.simpleSend,
+        },
+      ],
+    });
+
+    expect(getByText('Summary')).toBeDefined();
+  });
+
+  it('renders FiatOrderSummaryLine when fiat orderId exists', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+        chainId: '0x1',
+        type: TransactionType.moneyAccountDeposit,
+        status: TransactionStatus.confirmed,
+        txParams: { from: '0xSender' },
+        metamaskPay: {
+          tokenAddress: '0x123',
+          chainId: '0x1',
+          fiat: { orderId: 'order-1' },
+        },
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.moneyAccountDeposit,
+          status: TransactionStatus.confirmed,
+        },
+      ],
+    });
+
+    expect(getByText('FiatOrderSummaryLine')).toBeDefined();
+  });
+
+  it('hides the money account deposit step that repeats the parent hash', () => {
+    const sharedHash = '0xabc123';
+    const vaultTransactionId = 'vault-tx-id';
+
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+        chainId: '0x1',
+        hash: sharedHash,
+        type: TransactionType.moneyAccountDeposit,
+        status: TransactionStatus.confirmed,
+        requiredTransactionIds: [vaultTransactionId],
+        txParams: { from: '0xSender' },
+        metamaskPay: {
+          fiat: { orderId: 'order-1' },
+        },
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText, queryByText } = render({
+      transactions: [
+        {
+          id: vaultTransactionId,
+          chainId: '0x1',
+          hash: sharedHash,
+          status: TransactionStatus.confirmed,
+          type: TransactionType.batch,
+          nestedTransactions: [
+            { type: TransactionType.tokenMethodApprove },
+            { type: TransactionType.contractInteraction },
+          ],
+        },
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          hash: sharedHash,
+          status: TransactionStatus.confirmed,
+          type: TransactionType.moneyAccountDeposit,
+        },
+      ],
+    });
+
+    expect(getByText('FiatOrderSummaryLine')).toBeDefined();
+    expect(getByText('ReceiveSummaryLine')).toBeDefined();
+    expect(queryByText('DefaultSummaryLine')).toBeNull();
+  });
+
+  it('keeps a money account deposit step whose hash differs from the parent', () => {
+    const relayTransactionId = 'relay-tx-id';
+
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        id: transactionIdMock,
+        chainId: '0x1',
+        hash: '0xparent',
+        type: TransactionType.moneyAccountDeposit,
+        status: TransactionStatus.confirmed,
+        requiredTransactionIds: [relayTransactionId],
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText } = render({
+      transactions: [
+        {
+          id: relayTransactionId,
+          chainId: '0x1',
+          hash: '0xrelay',
+          status: TransactionStatus.confirmed,
+          type: TransactionType.relayDeposit,
+        },
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          hash: '0xparent',
+          status: TransactionStatus.confirmed,
+          type: TransactionType.moneyAccountDeposit,
+        },
+      ],
+    });
+
+    expect(getByText('DepositSummaryLine')).toBeDefined();
+    expect(getByText('ReceiveSummaryLine')).toBeDefined();
+  });
+
+  it('routes predictWithdraw to ReceiveSummaryLine', () => {
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.predictWithdraw,
+        },
+      ],
+    });
+
+    expect(getByText('ReceiveSummaryLine')).toBeDefined();
+  });
+
+  it('routes predictDeposit to ReceiveSummaryLine', () => {
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.predictDeposit,
+        },
+      ],
+    });
+
+    expect(getByText('ReceiveSummaryLine')).toBeDefined();
+  });
+
+  it('routes musdConversion to ReceiveSummaryLine', () => {
+    const { getByText } = render({
+      transactions: [
+        {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.musdConversion,
+        },
+      ],
+    });
+
+    expect(getByText('ReceiveSummaryLine')).toBeDefined();
+  });
+
+  describe('money context heading', () => {
+    const { useIsMoneyAccountContext } = jest.requireMock(
+      '../../../hooks/activity/useIsMoneyAccountContext',
+    );
+
+    afterEach(() => {
+      useIsMoneyAccountContext.mockReturnValue(false);
+    });
+
+    it('shows "Steps (X completed)" heading for multi-step transactions', () => {
+      useIsMoneyAccountContext.mockReturnValue(true);
+
+      useTransactionDetailsMock.mockReturnValue({
+        transactionMeta: {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.moneyAccountWithdraw,
+          status: TransactionStatus.confirmed,
+          requiredTransactionIds: [REQUIRED_TRANSACTION_ID_MOCK],
+        } as unknown as TransactionMeta,
+      });
+
+      const { getByText } = render({
+        transactions: [
+          {
+            id: REQUIRED_TRANSACTION_ID_MOCK,
+            chainId: '0x1',
+            type: TransactionType.relayDeposit,
+            status: TransactionStatus.confirmed,
+          },
+          {
+            id: transactionIdMock,
+            chainId: '0x1',
+            type: TransactionType.moneyAccountWithdraw,
+            status: TransactionStatus.confirmed,
+          },
+        ],
+      });
+
+      expect(getByText('Steps (2 completed)')).toBeDefined();
+    });
+
+    it('hides heading for single-step transactions', () => {
+      useIsMoneyAccountContext.mockReturnValue(true);
+
+      useTransactionDetailsMock.mockReturnValue({
+        transactionMeta: {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.moneyAccountWithdraw,
+          status: TransactionStatus.confirmed,
+        } as unknown as TransactionMeta,
+      });
+
+      const { queryByText } = render({
+        transactions: [
+          {
+            id: transactionIdMock,
+            chainId: '0x1',
+            type: TransactionType.moneyAccountWithdraw,
+            status: TransactionStatus.confirmed,
+          },
+        ],
+      });
+
+      expect(queryByText(/Steps \(/u)).toBeNull();
+      expect(queryByText('Summary')).toBeNull();
+    });
+
+    it('shows heading and deposit line for mUSD conversion with musdRelayDeposit child', () => {
+      useIsMoneyAccountContext.mockReturnValue(true);
+
+      useTransactionDetailsMock.mockReturnValue({
+        transactionMeta: {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.musdConversion,
+          status: TransactionStatus.confirmed,
+          requiredTransactionIds: [REQUIRED_TRANSACTION_ID_MOCK],
+        } as unknown as TransactionMeta,
+      });
+
+      const { getByText } = render({
+        transactions: [
+          {
+            id: REQUIRED_TRANSACTION_ID_MOCK,
+            chainId: '0x1',
+            type: TransactionType.musdRelayDeposit,
+            status: TransactionStatus.confirmed,
+          },
+          {
+            id: transactionIdMock,
+            chainId: '0x1',
+            type: TransactionType.musdConversion,
+            status: TransactionStatus.confirmed,
+          },
+        ],
+      });
+
+      expect(getByText('Steps (2 completed)')).toBeDefined();
+      expect(getByText('DepositSummaryLine')).toBeDefined();
+    });
+
+    it('includes fiatOrderId in completedCount when parent is confirmed', () => {
+      useIsMoneyAccountContext.mockReturnValue(true);
+
+      useTransactionDetailsMock.mockReturnValue({
+        transactionMeta: {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.moneyAccountDeposit,
+          status: TransactionStatus.confirmed,
+          metamaskPay: {
+            fiat: { orderId: 'order-1' },
+          },
+        } as unknown as TransactionMeta,
+      });
+
+      const { getByText } = render({
+        transactions: [
+          {
+            id: transactionIdMock,
+            chainId: '0x1',
+            type: TransactionType.moneyAccountDeposit,
+            status: TransactionStatus.confirmed,
+          },
+        ],
+      });
+
+      expect(getByText('Steps (2 completed)')).toBeDefined();
+    });
+
+    it('counts fiat and the on-chain deposit after dropping the duplicate hash', () => {
+      useIsMoneyAccountContext.mockReturnValue(true);
+
+      const sharedHash = '0xabc123';
+      const vaultTransactionId = 'vault-tx-id';
+
+      useTransactionDetailsMock.mockReturnValue({
+        transactionMeta: {
+          id: transactionIdMock,
+          chainId: '0x1',
+          hash: sharedHash,
+          type: TransactionType.moneyAccountDeposit,
+          status: TransactionStatus.confirmed,
+          requiredTransactionIds: [vaultTransactionId],
+          metamaskPay: {
+            fiat: { orderId: 'order-1' },
+          },
+        } as unknown as TransactionMeta,
+      });
+
+      const { getByText, queryByText } = render({
+        transactions: [
+          {
+            id: vaultTransactionId,
+            chainId: '0x1',
+            hash: sharedHash,
+            status: TransactionStatus.confirmed,
+            type: TransactionType.contractInteraction,
+          },
+          {
+            id: transactionIdMock,
+            chainId: '0x1',
+            hash: sharedHash,
+            status: TransactionStatus.confirmed,
+            type: TransactionType.moneyAccountDeposit,
+          },
+        ],
+      });
+
+      expect(getByText('Steps (2 completed)')).toBeDefined();
+      expect(queryByText('DefaultSummaryLine')).toBeNull();
+    });
+
+    it('keeps a single on-chain step for a crypto money account deposit', () => {
+      useIsMoneyAccountContext.mockReturnValue(true);
+
+      const sharedHash = '0xabc123';
+      const vaultTransactionId = 'vault-tx-id';
+
+      useTransactionDetailsMock.mockReturnValue({
+        transactionMeta: {
+          id: transactionIdMock,
+          chainId: '0x1',
+          hash: sharedHash,
+          type: TransactionType.moneyAccountDeposit,
+          status: TransactionStatus.confirmed,
+          requiredTransactionIds: [vaultTransactionId],
+        } as unknown as TransactionMeta,
+      });
+
+      const { getByText, queryByText } = render({
+        transactions: [
+          {
+            id: vaultTransactionId,
+            chainId: '0x1',
+            hash: sharedHash,
+            status: TransactionStatus.confirmed,
+            type: TransactionType.contractInteraction,
+          },
+          {
+            id: transactionIdMock,
+            chainId: '0x1',
+            hash: sharedHash,
+            status: TransactionStatus.confirmed,
+            type: TransactionType.moneyAccountDeposit,
+          },
+        ],
+      });
+
+      expect(getByText('ReceiveSummaryLine')).toBeDefined();
+      expect(queryByText('DefaultSummaryLine')).toBeNull();
+      expect(queryByText('FiatOrderSummaryLine')).toBeNull();
+      expect(queryByText(/Steps \(/u)).toBeNull();
+    });
+
+    it('includes sourceHash in completedCount when parent is confirmed', () => {
+      useIsMoneyAccountContext.mockReturnValue(true);
+
+      useTransactionDetailsMock.mockReturnValue({
+        transactionMeta: {
+          id: transactionIdMock,
+          chainId: '0x1',
+          type: TransactionType.perpsDeposit,
+          status: TransactionStatus.confirmed,
+          metamaskPay: {
+            sourceHash: '0xabc',
+            tokenAddress: '0x123',
+            chainId: '0x1',
+          },
+        } as unknown as TransactionMeta,
+      });
+
+      const { getByText } = render({
+        transactions: [
+          {
+            id: transactionIdMock,
+            chainId: '0x1',
+            type: TransactionType.perpsDeposit,
+            status: TransactionStatus.confirmed,
+          },
+        ],
+      });
+
+      expect(getByText('Steps (2 completed)')).toBeDefined();
+    });
+  });
+});

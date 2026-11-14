@@ -1,0 +1,592 @@
+import React, { useCallback, useMemo } from 'react';
+import { ScrollView, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSelector } from 'react-redux';
+import { useNavigation } from '@react-navigation/native';
+import { BatchSellMetricsLocation } from '@metamask/bridge-controller';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import {
+  Icon,
+  IconName,
+  IconSize,
+  IconColor,
+  TextColor,
+  TextVariant,
+  Text,
+  Box,
+  ActionListItem,
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import MainActionButtonGlass from '../../../component-library/components-temp/MainActionButtonGlass';
+import { EVENT_NAME } from '../../../core/Analytics/MetaMetrics.events';
+import { ActivityScreenEntryPoint } from '../../../core/Analytics/events/activity';
+import { Authentication } from '../../../core/';
+import AppConstants from '../../../core/AppConstants';
+import { useTheme } from '../../../util/theme';
+import Routes from '../../../constants/navigation/Routes';
+import { strings } from '../../../../locales/i18n';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { useSupportConsent } from '../../hooks/useSupportConsent';
+import { useQRScanner } from '../../hooks/useQRScanner';
+import { getDetectedGeolocation } from '../../../reducers/fiatOrders';
+import { useRampsButtonClickData } from '../../UI/Ramp/hooks/useRampsButtonClickData';
+import { AccountsMenuSelectorsIDs } from './AccountsMenu.testIds';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { WalletViewSelectorsIDs } from '../Wallet/WalletView.testIds';
+import { useRampNavigation } from '../../UI/Ramp/hooks/useRampNavigation';
+import { RAMPS_BUY_CUF_SURFACE } from '../../UI/Ramp/constants/rampsBuyCufTags';
+import { isNotificationsFeatureEnabled } from '../../../util/notifications';
+import {
+  getMetamaskNotificationsReadCount,
+  getMetamaskNotificationsUnreadCount,
+  selectIsMetamaskNotificationsEnabled,
+} from '../../../selectors/notifications';
+import { METAMASK_SUPPORT_URL } from '../../../constants/urls';
+import { getBetaSupportUrl } from './AccountsMenu.utils';
+import { isBetaBuild, isFlaskBuild } from '../../../util/environment';
+import { useCardUkMigrationUpdateBadge } from '../../UI/Card/hooks/useCardUkMigrationUpdateBadge';
+import { useCardUkMigrationState } from '../../UI/Card/hooks/useCardUkMigrationState';
+import CardUkMigrationUpdateBadge from './components/CardUkMigrationUpdateBadge/CardUkMigrationUpdateBadge';
+import { selectCardActiveProviderId } from '../../../selectors/cardController';
+import { useMetamaskOrangeEntry } from '../../../hooks/useMetamaskOrangeEntry';
+import {
+  CardFlow,
+  mapUkMigrationPhaseToAnalytics,
+  withCardProvider,
+} from '../../UI/Card/util/metrics';
+import { selectBatchSellEnabled } from '../../../selectors/featureFlagController/batchSell';
+import { selectIsSwapsEnabled } from '../../../core/redux/slices/bridge';
+import type { RootState } from '../../../reducers';
+import { selectSelectedInternalAccountAddress } from '../../../selectors/accountsController';
+import { isHardwareAccount } from '../../../util/address';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
+
+const AccountsMenu = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const tw = useTailwind();
+  const { colors } = useTheme();
+  const navigation = useNavigation<AppNavigationProp>();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const { openSupportWithConsent } = useSupportConsent();
+  const { openQRScanner } = useQRScanner();
+  const { goToBuy } = useRampNavigation();
+  const rampGeodetectedRegion = useSelector(getDetectedGeolocation);
+  const rampsButtonClickData = useRampsButtonClickData();
+  const isSwapsEnabled = useSelector((state: RootState) =>
+    selectIsSwapsEnabled(state),
+  );
+  const selectedAddress = useSelector(selectSelectedInternalAccountAddress);
+  const isHardwareWallet = selectedAddress
+    ? Boolean(isHardwareAccount(selectedAddress))
+    : false;
+  const shouldRenderBatchSell =
+    useSelector(selectBatchSellEnabled) &&
+    AppConstants.SWAPS.ACTIVE &&
+    !isHardwareWallet;
+  const isNotificationEnabled = useSelector(
+    selectIsMetamaskNotificationsEnabled,
+  );
+  const unreadNotificationCount = useSelector(
+    getMetamaskNotificationsUnreadCount,
+  );
+  const readNotificationCount = useSelector(getMetamaskNotificationsReadCount);
+  const cardUpdateBadgeSeverity = useCardUkMigrationUpdateBadge();
+  const activeProviderId = useSelector(selectCardActiveProviderId);
+  const {
+    state: { phase: ukMigrationPhase },
+  } = useCardUkMigrationState();
+  const {
+    showOrangeEntry,
+    label: orangeLabel,
+    onPress: onPressOrange,
+  } = useMetamaskOrangeEntry();
+
+  const onPressBatchSell = useCallback(() => {
+    navigation.navigate(Routes.BRIDGE.ROOT, {
+      screen: Routes.BRIDGE.BATCH_SELL_TOKEN_SELECT,
+      params: {
+        batchSellLocation: BatchSellMetricsLocation.Unknown,
+      },
+    });
+  }, [navigation]);
+
+  const onPressDeposit = useCallback(() => {
+    trackEvent(
+      createEventBuilder(EVENT_NAME.RAMPS_BUTTON_CLICKED)
+        .addProperties({
+          button_text: 'Buy',
+          location: 'AccountsMenu',
+          ramp_type: 'UNIFIED_BUY_2',
+          chain_id_destination: null,
+          region: rampGeodetectedRegion ?? null,
+          is_authenticated: rampsButtonClickData.is_authenticated ?? null,
+          preferred_provider: rampsButtonClickData.preferred_provider ?? null,
+          order_count: rampsButtonClickData.order_count,
+        })
+        .build(),
+    );
+    goToBuy(undefined, { surface: RAMPS_BUY_CUF_SURFACE.ACCOUNTS_MENU });
+  }, [
+    goToBuy,
+    createEventBuilder,
+    trackEvent,
+    rampGeodetectedRegion,
+    rampsButtonClickData,
+  ]);
+
+  const onPressActivity = useCallback(() => {
+    trackEvent(createEventBuilder(EVENT_NAME.ACTIVITY_CLICKED).build());
+    navigation.navigate(Routes.TRANSACTIONS_VIEW, {
+      screen: Routes.TRANSACTIONS_VIEW,
+      params: { entryPoint: ActivityScreenEntryPoint.AccountsMenu },
+    });
+  }, [navigation, trackEvent, createEventBuilder]);
+
+  const onPressNotifications = useCallback(() => {
+    navigation.navigate(Routes.NOTIFICATIONS.VIEW);
+    if (isNotificationEnabled && isNotificationsFeatureEnabled()) {
+      trackEvent(
+        createEventBuilder(EVENT_NAME.NOTIFICATIONS_MENU_OPENED)
+          .addProperties({
+            unread_count: unreadNotificationCount,
+            read_count: readNotificationCount,
+          })
+          .build(),
+      );
+    }
+  }, [
+    isNotificationEnabled,
+    navigation,
+    trackEvent,
+    createEventBuilder,
+    unreadNotificationCount,
+    readNotificationCount,
+  ]);
+  const handleBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const onPressSettings = useCallback(() => {
+    trackEvent(createEventBuilder(EVENT_NAME.SETTINGS_VIEWED).build());
+    navigation.navigate(Routes.SETTINGS.ROOT);
+  }, [navigation, trackEvent, createEventBuilder]);
+
+  const onPressContacts = useCallback(() => {
+    // TODO: Will add events in follow up PR
+    navigation.navigate(Routes.SETTINGS.CONTACTS);
+  }, [navigation]);
+
+  const onPressManageWallet = useCallback(() => {
+    const updateLabelVisible = Boolean(cardUpdateBadgeSeverity);
+    const migrationPhase = updateLabelVisible
+      ? mapUkMigrationPhaseToAnalytics(ukMigrationPhase)
+      : undefined;
+    trackEvent(
+      createEventBuilder(EVENT_NAME.CARD_HOME_CLICKED)
+        .addProperties(
+          withCardProvider(activeProviderId, {
+            update_label_visible: updateLabelVisible,
+            ...(updateLabelVisible
+              ? {
+                  flow: CardFlow.MIGRATION,
+                  ...(migrationPhase
+                    ? { migration_phase: migrationPhase }
+                    : {}),
+                }
+              : {}),
+          }),
+        )
+        .build(),
+    );
+    navigation.navigate(Routes.CARD.ROOT);
+  }, [
+    activeProviderId,
+    cardUpdateBadgeSeverity,
+    createEventBuilder,
+    navigation,
+    trackEvent,
+    ukMigrationPhase,
+  ]);
+
+  const onPressNetworks = useCallback(() => {
+    navigation.navigate(Routes.SETTINGS.NETWORKS_MANAGEMENT);
+  }, [navigation]);
+
+  const onPressPermissions = useCallback(() => {
+    // TODO: Will add events in follow up PR
+    navigation.navigate(Routes.SETTINGS.SDK_SESSIONS_MANAGER);
+  }, [navigation]);
+
+  const goToBrowserUrl = useCallback(
+    (url: string, title: string) => {
+      navigation.navigate('Webview', {
+        screen: 'SimpleWebview',
+        params: {
+          url,
+          title,
+        },
+      });
+    },
+    [navigation],
+  );
+
+  const onPressAboutMetaMask = useCallback(() => {
+    trackEvent(createEventBuilder(EVENT_NAME.SETTINGS_ABOUT).build());
+    navigation.navigate(Routes.SETTINGS.COMPANY);
+  }, [navigation, trackEvent, createEventBuilder]);
+
+  const onPressRequestFeature = useCallback(() => {
+    trackEvent(
+      createEventBuilder(EVENT_NAME.NAVIGATION_TAPS_SEND_FEEDBACK).build(),
+    );
+    goToBrowserUrl(
+      'https://community.metamask.io/c/feature-requests-ideas/',
+      strings('app_settings.request_feature'),
+    );
+  }, [goToBrowserUrl, trackEvent, createEventBuilder]);
+
+  const onPressSupport = useCallback(() => {
+    const betaSupportUrl = getBetaSupportUrl();
+
+    if (betaSupportUrl) {
+      trackEvent(
+        createEventBuilder(EVENT_NAME.NAVIGATION_TAPS_GET_HELP).build(),
+      );
+      goToBrowserUrl(betaSupportUrl, strings('app_settings.contact_support'));
+      return;
+    }
+
+    // Defer tracking to when support actually opens (consent confirm/reject),
+    // not the mere press that only shows the consent sheet.
+    openSupportWithConsent(
+      (url) => goToBrowserUrl(url, strings('app_settings.contact_support')),
+      METAMASK_SUPPORT_URL,
+      () =>
+        trackEvent(
+          createEventBuilder(EVENT_NAME.NAVIGATION_TAPS_GET_HELP).build(),
+        ),
+    );
+  }, [goToBrowserUrl, trackEvent, createEventBuilder, openSupportWithConsent]);
+
+  const onPressLock = useCallback(async () => {
+    await Authentication.lockApp({ reset: false, locked: false });
+  }, []);
+
+  const onPressLogOut = useCallback(() => {
+    Alert.alert(
+      strings('drawer.lock_title'),
+      '',
+      [
+        {
+          text: strings('drawer.lock_cancel'),
+          onPress: () => null,
+          style: 'cancel',
+        },
+        {
+          text: strings('drawer.lock_ok'),
+          onPress: async () => {
+            trackEvent(
+              createEventBuilder(EVENT_NAME.NAVIGATION_TAPS_LOGOUT).build(),
+            );
+            await onPressLock();
+          },
+        },
+      ],
+      { cancelable: false },
+    );
+  }, [onPressLock, trackEvent, createEventBuilder]);
+
+  const separator = useMemo(
+    () => (
+      <Box
+        style={tw.style('h-px my-2 mx-4', {
+          backgroundColor: colors.border.muted,
+          opacity: 0.75,
+        })}
+      />
+    ),
+
+    [colors.border.muted, tw],
+  );
+
+  const arrowRightIcon = useMemo(
+    () => (
+      <Icon
+        name={IconName.ArrowRight}
+        size={IconSize.Sm}
+        color={IconColor.IconAlternative}
+      />
+    ),
+    [],
+  );
+
+  const aboutMetaMaskTitle = useMemo(() => {
+    if (isFlaskBuild) {
+      return strings('app_settings.info_title_flask');
+    }
+
+    if (isBetaBuild) {
+      return strings('app_settings.info_title_beta');
+    }
+
+    return strings('app_settings.info_title');
+  }, []);
+
+  const isNotificationsEnabled = useMemo(
+    () => isNotificationsFeatureEnabled() && isNotificationEnabled,
+    [isNotificationEnabled],
+  );
+
+  const notificationBadgeCount = useMemo(() => {
+    if (unreadNotificationCount > 99) return '99+';
+    return unreadNotificationCount.toString();
+  }, [unreadNotificationCount]);
+
+  const renderNotificationsEndAccessory = useMemo(() => {
+    if (isNotificationsEnabled && unreadNotificationCount > 0) {
+      return (
+        <Box style={tw.style('flex-row items-center gap-2')}>
+          <Box
+            style={tw.style(
+              'rounded-lg px-2 py-0.5 min-w-6 items-center justify-center',
+              {
+                backgroundColor: colors.error.default,
+              },
+            )}
+          >
+            <Text
+              style={tw.style('font-medium')}
+              variant={TextVariant.BodyXs}
+              color={TextColor.PrimaryInverse}
+            >
+              {notificationBadgeCount}
+            </Text>
+          </Box>
+          {arrowRightIcon}
+        </Box>
+      );
+    }
+    return arrowRightIcon;
+  }, [
+    isNotificationsEnabled,
+    unreadNotificationCount,
+    notificationBadgeCount,
+    arrowRightIcon,
+    colors.error.default,
+    tw,
+  ]);
+
+  const cardUpdateBadge = cardUpdateBadgeSeverity ? (
+    <CardUkMigrationUpdateBadge
+      severity={cardUpdateBadgeSeverity}
+      testID={AccountsMenuSelectorsIDs.MANAGE_CARD_UPDATE_BADGE}
+    />
+  ) : null;
+
+  const cardRowEndAccessory = cardUpdateBadge ? (
+    <Box twClassName="flex-row items-center gap-2">
+      {cardUpdateBadge}
+      {arrowRightIcon}
+    </Box>
+  ) : (
+    arrowRightIcon
+  );
+
+  return (
+    <SafeAreaView
+      edges={{ bottom: 'additive' }}
+      style={tw.style('flex-1', { backgroundColor: colors.background.default })}
+    >
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        onBack={handleBack}
+        backButtonProps={{ testID: AccountsMenuSelectorsIDs.BACK_BUTTON }}
+        includesTopInset
+      />
+      <ScrollView
+        style={tw.style('flex-1', {
+          backgroundColor: colors.background.default,
+        })}
+        testID={AccountsMenuSelectorsIDs.ACCOUNTS_MENU_SCROLL_ID}
+      >
+        {/* Quick Actions Section */}
+        <Box style={tw.style('px-4 pt-4 pb-3 flex-row gap-4 justify-between')}>
+          <Box style={tw.style('mb-2 flex-1')}>
+            <MainActionButtonGlass
+              iconName={IconName.Activity}
+              label={strings('activity_view.title')}
+              onPress={onPressActivity}
+              testID={AccountsMenuSelectorsIDs.ACTIVITY_BUTTON}
+              isGlass={isGlassHeader}
+            />
+          </Box>
+          <Box style={tw.style('mb-2 flex-1')}>
+            <MainActionButtonGlass
+              iconName={IconName.QrCode}
+              label={strings('accounts_menu.scan')}
+              onPress={openQRScanner}
+              testID={WalletViewSelectorsIDs.WALLET_SCAN_BUTTON}
+              isGlass={isGlassHeader}
+            />
+          </Box>
+          <Box style={tw.style('mb-2 flex-1')}>
+            {shouldRenderBatchSell ? (
+              <MainActionButtonGlass
+                iconName={IconName.BuySell}
+                label={strings('asset_overview.batch_sell')}
+                onPress={onPressBatchSell}
+                isDisabled={!isSwapsEnabled}
+                testID={AccountsMenuSelectorsIDs.BATCH_SELL_BUTTON}
+                isGlass={isGlassHeader}
+              />
+            ) : (
+              <MainActionButtonGlass
+                iconName={IconName.AttachMoney}
+                label={strings('accounts_menu.buy')}
+                onPress={onPressDeposit}
+                testID={AccountsMenuSelectorsIDs.BUY_BUTTON}
+                isGlass={isGlassHeader}
+              />
+            )}
+          </Box>
+        </Box>
+
+        {/* Notifications Row */}
+        {isNotificationsFeatureEnabled() && (
+          <ActionListItem
+            startAccessory={
+              <Icon name={IconName.Notification} size={IconSize.Lg} />
+            }
+            label={strings('accounts_menu.notifications')}
+            endAccessory={renderNotificationsEndAccessory}
+            onPress={onPressNotifications}
+            testID={AccountsMenuSelectorsIDs.NOTIFICATIONS_BUTTON}
+          />
+        )}
+
+        {showOrangeEntry ? (
+          <ActionListItem
+            startAccessory={
+              <Icon name={IconName.MetamaskFoxOutline} size={IconSize.Lg} />
+            }
+            label={orangeLabel}
+            endAccessory={arrowRightIcon}
+            onPress={onPressOrange}
+            testID={AccountsMenuSelectorsIDs.METAMASK_ORANGE}
+          />
+        ) : null}
+
+        {/* MetaMask Card Row */}
+        <ActionListItem
+          startAccessory={<Icon name={IconName.Card} size={IconSize.Lg} />}
+          label={strings('accounts_menu.card_title')}
+          onPress={onPressManageWallet}
+          endAccessory={cardRowEndAccessory}
+          testID={AccountsMenuSelectorsIDs.MANAGE_CARD}
+        />
+
+        {separator}
+
+        {/* Manage Section */}
+        <Box style={tw.style('px-4 py-3')}>
+          <Text variant={TextVariant.BodyMd} color={TextColor.TextAlternative}>
+            {strings('accounts_menu.manage')}
+          </Text>
+        </Box>
+
+        {/* Settings Row */}
+        <ActionListItem
+          startAccessory={<Icon name={IconName.Setting} size={IconSize.Lg} />}
+          label={strings('accounts_menu.settings')}
+          endAccessory={arrowRightIcon}
+          onPress={onPressSettings}
+          testID={AccountsMenuSelectorsIDs.SETTINGS}
+        />
+
+        {/* Contacts Row */}
+        <ActionListItem
+          startAccessory={<Icon name={IconName.Bookmark} size={IconSize.Lg} />}
+          label={strings('send.contacts')}
+          endAccessory={arrowRightIcon}
+          onPress={onPressContacts}
+          testID={AccountsMenuSelectorsIDs.CONTACTS}
+        />
+
+        {/* Permissions Row */}
+        <ActionListItem
+          startAccessory={
+            <Icon name={IconName.SecurityTick} size={IconSize.Lg} />
+          }
+          label={strings('accounts_menu.permissions')}
+          endAccessory={arrowRightIcon}
+          onPress={onPressPermissions}
+          testID={AccountsMenuSelectorsIDs.PERMISSIONS}
+        />
+
+        {/* Networks Row */}
+        <ActionListItem
+          startAccessory={<Icon name={IconName.Hierarchy} size={IconSize.Lg} />}
+          label={strings('accounts_menu.networks')}
+          endAccessory={arrowRightIcon}
+          onPress={onPressNetworks}
+          testID={AccountsMenuSelectorsIDs.NETWORKS}
+        />
+
+        {separator}
+
+        {/* Resources Section */}
+        <Box style={tw.style('px-4 py-3')}>
+          <Text variant={TextVariant.BodyMd} color={TextColor.TextAlternative}>
+            {strings('accounts_menu.resources')}
+          </Text>
+        </Box>
+
+        {/* About MetaMask Row */}
+        <ActionListItem
+          startAccessory={<Icon name={IconName.Info} size={IconSize.Lg} />}
+          label={aboutMetaMaskTitle}
+          endAccessory={arrowRightIcon}
+          onPress={onPressAboutMetaMask}
+          testID={AccountsMenuSelectorsIDs.ABOUT_METAMASK}
+        />
+
+        {/* Request a Feature Row */}
+        <ActionListItem
+          startAccessory={<Icon name={IconName.Details} size={IconSize.Lg} />}
+          label={strings('app_settings.request_feature')}
+          onPress={onPressRequestFeature}
+          testID={AccountsMenuSelectorsIDs.REQUEST_FEATURE}
+        />
+
+        {/* Support Row */}
+        <ActionListItem
+          startAccessory={<Icon name={IconName.Sms} size={IconSize.Lg} />}
+          label={strings('app_settings.contact_support')}
+          onPress={onPressSupport}
+          testID={AccountsMenuSelectorsIDs.SUPPORT}
+        />
+
+        {separator}
+
+        {/* Log Out Row */}
+        <ActionListItem
+          startAccessory={
+            <Icon
+              name={IconName.Lock}
+              size={IconSize.Lg}
+              color={IconColor.ErrorDefault}
+            />
+          }
+          label={strings('accounts_menu.log_out')}
+          labelTextProps={{ color: TextColor.ErrorDefault }}
+          onPress={onPressLogOut}
+          testID={AccountsMenuSelectorsIDs.LOCK}
+        />
+      </ScrollView>
+    </SafeAreaView>
+  );
+};
+
+export default AccountsMenu;

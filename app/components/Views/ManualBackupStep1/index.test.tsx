@@ -1,42 +1,790 @@
 import React from 'react';
-import { shallow } from 'enzyme';
-import { Provider } from 'react-redux';
-import configureMockStore from 'redux-mock-store';
 import ManualBackupStep1 from './';
+import configureMockStore from 'redux-mock-store';
+import { Provider } from 'react-redux';
+import renderWithProvider from '../../../util/test/renderWithProvider';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import { fireEvent, waitFor, act } from '@testing-library/react-native';
+import { ManualBackUpStepsSelectorsIDs } from './ManualBackUpSteps.testIds';
 import { AppThemeKey } from '../../../util/theme/models';
+import { strings } from '../../../../locales/i18n';
+import { InteractionManager, Platform } from 'react-native';
+import {
+  AccountType,
+  ONBOARDING_SUCCESS_FLOW,
+} from '../../../constants/onboarding';
 
 const mockStore = configureMockStore();
-const initialState = {
-  user: { appTheme: AppThemeKey.light },
+const store = mockStore({ user: { appTheme: AppThemeKey.light } });
+
+jest.mock('@react-navigation/native', () => {
+  const actualNav = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualNav,
+    useNavigation: jest.fn(),
+    useRoute: jest.fn(),
+    useFocusEffect: jest.fn(),
+  };
+});
+
+jest.mock('react-native', () => {
+  const RN = jest.requireActual('react-native');
+  return {
+    ...RN,
+    InteractionManager: {
+      runAfterInteractions: jest.fn((cb) => cb()),
+    },
+  };
+});
+
+jest.mock('@metamask/design-system-twrnc-preset', () => ({
+  useTailwind: () => {
+    const tw = (..._args: unknown[]) => ({});
+    tw.style = jest.fn(() => ({}));
+    return tw;
+  },
+  useTheme: () => 'light',
+  Theme: { Light: 'light', Dark: 'dark' },
+}));
+
+const { mockTheme } = jest.requireActual('../../../util/theme');
+
+const mockUseTheme = jest.fn().mockReturnValue({
+  colors: {
+    text: { default: mockTheme.colors.text.default },
+    background: {
+      default: mockTheme.colors.background.default,
+      muted: mockTheme.colors.background.muted,
+    },
+    icon: { default: mockTheme.colors.icon.default },
+    border: {
+      default: mockTheme.colors.border.default,
+      muted: mockTheme.colors.border.muted,
+    },
+    error: { default: mockTheme.colors.error.default },
+  },
+  themeAppearance: 'dark',
+});
+
+jest.mock('../../../util/theme', () => ({
+  useTheme: () => mockUseTheme(),
+  AppThemeKey: { os: 'os', light: 'light', dark: 'dark' },
+}));
+
+const mockIsMetricsEnabled = jest.fn().mockReturnValue(true);
+jest.mock('../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => ({
+    isEnabled: mockIsMetricsEnabled,
+    enable: jest.fn(),
+    identify: jest.fn(),
+    createEventBuilder: jest.fn(() => ({
+      addProperties: jest.fn(() => ({ build: jest.fn() })),
+      build: jest.fn(),
+    })),
+    trackEvent: jest.fn(),
+    getAnalyticsId: jest.fn(),
+  }),
+}));
+
+jest.mock('../../../util/mnemonic', () => ({
+  uint8ArrayToMnemonic: jest.fn(
+    () =>
+      'abstract accident acoustic announce apple april argue artistic atmosphere aunt around awesome',
+  ),
+}));
+
+jest.mock('../../../core/Engine', () => {
+  const mockHasFundsFn = jest.fn().mockReturnValue(true);
+  const mockExportSeedPhraseFn = jest.fn().mockResolvedValue(new Uint8Array());
+  return {
+    __esModule: true,
+    default: {
+      hasFunds: mockHasFundsFn,
+      context: {
+        KeyringController: { exportSeedPhrase: mockExportSeedPhraseFn },
+      },
+    },
+  };
+});
+
+const Engine = jest.requireMock('../../../core/Engine').default;
+const mockHasFunds = Engine.hasFunds as jest.Mock;
+const mockExportSeedPhrase = Engine.context.KeyringController
+  .exportSeedPhrase as jest.Mock;
+
+const mockGetPassword = jest.fn();
+jest.mock('../../../core', () => ({
+  Authentication: { getPassword: () => mockGetPassword() },
+}));
+
+jest.mock('../../../util/Logger', () => ({ error: jest.fn(), log: jest.fn() }));
+const Logger = jest.requireMock('../../../util/Logger');
+
+jest.mock('../../UI/OnboardingFoxLoader/OnboardingFoxLoader');
+
+jest.mock('../../../util/metrics/TrackError/trackErrorAsAnalytics', () =>
+  jest.fn(),
+);
+jest.mock('../../../util/metrics/TrackOnboarding/trackOnboarding', () =>
+  jest.fn(),
+);
+const trackErrorAsAnalytics = jest.requireMock(
+  '../../../util/metrics/TrackError/trackErrorAsAnalytics',
+);
+
+const MOCK_WORDS = [
+  'abstract',
+  'accident',
+  'acoustic',
+  'announce',
+  'artefact',
+  'attitude',
+  'bachelor',
+  'broccoli',
+  'business',
+  'category',
+  'champion',
+  'cinnamon',
+];
+
+const createMockNavigation = () => ({
+  navigate: jest.fn(),
+  goBack: jest.fn(),
+  setOptions: jest.fn(),
+  dispatch: jest.fn(),
+  addListener: jest.fn(),
+  removeListener: jest.fn(),
+  isFocused: jest.fn(),
+});
+
+interface SetupOptions {
+  seedPhrase?: string[];
+  backupFlow?: boolean;
+  settingsBackup?: boolean;
+}
+
+const renderComponent = (routeParams: SetupOptions = {}) => {
+  const nav = createMockNavigation();
+  store.dispatch = nav.dispatch;
+
+  (useNavigation as jest.Mock).mockReturnValue(nav);
+  (useRoute as jest.Mock).mockReturnValue({
+    params: {
+      seedPhrase: MOCK_WORDS,
+      backupFlow: true,
+      settingsBackup: true,
+      ...routeParams,
+    },
+  });
+
+  const wrapper = renderWithProvider(
+    <Provider store={store}>
+      <ManualBackupStep1 />
+    </Provider>,
+  );
+
+  return { wrapper, ...nav };
 };
-const store = mockStore(initialState);
+
+const revealSeedPhrase = (wrapper: ReturnType<typeof renderWithProvider>) => {
+  // fireEvent flushes the seedPhraseHidden update before it returns.
+  // Do not wrap this in `await act(async () => ...)` or waitFor: testSetup
+  // freezes Date.now, so those waits never elapse and the test hits Jest's
+  // timeout.
+  fireEvent.press(
+    wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.BLUR_BUTTON),
+  );
+  expect(
+    wrapper.getByTestId(`${ManualBackUpStepsSelectorsIDs.WORD_ITEM}-0`),
+  ).toBeOnTheScreen();
+  expect(wrapper.getByText(MOCK_WORDS[0])).toBeOnTheScreen();
+};
+
+const renderPasswordView = async () => {
+  mockGetPassword.mockResolvedValue(null);
+
+  const result = renderComponent({
+    seedPhrase: undefined,
+    backupFlow: false,
+    settingsBackup: false,
+  });
+
+  await waitFor(() => {
+    expect(
+      result.wrapper.getByTestId(
+        ManualBackUpStepsSelectorsIDs.CONFIRM_PASSWORD_INPUT,
+      ),
+    ).toBeOnTheScreen();
+  });
+
+  return result;
+};
 
 describe('ManualBackupStep1', () => {
-  it('should render correctly', () => {
-    const wrapper = shallow(
-      <Provider store={store}>
-        <ManualBackupStep1
-          route={{
-            params: {
-              words: [
-                'abstract',
-                'accident',
-                'acoustic',
-                'announce',
-                'artefact',
-                'attitude',
-                'bachelor',
-                'broccoli',
-                'business',
-                'category',
-                'champion',
-                'cinnamon',
-              ],
-            },
-          }}
-        />
-      </Provider>,
-    );
-    expect(wrapper).toMatchSnapshot();
+  jest.spyOn(InteractionManager, 'runAfterInteractions').mockImplementation(
+    jest.fn().mockImplementation((cb) => {
+      cb();
+      return {
+        then: (f: () => void) => Promise.resolve(f()),
+        done: (f: () => void, r: () => void) => Promise.resolve().then(f, r),
+        cancel: jest.fn(),
+      };
+    }),
+  );
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('renders correctly', () => {
+    const { wrapper } = renderComponent();
+    expect(
+      wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.STEP_1_CONTAINER),
+    ).toBeOnTheScreen();
+  });
+
+  describe('seed phrase reveal', () => {
+    it('reveals seed phrase words after pressing the blur overlay', () => {
+      const { wrapper } = renderComponent();
+
+      expect(
+        wrapper.getByText(strings('manual_backup_step_1.action')),
+      ).toBeOnTheScreen();
+      expect(
+        wrapper.getByText(strings('manual_backup_step_1.reveal')),
+      ).toBeOnTheScreen();
+
+      revealSeedPhrase(wrapper);
+    });
+
+    it('displays the concealer with blur overlay before reveal', () => {
+      const { wrapper } = renderComponent();
+
+      expect(
+        wrapper.getByText(strings('manual_backup_step_1.action')),
+      ).toBeOnTheScreen();
+      expect(
+        wrapper.getByText(strings('manual_backup_step_1.description'), {
+          exact: false,
+        }),
+      ).toBeOnTheScreen();
+      expect(
+        wrapper.getByText(strings('manual_backup_step_1.what_is_srp')),
+      ).toBeOnTheScreen();
+      expect(
+        wrapper.getByText(strings('manual_backup_step_1.reveal')),
+      ).toBeOnTheScreen();
+    });
+
+    it('opens the seedphrase definition modal', async () => {
+      const { wrapper, navigate } = renderComponent();
+
+      fireEvent.press(
+        wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.SEEDPHRASE_LINK),
+      );
+
+      expect(navigate).toHaveBeenCalledWith('RootModalFlow', {
+        screen: 'SeedphraseModal',
+      });
+    });
+
+    it('navigates to ManualBackupStep2 after reveal and continue', async () => {
+      const { wrapper, navigate } = renderComponent();
+
+      revealSeedPhrase(wrapper);
+
+      fireEvent.press(
+        wrapper.getByText(strings('manual_backup_step_1.continue')),
+      );
+
+      await waitFor(() => {
+        expect(navigate).toHaveBeenCalledWith('ManualBackupStep2', {
+          words: MOCK_WORDS,
+          steps: [
+            'Create password',
+            'Secure wallet',
+            'Confirm Secret Recovery Phrase',
+          ],
+          backupFlow: true,
+          settingsBackup: true,
+        });
+      });
+    });
+  });
+
+  describe('header visibility', () => {
+    it('hides header during onboarding flow', async () => {
+      const { wrapper } = renderComponent({
+        backupFlow: false,
+        settingsBackup: false,
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.queryByTestId(ManualBackUpStepsSelectorsIDs.BACK_BUTTON),
+        ).toBeNull();
+      });
+    });
+
+    it('shows header with back button for backup flow', async () => {
+      const { wrapper, goBack } = renderComponent({
+        backupFlow: true,
+        settingsBackup: false,
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.BACK_BUTTON),
+        ).toBeOnTheScreen();
+      });
+
+      fireEvent.press(
+        wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.BACK_BUTTON),
+      );
+      expect(goBack).toHaveBeenCalled();
+    });
+
+    it('shows header with back button for settings backup flow', async () => {
+      const { wrapper, goBack } = renderComponent({
+        backupFlow: false,
+        settingsBackup: true,
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.BACK_BUTTON),
+        ).toBeOnTheScreen();
+      });
+
+      fireEvent.press(
+        wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.BACK_BUTTON),
+      );
+      expect(goBack).toHaveBeenCalled();
+    });
+  });
+
+  describe('theme appearance', () => {
+    afterEach(() => {
+      mockUseTheme.mockReturnValue({
+        colors: {
+          text: { default: mockTheme.colors.text.default },
+          background: {
+            default: mockTheme.colors.background.default,
+            muted: mockTheme.colors.background.muted,
+          },
+          icon: { default: mockTheme.colors.icon.default },
+          border: {
+            default: mockTheme.colors.border.default,
+            muted: mockTheme.colors.border.muted,
+          },
+          error: { default: mockTheme.colors.error.default },
+        },
+        themeAppearance: 'dark',
+      });
+      Platform.OS = 'ios';
+    });
+
+    it('renders blur overlay before seed phrase is revealed (dark theme, iOS)', () => {
+      mockUseTheme.mockReturnValue({
+        colors: {
+          text: { default: mockTheme.colors.text.default },
+          background: {
+            default: mockTheme.colors.background.default,
+            muted: mockTheme.colors.background.muted,
+          },
+          icon: { default: mockTheme.colors.icon.default },
+          border: {
+            default: mockTheme.colors.border.default,
+            muted: mockTheme.colors.border.muted,
+          },
+          error: { default: mockTheme.colors.error.default },
+        },
+        themeAppearance: 'dark',
+      });
+
+      const { wrapper } = renderComponent();
+
+      expect(
+        wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.BLUR_BUTTON),
+      ).toBeOnTheScreen();
+    });
+
+    it('renders blur overlay before seed phrase is revealed (light theme, Android)', () => {
+      Platform.OS = 'android';
+      mockUseTheme.mockReturnValue({
+        colors: {
+          text: { default: mockTheme.colors.text.default },
+          background: {
+            default: mockTheme.colors.background.default,
+            muted: mockTheme.colors.background.muted,
+          },
+          icon: { default: mockTheme.colors.icon.default },
+          border: {
+            default: mockTheme.colors.border.default,
+            muted: mockTheme.colors.border.muted,
+          },
+          error: { default: mockTheme.colors.error.default },
+        },
+        themeAppearance: 'light',
+      });
+
+      const { wrapper } = renderComponent();
+
+      expect(
+        wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.BLUR_BUTTON),
+      ).toBeOnTheScreen();
+    });
+  });
+
+  describe('remind me later', () => {
+    const renderOnboarding = (overrides: SetupOptions = {}) =>
+      renderComponent({
+        backupFlow: false,
+        settingsBackup: false,
+        ...overrides,
+      });
+
+    it('is hidden when user has funds', () => {
+      mockHasFunds.mockReturnValue(true);
+      const { wrapper } = renderOnboarding();
+
+      expect(
+        wrapper.queryByText(strings('account_backup_step_1.remind_me_later')),
+      ).toBeNull();
+    });
+
+    it('is visible when user has no funds', () => {
+      mockHasFunds.mockReturnValue(false);
+      const { wrapper } = renderOnboarding();
+
+      expect(
+        wrapper.queryByText(strings('account_backup_step_1.remind_me_later')),
+      ).toBeOnTheScreen();
+    });
+
+    it('is hidden for backup flow', () => {
+      mockHasFunds.mockReturnValue(false);
+      const { wrapper } = renderOnboarding({ backupFlow: true });
+
+      expect(
+        wrapper.queryByText(strings('account_backup_step_1.remind_me_later')),
+      ).toBeNull();
+    });
+
+    it('is hidden for settings backup flow', () => {
+      mockHasFunds.mockReturnValue(false);
+      const { wrapper } = renderOnboarding({ settingsBackup: true });
+
+      expect(
+        wrapper.queryByText(strings('account_backup_step_1.remind_me_later')),
+      ).toBeNull();
+    });
+
+    it('skips backup and resets navigation when metrics are enabled', async () => {
+      mockHasFunds.mockReturnValue(false);
+      mockIsMetricsEnabled.mockReturnValue(true);
+      const { wrapper, dispatch } = renderOnboarding();
+
+      await act(async () => {
+        fireEvent.press(
+          wrapper.getByText(strings('account_backup_step_1.remind_me_later')),
+        );
+      });
+
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'RESET',
+          payload: expect.objectContaining({
+            index: 0,
+            routes: expect.arrayContaining([
+              expect.objectContaining({ name: 'OnboardingSuccessFlow' }),
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it('navigates to OptinMetrics when metrics are disabled', async () => {
+      mockHasFunds.mockReturnValue(false);
+      mockIsMetricsEnabled.mockReturnValue(false);
+      const { wrapper, navigate } = renderOnboarding();
+
+      await act(async () => {
+        fireEvent.press(
+          wrapper.getByText(strings('account_backup_step_1.remind_me_later')),
+        );
+      });
+
+      expect(navigate).toHaveBeenCalledWith(
+        'OptinMetrics',
+        expect.objectContaining({
+          successFlow: ONBOARDING_SUCCESS_FLOW.NO_BACKED_UP_SRP,
+          accountType: AccountType.Metamask,
+        }),
+      );
+    });
+
+    it('navigates to ManualBackupStep2 after revealing and pressing continue', () => {
+      mockHasFunds.mockReturnValue(false);
+      const { wrapper, navigate } = renderOnboarding();
+
+      revealSeedPhrase(wrapper);
+
+      fireEvent.press(
+        wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.CONTINUE_BUTTON),
+      );
+
+      expect(navigate).toHaveBeenCalledWith('ManualBackupStep2', {
+        words: MOCK_WORDS,
+        steps: expect.any(Array),
+        backupFlow: false,
+        settingsBackup: false,
+      });
+    });
+  });
+
+  describe('seed phrase recovery (no seed phrase in route params)', () => {
+    it('shows the onboarding fox loader while recovering the seed phrase', () => {
+      mockGetPassword.mockReturnValue(new Promise(() => undefined));
+
+      const { wrapper } = renderComponent({
+        seedPhrase: undefined,
+        backupFlow: false,
+        settingsBackup: false,
+      });
+
+      expect(
+        wrapper.getByTestId('fox-rive-loader-animation'),
+      ).toBeOnTheScreen();
+      expect(
+        wrapper.queryByTestId(
+          ManualBackUpStepsSelectorsIDs.CONFIRM_PASSWORD_INPUT,
+        ),
+      ).not.toBeOnTheScreen();
+    });
+
+    it('shows password view when Authentication.getPassword returns null', async () => {
+      const { wrapper } = await renderPasswordView();
+
+      expect(
+        wrapper.getByText(strings('manual_backup_step_1.before_continiuing')),
+      ).toBeOnTheScreen();
+    });
+
+    it('shows password view and tracks analytics when getPassword throws', async () => {
+      mockGetPassword.mockRejectedValue(new Error('Test error'));
+
+      const { wrapper } = renderComponent({
+        seedPhrase: undefined,
+        backupFlow: false,
+        settingsBackup: false,
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByTestId(
+            ManualBackUpStepsSelectorsIDs.CONFIRM_PASSWORD_INPUT,
+          ),
+        ).toBeOnTheScreen();
+      });
+
+      expect(trackErrorAsAnalytics).toHaveBeenCalledWith(
+        'ManualBackupStep1: SRP recovery failed',
+        'Test error',
+      );
+      expect(Logger.error).not.toHaveBeenCalled();
+    });
+
+    it('tracks analytics with JSON-serialized payload when getPassword throws a non-Error object', async () => {
+      mockGetPassword.mockRejectedValue({ code: 'USER_CANCELED' });
+
+      const { wrapper } = renderComponent({
+        seedPhrase: undefined,
+        backupFlow: false,
+        settingsBackup: false,
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByTestId(
+            ManualBackUpStepsSelectorsIDs.CONFIRM_PASSWORD_INPUT,
+          ),
+        ).toBeOnTheScreen();
+      });
+
+      expect(trackErrorAsAnalytics).toHaveBeenCalledWith(
+        'ManualBackupStep1: SRP recovery failed',
+        JSON.stringify({ code: 'USER_CANCELED' }),
+      );
+      expect(Logger.error).not.toHaveBeenCalled();
+    });
+
+    it('exports seed phrase when credentials are available', async () => {
+      mockGetPassword.mockResolvedValue({ password: 'test-password' });
+      mockExportSeedPhrase.mockResolvedValue(new Uint8Array([0]));
+
+      const { wrapper } = renderComponent({
+        seedPhrase: undefined,
+        backupFlow: false,
+        settingsBackup: false,
+      });
+
+      await waitFor(() => {
+        expect(mockGetPassword).toHaveBeenCalled();
+        expect(mockExportSeedPhrase).toHaveBeenCalledWith({
+          password: 'test-password',
+        });
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.BLUR_BUTTON),
+        ).toBeOnTheScreen();
+      });
+    });
+
+    it('shows password view when getPassword returns false', async () => {
+      mockGetPassword.mockResolvedValue(false);
+
+      const { wrapper } = renderComponent({
+        seedPhrase: undefined,
+        backupFlow: false,
+        settingsBackup: false,
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByTestId(
+            ManualBackUpStepsSelectorsIDs.CONFIRM_PASSWORD_INPUT,
+          ),
+        ).toBeOnTheScreen();
+      });
+    });
+
+    it('shows password view when seed phrase export fails after credentials resolve', async () => {
+      mockGetPassword.mockResolvedValue({ password: 'test-password' });
+      mockExportSeedPhrase.mockRejectedValue(new Error('export failed'));
+
+      const { wrapper } = renderComponent({
+        seedPhrase: undefined,
+        backupFlow: false,
+        settingsBackup: false,
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByTestId(
+            ManualBackUpStepsSelectorsIDs.CONFIRM_PASSWORD_INPUT,
+          ),
+        ).toBeOnTheScreen();
+      });
+
+      expect(trackErrorAsAnalytics).toHaveBeenCalledWith(
+        'ManualBackupStep1: SRP recovery failed',
+        'export failed',
+      );
+      expect(Logger.error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('password unlock', () => {
+    it('unlocks with correct password', async () => {
+      const { wrapper } = await renderPasswordView();
+      mockExportSeedPhrase.mockResolvedValue(new Uint8Array([0]));
+
+      await act(async () => {
+        fireEvent.changeText(
+          wrapper.getByTestId(
+            ManualBackUpStepsSelectorsIDs.CONFIRM_PASSWORD_INPUT,
+          ),
+          'correct-password',
+        );
+      });
+
+      await act(async () => {
+        fireEvent.press(
+          wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.SUBMIT_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockExportSeedPhrase).toHaveBeenCalledWith({
+          password: 'correct-password',
+        });
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.BLUR_BUTTON),
+        ).toBeOnTheScreen();
+      });
+    });
+
+    it('shows incorrect password warning on decrypt failure', async () => {
+      const { wrapper } = await renderPasswordView();
+      mockExportSeedPhrase.mockRejectedValue(new Error('Decrypt failed'));
+
+      await act(async () => {
+        fireEvent.changeText(
+          wrapper.getByTestId(
+            ManualBackUpStepsSelectorsIDs.CONFIRM_PASSWORD_INPUT,
+          ),
+          'wrong-password',
+        );
+      });
+
+      await act(async () => {
+        fireEvent.press(
+          wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.SUBMIT_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByText(
+            strings('reveal_credential.warning_incorrect_password'),
+          ),
+        ).toBeOnTheScreen();
+      });
+    });
+
+    it('shows unknown error for non-decrypt failures', async () => {
+      const { wrapper } = await renderPasswordView();
+      mockExportSeedPhrase.mockRejectedValue(new Error('Network error'));
+
+      await act(async () => {
+        fireEvent.changeText(
+          wrapper.getByTestId(
+            ManualBackUpStepsSelectorsIDs.CONFIRM_PASSWORD_INPUT,
+          ),
+          'some-password',
+        );
+      });
+
+      await act(async () => {
+        fireEvent.press(
+          wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.SUBMIT_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(
+          wrapper.getByText(strings('reveal_credential.unknown_error')),
+        ).toBeOnTheScreen();
+      });
+    });
+
+    it('does not attempt unlock when password is empty', async () => {
+      const { wrapper } = await renderPasswordView();
+      mockExportSeedPhrase.mockClear();
+
+      await act(async () => {
+        fireEvent.press(
+          wrapper.getByTestId(ManualBackUpStepsSelectorsIDs.SUBMIT_BUTTON),
+        );
+      });
+
+      expect(mockExportSeedPhrase).not.toHaveBeenCalled();
+    });
   });
 });

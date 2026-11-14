@@ -5,9 +5,6 @@ import { strings } from '../../../../locales/i18n';
 import BottomSheet, {
   BottomSheetRef,
 } from '../../../component-library/components/BottomSheets/BottomSheet';
-import Text, {
-  TextVariant,
-} from '../../../component-library/components/Texts/Text';
 import BottomSheetFooter, {
   ButtonsAlignment,
 } from '../../../component-library/components/BottomSheets/BottomSheetFooter';
@@ -22,7 +19,8 @@ import Icon, {
   IconSize,
 } from '../../../component-library/components/Icons/Icon';
 import createStyles from './styles';
-import { DataCollectionModalSelectorsIDs } from '../../../../e2e/selectors/Modals/DataCollectionModal.selectors';
+import { DataCollectionBottomSheetSelectorsIDs } from './DataCollectionBottomSheet.testIds';
+import { Text, TextVariant } from '@metamask/design-system-react-native';
 
 const DataCollectionModal = () => {
   const styles = createStyles();
@@ -35,7 +33,7 @@ const DataCollectionModal = () => {
     onPress: () => {
       bottomSheetRef.current?.onCloseBottomSheet();
     },
-    testID: DataCollectionModalSelectorsIDs.ACCEPT_BUTTON,
+    testID: DataCollectionBottomSheetSelectorsIDs.ACCEPT_BUTTON,
   };
 
   return (
@@ -45,10 +43,10 @@ const DataCollectionModal = () => {
           size={IconSize.Lg}
           name={IconName.Warning}
           color={IconColor.Warning}
-          testID={DataCollectionModalSelectorsIDs.ICON_WARNING}
+          testID={DataCollectionBottomSheetSelectorsIDs.ICON_WARNING}
         />
         <View style={styles.content}>
-          <Text variant={TextVariant.BodyMD}>
+          <Text variant={TextVariant.BodyMd}>
             {strings('data_collection_modal.content')}
           </Text>
         </View>

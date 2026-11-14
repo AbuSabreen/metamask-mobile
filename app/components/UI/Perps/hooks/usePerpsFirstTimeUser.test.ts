@@ -1,0 +1,221 @@
+import { renderHook } from '@testing-library/react-native';
+import Engine from '../../../../core/Engine';
+import { usePerpsFirstTimeUser } from './usePerpsFirstTimeUser';
+import {
+  selectIsFirstTimeUser,
+  type PerpsControllerState,
+} from '@metamask/perps-controller';
+import { usePerpsSelector } from './usePerpsSelector';
+
+// Mock usePerpsSelector
+jest.mock('./usePerpsSelector', () => ({
+  usePerpsSelector: jest.fn(),
+}));
+
+// Mock Engine
+jest.mock('../../../../core/Engine', () => ({
+  context: {
+    PerpsController: {
+      markTutorialCompleted: jest.fn(),
+      resetFirstTimeUserState: jest.fn(),
+      clearPendingTransactionRequests: jest.fn(),
+    },
+  },
+}));
+
+const mockUsePerpsSelector = usePerpsSelector as jest.MockedFunction<
+  typeof usePerpsSelector
+>;
+
+describe('usePerpsFirstTimeUser', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should return isFirstTimeUser: true when selector returns true', () => {
+    // Arrange
+    mockUsePerpsSelector.mockImplementation(
+      <T>(selector: (state: PerpsControllerState) => T) => {
+        // Verify the correct selector is passed
+        expect(selector).toBe(selectIsFirstTimeUser);
+        return true as T;
+      },
+    );
+
+    // Act
+    const { result } = renderHook(() => usePerpsFirstTimeUser());
+
+    // Assert
+    expect(result.current).toEqual({
+      isFirstTimeUser: true,
+      markTutorialCompleted: expect.any(Function),
+      resetFirstTimeUserState: expect.any(Function),
+      clearPendingTransactionRequests: expect.any(Function),
+    });
+  });
+
+  it('should return isFirstTimeUser: false when selector returns false', () => {
+    // Arrange
+    mockUsePerpsSelector.mockImplementation(
+      <T>(selector: (state: PerpsControllerState) => T) => {
+        // Verify the correct selector is passed
+        expect(selector).toBe(selectIsFirstTimeUser);
+        return false as T;
+      },
+    );
+
+    // Act
+    const { result } = renderHook(() => usePerpsFirstTimeUser());
+
+    // Assert
+    expect(result.current).toEqual({
+      isFirstTimeUser: false,
+      markTutorialCompleted: expect.any(Function),
+      resetFirstTimeUserState: expect.any(Function),
+      clearPendingTransactionRequests: expect.any(Function),
+    });
+  });
+
+  it('should default to isFirstTimeUser: true when selector returns undefined (simulating undefined state)', () => {
+    // Arrange - mock the selector to return true (which is what the actual selector would do with undefined state)
+    mockUsePerpsSelector.mockImplementation(
+      <T>(selector: (state: PerpsControllerState) => T) => {
+        // Verify the correct selector is passed
+        expect(selector).toBe(selectIsFirstTimeUser);
+        // Return true since selectIsFirstTimeUser returns true for undefined state
+        return true as T;
+      },
+    );
+
+    // Act
+    const { result } = renderHook(() => usePerpsFirstTimeUser());
+
+    // Assert
+    expect(result.current).toEqual({
+      isFirstTimeUser: true,
+      markTutorialCompleted: expect.any(Function),
+      resetFirstTimeUserState: expect.any(Function),
+      clearPendingTransactionRequests: expect.any(Function),
+    });
+  });
+
+  it('should call PerpsController.markTutorialCompleted when markTutorialCompleted is called', () => {
+    // Arrange
+    mockUsePerpsSelector.mockImplementation(
+      <T>(selector: (state: PerpsControllerState) => T) => {
+        expect(selector).toBe(selectIsFirstTimeUser);
+        return true as T;
+      },
+    );
+    const mockMarkTutorialCompleted = Engine.context.PerpsController
+      .markTutorialCompleted as jest.Mock;
+
+    // Act
+    const { result } = renderHook(() => usePerpsFirstTimeUser());
+    result.current.markTutorialCompleted();
+
+    // Assert
+    expect(mockMarkTutorialCompleted).toHaveBeenCalledWith();
+  });
+
+  it('should call PerpsController.resetFirstTimeUserState when resetFirstTimeUserState is called', () => {
+    // Arrange
+    mockUsePerpsSelector.mockImplementation(
+      <T>(selector: (state: PerpsControllerState) => T) => {
+        expect(selector).toBe(selectIsFirstTimeUser);
+        return false as T;
+      },
+    );
+    const mockResetFirstTimeUserState = Engine.context.PerpsController
+      .resetFirstTimeUserState as jest.Mock;
+
+    // Act
+    const { result } = renderHook(() => usePerpsFirstTimeUser());
+    result.current.resetFirstTimeUserState();
+
+    // Assert
+    expect(mockResetFirstTimeUserState).toHaveBeenCalledWith();
+  });
+
+  it('should handle PerpsController being undefined gracefully for markTutorialCompleted', () => {
+    // Arrange
+    mockUsePerpsSelector.mockImplementation(
+      <T>(selector: (state: PerpsControllerState) => T) => {
+        expect(selector).toBe(selectIsFirstTimeUser);
+        return true as T;
+      },
+    );
+    // @ts-expect-error - Testing undefined case
+    Engine.context.PerpsController = undefined;
+
+    // Act
+    const { result } = renderHook(() => usePerpsFirstTimeUser());
+
+    // Should not throw when markTutorialCompleted is called
+    expect(() => result.current.markTutorialCompleted()).not.toThrow();
+  });
+
+  it('should handle PerpsController being undefined gracefully for resetFirstTimeUserState', () => {
+    // Arrange
+    mockUsePerpsSelector.mockImplementation(
+      <T>(selector: (state: PerpsControllerState) => T) => {
+        expect(selector).toBe(selectIsFirstTimeUser);
+        return true as T;
+      },
+    );
+    // @ts-expect-error - Testing undefined case
+    Engine.context.PerpsController = undefined;
+
+    // Act
+    const { result } = renderHook(() => usePerpsFirstTimeUser());
+
+    // Should not throw when resetFirstTimeUserState is called
+    expect(() => result.current.resetFirstTimeUserState()).not.toThrow();
+  });
+
+  it('calls PerpsController.clearPendingTransactionRequests when invoked', () => {
+    // Arrange
+    mockUsePerpsSelector.mockImplementation(
+      <T>(selector: (state: PerpsControllerState) => T) => {
+        expect(selector).toBe(selectIsFirstTimeUser);
+        return true as T;
+      },
+    );
+    // Restore mock for this test
+    // @ts-expect-error - Partial mock for testing
+    Engine.context.PerpsController = {
+      markTutorialCompleted: jest.fn(),
+      resetFirstTimeUserState: jest.fn(),
+      clearPendingTransactionRequests: jest.fn(),
+    };
+    const mockClearPendingTransactionRequests = Engine.context.PerpsController
+      .clearPendingTransactionRequests as jest.Mock;
+
+    // Act
+    const { result } = renderHook(() => usePerpsFirstTimeUser());
+    result.current.clearPendingTransactionRequests();
+
+    // Assert
+    expect(mockClearPendingTransactionRequests).toHaveBeenCalledWith();
+  });
+
+  it('handles PerpsController being undefined gracefully for clearPendingTransactionRequests', () => {
+    // Arrange
+    mockUsePerpsSelector.mockImplementation(
+      <T>(selector: (state: PerpsControllerState) => T) => {
+        expect(selector).toBe(selectIsFirstTimeUser);
+        return true as T;
+      },
+    );
+    // @ts-expect-error - Testing undefined case
+    Engine.context.PerpsController = undefined;
+
+    // Act
+    const { result } = renderHook(() => usePerpsFirstTimeUser());
+
+    // Should not throw when clearPendingTransactionRequests is called
+    expect(() =>
+      result.current.clearPendingTransactionRequests(),
+    ).not.toThrow();
+  });
+});

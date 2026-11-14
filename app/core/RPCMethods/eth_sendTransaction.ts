@@ -1,10 +1,20 @@
-import type { JsonRpcRequest, PendingJsonRpcResponse } from 'json-rpc-engine';
+import type {
+  Json,
+  JsonRpcParams,
+  JsonRpcRequest,
+  PendingJsonRpcResponse,
+} from '@metamask/utils';
 import {
   TransactionController,
+  TransactionParams,
   WalletDevice,
 } from '@metamask/transaction-controller';
 import { rpcErrors } from '@metamask/rpc-errors';
-import ppomUtil from '../../lib/ppom/ppom-util';
+import { validateTransactionParams } from '@metamask/eth-json-rpc-middleware';
+import ppomUtil, { PPOMRequest } from '../../lib/ppom/ppom-util';
+import { updateConfirmationMetric } from '../redux/slices/confirmationMetrics';
+import { store } from '../../store';
+import { INTERNAL_ORIGINS } from '../../constants/transaction';
 
 /**
  * A JavaScript object that is not `null`, a function, or an array.
@@ -37,7 +47,6 @@ function isObject(value: unknown): value is RuntimeObject {
  * name, regardless of whether it is enumerable or not.
  */
 const hasProperty = <
-  // eslint-disable-next-line @typescript-eslint/ban-types
   ObjectToCheck extends Object,
   Property extends PropertyKey,
 >(
@@ -45,6 +54,11 @@ const hasProperty = <
   name: Property,
 ): objectToCheck is ObjectToCheck & Record<Property, unknown> =>
   Object.hasOwnProperty.call(objectToCheck, name);
+
+interface SendArgs {
+  from: string;
+  chainId?: number;
+}
 
 /**
  * Handle a `eth_sendTransaction` request.
@@ -64,15 +78,17 @@ async function eth_sendTransaction({
   res,
   sendTransaction,
   validateAccountAndChainId,
+  analytics,
 }: {
   hostname: string;
-  req: JsonRpcRequest<unknown> & { method: 'eth_sendTransaction' };
-  res: PendingJsonRpcResponse<unknown>;
+  req: JsonRpcRequest<[TransactionParams & JsonRpcParams]> & {
+    method: 'eth_sendTransaction';
+    networkClientId: string;
+  };
+  res: PendingJsonRpcResponse<Json>;
   sendTransaction: TransactionController['addTransaction'];
-  validateAccountAndChainId: (args: {
-    from: string;
-    chainId?: number;
-  }) => Promise<void>;
+  validateAccountAndChainId: (args: SendArgs) => Promise<void>;
+  analytics: { dapp_url?: string; request_source?: string };
 }) {
   if (
     !Array.isArray(req.params) &&
@@ -88,17 +104,42 @@ async function eth_sendTransaction({
       message: `Invalid parameters: expected the first parameter to be an object`,
     });
   }
+  validateTransactionParams(transactionParameters);
+  // TODO: Normalize chainId to Hex string
+  const nChainId =
+    typeof req.params[0].chainId === 'number'
+      ? req.params[0].chainId
+      : parseInt(req.params[0].chainId || '0x0', 16);
   await validateAccountAndChainId({
     from: req.params[0].from,
-    chainId: req.params[0].chainId,
+    chainId: nChainId,
   });
+  // Prevent external transactions from using internal origins
+  if (INTERNAL_ORIGINS.includes(hostname)) {
+    throw rpcErrors.invalidParams({
+      message: 'External transactions cannot use internal origins',
+    });
+  }
 
   const { result, transactionMeta } = await sendTransaction(req.params[0], {
     deviceConfirmedOn: WalletDevice.MM_MOBILE,
+    networkClientId: req.networkClientId,
     origin: hostname,
   });
 
-  ppomUtil.validateRequest(req, transactionMeta?.id);
+  ppomUtil.validateRequest(req as PPOMRequest, {
+    transactionMeta,
+  });
+
+  const { id } = transactionMeta;
+  store.dispatch(
+    updateConfirmationMetric({
+      id,
+      params: {
+        properties: { ...analytics },
+      },
+    }),
+  );
 
   res.result = await result;
 }

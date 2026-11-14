@@ -1,0 +1,465 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
+/* eslint-disable @typescript-eslint/no-var-requires */
+import React from 'react';
+import { render } from '@testing-library/react-native';
+import { NavigationContainer } from '@react-navigation/native';
+import { Provider } from 'react-redux';
+import { configureStore } from '@reduxjs/toolkit';
+import CardRoutes from './index';
+
+jest.mock('@react-navigation/native-stack', () => {
+  const { View, Text } = require('react-native');
+  return {
+    createNativeStackNavigator: () => ({
+      Navigator: ({
+        children,
+        screenOptions,
+        initialRouteName,
+      }: {
+        children: React.ReactNode;
+        screenOptions?: { headerShown?: boolean };
+        initialRouteName?: string;
+      }) => (
+        <View testID="stack-navigator">
+          {screenOptions?.headerShown === false && (
+            <Text>headerShown: false</Text>
+          )}
+          {initialRouteName && (
+            <Text testID="initial-route">{initialRouteName}</Text>
+          )}
+          {children}
+        </View>
+      ),
+      Screen: ({
+        name,
+        options,
+        component: Component,
+      }: {
+        name: string;
+        options?: {
+          headerShown?: boolean;
+          animation?: string;
+          gestureEnabled?: boolean;
+        };
+        component?: React.ComponentType;
+      }) => (
+        <View testID={`screen-${name}`}>
+          <Text>{name}</Text>
+          {options?.headerShown === false && <Text>no-header</Text>}
+          {options?.animation ? (
+            <Text>{`${name}-animation:${options.animation}`}</Text>
+          ) : null}
+          {options?.gestureEnabled === false ? (
+            <Text>{`${name}-gesture:disabled`}</Text>
+          ) : null}
+          {(name === 'CardHome' || name === 'CardModals') && Component ? (
+            <Component />
+          ) : null}
+        </View>
+      ),
+    }),
+  };
+});
+
+jest.mock('../Views/CardHome/CardHome', () => {
+  const { View } = require('react-native');
+  return () => <View testID="card-home" />;
+});
+
+jest.mock('../Views/CardWelcome/CardWelcome', () => {
+  const { View } = require('react-native');
+  return () => <View testID="card-welcome" />;
+});
+
+jest.mock('../Views/CardAuthentication/CardAuthentication', () => {
+  const { View } = require('react-native');
+  return () => <View testID="card-authentication" />;
+});
+
+jest.mock('../Views/CardMfa/CardMfaMethod', () => {
+  const { View } = require('react-native');
+  return () => <View testID="card-mfa-method" />;
+});
+
+jest.mock('../Views/CardMfa/CardMfaCode', () => {
+  const { View } = require('react-native');
+  return () => <View testID="card-mfa-code" />;
+});
+
+jest.mock('../Views/ContactDetails/ContactDetails', () => {
+  const { View } = require('react-native');
+  return () => <View testID="contact-details" />;
+});
+
+jest.mock('../Views/SpendingLimit/SpendingLimit', () => {
+  const { View } = require('react-native');
+  return () => <View testID="spending-limit" />;
+});
+
+jest.mock('../Views/ChooseYourCard/ChooseYourCard', () => {
+  const { View } = require('react-native');
+  return () => <View testID="choose-your-card" />;
+});
+
+jest.mock('../Views/ReviewOrder/ReviewOrder', () => {
+  const { View } = require('react-native');
+  return () => <View testID="review-order" />;
+});
+
+jest.mock('./OnboardingNavigator', () => {
+  const { View } = require('react-native');
+  return () => <View testID="onboarding-navigator" />;
+});
+
+jest.mock('../components/AddFundsBottomSheet/AddFundsBottomSheet', () => {
+  const { View } = require('react-native');
+  return () => <View testID="add-funds-bottom-sheet" />;
+});
+
+jest.mock(
+  '../components/AssetSelectionBottomSheet/AssetSelectionBottomSheet',
+  () => {
+    const { View } = require('react-native');
+    return () => <View testID="asset-selection-bottom-sheet" />;
+  },
+);
+
+jest.mock('../components/PasswordBottomSheet', () => {
+  const { View } = require('react-native');
+  return () => <View testID="password-bottom-sheet" />;
+});
+
+jest.mock('../components/Onboarding/RegionSelectorModal', () => {
+  const { View } = require('react-native');
+  return () => <View testID="region-selector-modal" />;
+});
+
+jest.mock('../components/Onboarding/ConfirmModal', () => {
+  const { View } = require('react-native');
+  return () => <View testID="confirm-modal" />;
+});
+
+jest.mock('../components/RecurringFeeModal/RecurringFeeModal', () => {
+  const { View } = require('react-native');
+  return () => <View testID="recurring-fee-modal" />;
+});
+
+jest.mock('../components/DaimoPayModal/DaimoPayModal', () => {
+  const { View } = require('react-native');
+  return () => <View testID="daimo-pay-modal" />;
+});
+
+jest.mock('../components/ViewPinBottomSheet', () => {
+  const { View } = require('react-native');
+  return () => <View testID="view-pin-bottom-sheet" />;
+});
+
+jest.mock('../Views/SetCardPin', () => {
+  const { View } = require('react-native');
+  return () => <View testID="set-card-pin" />;
+});
+
+jest.mock('../components/MoneyUnlinkCardSheet', () => {
+  const { View } = require('react-native');
+  return () => <View testID="money-unlink-card-sheet" />;
+});
+
+jest.mock('../Views/OrderCompleted/OrderCompleted', () => {
+  const { View } = require('react-native');
+  return () => <View testID="order-completed" />;
+});
+
+jest.mock('../Views/Cashback/Cashback', () => {
+  const { View } = require('react-native');
+  return () => <View testID="cashback" />;
+});
+
+jest.mock('../Views/CreditRedeem/CreditRedeem', () => {
+  const { View } = require('react-native');
+  return () => <View testID="credit-redeem" />;
+});
+
+jest.mock(
+  '../components/CreditBalanceTooltipSheet/CreditBalanceTooltipSheet',
+  () => {
+    const { View } = require('react-native');
+    return () => <View testID="credit-balance-tooltip" />;
+  },
+);
+
+jest.mock(
+  '../components/CreditRefundTooltipSheet/CreditRefundTooltipSheet',
+  () => {
+    const { View } = require('react-native');
+    return () => <View testID="credit-refund-tooltip" />;
+  },
+);
+
+jest.mock('../components/DigitalWalletInstructionsSheet', () => {
+  const { View } = require('react-native');
+  return () => <View testID="digital-wallet-instructions-sheet" />;
+});
+
+jest.mock('../sdk', () => ({
+  withCardSDK: (Component: React.ComponentType) => Component,
+}));
+
+const mockSwitchToLinkedCardAccount = jest.fn();
+jest.mock(
+  '../../../../core/DeeplinkManager/handlers/legacy/switchToLinkedCardAccount',
+  () => ({
+    switchToLinkedCardAccount: () => mockSwitchToLinkedCardAccount(),
+  }),
+);
+
+interface EntryRouting {
+  hasCard: boolean;
+  provider: string | null;
+  source: 'card_links' | 'legacy';
+  disagreesWithLegacy: boolean;
+}
+
+jest.mock('../../../../selectors/cardController', () => ({
+  selectIsCardAuthenticated: (state: {
+    card: { isAuthenticatedCard: boolean };
+  }) => state.card.isAuthenticatedCard,
+  selectHasCardholderAccounts: () => false,
+  selectCardEntryRouting: (state: {
+    card: { isCardholder: boolean; entryRouting?: EntryRouting };
+  }): EntryRouting =>
+    state.card.entryRouting ?? {
+      hasCard: state.card.isCardholder,
+      provider: state.card.isCardholder ? 'immersve' : null,
+      source: state.card.isCardholder ? 'card_links' : 'legacy',
+      disagreesWithLegacy: false,
+    },
+  selectHasCard: (state: {
+    card: { isCardholder: boolean; entryRouting?: EntryRouting };
+  }) => {
+    const routing = state.card.entryRouting ?? {
+      hasCard: state.card.isCardholder,
+      source: state.card.isCardholder ? 'card_links' : 'legacy',
+    };
+    return routing.source === 'card_links'
+      ? routing.hasCard
+      : state.card.isCardholder;
+  },
+}));
+
+jest.mock('../../../../constants/navigation/Routes', () => ({
+  HOME_TABS: 'Home',
+  MONEY: {
+    ROOT: 'MoneyScreens',
+    HOME: 'MoneyHome',
+  },
+  CARD: {
+    HOME: 'CardHome',
+    APPLE_PAY_SPLASH: 'CardApplePaySplash',
+    APPLE_PAY_CONFIRMATION: 'CardApplePayConfirmation',
+    WELCOME: 'CardWelcome',
+    CHOOSE_YOUR_CARD: 'ChooseYourCard',
+    REVIEW_ORDER: 'ReviewOrder',
+    ORDER_COMPLETED: 'OrderCompleted',
+    CASHBACK: 'Cashback',
+    CREDIT_REDEEM: 'CreditRedeem',
+    CONTACT_DETAILS: 'CardContactDetails',
+    SET_PIN: 'CardSetPin',
+    CONFIRM_PIN: 'CardConfirmPin',
+    AUTHENTICATION: 'CardAuthentication',
+    MFA_METHOD: 'CardMfaMethod',
+    MFA_CODE: 'CardMfaCode',
+    SPENDING_LIMIT: 'SpendingLimit',
+    ONBOARDING: {
+      ROOT: 'CardOnboarding',
+    },
+    MODALS: {
+      ID: 'CardModals',
+      ADD_FUNDS: 'AddFunds',
+      ASSET_SELECTION: 'AssetSelection',
+      REGION_SELECTION: 'RegionSelection',
+      CONFIRM_MODAL: 'ConfirmModal',
+      PASSWORD: 'Password',
+      RECURRING_FEE: 'RecurringFee',
+      DAIMO_PAY: 'DaimoPay',
+      VIEW_PIN: 'ViewPin',
+      CREDIT_BALANCE_TOOLTIP: 'CreditBalanceTooltip',
+      CREDIT_REFUND_TOOLTIP: 'CreditRefundTooltip',
+      SPENDING_LIMIT_OPTIONS: 'SpendingLimitOptions',
+      WAITLIST_FORM: 'WaitlistForm',
+      FORGOT_PASSWORD: 'ForgotPassword',
+      UNLINK_MONEY_ACCOUNT: 'CardUnlinkMoneyAccountSheet',
+      UK_MIGRATION: 'CardUkMigrationModal',
+      DIGITAL_WALLET_INSTRUCTIONS: 'CardDigitalWalletInstructionsModal',
+      APPLE_PAY_USAGE: 'CardApplePayUsageSheet',
+    },
+  },
+}));
+
+const createMockStore = (
+  isAuthenticated = false,
+  isCardholder = false,
+  entryRouting?: EntryRouting,
+) =>
+  configureStore({
+    reducer: {
+      card: () => ({
+        isAuthenticatedCard: isAuthenticated,
+        isCardholder,
+        entryRouting,
+      }),
+    },
+  });
+
+describe('CardRoutes', () => {
+  const renderWithProviders = (
+    component: React.ReactElement,
+    store = createMockStore(),
+  ) =>
+    render(
+      <Provider store={store}>
+        <NavigationContainer>{component}</NavigationContainer>
+      </Provider>,
+    );
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('CardRoutes component', () => {
+    it('renders successfully', () => {
+      const { getAllByTestId } = renderWithProviders(<CardRoutes />);
+
+      expect(getAllByTestId('stack-navigator').length).toBeGreaterThan(0);
+    });
+
+    it('renders nested stack navigators', () => {
+      const { getAllByTestId } = renderWithProviders(<CardRoutes />);
+
+      expect(getAllByTestId('stack-navigator').length).toBeGreaterThan(0);
+    });
+
+    it('includes CardHome screen', () => {
+      const { getAllByTestId } = renderWithProviders(<CardRoutes />);
+
+      expect(getAllByTestId('screen-CardHome').length).toBeGreaterThan(0);
+    });
+
+    it('includes Contact Details screen', () => {
+      const { getByTestId } = renderWithProviders(<CardRoutes />);
+
+      expect(getByTestId('screen-CardContactDetails')).toBeTruthy();
+    });
+
+    it('includes CardModals navigator', () => {
+      const { getByTestId } = renderWithProviders(<CardRoutes />);
+
+      expect(getByTestId('screen-CardModals')).toBeTruthy();
+    });
+
+    it('includes unlink Money account modal screen', () => {
+      const { getByTestId } = renderWithProviders(<CardRoutes />);
+
+      expect(getByTestId('screen-CardUnlinkMoneyAccountSheet')).toBeTruthy();
+    });
+
+    it('includes digital wallet instructions modal screen', () => {
+      const { getByTestId } = renderWithProviders(<CardRoutes />);
+
+      expect(
+        getByTestId('screen-CardDigitalWalletInstructionsModal'),
+      ).toBeTruthy();
+    });
+  });
+
+  describe('Initial route selection', () => {
+    const initialRouteNames = (store = createMockStore()) => {
+      const { getAllByTestId } = renderWithProviders(<CardRoutes />, store);
+      return getAllByTestId('initial-route').map((el) => el.children[0]);
+    };
+
+    it('navigates to Home when authenticated', () => {
+      expect(initialRouteNames(createMockStore(true, false))).toContain(
+        'CardHome',
+      );
+      expect(mockSwitchToLinkedCardAccount).not.toHaveBeenCalled();
+    });
+
+    it('navigates to Home when is cardholder', () => {
+      expect(initialRouteNames(createMockStore(false, true))).not.toContain(
+        'CardWelcome',
+      );
+    });
+
+    it('opens Welcome when the flag is off and only another account is a cardholder', () => {
+      const store = createMockStore(false, false, {
+        hasCard: true,
+        provider: null,
+        source: 'legacy',
+        disagreesWithLegacy: false,
+      });
+
+      expect(initialRouteNames(store)).toContain('CardWelcome');
+      expect(mockSwitchToLinkedCardAccount).not.toHaveBeenCalled();
+    });
+
+    it('opens Home and switches to the linked account when stored links say there is a card', () => {
+      const store = createMockStore(false, false, {
+        hasCard: true,
+        provider: 'immersve',
+        source: 'card_links',
+        disagreesWithLegacy: false,
+      });
+
+      expect(initialRouteNames(store)).not.toContain('CardWelcome');
+      expect(mockSwitchToLinkedCardAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it('opens Home without switching when the user is already signed in', () => {
+      const store = createMockStore(true, false, {
+        hasCard: true,
+        provider: 'immersve',
+        source: 'card_links',
+        disagreesWithLegacy: false,
+      });
+
+      expect(initialRouteNames(store)).not.toContain('CardWelcome');
+      expect(mockSwitchToLinkedCardAccount).not.toHaveBeenCalled();
+    });
+
+    it('opens Welcome when stored links have no routable card', () => {
+      const store = createMockStore(false, true, {
+        hasCard: false,
+        provider: null,
+        source: 'card_links',
+        disagreesWithLegacy: true,
+      });
+
+      expect(initialRouteNames(store)).toContain('CardWelcome');
+      expect(mockSwitchToLinkedCardAccount).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Navigator configuration', () => {
+    it('renders with header hidden configuration', () => {
+      const { getAllByText } = renderWithProviders(<CardRoutes />);
+
+      expect(getAllByText('headerShown: false').length).toBeGreaterThan(0);
+    });
+
+    it('slides the Apple Pay splash in from the bottom', () => {
+      const { getByText } = renderWithProviders(<CardRoutes />);
+
+      expect(
+        getByText('CardApplePaySplash-animation:slide_from_bottom'),
+      ).toBeOnTheScreen();
+    });
+
+    it('disables swipe back on the Apple Pay confirmation', () => {
+      const { getByText } = renderWithProviders(<CardRoutes />);
+
+      expect(
+        getByText('CardApplePayConfirmation-gesture:disabled'),
+      ).toBeOnTheScreen();
+    });
+  });
+});

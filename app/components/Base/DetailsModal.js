@@ -5,7 +5,7 @@ import Ionicons from 'react-native-vector-icons/Ionicons';
 import { fontStyles } from '../../styles/common';
 import Text from './Text';
 import { useTheme } from '../../util/theme';
-import { TransactionDetailsModalSelectorsIDs } from '../../../e2e/selectors/Modals/TransactionDetailsModal.selectors';
+import { TransactionDetailsModalSelectorsIDs } from '../Views/confirmations/components/activity/TransactionDetailsModal.testIds';
 
 const createStyles = (colors) =>
   StyleSheet.create({
@@ -36,7 +36,7 @@ const createStyles = (colors) =>
     },
     closeIcon: { paddingTop: 4, position: 'absolute', right: 16 },
     body: {
-      paddingHorizontal: 15,
+      paddingHorizontal: 16,
     },
     section: {
       paddingVertical: 16,
@@ -98,7 +98,7 @@ const DetailsModalCloseIcon = ({ style, ...props }) => {
       {...props}
       testID={TransactionDetailsModalSelectorsIDs.CLOSE_ICON}
     >
-      <Ionicons color={colors.text.default} name={'ios-close'} size={38} />
+      <Ionicons color={colors.text.default} name={'close'} size={38} />
     </TouchableOpacity>
   );
 };

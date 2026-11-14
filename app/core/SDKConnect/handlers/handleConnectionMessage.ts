@@ -1,39 +1,29 @@
+import { AccountsController } from '@metamask/accounts-controller';
+import { toChecksumHexAddress } from '@metamask/controller-utils';
 import { KeyringController } from '@metamask/keyring-controller';
 import { NetworkController } from '@metamask/network-controller';
-import { PreferencesController } from '@metamask/preferences-controller';
 import {
   CommunicationLayerMessage,
   MessageType,
-  SendAnalytics,
-  TrackingEvents,
 } from '@metamask/sdk-communication-layer';
 import Logger from '../../../util/Logger';
 import Engine from '../../Engine';
+import { getPermittedAccounts } from '../../Permissions';
 import { Connection } from '../Connection';
 import DevLogger from '../utils/DevLogger';
 import {
+  waitForAsyncCondition,
+  waitForCondition,
   waitForConnectionReadiness,
   waitForKeychainUnlocked,
 } from '../utils/wait.util';
 import checkPermissions from './checkPermissions';
 import handleCustomRpcCalls from './handleCustomRpcCalls';
 import handleSendMessage from './handleSendMessage';
-// eslint-disable-next-line
-const { version } = require('../../../../package.json');
-
-const lcLogguedRPCs = [
-  'eth_sendTransaction',
-  'eth_signTypedData',
-  'eth_signTransaction',
-  'personal_sign',
-  'wallet_requestPermissions',
-  'wallet_switchEthereumChain',
-  'eth_signTypedData_v3',
-  'eth_signTypedData_v4',
-  'metamask_connectSign',
-  'metamask_connectWith',
-  'metamask_batch',
-].map((method) => method.toLowerCase());
+import { MetaMetricsEvents } from '../../Analytics';
+import { analytics } from '../../../util/analytics/analytics';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
+import { ANALYTICS_TRACKED_RPC_METHODS } from '../SDKConnectConstants';
 
 export const handleConnectionMessage = async ({
   message,
@@ -44,6 +34,15 @@ export const handleConnectionMessage = async ({
   engine: typeof Engine;
   connection: Connection;
 }) => {
+  // Check if message has already been processed
+  const rpcQueueManager = connection.rpcQueueManager;
+  if (message.id && rpcQueueManager.getId(message.id)) {
+    DevLogger.log(
+      `Connection::onMessage rpcId=${message.id} already processed`,
+    );
+    return;
+  }
+
   // TODO should probably handle this in a separate EventType.TERMINATE event.
   // handle termination message
   if (message.type === MessageType.TERMINATE) {
@@ -65,26 +64,27 @@ export const handleConnectionMessage = async ({
     `Connection::onMessage id=${connection.channelId} method=${message.method}`,
   );
 
-  connection.setLoading(false);
+  const anonId = connection.originatorInfo?.anonId;
 
-  if (lcLogguedRPCs.includes(message.method.toLowerCase())) {
-    // Save analytics data on tracked methods
-    SendAnalytics(
-      {
-        id: connection.channelId,
-        event: TrackingEvents.SDK_RPC_REQUEST_RECEIVED,
-        sdkVersion: connection.originatorInfo?.apiVersion,
-        walletVersion: version,
-        params: {
-          method: message.method,
-          from: 'mobile_wallet',
-        },
-      },
-      connection.socketServerUrl,
-    ).catch((error) => {
-      Logger.error(error, 'SendAnalytics failed');
-    });
+  if (anonId && ANALYTICS_TRACKED_RPC_METHODS.includes(message.method)) {
+    DevLogger.log(
+      `[MM SDK Analytics] event=${MetaMetricsEvents.SDK_LEGACY_RPC_REQUEST_RECEIVED.category} anonId=${anonId}`,
+    );
+    analytics.trackEvent(
+      AnalyticsEventBuilder.createEventBuilder(
+        MetaMetricsEvents.SDK_LEGACY_RPC_REQUEST_RECEIVED,
+      )
+        .addProperties({
+          transport_type: 'socket_relay',
+          sdk_version: connection.originatorInfo?.apiVersion,
+          rpc_method: message.method,
+          remote_session_id: anonId,
+        })
+        .build(),
+    );
   }
+
+  connection.setLoading(false);
 
   // Wait for keychain to be unlocked before handling rpc calls.
   const keyringController = (
@@ -96,24 +96,37 @@ export const handleConnectionMessage = async ({
     context: 'connection::on_message',
   });
 
-  const preferencesController = (
-    engine.context as {
-      PreferencesController: PreferencesController;
+  const accountsController = (
+    Engine.context as {
+      AccountsController: AccountsController;
     }
-  ).PreferencesController;
-  const selectedAddress = preferencesController.state.selectedAddress;
+  ).AccountsController;
+
+  const selectedInternalAccountChecksummedAddress = toChecksumHexAddress(
+    accountsController.getSelectedAccount().address,
+  );
 
   const networkController = (
     engine.context as {
       NetworkController: NetworkController;
     }
   ).NetworkController;
-  const chainId = networkController.state.providerConfig.chainId;
+
+  const {
+    configuration: { chainId },
+  } = networkController.getNetworkClientById(
+    networkController.state?.selectedNetworkClientId,
+  );
 
   // Wait for bridge to be ready before handling messages.
   // It will wait until user accept/reject the connection request.
   try {
     await checkPermissions({ message, connection, engine });
+    DevLogger.log(
+      `[handleConnectionMessage] checkPermissions passed -- method=${
+        message.method
+      } -- hasRelayPersistence=${connection.remote.hasRelayPersistence()}`,
+    );
     if (!connection.remote.hasRelayPersistence()) {
       if (!connection.receivedDisconnect) {
         await waitForConnectionReadiness({ connection });
@@ -146,13 +159,15 @@ export const handleConnectionMessage = async ({
 
   const processedRpc = await handleCustomRpcCalls({
     batchRPCManager: connection.batchRPCManager,
-    selectedAddress,
+    selectedAddress: selectedInternalAccountChecksummedAddress,
     selectedChainId: chainId,
     connection,
     navigation: connection.navigation,
     rpc: {
       id: message.id,
       method: message.method,
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       params: message.params as any,
     },
   });
@@ -163,6 +178,34 @@ export const handleConnectionMessage = async ({
     connection.rpcQueueManager.add({
       id: processedRpc?.id ?? message.id,
       method: processedRpc?.method ?? message.method,
+    });
+
+    if (!connection.backgroundBridge) {
+      await waitForCondition({
+        fn() {
+          DevLogger.log(
+            `[handleConnectionMessage] waiting for backgroundBridge`,
+            connection.backgroundBridge,
+          );
+          return connection.backgroundBridge !== undefined;
+        },
+        context: 'handleConnectionMessage',
+        waitTime: 1000,
+      });
+    }
+
+    // wait for accounts to be loaded
+    await waitForAsyncCondition({
+      fn: async () => {
+        const accounts = getPermittedAccounts(connection.channelId);
+        DevLogger.log(
+          `handleConnectionMessage::waitForAsyncCondition channelId=${connection.channelId} accounts`,
+          accounts,
+        );
+        return accounts.length > 0;
+      },
+      context: 'deeplink',
+      waitTime: 500,
     });
 
     connection.backgroundBridge?.onMessage({

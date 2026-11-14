@@ -13,6 +13,14 @@ import { lightTheme, darkTheme, brandColor } from '@metamask/design-tokens';
 import Device from '../device';
 
 /**
+ * Darker success green used in light mode for better contrast on charts,
+ * price indicators, and action buttons. The design-system token
+ * `success.default` is too faint against a light background.
+ */
+// eslint-disable-next-line @metamask/design-tokens/color-no-hex
+export const LIGHT_MODE_SUCCESS_GREEN = '#00881A';
+
+/**
  * This is needed to make our unit tests pass since Enzyme doesn't support contextType
  * TODO: Convert classes into functional components and remove contextType
  */
@@ -24,6 +32,8 @@ export const mockTheme = {
   brandColors: brandColor,
 };
 
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const ThemeContext = React.createContext<any>(undefined);
 
 /**
@@ -37,8 +47,14 @@ export const ThemeContext = React.createContext<any>(undefined);
  */
 export const getAssetFromTheme = (
   appTheme: AppThemeKey,
-  osColorScheme: ColorSchemeName,
+  // `Appearance.getColorScheme()` (and therefore `useColorScheme`) can resolve
+  // to `null`/`undefined`, which RN 0.83 no longer includes in `ColorSchemeName`.
+  osColorScheme: ColorSchemeName | null | undefined,
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   light: any,
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   dark: any,
 ) => {
   let asset = light;
@@ -99,6 +115,8 @@ const useColorSchemeCustom = (
 export const useAppTheme = (): Theme => {
   const osThemeName = useColorSchemeCustom();
   const appTheme: AppThemeKey = useSelector(
+    // TODO: Replace "any" with type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (state: any) => state.user.appTheme,
   );
   const themeAppearance = getAssetFromTheme(
@@ -114,14 +132,18 @@ export const useAppTheme = (): Theme => {
 
   const setDarkStatusBar = () => {
     StatusBar.setBarStyle('light-content', true);
-    Device.isAndroid() &&
-      StatusBar.setBackgroundColor(darkTheme.colors.background.default);
+    if (Device.isAndroid()) {
+      StatusBar.setTranslucent(true);
+      StatusBar.setBackgroundColor('transparent');
+    }
   };
 
   const setLightStatusBar = () => {
     StatusBar.setBarStyle('dark-content', true);
-    Device.isAndroid() &&
-      StatusBar.setBackgroundColor(lightTheme.colors.background.default);
+    if (Device.isAndroid()) {
+      StatusBar.setTranslucent(true);
+      StatusBar.setBackgroundColor('transparent');
+    }
   };
 
   switch (appTheme) {
@@ -187,8 +209,12 @@ export const useTheme = (): Theme => {
  * @param dark Dark asset
  * @returns Asset based on theme
  */
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const useAssetFromTheme = (light: any, dark: any) => {
   const osColorScheme = useColorScheme();
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const appTheme = useSelector((state: any) => state.user.appTheme);
   const asset = getAssetFromTheme(appTheme, osColorScheme, light, dark);
 

@@ -1,4 +1,3 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
 import React from 'react';
 import { View } from 'react-native';
 import Text, {
@@ -29,7 +28,7 @@ const SnapVersionTag: React.FC<SnapVersionTagProps> = ({
     <View testID={SNAP_VERSION_BADGE} style={styles.versionBadgeContainer}>
       <Text
         testID={SNAP_VERSION_BADGE_VALUE}
-        variant={TextVariant.HeadingSMRegular}
+        variant={TextVariant.BodyMD}
         color={TextColor.Default}
         style={styles.versionBadgeItem}
       >
@@ -45,4 +44,3 @@ const SnapVersionTag: React.FC<SnapVersionTagProps> = ({
 };
 
 export default React.memo(SnapVersionTag);
-///: END:ONLY_INCLUDE_IF

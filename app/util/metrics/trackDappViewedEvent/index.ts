@@ -1,8 +1,10 @@
 import { store } from '../../../store';
-import { selectIdentities } from '../../../selectors/preferencesController';
 import { addToViewedDapp } from '../../../actions/browser';
-import { MetaMetrics, MetaMetricsEvents } from '../../../core/Analytics';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
+import { analytics } from '../../../util/analytics/analytics';
 import { prefixUrlWithProtocol } from '../../browser';
+import { selectInternalAccounts } from '../../../selectors/accountsController';
 
 /**
  * Tracks Dapp viewed event
@@ -22,20 +24,24 @@ const trackDappViewedEvent = ({
 }) => {
   const visitedDappsByHostname =
     store.getState().browser.visitedDappsByHostname;
-  const isFirstVisit = !visitedDappsByHostname[hostname];
-  const accountByAddress = selectIdentities(store.getState());
-  const numberOfWalletAccounts = Object.keys(accountByAddress).length;
+  const isFirstVisit = !visitedDappsByHostname?.[hostname];
+  const internalAccounts = selectInternalAccounts(store.getState());
+  const numberOfWalletAccounts = Object.keys(internalAccounts).length;
 
   // Add Dapp hostname to viewed dapps
   store.dispatch(addToViewedDapp(hostname));
 
-  MetaMetrics.getInstance().trackEvent(MetaMetricsEvents.DAPP_VIEWED, {
-    Referrer: prefixUrlWithProtocol(hostname),
-    is_first_visit: isFirstVisit,
-    number_of_accounts: numberOfWalletAccounts,
-    number_of_accounts_connected: numberOfConnectedAccounts,
-    source: 'in-app browser',
-  });
+  analytics.trackEvent(
+    AnalyticsEventBuilder.createEventBuilder(MetaMetricsEvents.DAPP_VIEWED)
+      .addProperties({
+        Referrer: prefixUrlWithProtocol(hostname),
+        is_first_visit: isFirstVisit,
+        number_of_accounts: numberOfWalletAccounts,
+        number_of_accounts_connected: numberOfConnectedAccounts,
+        source: 'in-app browser',
+      })
+      .build(),
+  );
 };
 
 export default trackDappViewedEvent;

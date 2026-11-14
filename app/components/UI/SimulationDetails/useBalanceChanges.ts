@@ -15,22 +15,28 @@ import {
 
 import {
   BalanceChange,
-  NATIVE_ASSET_IDENTIFIER,
   TokenAssetIdentifier,
   AssetType,
   FIAT_UNAVAILABLE,
+  NativeAssetIdentifier,
 } from './types';
 import { getTokenDetails } from '../../../util/address';
 import {
-  selectConversionRate,
+  selectUSDConversionRateByChainId,
+  selectConversionRateByChainId,
   selectCurrentCurrency,
 } from '../../../selectors/currencyRateController';
-import { selectChainId } from '../../../selectors/networkController';
 import { useAsyncResultOrThrow } from '../../hooks/useAsyncResult';
+import { RootState } from '../../../reducers';
 
 const NATIVE_DECIMALS = 18;
-
 const ERC20_DEFAULT_DECIMALS = 18;
+const CURRENCY_USD = 'usd';
+
+// See https://github.com/MikeMcl/bignumber.js/issues/11#issuecomment-23053776
+function convertNumberToStringWithPrecisionWarning(value: number): string {
+  return String(value);
+}
 
 // Converts a SimulationTokenStandard to a TokenStandard
 function convertStandard(standard: SimulationTokenStandard) {
@@ -60,9 +66,17 @@ function getAssetAmount(
 }
 
 // Fetches the decimals for the given token address.
-async function fetchErc20Decimals(address: Hex): Promise<number> {
+async function fetchErc20Decimals(
+  address: Hex,
+  networkClientId: string,
+): Promise<number> {
   try {
-    const { decimals } = await getTokenDetails(address);
+    const { decimals } = await getTokenDetails(
+      address,
+      undefined,
+      undefined,
+      networkClientId,
+    );
     return decimals ? parseInt(decimals, 10) : ERC20_DEFAULT_DECIMALS;
   } catch {
     return ERC20_DEFAULT_DECIMALS;
@@ -72,12 +86,15 @@ async function fetchErc20Decimals(address: Hex): Promise<number> {
 // Fetches token details for all the token addresses in the SimulationTokenBalanceChanges
 async function fetchAllErc20Decimals(
   addresses: Hex[],
+  networkClientId: string,
 ): Promise<Record<Hex, number>> {
   const uniqueAddresses = [
     ...new Set(addresses.map((address) => address.toLowerCase() as Hex)),
   ];
   const allDecimals = await Promise.all(
-    uniqueAddresses.map(fetchErc20Decimals),
+    uniqueAddresses.map((address) =>
+      fetchErc20Decimals(address, networkClientId),
+    ),
   );
   return Object.fromEntries(
     allDecimals.map((decimals, i) => [uniqueAddresses[i], decimals]),
@@ -98,13 +115,12 @@ const fetchTokenExchangeRates = async (
   chainId: Hex,
 ) => {
   try {
-    const x = await fetchTokenContractExchangeRates({
+    return await fetchTokenContractExchangeRates({
       tokenPricesService: new CodefiTokenPricesServiceV2(),
       nativeCurrency,
       tokenAddresses,
       chainId,
     });
-    return x;
   } catch (err) {
     return {};
   }
@@ -133,15 +149,26 @@ async function fetchTokenFiatRates(
 function getNativeBalanceChange(
   nativeBalanceChange: SimulationBalanceChange | undefined,
   nativeFiatRate: number,
+  nativeUsdRate: number | undefined,
+  chainId: Hex,
 ): BalanceChange | undefined {
   if (!nativeBalanceChange) {
     return undefined;
   }
-  const asset = NATIVE_ASSET_IDENTIFIER;
-  const amount = getAssetAmount(nativeBalanceChange, NATIVE_DECIMALS);
 
-  const fiatAmount = amount.times(nativeFiatRate).toNumber();
-  return { asset, amount, fiatAmount };
+  const asset: NativeAssetIdentifier = {
+    type: AssetType.Native,
+    chainId,
+  };
+
+  const amount = getAssetAmount(nativeBalanceChange, NATIVE_DECIMALS);
+  const [fiatAmount, usdAmount] = [nativeFiatRate, nativeUsdRate].map((rate) =>
+    rate
+      ? amount.times(convertNumberToStringWithPrecisionWarning(rate)).toNumber()
+      : FIAT_UNAVAILABLE,
+  );
+
+  return { asset, amount, fiatAmount, usdAmount };
 }
 
 // Compiles the balance changes for token assets
@@ -149,46 +176,89 @@ function getTokenBalanceChanges(
   tokenBalanceChanges: SimulationTokenBalanceChange[],
   erc20Decimals: Record<Hex, number>,
   erc20FiatRates: Partial<Record<Hex, number>>,
+  erc20UsdRates: Partial<Record<Hex, number>>,
+  chainId: Hex,
 ): BalanceChange[] {
   return tokenBalanceChanges.map((tokenBc) => {
     const asset: TokenAssetIdentifier = {
       type: convertStandard(tokenBc.standard),
       address: tokenBc.address.toLowerCase() as Hex,
       tokenId: tokenBc.id,
+      chainId,
     };
 
     const decimals =
       asset.type === AssetType.ERC20
-        ? erc20Decimals[asset.address] ?? ERC20_DEFAULT_DECIMALS
+        ? (erc20Decimals[asset.address] ?? ERC20_DEFAULT_DECIMALS)
         : 0;
+    const balance = getAssetAmount(
+      {
+        difference: tokenBc.previousBalance,
+        isDecrease: false,
+      } as SimulationBalanceChange,
+      decimals,
+    );
+
     const amount = getAssetAmount(tokenBc, decimals);
-
     const fiatRate = erc20FiatRates[tokenBc.address];
-    const fiatAmount = fiatRate
-      ? amount.times(fiatRate).toNumber()
-      : FIAT_UNAVAILABLE;
+    const usdRate = erc20UsdRates[tokenBc.address.toLowerCase() as Hex];
+    const [fiatAmount, usdAmount] = [fiatRate, usdRate].map((rate) =>
+      rate
+        ? amount
+            .times(convertNumberToStringWithPrecisionWarning(rate))
+            .toNumber()
+        : FIAT_UNAVAILABLE,
+    );
 
-    return { asset, amount, fiatAmount };
+    const tokenSymbol = (
+      tokenBc as SimulationTokenBalanceChange & { tokenSymbol: string }
+    ).tokenSymbol;
+
+    return {
+      asset,
+      amount,
+      balance,
+      decimals,
+      fiatAmount,
+      usdAmount,
+      tokenSymbol,
+    };
   });
 }
 
 // Compiles a list of balance changes from simulation data
-export default function useBalanceChanges(
-  simulationData: SimulationData | undefined,
-): { pending: boolean; value: BalanceChange[] } {
-  const nativeFiatRate = useSelector(selectConversionRate) as number;
+export default function useBalanceChanges({
+  chainId,
+  simulationData,
+  networkClientId,
+}: {
+  chainId: Hex;
+  simulationData?: SimulationData;
+  networkClientId: string;
+}): { pending: boolean; value: BalanceChange[] } {
+  const nativeFiatRate =
+    useSelector((state: RootState) =>
+      selectConversionRateByChainId(state, chainId),
+    ) ?? 0;
   const fiatCurrency = useSelector(selectCurrentCurrency);
-  const chainId = useSelector(selectChainId);
+  const nativeUsdRate =
+    useSelector((state: RootState) =>
+      selectUSDConversionRateByChainId(state, chainId),
+    ) ?? undefined;
 
   const { nativeBalanceChange, tokenBalanceChanges = [] } =
     simulationData ?? {};
 
   const erc20TokenAddresses = tokenBalanceChanges
+    // TODO: Replace "any" with type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .filter((tbc: any) => tbc.standard === SimulationTokenStandard.erc20)
+    // TODO: Replace "any" with type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .map((tbc: any) => tbc.address);
 
   const erc20Decimals = useAsyncResultOrThrow(
-    () => fetchAllErc20Decimals(erc20TokenAddresses),
+    () => fetchAllErc20Decimals(erc20TokenAddresses, networkClientId),
     [JSON.stringify(erc20TokenAddresses)],
   );
 
@@ -197,23 +267,47 @@ export default function useBalanceChanges(
     [JSON.stringify(erc20TokenAddresses), chainId, fiatCurrency],
   );
 
-  if (erc20Decimals.pending || erc20FiatRates.pending || !simulationData) {
+  const erc20UsdRates = useAsyncResultOrThrow(
+    async () =>
+      fiatCurrency === CURRENCY_USD
+        ? (erc20FiatRates.value ?? {})
+        : fetchTokenFiatRates(CURRENCY_USD, erc20TokenAddresses, chainId),
+    [
+      JSON.stringify(erc20TokenAddresses),
+      chainId,
+      fiatCurrency,
+      erc20FiatRates.value,
+    ],
+  );
+
+  if (
+    erc20Decimals.pending ||
+    erc20FiatRates.pending ||
+    erc20UsdRates.pending ||
+    !simulationData
+  ) {
     return { pending: true, value: [] };
   }
 
   const nativeChange = getNativeBalanceChange(
     nativeBalanceChange,
     nativeFiatRate,
+    nativeUsdRate,
+    chainId,
   );
+
   const tokenChanges = getTokenBalanceChanges(
     tokenBalanceChanges,
     erc20Decimals.value,
     erc20FiatRates.value,
+    erc20UsdRates.value,
+    chainId,
   );
 
   const balanceChanges: BalanceChange[] = [
     ...(nativeChange ? [nativeChange] : []),
     ...tokenChanges,
   ];
+
   return { pending: false, value: balanceChanges };
 }

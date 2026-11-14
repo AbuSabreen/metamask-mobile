@@ -1,0 +1,908 @@
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { AnalyticsEventBuilder } from '../../../../util/analytics/AnalyticsEventBuilder';
+import { analytics } from '../../../../util/analytics/analytics';
+import Logger from '../../../../util/Logger';
+import { DevLogger } from '../../../../core/SDKConnect/utils/DevLogger';
+import {
+  BUILDER_FEE_CONFIG,
+  PerpsMeasurementName,
+  PerpsTraceNames,
+  type PerpsAnalyticsEvent,
+} from '@metamask/perps-controller';
+import { setMeasurement as setSentryMeasurement } from '@sentry/react-native';
+import {
+  endTrace as endSharedTrace,
+  setTraceMeasurement,
+  trace as startTrace,
+  TraceName,
+} from '../../../../util/trace';
+import {
+  getActivePerpsLoadingSessionTraceData,
+  recordPerpsControllerConstructedAt,
+} from '../utils/perpsLoadingSession';
+import {
+  createMobileInfrastructure,
+  createMobileClientConfig,
+  getTerminalApiUrl,
+} from './mobileInfrastructure';
+import {
+  resolveTerminalGlobalSnapshotUrl,
+  TERMINAL_API_HOSTS,
+  TERMINAL_API_PATHS,
+} from '../constants/terminalApi';
+import Engine from '../../../../core/Engine';
+
+jest.mock('../../../../util/analytics/analytics', () => ({
+  analytics: {
+    isEnabled: jest.fn(),
+    trackEvent: jest.fn(),
+  },
+}));
+
+jest.mock('../../../../util/analytics/AnalyticsEventBuilder', () => ({
+  AnalyticsEventBuilder: {
+    createEventBuilder: jest.fn(),
+  },
+}));
+
+jest.mock('../../../../core/Analytics', () => ({
+  MetaMetricsEvents: {
+    PERPS_UI_INTERACTION: {
+      category: 'Perp UI Interaction',
+      name: 'Perp UI Interaction',
+    },
+  },
+}));
+
+jest.mock('../../../../util/Logger', () => ({
+  __esModule: true,
+  default: {
+    error: jest.fn(),
+  },
+}));
+
+jest.mock('../../../../core/SDKConnect/utils/DevLogger', () => ({
+  DevLogger: { log: jest.fn() },
+}));
+
+jest.mock('../../../../util/trace', () => ({
+  trace: jest.fn(),
+  endTrace: jest.fn(),
+  setTraceMeasurement: jest.fn(),
+  TraceName: {
+    PerpsMarketDataPreload: 'Perps Market Data Preload',
+    PerpsUserDataPreload: 'Perps User Data Preload',
+    PerpsPlaceOrder: 'Perps Place Order',
+  },
+}));
+
+jest.mock('@sentry/react-native', () => ({
+  setMeasurement: jest.fn(),
+}));
+
+jest.mock('react-native-performance', () => ({
+  now: jest.fn(() => 123),
+}));
+
+jest.mock('../utils/perpsLoadingSession', () => ({
+  getActivePerpsLoadingSessionTraceData: jest.fn(),
+  recordPerpsControllerConstructedAt: jest.fn(),
+}));
+
+jest.mock('../providers/PerpsStreamManager', () => ({
+  getStreamManagerInstance: jest.fn(),
+}));
+
+jest.mock('../../../../store/storage-wrapper', () => ({
+  __esModule: true,
+  default: {
+    getItem: jest.fn().mockResolvedValue('cached-value'),
+    getItemSync: jest.fn().mockReturnValue('cached-sync-value'),
+    setItem: jest.fn().mockResolvedValue(undefined),
+    removeItem: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+jest.mock('../../../../core/Engine', () => ({
+  context: {
+    RewardsController: {
+      getPerpsDiscountForAccount: jest.fn().mockResolvedValue(5),
+      getPerpsTradingFeeGrant: jest.fn().mockResolvedValue({
+        providerId: 'hyperliquid',
+        isTestnet: false,
+        feeBips: 2.5,
+        expiresAt: 1_800_000_000_000,
+      }),
+    },
+  },
+}));
+
+jest.mock('../services/PerpsCacheInvalidator', () => ({
+  PerpsCacheInvalidator: {
+    invalidate: jest.fn(),
+    invalidateAll: jest.fn(),
+  },
+}));
+
+jest.mock('../../../../util/remoteFeatureFlag', () => ({
+  validatedVersionGatedFeatureFlag: jest.fn(),
+}));
+
+const mockSelectVipProgramEnabled = jest.fn().mockReturnValue(true);
+jest.mock('../../../../selectors/featureFlagController/vipProgram', () => ({
+  selectVipProgramEnabled: (...args: unknown[]) =>
+    mockSelectVipProgramEnabled(...args),
+}));
+
+jest.mock('../../../../store', () => ({
+  store: {
+    getState: jest.fn().mockReturnValue({}),
+  },
+}));
+
+jest.mock('../utils/formatUtils', () => ({
+  formatVolume: jest.fn(),
+  formatPerpsFiat: jest.fn(),
+  PRICE_RANGES_UNIVERSAL: [],
+}));
+
+jest.mock('../../../../util/intl', () => ({
+  getIntlNumberFormatter: jest.fn(() => ({
+    format: jest.fn((v: number) => `${v}%`),
+  })),
+}));
+
+const mockIsLighterProviderEnabled = jest.fn();
+jest.mock('../utils/lighterFeatureFlags', () => ({
+  isLighterProviderEnabled: () => mockIsLighterProviderEnabled(),
+}));
+
+describe('createMobileInfrastructure', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('performance tracing', () => {
+    it('forwards the post-hydration controller timestamp', () => {
+      const infra = createMobileInfrastructure();
+
+      infra.performance.onControllerConstructed?.(321);
+
+      expect(recordPerpsControllerConstructedAt).toHaveBeenCalledWith(321);
+    });
+
+    it.each([
+      [
+        PerpsMeasurementName.PerpsMarketDataPreload,
+        PerpsTraceNames.MarketDataPreload,
+        TraceName.PerpsMarketDataPreload,
+      ],
+      [
+        PerpsMeasurementName.PerpsUserDataPreload,
+        PerpsTraceNames.UserDataPreload,
+        TraceName.PerpsUserDataPreload,
+      ],
+    ])(
+      'targets %s to its explicit preload trace',
+      (name, coreName, traceName) => {
+        const infra = createMobileInfrastructure();
+        infra.tracer.trace({
+          name: coreName,
+          id: 'trace-id',
+          op: 'perps.preload',
+        });
+
+        infra.tracer.setMeasurement(name, 42, 'millisecond', 'trace-id');
+
+        expect(setTraceMeasurement).toHaveBeenCalledWith(
+          { name: traceName, id: 'trace-id' },
+          name,
+          42,
+          'millisecond',
+        );
+        expect(setSentryMeasurement).not.toHaveBeenCalled();
+      },
+    );
+
+    it('targets child measurements to the trace that opened their id', () => {
+      const infra = createMobileInfrastructure();
+      infra.tracer.trace({
+        name: PerpsTraceNames.MarketDataPreload,
+        id: 'trace-id',
+        op: 'perps.preload',
+      });
+
+      infra.tracer.setMeasurement(
+        'terminal_request_duration_ms',
+        17,
+        'millisecond',
+        'trace-id',
+      );
+
+      expect(setTraceMeasurement).toHaveBeenCalledWith(
+        { name: TraceName.PerpsMarketDataPreload, id: 'trace-id' },
+        'terminal_request_duration_ms',
+        17,
+        'millisecond',
+      );
+      expect(setSentryMeasurement).not.toHaveBeenCalled();
+    });
+
+    it('does not write an explicit-id measurement without its trace', () => {
+      const infra = createMobileInfrastructure();
+
+      infra.tracer.setMeasurement(
+        'unknown.measurement',
+        1,
+        'millisecond',
+        'missing-trace-id',
+      );
+
+      expect(setTraceMeasurement).not.toHaveBeenCalled();
+      expect(setSentryMeasurement).not.toHaveBeenCalled();
+      expect(DevLogger.log).toHaveBeenCalledWith(
+        'Perps tracing dropped a measurement for an unknown trace id',
+        { traceId: 'missing-trace-id', measurement: 'unknown.measurement' },
+      );
+    });
+
+    it.each([
+      [PerpsTraceNames.MarketDataPreload, TraceName.PerpsMarketDataPreload],
+      [PerpsTraceNames.UserDataPreload, TraceName.PerpsUserDataPreload],
+    ])(
+      'correlates the %s trace with the active loading session',
+      (name, traceName) => {
+        jest.mocked(getActivePerpsLoadingSessionTraceData).mockReturnValue({
+          perps_session_id: 'session-id',
+          account_generation: 1,
+          context_generation: 1,
+        });
+        const infra = createMobileInfrastructure();
+
+        infra.tracer.trace({
+          name,
+          id: 'preload-id',
+          op: 'perps.preload',
+          data: { provider: 'hyperliquid' },
+        });
+
+        expect(startTrace).toHaveBeenCalledWith({
+          name: traceName,
+          id: 'preload-id',
+          op: 'perps.preload',
+          tags: undefined,
+          data: {
+            provider: 'hyperliquid',
+            perps_session_id: 'session-id',
+            account_generation: 1,
+            context_generation: 1,
+          },
+        });
+      },
+    );
+
+    it('preserves ambient measurements without an explicit trace id', () => {
+      const infra = createMobileInfrastructure();
+
+      infra.tracer.setMeasurement('legacy.measurement', 7, 'millisecond');
+
+      expect(setSentryMeasurement).toHaveBeenCalledWith(
+        'legacy.measurement',
+        7,
+        'millisecond',
+      );
+      expect(setTraceMeasurement).not.toHaveBeenCalled();
+    });
+
+    it('forwards the Core trade status to the shared trace', () => {
+      const infra = createMobileInfrastructure();
+
+      infra.tracer.trace({
+        name: PerpsTraceNames.PlaceOrder,
+        id: 'trade-id',
+        op: 'perps.trade',
+      });
+      infra.tracer.endTrace({
+        name: PerpsTraceNames.PlaceOrder,
+        id: 'trade-id',
+        status: 'error',
+        data: { success: false },
+      });
+
+      expect(endSharedTrace).toHaveBeenCalledWith({
+        name: TraceName.PerpsPlaceOrder,
+        id: 'trade-id',
+        status: 'error',
+        data: { success: false },
+      });
+    });
+  });
+
+  describe('metrics', () => {
+    it('delegates isEnabled to analytics.isEnabled', () => {
+      jest.mocked(analytics.isEnabled).mockReturnValue(true);
+      const infra = createMobileInfrastructure();
+
+      expect(infra.metrics.isEnabled()).toBe(true);
+      expect(analytics.isEnabled).toHaveBeenCalled();
+    });
+
+    it('returns false when analytics is disabled', () => {
+      jest.mocked(analytics.isEnabled).mockReturnValue(false);
+      const infra = createMobileInfrastructure();
+
+      expect(infra.metrics.isEnabled()).toBe(false);
+    });
+
+    it('tracks event using AnalyticsEventBuilder when event matches MetaMetricsEvents', () => {
+      const mockBuild = jest.fn().mockReturnValue({ name: 'built-event' });
+      const mockAddProperties = jest.fn().mockReturnValue({ build: mockBuild });
+      jest.mocked(AnalyticsEventBuilder.createEventBuilder).mockReturnValue({
+        addProperties: mockAddProperties,
+        build: mockBuild,
+      } as unknown as ReturnType<
+        typeof AnalyticsEventBuilder.createEventBuilder
+      >);
+
+      const infra = createMobileInfrastructure();
+      const properties = { key: 'value' };
+
+      infra.metrics.trackPerpsEvent(
+        'Perp UI Interaction' as PerpsAnalyticsEvent,
+        properties,
+      );
+
+      expect(AnalyticsEventBuilder.createEventBuilder).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_UI_INTERACTION,
+      );
+      expect(mockAddProperties).toHaveBeenCalledWith(properties);
+      expect(mockBuild).toHaveBeenCalled();
+      expect(analytics.trackEvent).toHaveBeenCalledWith({
+        name: 'built-event',
+      });
+    });
+
+    it('uses fallback category-based event when event name is not found in MetaMetricsEvents', () => {
+      const mockBuild = jest.fn().mockReturnValue({ name: 'fallback-event' });
+      const mockAddProperties = jest.fn().mockReturnValue({ build: mockBuild });
+      jest.mocked(AnalyticsEventBuilder.createEventBuilder).mockReturnValue({
+        addProperties: mockAddProperties,
+        build: mockBuild,
+      } as unknown as ReturnType<
+        typeof AnalyticsEventBuilder.createEventBuilder
+      >);
+
+      const infra = createMobileInfrastructure();
+      const properties = { action: 'test' };
+
+      infra.metrics.trackPerpsEvent(
+        'Unknown Perps Event' as PerpsAnalyticsEvent,
+        properties,
+      );
+
+      expect(AnalyticsEventBuilder.createEventBuilder).toHaveBeenCalledWith({
+        category: 'Unknown Perps Event',
+      });
+      expect(mockAddProperties).toHaveBeenCalledWith(properties);
+      expect(analytics.trackEvent).toHaveBeenCalledWith({
+        name: 'fallback-event',
+      });
+    });
+  });
+
+  describe('logger', () => {
+    it('preserves logger options and injects the perps feature tag', () => {
+      const infra = createMobileInfrastructure();
+      const error = new Error('boom');
+
+      infra.logger.error(error, {
+        tags: { component: 'test_component' },
+        context: {
+          name: 'test_context',
+          data: { foo: 'bar' },
+        },
+        extras: { traceId: '123' },
+      });
+
+      expect(Logger.error).toHaveBeenCalledWith(
+        error,
+        expect.objectContaining({
+          tags: expect.objectContaining({
+            feature: expect.any(String),
+            component: 'test_component',
+          }),
+          context: {
+            name: 'test_context',
+            data: { foo: 'bar' },
+          },
+          extras: { traceId: '123' },
+        }),
+      );
+    });
+  });
+
+  describe('rewards', () => {
+    it('delegates getPerpsDiscountForAccount to RewardsController when vipProgramEnabled', async () => {
+      mockSelectVipProgramEnabled.mockReturnValue(true);
+      const infra = createMobileInfrastructure();
+      const caipAccountId =
+        'eip155:42161:0x1234' as `${string}:${string}:${string}`;
+
+      const result = await infra.rewards.getPerpsDiscountForAccount(
+        caipAccountId,
+        10,
+      );
+
+      expect(
+        Engine.context.RewardsController.getPerpsDiscountForAccount,
+      ).toHaveBeenCalledWith(caipAccountId, 10);
+      expect(result).toBe(5);
+    });
+
+    it('leaves VIP eligibility to RewardsController', async () => {
+      mockSelectVipProgramEnabled.mockReturnValue(false);
+      const infra = createMobileInfrastructure();
+      const caipAccountId =
+        'eip155:42161:0x1234' as `${string}:${string}:${string}`;
+
+      const result = await infra.rewards.getPerpsDiscountForAccount(
+        caipAccountId,
+        10,
+      );
+
+      expect(
+        Engine.context.RewardsController.getPerpsDiscountForAccount,
+      ).toHaveBeenCalledWith(caipAccountId, 10);
+      expect(result).toBe(5);
+    });
+
+    it('delegates a route-aware grant independently of VIP eligibility', async () => {
+      mockSelectVipProgramEnabled.mockReturnValue(false);
+      const infra = createMobileInfrastructure();
+      const scope = { providerId: 'hyperliquid', isTestnet: false };
+
+      const result = await infra.rewards.getPerpsTradingFeeGrant?.(scope);
+
+      expect(
+        Engine.context.RewardsController.getPerpsTradingFeeGrant,
+      ).toHaveBeenCalledWith(scope);
+      expect(result).toEqual(
+        expect.objectContaining({
+          providerId: 'hyperliquid',
+          isTestnet: false,
+          feeBips: 2.5,
+        }),
+      );
+    });
+  });
+
+  describe('diskCache', () => {
+    it('delegates getItem to StorageWrapper.getItem', async () => {
+      const StorageWrapper = jest.requireMock(
+        '../../../../store/storage-wrapper',
+      ).default;
+      const infra = createMobileInfrastructure();
+
+      const value = await infra.diskCache.getItem('test-key');
+
+      expect(StorageWrapper.getItem).toHaveBeenCalledWith('test-key');
+      expect(value).toBe('cached-value');
+    });
+
+    it('delegates getItemSync to StorageWrapper.getItemSync', () => {
+      const StorageWrapper = jest.requireMock(
+        '../../../../store/storage-wrapper',
+      ).default;
+      const infra = createMobileInfrastructure();
+
+      const value = infra.diskCache.getItemSync?.('test-key');
+
+      expect(StorageWrapper.getItemSync).toHaveBeenCalledWith('test-key');
+      expect(value).toBe('cached-sync-value');
+    });
+
+    it('delegates setItem to StorageWrapper.setItem', async () => {
+      const StorageWrapper = jest.requireMock(
+        '../../../../store/storage-wrapper',
+      ).default;
+      const infra = createMobileInfrastructure();
+
+      await infra.diskCache.setItem('test-key', 'test-value');
+
+      expect(StorageWrapper.setItem).toHaveBeenCalledWith(
+        'test-key',
+        'test-value',
+      );
+    });
+
+    it('delegates removeItem to StorageWrapper.removeItem', async () => {
+      const StorageWrapper = jest.requireMock(
+        '../../../../store/storage-wrapper',
+      ).default;
+      const infra = createMobileInfrastructure();
+
+      const result = await infra.diskCache.removeItem('test-key');
+
+      expect(StorageWrapper.removeItem).toHaveBeenCalledWith('test-key');
+      expect(result).toBeUndefined();
+    });
+  });
+});
+
+describe('createMobileClientConfig', () => {
+  const envVars = [
+    'METAMASK_ENVIRONMENT',
+    'MM_PERPS_BLOCKED_REGIONS',
+    'MM_PERPS_HIP3_ENABLED',
+    'MM_PERPS_HIP3_ALLOWLIST_MARKETS',
+    'MM_PERPS_HIP3_BLOCKLIST_MARKETS',
+    'MM_PERPS_HL_BUILDER_ADDRESS_TESTNET',
+    'MM_PERPS_HL_BUILDER_ADDRESS_MAINNET',
+    'MM_PERPS_LIGHTER_PROVIDER_ENABLED',
+    'MM_PERPS_LIGHTER_ACCOUNT_INDEX_TESTNET',
+    'MM_PERPS_LIGHTER_API_KEY_INDEX',
+    'MM_PERPS_LIGHTER_CHASE_TESTNET_PROBE',
+  ] as const;
+  const saved: Partial<Record<(typeof envVars)[number], string>> = {};
+
+  beforeEach(() => {
+    mockIsLighterProviderEnabled.mockReturnValue(false);
+    for (const key of envVars) {
+      if (process.env[key] !== undefined) {
+        saved[key] = process.env[key];
+      }
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of envVars) {
+      const savedValue = saved[key];
+      if (savedValue === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedValue;
+      }
+      delete saved[key];
+    }
+  });
+
+  it('returns default config when no env vars are set', () => {
+    // Arrange is provided by beforeEach.
+
+    // Act
+    const config = createMobileClientConfig();
+
+    // Assert
+    expect(config).toEqual({
+      fallbackBlockedRegions: [],
+      fallbackHip3Enabled: false,
+      fallbackHip3AllowlistMarkets: [],
+      fallbackHip3BlocklistMarkets: [],
+      providerCredentials: {
+        hyperliquid: {
+          builderAddressTestnet: '',
+          builderAddressMainnet: BUILDER_FEE_CONFIG.MainnetBuilder,
+        },
+        lighter: {
+          enabled: false,
+          chaseTestnetProbe: false,
+          accountIndexTestnet: undefined,
+          apiKeyIndex: undefined,
+        },
+      },
+    });
+  });
+
+  it('enables Lighter with its signer bridge when explicitly enabled', () => {
+    mockIsLighterProviderEnabled.mockReturnValue(true);
+
+    const config = createMobileClientConfig();
+
+    expect(config.providerCredentials?.lighter).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        signerBridge: expect.any(Object),
+      }),
+    );
+  });
+
+  it.each([false, true])(
+    'passes the explicit Chase probe only with Lighter enabled=%s',
+    (enabled) => {
+      mockIsLighterProviderEnabled.mockReturnValue(enabled);
+      process.env.MM_PERPS_LIGHTER_CHASE_TESTNET_PROBE = 'true';
+
+      const config = createMobileClientConfig();
+
+      expect(config.providerCredentials?.lighter?.chaseTestnetProbe).toBe(
+        enabled,
+      );
+    },
+  );
+
+  it.each([undefined, 'false', 'TRUE', '1'])(
+    'keeps the Chase probe disabled for %s',
+    (value) => {
+      mockIsLighterProviderEnabled.mockReturnValue(true);
+      if (value !== undefined)
+        process.env.MM_PERPS_LIGHTER_CHASE_TESTNET_PROBE = value;
+
+      const config = createMobileClientConfig();
+
+      expect(config.providerCredentials?.lighter?.chaseTestnetProbe).toBe(
+        false,
+      );
+    },
+  );
+
+  it('enables Lighter with its signer bridge through a production override', () => {
+    mockIsLighterProviderEnabled.mockReturnValue(true);
+
+    const config = createMobileClientConfig();
+
+    expect(config.providerCredentials?.lighter).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        signerBridge: expect.any(Object),
+      }),
+    );
+  });
+
+  it.each(['abc', 'NaN', 'Infinity', '-1', '1.5', '0x08', ' ', '255'])(
+    'rejects malformed signer key slot %s instead of selecting another slot',
+    (value) => {
+      mockIsLighterProviderEnabled.mockReturnValue(true);
+      process.env.MM_PERPS_LIGHTER_API_KEY_INDEX = value;
+
+      expect(() => createMobileClientConfig()).toThrow(
+        'MM_PERPS_LIGHTER_API_KEY_INDEX',
+      );
+    },
+  );
+
+  it.each(['invalid', '-1', '1.5', '9007199254740992'])(
+    'rejects malformed Lighter account index %s',
+    (value) => {
+      mockIsLighterProviderEnabled.mockReturnValue(true);
+      process.env.MM_PERPS_LIGHTER_ACCOUNT_INDEX_TESTNET = value;
+
+      expect(() => createMobileClientConfig()).toThrow(
+        'MM_PERPS_LIGHTER_ACCOUNT_INDEX_TESTNET',
+      );
+    },
+  );
+
+  it('supplies validated explicit signer indices', () => {
+    mockIsLighterProviderEnabled.mockReturnValue(true);
+    process.env.MM_PERPS_LIGHTER_ACCOUNT_INDEX_TESTNET = '59';
+    process.env.MM_PERPS_LIGHTER_API_KEY_INDEX = '254';
+
+    const config = createMobileClientConfig();
+
+    expect(config.providerCredentials?.lighter).toEqual(
+      expect.objectContaining({ accountIndexTestnet: 59, apiKeyIndex: 254 }),
+    );
+  });
+
+  it('keeps Lighter disabled in production without an override', () => {
+    mockIsLighterProviderEnabled.mockReturnValue(false);
+
+    const config = createMobileClientConfig();
+
+    expect(config.providerCredentials?.lighter).toEqual({
+      enabled: false,
+      chaseTestnetProbe: false,
+      accountIndexTestnet: undefined,
+      apiKeyIndex: undefined,
+    });
+  });
+});
+
+describe('getTerminalApiUrl', () => {
+  let savedEnv: string | undefined;
+  let savedBuildType: string | undefined;
+
+  beforeEach(() => {
+    savedEnv = process.env.METAMASK_ENVIRONMENT;
+    savedBuildType = process.env.METAMASK_BUILD_TYPE;
+  });
+
+  afterEach(() => {
+    if (savedEnv !== undefined) {
+      process.env.METAMASK_ENVIRONMENT = savedEnv;
+    } else {
+      delete process.env.METAMASK_ENVIRONMENT;
+    }
+    if (savedBuildType !== undefined) {
+      process.env.METAMASK_BUILD_TYPE = savedBuildType;
+    } else {
+      delete process.env.METAMASK_BUILD_TYPE;
+    }
+  });
+
+  it('returns dev URL for dev environment', () => {
+    process.env.METAMASK_ENVIRONMENT = 'dev';
+    delete process.env.METAMASK_BUILD_TYPE;
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.DEV}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns dev URL for test environment', () => {
+    process.env.METAMASK_ENVIRONMENT = 'test';
+    delete process.env.METAMASK_BUILD_TYPE;
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.DEV}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns dev URL for e2e environment', () => {
+    process.env.METAMASK_ENVIRONMENT = 'e2e';
+    delete process.env.METAMASK_BUILD_TYPE;
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.DEV}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns uat URL for beta build type', () => {
+    process.env.METAMASK_ENVIRONMENT = 'production';
+    process.env.METAMASK_BUILD_TYPE = 'beta';
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.UAT}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns prd URL for production environment', () => {
+    process.env.METAMASK_ENVIRONMENT = 'production';
+    process.env.METAMASK_BUILD_TYPE = 'main';
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.PRD}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns prd URL for rc environment', () => {
+    process.env.METAMASK_ENVIRONMENT = 'rc';
+    process.env.METAMASK_BUILD_TYPE = 'main';
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.PRD}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns uat URL for exp environment (default fallthrough)', () => {
+    process.env.METAMASK_ENVIRONMENT = 'exp';
+    process.env.METAMASK_BUILD_TYPE = 'main';
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.UAT}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns uat URL for non-beta build type in non-prod env (default fallthrough)', () => {
+    process.env.METAMASK_ENVIRONMENT = 'exp';
+    process.env.METAMASK_BUILD_TYPE = 'flask';
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.UAT}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns uat URL when METAMASK_ENVIRONMENT is undefined', () => {
+    delete process.env.METAMASK_ENVIRONMENT;
+    delete process.env.METAMASK_BUILD_TYPE;
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.UAT}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns uat URL for local environment', () => {
+    process.env.METAMASK_ENVIRONMENT = 'local';
+    delete process.env.METAMASK_BUILD_TYPE;
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.UAT}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+
+  it('returns dev URL when env is dev even if build type is beta', () => {
+    process.env.METAMASK_ENVIRONMENT = 'dev';
+    process.env.METAMASK_BUILD_TYPE = 'beta';
+    expect(getTerminalApiUrl()).toBe(
+      `${TERMINAL_API_HOSTS.DEV}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+  });
+});
+
+describe('createMobileInfrastructure - terminalApi', () => {
+  let savedEnv: string | undefined;
+  let savedBuildType: string | undefined;
+
+  beforeEach(() => {
+    savedEnv = process.env.METAMASK_ENVIRONMENT;
+    savedBuildType = process.env.METAMASK_BUILD_TYPE;
+  });
+
+  afterEach(() => {
+    if (savedEnv !== undefined) {
+      process.env.METAMASK_ENVIRONMENT = savedEnv;
+    } else {
+      delete process.env.METAMASK_ENVIRONMENT;
+    }
+    if (savedBuildType !== undefined) {
+      process.env.METAMASK_BUILD_TYPE = savedBuildType;
+    } else {
+      delete process.env.METAMASK_BUILD_TYPE;
+    }
+  });
+
+  it('uses the schema-v4 global snapshot route required by Core', () => {
+    expect(TERMINAL_API_PATHS.GLOBAL_SNAPSHOT).toBe('/v4/perpetuals');
+  });
+
+  it('includes the production market endpoint in one Terminal config', () => {
+    process.env.METAMASK_ENVIRONMENT = 'production';
+    process.env.METAMASK_BUILD_TYPE = 'main';
+    const infra = createMobileInfrastructure();
+    expect(infra.terminalApi).toEqual({
+      marketDataUrl: `${TERMINAL_API_HOSTS.PRD}${TERMINAL_API_PATHS.MARKET_DATA}`,
+      globalSnapshotUrl: `${TERMINAL_API_HOSTS.PRD}${TERMINAL_API_PATHS.GLOBAL_SNAPSHOT}`,
+    });
+  });
+
+  it('uses the full development and UAT endpoints', () => {
+    process.env.METAMASK_ENVIRONMENT = 'dev';
+    delete process.env.METAMASK_BUILD_TYPE;
+    const infra = createMobileInfrastructure();
+    expect(infra.terminalApi?.marketDataUrl).toBe(
+      `${TERMINAL_API_HOSTS.DEV}${TERMINAL_API_PATHS.MARKET_DATA}`,
+    );
+    expect(infra.terminalApi?.globalSnapshotUrl).toBe(
+      `${TERMINAL_API_HOSTS.DEV}${TERMINAL_API_PATHS.GLOBAL_SNAPSHOT}`,
+    );
+
+    process.env.METAMASK_ENVIRONMENT = 'exp';
+    process.env.METAMASK_BUILD_TYPE = 'beta';
+    expect(createMobileInfrastructure().terminalApi).toEqual({
+      marketDataUrl: `${TERMINAL_API_HOSTS.UAT}${TERMINAL_API_PATHS.MARKET_DATA}`,
+      globalSnapshotUrl: `${TERMINAL_API_HOSTS.UAT}${TERMINAL_API_PATHS.GLOBAL_SNAPSHOT}`,
+    });
+  });
+});
+
+describe('resolveTerminalGlobalSnapshotUrl', () => {
+  it('returns a trimmed explicit endpoint only for a dev bundle in dev', () => {
+    expect(
+      resolveTerminalGlobalSnapshotUrl({
+        isDevBundle: true,
+        environment: 'dev',
+        endpoint: '  http://127.0.0.1:9332/v4/perpetuals  ',
+        host: TERMINAL_API_HOSTS.DEV,
+      }),
+    ).toBe('http://127.0.0.1:9332/v4/perpetuals');
+
+    expect(
+      resolveTerminalGlobalSnapshotUrl({
+        isDevBundle: true,
+        environment: 'production',
+        endpoint: 'http://127.0.0.1:9332/v4/perpetuals',
+        host: TERMINAL_API_HOSTS.PRD,
+      }),
+    ).toBe(`${TERMINAL_API_HOSTS.PRD}${TERMINAL_API_PATHS.GLOBAL_SNAPSHOT}`);
+    expect(
+      resolveTerminalGlobalSnapshotUrl({
+        isDevBundle: false,
+        environment: 'dev',
+        endpoint: 'http://127.0.0.1:9332/v4/perpetuals',
+        host: TERMINAL_API_HOSTS.DEV,
+      }),
+    ).toBe(`${TERMINAL_API_HOSTS.DEV}${TERMINAL_API_PATHS.GLOBAL_SNAPSHOT}`);
+  });
+
+  it('derives the deployed endpoint when the dev override is blank', () => {
+    expect(
+      resolveTerminalGlobalSnapshotUrl({
+        isDevBundle: true,
+        environment: 'dev',
+        endpoint: '   ',
+        host: TERMINAL_API_HOSTS.DEV,
+      }),
+    ).toBe(`${TERMINAL_API_HOSTS.DEV}${TERMINAL_API_PATHS.GLOBAL_SNAPSHOT}`);
+  });
+});

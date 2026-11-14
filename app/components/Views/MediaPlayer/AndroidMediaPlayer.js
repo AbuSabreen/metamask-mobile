@@ -11,19 +11,19 @@ import {
   PanResponder,
   StyleSheet,
   Animated,
-  SafeAreaView,
   Easing,
   Image,
   View,
   Text,
-  ViewPropTypes,
   TouchableNativeFeedback,
   TouchableHighlight,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import FA5Icon from 'react-native-vector-icons/FontAwesome5';
 import AntIcon from 'react-native-vector-icons/AntDesign';
 import { baseStyles, colors as importedColors } from '../../../styles/common';
 import { useTheme } from '../../../util/theme';
+import { ViewPropTypes } from 'deprecated-react-native-prop-types';
 
 const createStyles = (theme) =>
   StyleSheet.create({
@@ -121,7 +121,7 @@ const createStyles = (theme) =>
       height: 4,
       width: '100%',
       borderRadius: 2,
-      backgroundColor: theme.brandColors.white000,
+      backgroundColor: theme.brandColors.white,
     },
     seekbarPermanentFill: {
       width: '100%',
@@ -137,7 +137,7 @@ const createStyles = (theme) =>
       top: 14,
       height: 14,
       width: 14,
-      backgroundColor: theme.brandColors.white000,
+      backgroundColor: theme.brandColors.white,
     },
     actionButton: {
       width: 44,
@@ -150,16 +150,16 @@ const createStyles = (theme) =>
       marginHorizontal: 8,
     },
     actionButtons: {
-      color: theme.brandColors.white000,
+      color: theme.brandColors.white,
     },
   });
 
 export default function VideoPlayer({
-  controlsAnimationTiming,
-  controlsToggleTiming,
+  controlsAnimationTiming = 500,
+  controlsToggleTiming = 5000,
   source,
-  displayTopControls,
-  displayBottomControls,
+  displayTopControls = true,
+  displayBottomControls = true,
   onClose,
   onError,
   textTracks,
@@ -643,12 +643,4 @@ VideoPlayer.propTypes = {
   selectedTextTrack: PropTypes.object,
   textTracks: PropTypes.arrayOf(PropTypes.object),
   style: ViewPropTypes.style,
-};
-
-VideoPlayer.defaultProps = {
-  doubleTapTime: 100,
-  controlsAnimationTiming: 500,
-  controlsToggleTiming: 5000,
-  displayTopControls: true,
-  displayBottomControls: true,
 };

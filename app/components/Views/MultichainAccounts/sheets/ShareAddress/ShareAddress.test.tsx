@@ -1,0 +1,393 @@
+import React from 'react';
+import { fireEvent } from '@testing-library/react-native';
+import { TouchableOpacity } from 'react-native';
+import ShareAddress from '.';
+import {
+  createMockSnapInternalAccount,
+  internalAccount1,
+} from '../../../../../util/test/accountsControllerTestUtils';
+import { SolAccountType } from '@metamask/keyring-api';
+import { strings } from '../../../../../../locales/i18n';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import { InternalAccount } from '@metamask/keyring-internal-api';
+import { mockNetworkState } from '../../../../../util/test/network';
+import Routes from '../../../../../constants/navigation/Routes';
+
+const mockGoBack = jest.fn();
+const mockNavigate = jest.fn();
+let mockAccount = internalAccount1;
+
+// The sheet closes on an animation and calls navigation.goBack before the
+// post-close callback. Run that sequence immediately.
+jest.mock(
+  '../../../../../component-library/components/BottomSheets/BottomSheet',
+  () => {
+    const ReactActual = jest.requireActual<typeof React>('react');
+    const BottomSheet = ReactActual.forwardRef(
+      (
+        { children }: { children?: React.ReactNode },
+        ref: React.Ref<{
+          onCloseBottomSheet: (callback?: () => void) => void;
+        }>,
+      ) => {
+        ReactActual.useImperativeHandle(ref, () => ({
+          onCloseBottomSheet: (callback?: () => void) => {
+            mockGoBack();
+            callback?.();
+          },
+          onOpenBottomSheet: () => undefined,
+        }));
+        return children;
+      },
+    );
+    BottomSheet.displayName = 'BottomSheet';
+    return {
+      __esModule: true,
+      default: BottomSheet,
+    };
+  },
+);
+// QRAccountDisplay is mocked because it uses the safeview context.
+// This is a workaround to render the component.
+jest.mock('../../../QRAccountDisplay', () => {
+  const actualReact = jest.requireActual('react');
+  const {
+    View,
+    Text,
+    TouchableOpacity: RNTouchableOpacity,
+  } = jest.requireActual('react-native');
+
+  return function MockQRAccountDisplay({
+    accountAddress,
+  }: {
+    accountAddress: string;
+  }) {
+    const [, setClipboard] = actualReact.useState('');
+
+    const handleCopy = () => {
+      setClipboard(accountAddress);
+    };
+
+    return actualReact.createElement(
+      View,
+      { testID: 'qr-account-display' },
+      actualReact.createElement(
+        Text,
+        { testID: 'account-label' },
+        'Test Account',
+      ),
+      actualReact.createElement(
+        Text,
+        { testID: 'account-address' },
+        accountAddress,
+      ),
+      actualReact.createElement(
+        RNTouchableOpacity,
+        {
+          onPress: handleCopy,
+          testID: 'qr-account-display-copy-button',
+        },
+        actualReact.createElement(Text, null, 'Copy Address'),
+      ),
+    );
+  };
+});
+
+jest.mock('../../../../../util/analytics/externalLinkTracking', () => ({
+  ...jest.requireActual('../../../../../util/analytics/externalLinkTracking'),
+  trackBlockExplorerLinkClicked: jest.fn(),
+}));
+import { trackBlockExplorerLinkClicked } from '../../../../../util/analytics/externalLinkTracking';
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    goBack: mockGoBack,
+    navigate: mockNavigate,
+  }),
+  useRoute: () => ({
+    params: {
+      account: mockAccount,
+    },
+  }),
+}));
+
+jest.mock('../../../../../util/analytics/qrCodeViewedTracking', () => ({
+  ...jest.requireActual('../../../../../util/analytics/qrCodeViewedTracking'),
+  getQrCodeViewedAccountType: jest.fn().mockReturnValue('MetaMask'),
+}));
+
+jest.mock('../../../../../util/address', () => ({
+  ...jest.requireActual('../../../../../util/address'),
+  renderAccountName: jest.fn().mockReturnValue('Test Account'),
+}));
+
+jest.mock('../../../../../core/Multichain/networks', () => ({
+  getMultichainBlockExplorer: jest.fn().mockReturnValue({
+    url: 'https://etherscan.io',
+    title: 'Etherscan',
+    blockExplorerName: 'Etherscan',
+  }),
+}));
+
+jest.mock('../../../../../core/ClipboardManager', () => {
+  let clipboardContent = '';
+  return {
+    setString: jest.fn((str) => {
+      clipboardContent = str;
+    }),
+    getString: jest.fn(() => clipboardContent),
+  };
+});
+
+jest.mock('../../../../../core/Engine', () => {
+  const { internalAccount1: mockAccountEngine } = jest.requireActual(
+    '../../../../../util/test/accountsControllerTestUtils',
+  );
+  return {
+    context: {
+      NetworkController: {
+        getNetworkConfigurationsByCaipChainId: jest.fn(),
+      },
+      KeyringController: {
+        state: {
+          keyrings: [
+            {
+              type: 'HD Key Tree',
+              accounts: [mockAccountEngine.address],
+            },
+          ],
+        },
+      },
+      AccountsController: {
+        internalAccounts: {
+          accounts: {
+            [mockAccountEngine.id]: mockAccountEngine,
+          },
+          selectedAccount: mockAccountEngine.id,
+        },
+      },
+    },
+  };
+});
+
+const mockTrackEvent = jest.fn();
+
+jest.mock('../../../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(() => ({
+    trackEvent: mockTrackEvent,
+    createEventBuilder: jest.requireActual(
+      '../../../../../util/analytics/AnalyticsEventBuilder',
+    ).AnalyticsEventBuilder.createEventBuilder,
+  })),
+}));
+
+// Mock QRCode component to render something visible
+jest.mock('react-native-qrcode-svg', () => {
+  const actualReact = jest.requireActual('react');
+  const { Text } = jest.requireActual('react-native');
+  return function MockQRCode({
+    value,
+    size,
+    logoSize,
+    logoBorderRadius,
+  }: {
+    value: string;
+    size?: number;
+    logoSize?: number;
+    logoBorderRadius?: number;
+  }) {
+    return actualReact.createElement(
+      Text,
+      {
+        testID: 'mock-qr-code',
+        accessibilityLabel: `QR Code: ${value}, size: ${size}, logoSize: ${logoSize}, logoBorderRadius: ${logoBorderRadius}`,
+      },
+      `QR Code: ${value}`,
+    );
+  };
+});
+
+// Mock ToastContext to prevent context errors in QRAccountDisplay
+jest.mock('../../../../../component-library/components/Toast', () => {
+  const actualReact = jest.requireActual('react');
+  return {
+    ToastContext: actualReact.createContext({
+      toastRef: { current: null },
+    }),
+    ToastVariants: {
+      Plain: 'plain',
+    },
+  };
+});
+
+const render = (account: InternalAccount = internalAccount1) => {
+  // Update the mock account before rendering
+  mockAccount = account;
+
+  const initialState = {
+    engine: {
+      backgroundState: {
+        ...backgroundState,
+        ...mockNetworkState,
+        AccountsController: {
+          internalAccounts: {
+            accounts: {
+              [account.id]: account,
+            },
+            selectedAccount: account.id,
+          },
+        },
+      },
+    },
+  };
+
+  const result = renderWithProvider(
+    <ShareAddress />,
+    { state: initialState },
+    false,
+  );
+
+  return result;
+};
+
+describe('ShareAddress', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGoBack.mockClear();
+    mockNavigate.mockClear();
+    mockTrackEvent.mockClear();
+    mockAccount = internalAccount1; // Reset to default
+  });
+
+  it('tracks QR Code Viewed on render without chain_id_caip', () => {
+    render();
+
+    expect(mockTrackEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'QR Code Viewed',
+        properties: expect.objectContaining({
+          location: 'account-details',
+          account_type: 'MetaMask',
+        }),
+      }),
+    );
+    expect(mockTrackEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        properties: expect.not.objectContaining({
+          chain_id_caip: expect.anything(),
+        }),
+      }),
+    );
+  });
+
+  it('displays title and QR account information', () => {
+    // Arrange
+    const { getByText, getByTestId } = render();
+
+    // Assert
+    expect(
+      getByText(strings('multichain_accounts.share_address.title')),
+    ).toBeOnTheScreen();
+    expect(getByTestId('mock-qr-code')).toBeOnTheScreen();
+    expect(getByTestId('qr-account-display')).toBeOnTheScreen();
+    expect(getByTestId('account-label')).toBeOnTheScreen();
+  });
+
+  it('renders QR code with correct size and logo properties', () => {
+    // Arrange
+    const { getByTestId } = render();
+    const qrCode = getByTestId('mock-qr-code');
+
+    // Assert
+    expect(qrCode).toBeOnTheScreen();
+    expect(qrCode.props.accessibilityLabel).toContain('size: 200');
+    expect(qrCode.props.accessibilityLabel).toContain('logoSize: 32');
+    expect(qrCode.props.accessibilityLabel).toContain('logoBorderRadius: 8');
+  });
+
+  it('navigates back when back button is pressed', () => {
+    // Arrange
+    const rendered = render();
+    const { root } = rendered;
+    const touchableOpacities = root.findAllByType(TouchableOpacity as never);
+    const backButton = touchableOpacities.find(
+      (touchable) =>
+        touchable.props.accessible === true && touchable.props.onPress,
+    );
+
+    // Act
+    expect(backButton).toBeTruthy();
+    if (backButton) {
+      fireEvent.press(backButton);
+    }
+
+    // Assert
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('navigates to block explorer when explorer button is pressed', () => {
+    // Arrange
+    const { getByTestId } = render();
+    const explorerButton = getByTestId('share-address-view-on-explorer-button');
+
+    // Act
+    expect(explorerButton).toBeOnTheScreen();
+    fireEvent.press(explorerButton);
+
+    // Assert — sheet pops before the explorer opens.
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith(
+      Routes.MULTICHAIN_ACCOUNTS.EXPLORER_WEBVIEW,
+      {
+        url: 'https://etherscan.io',
+        title: 'Etherscan',
+      },
+    );
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockGoBack.mock.invocationCallOrder[0]).toBeLessThan(
+      mockNavigate.mock.invocationCallOrder[0],
+    );
+    expect(jest.mocked(trackBlockExplorerLinkClicked)).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.any(Function),
+      expect.objectContaining({
+        location: 'share_address',
+        url: 'https://etherscan.io',
+      }),
+    );
+  });
+
+  it('renders different account types correctly', () => {
+    // Arrange
+    const snapAccount = createMockSnapInternalAccount(
+      '0x9876543210987654321098765432109876543210',
+      'Snap Account',
+      SolAccountType.DataAccount,
+    );
+
+    // Act
+    const { getByTestId } = render(snapAccount);
+
+    // Assert
+    expect(getByTestId('account-address')).toBeOnTheScreen();
+    expect(getByTestId('qr-account-display')).toBeOnTheScreen();
+  });
+
+  it('displays explorer button with correct text', () => {
+    // Arrange
+    const { getByText } = render();
+
+    // Assert
+    expect(getByText(/View on Etherscan/i)).toBeOnTheScreen();
+  });
+
+  it('shows account address in QR account display', () => {
+    // Arrange
+    const { getByTestId } = render();
+
+    // Assert
+    expect(getByTestId('account-address')).toBeOnTheScreen();
+  });
+});

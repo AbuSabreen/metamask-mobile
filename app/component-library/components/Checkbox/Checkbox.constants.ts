@@ -1,4 +1,4 @@
-/* eslint-disable import/prefer-default-export */
+/* eslint-disable import-x/prefer-default-export */
 
 // External dependencies.
 import { IconName, IconSize } from '../Icons/Icon';
@@ -19,7 +19,7 @@ export const DEFAULT_CHECKBOX_ICONSIZE = IconSize.Md;
 
 // Sample
 export const SAMPLE_CHECKBOX_PROPS: CheckboxProps = {
-  label: 'Sample Checkbox Label',
+  label: 'Sample checkbox label',
   isChecked: false,
   isIndeterminate: false,
   isDisabled: false,

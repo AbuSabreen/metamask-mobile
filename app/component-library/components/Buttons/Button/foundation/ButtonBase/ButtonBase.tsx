@@ -20,9 +20,16 @@ import {
   DEFAULT_BUTTONBASE_LABEL_TEXTVARIANT,
 } from './ButtonBase.constants';
 
+/**
+ * @deprecated Please update your code to use `ButtonBase` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/ButtonBase/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#buttonbase-component Migration docs}
+ */
 const ButtonBase = ({
   label,
   labelColor = DEFAULT_BUTTONBASE_LABEL_COLOR,
+  labelTextVariant = DEFAULT_BUTTONBASE_LABEL_TEXTVARIANT,
   startIconName,
   endIconName,
   size = DEFAULT_BUTTONBASE_SIZE,
@@ -59,7 +66,7 @@ const ButtonBase = ({
       )}
       {typeof label === 'string' ? (
         <Text
-          variant={DEFAULT_BUTTONBASE_LABEL_TEXTVARIANT}
+          variant={labelTextVariant}
           style={styles.label}
           accessibilityRole="none"
         >

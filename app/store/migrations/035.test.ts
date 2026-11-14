@@ -3,6 +3,7 @@ import { merge } from 'lodash';
 import { captureException } from '@sentry/react-native';
 import initialRootState from '../../util/test/initial-root-state';
 import { NetworkStatus } from '@metamask/network-controller';
+import { getErrorMessage } from '../../util/test/getErrorMessage';
 
 const expectedState = {
   engine: {
@@ -104,7 +105,11 @@ describe('Migration #35', () => {
       state: merge({}, initialRootState, {
         engine: {
           backgroundState: {
-            NetworkController: { networkDetails: {}, providerConfig: null },
+            NetworkController: {
+              networkDetails: {},
+              providerConfig: null,
+              networkConfigurations: {},
+            },
           },
         },
       }),
@@ -135,7 +140,7 @@ describe('Migration #35', () => {
 
       expect(newState).toStrictEqual(state);
       expect(mockedCaptureException).toHaveBeenCalledWith(expect.any(Error));
-      expect(mockedCaptureException.mock.calls[0][0].message).toBe(
+      expect(getErrorMessage(mockedCaptureException.mock.calls[0][0])).toBe(
         errorMessage,
       );
     });

@@ -6,7 +6,11 @@ If you are a designer you can visit the [MetaMask Design System Guides (Design)]
 
 ## Storybook
 
-We document our components using Storybook. Please read the [Documentation Guidelines](../../storybook/DOCUMENTATION_GUIDELINES.md) to get up and running.
+We document our components using Storybook.
+
+For instructions on how to run Storybook locally see our [Storybook documentation](../../docs/readme/storybook.md).
+
+**Quick Start**: Run `yarn storybook`, then open the app as usual. Storybook replaces the wallet entry while that command is running. Leave `index.js` unchanged.
 
 ## Support
 

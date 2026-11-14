@@ -1,31 +1,71 @@
+// Shim is used to ensure API compatibility for React Native and provides polyfills for globals
 import './shim.js';
 
-// Needed to polyfill random number generation.
-import 'react-native-get-random-values';
-import '@walletconnect/react-native-compat';
+// Native C++ networking (nitro-fetch + nitro-websockets). Must run after shim.
+import './app/core/NitroFetchSetup';
+import './app/core/NitroWebSocketSetup';
 
+// TODO: This import may not be required anymore since we've upgraded to v2 - https://docs.swmansion.com/react-native-gesture-handler/docs/fundamentals/installation/#requirements
+// Legacy - Need to import early for native module initialization - https://docs.swmansion.com/react-native-gesture-handler/docs/1.x/
 import 'react-native-gesture-handler';
-import 'react-native-url-polyfill/auto';
 
-import crypto from 'crypto'; // eslint-disable-line import/no-nodejs-modules, no-unused-vars
-require('react-native-browser-polyfill'); // eslint-disable-line import/no-commonjs
+// why-did-you-render must run as early as possible (after gesture-handler) in dev
+import './wdyr';
 
-import * as Sentry from '@sentry/react-native'; // eslint-disable-line import/no-namespace
+// Required for EAS Updates to resolve assets (.riv, .png, etc.) from OTA bundles
+import 'expo-asset';
+
+// Root entry is plain JS; TypeScript import resolver does not resolve expo here.
+// eslint-disable-next-line import-x/no-unresolved -- expo-splash-screen is a runtime dependency (see package.json)
+import { preventAutoHideAsync } from 'expo-splash-screen';
+
+// Keep the native splash visible until we explicitly hide it in FoxLoader
+// This prevents the white flash between native splash and first RN render
+try {
+  preventAutoHideAsync();
+} catch (_e) {
+  // Non-fatal — app can still start if the native splash is unavailable
+}
+
+import * as Sentry from '@sentry/react-native'; // eslint-disable-line import-x/no-namespace
 import { setupSentry } from './app/util/sentry/utils';
-setupSentry();
-
-import notifee, { EventType } from '@notifee/react-native';
-
 import { AppRegistry, LogBox } from 'react-native';
 import Root from './app/components/Views/Root';
-import { name } from './app.json';
-import { isTest } from './app/util/test/utils.js';
+import { name } from './app.config.js';
+import { hasTestOverrides } from './app/util/test/utils.js';
+import { Performance, initializeAppProfiling } from './app/core/Performance';
+import {
+  handleCustomError,
+  setReactNativeDefaultHandler,
+} from './app/core/ErrorHandler';
+import AppLockService from './app/core/AppLock/AppLockService';
 
-import NotificationManager from './app/core/NotificationManager';
-import { isNotificationsFeatureEnabled } from './app/util/notifications/methods';
+import { enableFreeze } from 'react-native-screens';
+
+if (__DEV__) {
+  require('./ReactotronConfig');
+}
+
+enableFreeze(true);
+
+// Subscribe to AppState before Engine and any screen hooks do, so the privacy
+// screen is raised first when the app backgrounds.
+AppLockService.initialize();
+
+// Setup Sentry
+setupSentry(__DEV__);
+
+// Setup Performance observers
+Performance.setupPerformanceObservers();
+
+// Arm Hermes CPU profiling for the whole process. No-op outside the
+// performance-test APKs, where IS_PERFORMANCE_TEST is baked in.
+initializeAppProfiling();
+
+// Ignore all logs
+LogBox.ignoreAllLogs();
 
 // List of warnings that we're ignoring
-
 LogBox.ignoreLogs([
   '{}',
   // Uncomment the below lines (21 and 22) to run browser-tests.spec.js in debug mode
@@ -82,31 +122,20 @@ if (IGNORE_BOXLOGS_DEVELOPMENT === 'true') {
   LogBox.ignoreAllLogs();
 }
 
-isNotificationsFeatureEnabled() &&
-  notifee.onBackgroundEvent(async ({ type, detail }) => {
-    const { notification, pressAction } = detail;
-
-    // Disable badge count https://notifee.app/react-native/docs/ios/badges#removing-the-badge-count
-    notifee.setBadgeCount(0).then(async () => {
-      if (
-        type === EventType.ACTION_PRESS &&
-        pressAction.id === 'mark-as-read'
-      ) {
-        await notifee.cancelNotification(notification.id);
-      } else {
-        NotificationManager.onMessageReceived(notification);
-      }
-    });
-  });
-
-/* Uncomment and comment regular registration below */
-// import Storybook from './.storybook';
-// AppRegistry.registerComponent(name, () => Storybook);
-
 /**
  * Application entry point responsible for registering root component
  */
 AppRegistry.registerComponent(name, () =>
   // Disable Sentry for E2E tests
-  isTest ? Root : Sentry.wrap(Root),
+  hasTestOverrides ? Root : Sentry.wrap(Root),
 );
+
+function setupGlobalErrorHandler() {
+  const reactNativeDefaultHandler = global.ErrorUtils.getGlobalHandler();
+  // set the base handler to the react native ExceptionsManager.handleException(), please refer to setupErrorHandling.js under react-native/Libraries/Core/ for details.
+  setReactNativeDefaultHandler(reactNativeDefaultHandler);
+  // override the global handler to provide custom error handling
+  global.ErrorUtils.setGlobalHandler(handleCustomError);
+}
+
+setupGlobalErrorHandler();

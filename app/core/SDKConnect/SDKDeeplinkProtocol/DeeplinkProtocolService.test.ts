@@ -8,15 +8,28 @@ import handleBatchRpcResponse from '../handlers/handleBatchRpcResponse';
 import handleCustomRpcCalls from '../handlers/handleCustomRpcCalls';
 import DevLogger from '../utils/DevLogger';
 import DeeplinkProtocolService from './DeeplinkProtocolService';
+import AppConstants from '../../AppConstants';
+import { DappClient } from '../dapp-sdk-types';
+import { createMockInternalAccount } from '../../../util/test/accountsControllerTestUtils';
+import { toChecksumHexAddress } from '@metamask/controller-utils';
 
 jest.mock('../SDKConnect');
-jest.mock('../../../core/Engine');
 jest.mock('react-native');
 jest.mock('../../BackgroundBridge/BackgroundBridge');
 jest.mock('../utils/DevLogger');
 jest.mock('../../../util/Logger');
 jest.mock('../handlers/handleCustomRpcCalls');
 jest.mock('../handlers/handleBatchRpcResponse');
+jest.mock('../../Permissions', () => ({
+  ...jest.requireActual('../../Permissions'),
+  getPermittedAccounts: jest.fn().mockReturnValue([]),
+}));
+
+const MOCK_ADDRESS = '0xc4955c0d639d99699bfd7ec54d9fafee40e4d272';
+const mockInternalAccount = createMockInternalAccount(
+  MOCK_ADDRESS,
+  'Account 1',
+);
 
 describe('DeeplinkProtocolService', () => {
   let service: DeeplinkProtocolService;
@@ -35,6 +48,8 @@ describe('DeeplinkProtocolService', () => {
       addDappConnection: jest.fn().mockResolvedValue(null),
     });
 
+    // TODO: Replace "any" with type
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (Engine.context as any) = {
       PermissionController: {
         requestPermissions: jest.fn().mockResolvedValue(null),
@@ -43,38 +58,60 @@ describe('DeeplinkProtocolService', () => {
           .mockReturnValue({ eth_accounts: { caveats: [{ value: [] }] } }),
       },
       KeyringController: { unlock: jest.fn() },
-      NetworkController: { state: { providerConfig: { chainId: '0x1' } } },
-      PreferencesController: { state: { selectedAddress: '0xAddress' } },
+      NetworkController: {
+        getNetworkClientById: () => ({
+          configuration: {
+            chainId: '0x1',
+          },
+        }),
+      },
+      AccountsController: {
+        getSelectedAccount: jest.fn().mockReturnValue(mockInternalAccount),
+      },
     };
 
     (Linking.openURL as jest.Mock).mockResolvedValue(null);
     service = new DeeplinkProtocolService();
+    service.loadPersistedConnections();
+  });
+
+  afterEach(async () => {
+    await service.ready;
   });
 
   describe('init', () => {
-    it('should initialize and load connections', async () => {
-      const spy = jest.spyOn(SDKConnect.getInstance(), 'loadDappConnections');
-      await service.init();
-      expect(spy).toHaveBeenCalled();
+    it('loads persisted connections and marks the service initialized', async () => {
+      await service.ready;
+
+      expect(SDKConnect.getInstance().loadDappConnections).toHaveBeenCalled();
       expect(service.isInitialized).toBe(true);
     });
 
-    it('should handle initialization error', async () => {
-      (
-        SDKConnect.getInstance().loadDappConnections as jest.Mock
-      ).mockRejectedValue(new Error('Failed to load connections'));
-      await service.init().catch(() => {
-        expect(service.isInitialized).toBe(false);
-        expect(Logger.log).toHaveBeenCalledWith(
-          expect.any(Error),
-          'DeeplinkProtocolService:: error initializing',
-        );
-      });
+    it('keeps the service uninitialized when loading connections fails', async () => {
+      jest
+        .mocked(SDKConnect.getInstance().loadDappConnections)
+        .mockRejectedValue(new Error('Failed to load connections'));
+      const failingService = new DeeplinkProtocolService();
+      failingService.loadPersistedConnections();
+
+      await failingService.ready;
+
+      expect(failingService.isInitialized).toBe(false);
+      expect(Logger.log).toHaveBeenCalledWith(
+        expect.any(Error),
+        'DeeplinkProtocolService:: error initializing',
+      );
     });
 
-    it('should initialize with raw connections', async () => {
-      await service.init();
-      expect(service.connections.connection1).toBeDefined();
+    it('stores loaded connections', async () => {
+      await service.ready;
+
+      expect(service.connections.connection1).toEqual(
+        expect.objectContaining({
+          clientId: 'connection1',
+          scheme: 'scheme1',
+        }),
+      );
     });
   });
 
@@ -112,9 +149,91 @@ describe('DeeplinkProtocolService', () => {
         scheme: 'test',
       };
       service.bridgeByClientId.client1 = {} as BackgroundBridge;
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const setupBridgeSpy = jest.spyOn(service as any, 'setupBridge');
       service.setupBridge(clientInfo);
       expect(setupBridgeSpy).toHaveReturned();
+    });
+
+    it('should throw error when originatorInfo.url is "metamask"', () => {
+      const clientInfo: DappClient = {
+        clientId: 'client1',
+        originatorInfo: {
+          url: 'metamask',
+          title: 'Test',
+          platform: 'test',
+          dappId: 'dappId',
+        },
+        connected: false,
+        validUntil: Date.now(),
+        scheme: 'test',
+      };
+
+      expect(() => service.setupBridge(clientInfo)).toThrow(
+        'Connections from metamask origin are not allowed',
+      );
+      expect(service.bridgeByClientId[clientInfo.clientId]).toBeUndefined();
+    });
+
+    it('should throw error when originatorInfo.title is "metamask"', () => {
+      const clientInfo: DappClient = {
+        clientId: 'client1',
+        originatorInfo: {
+          url: 'https://example.com',
+          title: 'metamask',
+          platform: 'test',
+          dappId: 'dappId',
+        },
+        connected: false,
+        validUntil: Date.now(),
+        scheme: 'test',
+      };
+
+      expect(() => service.setupBridge(clientInfo)).toThrow(
+        'Connections from metamask origin are not allowed',
+      );
+      expect(service.bridgeByClientId[clientInfo.clientId]).toBeUndefined();
+    });
+
+    it('should allow connection when originatorInfo contains "metamask" as substring', () => {
+      const clientInfo: DappClient = {
+        clientId: 'client1',
+        originatorInfo: {
+          url: 'https://my-metamask-dapp.com',
+          title: 'My MetaMask App',
+          platform: 'test',
+          dappId: 'dappId',
+        },
+        connected: false,
+        validUntil: Date.now(),
+        scheme: 'test',
+      };
+
+      expect(() => service.setupBridge(clientInfo)).not.toThrow();
+      expect(service.bridgeByClientId[clientInfo.clientId]).toBeInstanceOf(
+        BackgroundBridge,
+      );
+    });
+
+    it('should allow connection when originatorInfo has valid url and title', () => {
+      const clientInfo: DappClient = {
+        clientId: 'client1',
+        originatorInfo: {
+          url: 'https://example.com',
+          title: 'Example Dapp',
+          platform: 'test',
+          dappId: 'dappId',
+        },
+        connected: false,
+        validUntil: Date.now(),
+        scheme: 'test',
+      };
+
+      expect(() => service.setupBridge(clientInfo)).not.toThrow();
+      expect(service.bridgeByClientId[clientInfo.clientId]).toBeInstanceOf(
+        BackgroundBridge,
+      );
     });
   });
   describe('sendMessage', () => {
@@ -130,7 +249,9 @@ describe('DeeplinkProtocolService', () => {
 
     it('should handle batch RPC responses', async () => {
       const mockChainRPCs = [{ id: '1' }];
-      const mockMessage = { data: { id: '1', error: null } };
+      const mockMessage = {
+        data: { id: '1', accounts: [], chainId: '0x1', error: null },
+      };
       service.batchRPCManager.getById = jest
         .fn()
         .mockReturnValue(mockChainRPCs);
@@ -144,6 +265,8 @@ describe('DeeplinkProtocolService', () => {
         url: 'test-url',
         isRemoteConn: true,
         sendMessage: jest.fn(),
+        // TODO: Replace "any" with type
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);
 
       await service.sendMessage(mockMessage, true);
@@ -159,7 +282,14 @@ describe('DeeplinkProtocolService', () => {
     });
 
     it('should handle error in message data', async () => {
-      const mockMessage = { data: { id: '1', error: new Error('Test error') } };
+      const mockMessage = {
+        data: {
+          id: '1',
+          accounts: [],
+          chainId: '0x1',
+          error: new Error('Test error'),
+        },
+      };
       const openDeeplinkSpy = jest.spyOn(service, 'openDeeplink');
 
       service.currentClientId = 'client1';
@@ -170,6 +300,8 @@ describe('DeeplinkProtocolService', () => {
         url: 'test-url',
         isRemoteConn: true,
         sendMessage: jest.fn(),
+        // TODO: Replace "any" with type
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);
 
       await service.sendMessage(mockMessage, true);
@@ -196,7 +328,14 @@ describe('DeeplinkProtocolService', () => {
 
     it('should handle non-final batch RPC response and error in message data', async () => {
       const mockChainRPCs = [{ id: '1' }];
-      const mockMessage = { data: { id: '1', error: new Error('Test error') } };
+      const mockMessage = {
+        data: {
+          id: '1',
+          accounts: [],
+          chainId: '0x1',
+          error: new Error('Test error'),
+        },
+      };
       const devLoggerSpy = jest.spyOn(DevLogger, 'log');
       const openDeeplinkSpy = jest.spyOn(service, 'openDeeplink');
       service.batchRPCManager.getById = jest
@@ -212,6 +351,8 @@ describe('DeeplinkProtocolService', () => {
         url: 'test-url',
         isRemoteConn: true,
         sendMessage: jest.fn(),
+        // TODO: Replace "any" with type
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any);
 
       service.rpcQueueManager.remove = jest.fn();
@@ -312,6 +453,117 @@ describe('DeeplinkProtocolService', () => {
     });
   });
 
+  describe('handleConnectionEventAsync', () => {
+    let clientInfo: DappClient;
+
+    let params: {
+      dappPublicKey: string;
+      url: string;
+      scheme: string;
+      channelId: string;
+      originatorInfo?: string;
+      request?: string;
+    };
+
+    beforeEach(() => {
+      clientInfo = {
+        clientId: 'client1',
+        originatorInfo: {
+          url: 'test.com',
+          title: 'Test',
+          platform: 'test',
+          dappId: 'dappId',
+        },
+        connected: false,
+        validUntil: Date.now(),
+        scheme: 'scheme1',
+      };
+      params = {
+        dappPublicKey: 'key',
+        url: 'url',
+        scheme: 'scheme1',
+        channelId: 'client1',
+        originatorInfo: Buffer.from(
+          JSON.stringify({
+            originatorInfo: {
+              url: 'test.com',
+              title: 'Test',
+              platform: 'test',
+              dappId: 'dappId',
+            },
+          }),
+        ).toString('base64'),
+        request: JSON.stringify({ id: '1', method: 'test', params: [] }),
+      };
+
+      // Mocking methods
+      service.checkPermission = jest.fn().mockResolvedValue(null);
+      service.setupBridge = jest.fn();
+      service.sendMessage = jest.fn().mockResolvedValue(null);
+      service.processDappRpcRequest = jest.fn().mockResolvedValue(null);
+      service.openDeeplink = jest.fn().mockResolvedValue(null);
+
+      (Engine.context as unknown) = {
+        PermissionController: {
+          requestPermissions: jest.fn().mockResolvedValue(null),
+        },
+        KeyringController: {
+          unlock: jest.fn().mockResolvedValue(null),
+          isUnlocked: jest.fn().mockReturnValue(true),
+        },
+      };
+    });
+
+    it('should setup a new client bridge if the connection does not exist', async () => {
+      await service.handleConnectionEventAsync({ clientInfo, params });
+      expect(service.checkPermission).toHaveBeenCalledWith({
+        originatorInfo: clientInfo.originatorInfo,
+        channelId: clientInfo.clientId,
+      });
+      expect(service.setupBridge).toHaveBeenCalledWith(clientInfo);
+      expect(SDKConnect.getInstance().addDappConnection).toHaveBeenCalledWith({
+        id: clientInfo.clientId,
+        lastAuthorized: expect.any(Number),
+        origin: AppConstants.MM_SDK.IOS_SDK,
+        originatorInfo: clientInfo.originatorInfo,
+        otherPublicKey: service.dappPublicKeyByClientId[clientInfo.clientId],
+        validUntil: expect.any(Number),
+        scheme: clientInfo.scheme,
+      });
+    });
+
+    it('should update existing client connection and process request if exists', async () => {
+      service.connections[clientInfo.clientId] = clientInfo;
+      await service.handleConnectionEventAsync({ clientInfo, params });
+      expect(service.processDappRpcRequest).toHaveBeenCalledWith(params);
+    });
+
+    it('should send error message if connection event fails', async () => {
+      (service.checkPermission as jest.Mock).mockRejectedValue(
+        new Error('Permission error'),
+      );
+      await service.handleConnectionEventAsync({ clientInfo, params });
+      expect(service.sendMessage).toHaveBeenCalledWith({
+        data: {
+          error: new Error('Permission error'),
+          jsonrpc: '2.0',
+        },
+        name: 'metamask-provider',
+      });
+      expect(service.openDeeplink).toHaveBeenCalledWith({
+        message: {
+          data: {
+            error: new Error('Permission error'),
+            jsonrpc: '2.0',
+          },
+          name: 'metamask-provider',
+        },
+        clientId: '',
+        scheme: clientInfo.scheme,
+      });
+    });
+  });
+
   describe('processDappRpcRequest', () => {
     it('should process a dapp RPC request', async () => {
       const params = {
@@ -322,6 +574,8 @@ describe('DeeplinkProtocolService', () => {
         originatorInfo: 'info',
         request: JSON.stringify({ id: '1', method: 'test', params: [] }),
       };
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       service.bridgeByClientId.channel1 = { onMessage: jest.fn() } as any;
       await service.processDappRpcRequest(params);
       expect(handleCustomRpcCalls).toHaveBeenCalled();
@@ -329,7 +583,16 @@ describe('DeeplinkProtocolService', () => {
   });
 
   describe('handleMessage', () => {
-    it('should handle an incoming message', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    });
+
+    it('logs an incoming deeplink message', () => {
       const params = {
         dappPublicKey: 'key',
         url: 'url',
@@ -338,15 +601,19 @@ describe('DeeplinkProtocolService', () => {
         ).toString('base64'),
         channelId: 'channel1',
         scheme: 'scheme',
-        account: '0xAddress@1',
+        account: `${toChecksumHexAddress(MOCK_ADDRESS)}@1`,
       };
+
       service.handleMessage(params);
+
       expect(DevLogger.log).toHaveBeenCalled();
     });
   });
 
   describe('removeConnection', () => {
     it('should remove a connection', () => {
+      // TODO: Replace "any" with type
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       service.connections.channel1 = {} as any;
       service.removeConnection('channel1');
       expect(service.connections.channel1).toBeUndefined();

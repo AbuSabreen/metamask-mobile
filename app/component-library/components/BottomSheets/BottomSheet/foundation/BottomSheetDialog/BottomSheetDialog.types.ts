@@ -1,5 +1,5 @@
 // Third party dependencies.
-import { ViewProps } from 'react-native';
+import { StyleProp, ViewProps, ViewStyle } from 'react-native';
 
 /**
  * BottomSheetDialog component props.
@@ -19,6 +19,11 @@ export interface BottomSheetDialogProps extends ViewProps {
    * @default true
    */
   isInteractable?: boolean;
+  /**
+   * Optional boolean that indicates if the KeyboardAvoidingView is enabled.
+   * @default true
+   */
+  keyboardAvoidingViewEnabled?: boolean;
   /**
    * Optional callback that gets triggered when sheet is closed.
    */
@@ -40,5 +45,6 @@ export interface BottomSheetDialogRef {
 export interface BottomSheetDialogStyleSheetVars {
   maxSheetHeight: number;
   screenBottomPadding: number;
+  style: StyleProp<ViewStyle>;
   isFullscreen: boolean;
 }

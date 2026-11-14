@@ -1,40 +1,77 @@
-import { StyleSheet } from 'react-native';
+/* eslint-disable react-native/no-color-literals */
+import { StyleSheet, TextStyle } from 'react-native';
 import { Theme } from '../../../util/theme/models';
+import { colors } from '../../../styles/common';
 
 const createStyles = (theme: Theme) =>
   StyleSheet.create({
     container: {
-      flex: 1,
-      backgroundColor: theme.brandColors.black000,
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      height: '100%',
+      width: '100%',
+      backgroundColor: theme.brandColors.black,
     },
     preview: {
       flex: 1,
+      width: '100%',
+      height: '100%',
+      position: 'absolute',
+      zIndex: 0,
     },
-    innerView: {
+    overlayContainerColumn: {
+      display: 'flex',
+      width: '100%',
+      height: '100%',
+      flexDirection: 'column',
+      position: 'absolute',
+      zIndex: 1,
+    },
+    overlayContainerRow: {
+      display: 'flex',
+      flexDirection: 'row',
+    },
+    overlay: {
       flex: 1,
-    },
-    closeIcon: {
-      marginTop: 20,
-      marginRight: 20,
-      width: 40,
-      alignSelf: 'flex-end',
-      color: theme.brandColors.white000,
+      flexBasis: 0,
+      backgroundColor: colors.overlay,
+      flexDirection: 'column',
+      display: 'flex',
     },
     frame: {
       width: 250,
       height: 250,
       alignSelf: 'center',
       justifyContent: 'center',
-      marginTop: 100,
-      opacity: 0.5,
+      margin: -4,
     },
-    text: {
-      flex: 1,
-      fontSize: 17,
-      color: theme.brandColors.white000,
+    overlayText: {
+      ...(theme.typography.sBodyMDMedium as TextStyle),
+      color: theme.brandColors.white,
+      position: 'absolute',
       textAlign: 'center',
+      textAlignVertical: 'bottom',
+      paddingBottom: 28,
+      width: '100%',
+      top: -40,
+    },
+    cameraNotAvailableContainer: {
       justifyContent: 'center',
-      marginTop: 100,
+      alignItems: 'center',
+      zIndex: 3,
+    },
+    cameraNotAvailableHeader: {
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      width: '100%',
+      zIndex: 2,
+    },
+    cameraNotAvailableText: {
+      ...(theme.typography.sBodyMDMedium as TextStyle),
+      color: theme.brandColors.white,
+      textAlign: 'center',
     },
   });
 

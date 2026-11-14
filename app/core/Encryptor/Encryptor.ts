@@ -1,16 +1,29 @@
 import { hasProperty, isPlainObject, Json } from '@metamask/utils';
+import type { Encryptor as KeyringControllerEncryptor } from '@metamask/keyring-controller';
 import {
   SALT_BYTES_COUNT,
   ENCRYPTION_LIBRARY,
   LEGACY_DERIVATION_OPTIONS,
 } from './constants';
 import type {
-  WithKeyEncryptor,
   EncryptionKey,
   EncryptionResult,
   KeyDerivationOptions,
 } from './types';
-import { getEncryptionLibrary } from './lib';
+import { QuickCryptoLib } from './lib';
+import { getRandomBytes } from './bytes';
+
+// Add these interfaces near the top with the other types
+interface DetailedDecryptResult {
+  exportedKeyString: string;
+  vault: unknown;
+  salt: string;
+}
+
+interface DetailedEncryptionResult {
+  vault: string;
+  exportedKeyString: string;
+}
 
 /**
  * Checks if the provided object is a `KeyDerivationOptions`.
@@ -44,7 +57,14 @@ const isEncryptionKey = (key: unknown): key is EncryptionKey =>
  * It supports generating a salt, deriving an encryption key from a
  * password and salt, and performing the encryption and decryption processes.
  */
-class Encryptor implements WithKeyEncryptor<EncryptionKey, Json> {
+class Encryptor
+  implements
+    KeyringControllerEncryptor<
+      EncryptionKey,
+      KeyDerivationOptions,
+      EncryptionResult
+    >
+{
   /**
    * The key derivation parameters used for encryption and decryption operations.
    * These parameters include the algorithm and its specific parameters, for example, number of iterations for key derivation.
@@ -73,18 +93,19 @@ class Encryptor implements WithKeyEncryptor<EncryptionKey, Json> {
    * @param size - The number of bytes for the salt. Defaults to `constant.SALT_BYTES_COUNT`.
    * @returns The base64-encoded salt string.
    */
-  generateSalt = (size = SALT_BYTES_COUNT) => {
-    const view = new Uint8Array(size);
-    global.crypto.getRandomValues(view);
-
+  generateSalt = (size: number = SALT_BYTES_COUNT) =>
     // From: https://github.com/MetaMask/browser-passworder/blob/main/src/index.ts#L418
     // Uint8Array is a fixed length array and thus does not have methods like pop, etc
     // so TypeScript complains about casting it to an array. Array.from() works here for
     // getting the proper type, but it results in a functional difference. In order to
     // cast, you have to first cast view to unknown then cast the unknown value to number[]
     // TypeScript ftw: double opt in to write potentially type-mismatched code.
-    return btoa(String.fromCharCode.apply(null, view as unknown as number[]));
-  };
+    btoa(
+      String.fromCharCode.apply(
+        null,
+        getRandomBytes(size) as unknown as number[],
+      ),
+    );
 
   /**
    * Generate an encryption key from a password and random salt, specifying
@@ -100,14 +121,13 @@ class Encryptor implements WithKeyEncryptor<EncryptionKey, Json> {
   keyFromPassword = async (
     password: string,
     salt: string,
-    exportable = false,
+    exportable = true,
     opts: KeyDerivationOptions = this.keyDerivationOptions,
-    lib = ENCRYPTION_LIBRARY.original,
+    lib = ENCRYPTION_LIBRARY.quickCrypto,
   ): Promise<EncryptionKey> => {
-    const key = await getEncryptionLibrary(lib).deriveKey(password, salt, opts);
-
+    const derivedKey = await QuickCryptoLib.deriveKey(password, salt, opts);
     return {
-      key,
+      key: derivedKey,
       keyMetadata: opts,
       exportable,
       lib,
@@ -127,12 +147,11 @@ class Encryptor implements WithKeyEncryptor<EncryptionKey, Json> {
   ): Promise<EncryptionResult> => {
     const text = JSON.stringify(data);
 
-    const lib = getEncryptionLibrary(key.lib);
-    const iv = await lib.generateIV(16);
-    const cipher = await lib.encrypt(text, key.key, iv);
+    const iv = await QuickCryptoLib.generateIv(16);
+    const result = await QuickCryptoLib.encrypt(text, key.key, iv);
 
     return {
-      cipher,
+      cipher: result,
       iv,
       keyMetadata: key.keyMetadata,
       lib: key.lib,
@@ -150,13 +169,13 @@ class Encryptor implements WithKeyEncryptor<EncryptionKey, Json> {
     key: EncryptionKey,
     payload: EncryptionResult,
   ): Promise<unknown> => {
-    // TODO: Check for key and payload compatiblity?
+    const result = await QuickCryptoLib.decrypt(
+      payload.cipher,
+      key.key,
+      payload.iv,
+    );
 
-    // We assume that both `payload.lib` and `key.lib` are the same here!
-    const lib = getEncryptionLibrary(payload.lib);
-    const text = await lib.decrypt(payload.cipher, key.key, payload.iv);
-
-    return JSON.parse(text);
+    return JSON.parse(result);
   };
 
   /**
@@ -183,7 +202,7 @@ class Encryptor implements WithKeyEncryptor<EncryptionKey, Json> {
     // the encryptor itself. This makes sure we always re-encrypt with the "latest" and "best"
     // setup possible.
     const result = await this.encryptWithKey(key, data);
-    result.lib = key.lib; // Use the same library as the one used for key generation!
+    result.lib = key.lib;
     result.salt = salt;
     result.keyMetadata = key.keyMetadata;
     return JSON.stringify(result);
@@ -249,7 +268,8 @@ class Encryptor implements WithKeyEncryptor<EncryptionKey, Json> {
     }
 
     const json = JSON.stringify(key);
-    return Buffer.from(json).toString('base64');
+    const base64Key = Buffer.from(json).toString('base64');
+    return base64Key;
   };
 
   /**
@@ -272,7 +292,74 @@ class Encryptor implements WithKeyEncryptor<EncryptionKey, Json> {
     }
     return key as EncryptionKey;
   };
+
+  /**
+   * Given a password and a cipher text, decrypts the text and returns
+   * the resulting value, keyString, and salt.
+   *
+   * @param password - The password to decrypt with.
+   * @param text - The encrypted vault to decrypt.
+   * @returns The decrypted vault along with the salt and exported key.
+   */
+  decryptWithDetail = async (
+    password: string,
+    text: string,
+  ): Promise<DetailedDecryptResult> => {
+    const payload = JSON.parse(text);
+
+    const { salt, keyMetadata } = payload;
+    const key = await this.keyFromPassword(
+      password,
+      salt,
+      true,
+      keyMetadata ?? LEGACY_DERIVATION_OPTIONS,
+      payload.lib,
+    );
+    const exportedKeyString = await this.exportKey(key);
+    const vault = await this.decryptWithKey(key, payload);
+
+    return {
+      exportedKeyString,
+      vault,
+      salt,
+    };
+  };
+
+  /**
+   * Encrypts a data object that can be any serializable value using
+   * a provided password.
+   *
+   * @param password - A password to use for encryption.
+   * @param dataObj - The data to encrypt.
+   * @param salt - The salt used to encrypt.
+   * @param keyDerivationOptions - The options to use for key derivation.
+   * @returns The vault and exported key string.
+   */
+  encryptWithDetail = async (
+    password: string,
+    dataObj: Json,
+    salt = this.generateSalt(),
+    keyDerivationOptions = this.keyDerivationOptions,
+  ): Promise<DetailedEncryptionResult> => {
+    const key = await this.keyFromPassword(
+      password,
+      salt,
+      true,
+      keyDerivationOptions,
+      ENCRYPTION_LIBRARY.original,
+    );
+    const exportedKeyString = await this.exportKey(key);
+
+    const result = await this.encryptWithKey(key, dataObj);
+    result.salt = salt;
+    result.keyMetadata = key.keyMetadata;
+    const vault = JSON.stringify(result);
+
+    return {
+      vault,
+      exportedKeyString,
+    };
+  };
 }
 
-// eslint-disable-next-line import/prefer-default-export
 export { Encryptor };

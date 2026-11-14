@@ -1,0 +1,999 @@
+import React from 'react';
+import { screen, fireEvent, waitFor, act } from '@testing-library/react-native';
+import { StackActions } from '@react-navigation/native';
+import AccountSelector from './AccountSelector';
+import { renderScreen } from '../../../util/test/renderWithProvider';
+import { AccountListBottomSheetSelectorsIDs } from './AccountListBottomSheet.testIds';
+import { CommonSelectorsIDs } from '../../../util/Common.testIds';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { MULTICHAIN_ACCOUNT_SELECTOR_SEARCH_INPUT_TESTID } from '../../../component-library/components-temp/MultichainAccounts/MultichainAccountSelectorList/MultichainAccountSelectorList.constants';
+import Routes from '../../../constants/navigation/Routes';
+import { ManageAccountsViewedSource } from '../../../core/Analytics/events/accounts';
+import { strings } from '../../../../locales/i18n';
+import Engine from '../../../core/Engine';
+import {
+  AccountSelectorParams,
+  AccountSelectorProps,
+  AccountSelectorScreens,
+} from './AccountSelector.types';
+import {
+  createMockAccountGroup,
+  createMockEntropyWallet,
+  createMockInternalAccountsFromGroups,
+  createMockState,
+} from '../../../component-library/components-temp/MultichainAccounts/test-utils';
+import { AccountGroupObject } from '@metamask/account-tree-controller';
+
+jest.mock('../../hooks/useNonTokenBalance', () => ({
+  useAccountListBalance: jest.fn(() => () => undefined),
+}));
+
+// Mock Engine
+jest.mock('../../../core/Engine', () => ({
+  context: {
+    KeyringController: {
+      state: { isUnlocked: true, keyrings: [] },
+    },
+    AccountsController: {
+      state: {
+        internalAccounts: {
+          accounts: {},
+          selectedAccount: '',
+        },
+      },
+    },
+    AccountTreeController: {
+      setSelectedAccountGroup: jest.fn(),
+    },
+    MultichainAccountService: {
+      createNextMultichainAccountGroup: jest.fn().mockResolvedValue({
+        id: 'new-account-group-id',
+        metadata: { name: 'New Account' },
+        accounts: [],
+      }),
+    },
+  },
+  setSelectedAddress: jest.fn(),
+}));
+
+// Mock useAnalytics
+const mockTrackEvent = jest.fn();
+// Declares the event parameter so recorded calls carry the event name.
+const mockCreateEventBuilder = jest.fn((_eventName: unknown) => ({
+  addProperties: jest.fn().mockReturnThis(),
+  build: jest.fn(() => ({})),
+}));
+
+jest.mock('../../../components/hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => ({
+    trackEvent: mockTrackEvent,
+    createEventBuilder: mockCreateEventBuilder,
+  }),
+}));
+
+// Mock useSyncSRPs
+jest.mock('../../hooks/useSyncSRPs', () => ({
+  useSyncSRPs: jest.fn(),
+}));
+
+// Mock useAccountsOperationsLoadingStates
+const mockUseAccountsOperationsLoadingStates = jest.fn();
+jest.mock('../../../util/accounts/useAccountsOperationsLoadingStates', () => ({
+  useAccountsOperationsLoadingStates: () =>
+    mockUseAccountsOperationsLoadingStates(),
+}));
+
+// Mock useAccounts hook
+jest.mock('../../hooks/useAccounts', () => ({
+  useAccounts: jest.fn(() => ({
+    accounts: [],
+    evmAccounts: [],
+    ensByAccountAddress: {},
+  })),
+}));
+
+// Mock navigation
+const mockGoBack = jest.fn();
+const mockNavigate = jest.fn();
+const mockDispatch = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    goBack: mockGoBack,
+    navigate: mockNavigate,
+    dispatch: mockDispatch,
+    isFocused: jest.fn(() => true),
+  }),
+}));
+
+// Mock whenEngineReady
+jest.mock('../../../util/analytics/whenEngineReady', () => ({
+  whenEngineReady: jest.fn().mockResolvedValue(undefined),
+}));
+
+// Mock analytics
+jest.mock('../../../util/analytics/analytics', () => ({
+  analytics: {
+    isEnabled: jest.fn(() => false),
+    trackEvent: jest.fn(),
+    optIn: jest.fn().mockResolvedValue(undefined),
+    optOut: jest.fn().mockResolvedValue(undefined),
+    getAnalyticsId: jest.fn().mockResolvedValue('test-analytics-id'),
+    identify: jest.fn(),
+    trackView: jest.fn(),
+    isOptedIn: jest.fn().mockResolvedValue(false),
+  },
+}));
+
+// Helper to create mock state with wallets and accounts
+const createTestState = (
+  accountGroups: AccountGroupObject[],
+  selectedGroupId?: string,
+) => {
+  const wallets = accountGroups.map((group, index) => {
+    // Extract wallet ID from group ID (e.g., 'entropy:wallet1/group1' -> 'entropy:wallet1')
+    const groupIdStr = group.id as string;
+    const slashIndex = groupIdStr.indexOf('/');
+    const walletId =
+      slashIndex !== -1
+        ? groupIdStr.substring(0, slashIndex)
+        : `wallet${index + 1}`;
+    return createMockEntropyWallet(walletId, `Wallet ${index + 1}`, [group]);
+  });
+
+  const internalAccounts = createMockInternalAccountsFromGroups(accountGroups);
+  const baseState = createMockState(wallets, internalAccounts);
+
+  // Update selected account group if provided
+  if (selectedGroupId) {
+    (
+      baseState.engine.backgroundState.AccountTreeController as {
+        selectedAccountGroup: string;
+      }
+    ).selectedAccountGroup = selectedGroupId;
+  }
+
+  return baseState;
+};
+
+const defaultRouteParams: AccountSelectorParams = {
+  onSelectAccount: jest.fn(),
+  disablePrivacyMode: false,
+};
+
+const mockRoute: AccountSelectorProps['route'] = {
+  params: defaultRouteParams,
+};
+
+const AccountSelectorWrapper = (props?: {
+  route?: AccountSelectorProps['route'];
+}) => <AccountSelector route={props?.route ?? mockRoute} />;
+
+describe('AccountSelector', () => {
+  // Create default test data
+  let mockAccountGroup1: AccountGroupObject;
+  let mockAccountGroup2: AccountGroupObject;
+  let mockState: ReturnType<typeof createTestState>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    // Reset loading states to default
+    mockUseAccountsOperationsLoadingStates.mockReturnValue({
+      isAccountSyncingInProgress: false,
+      areAnyOperationsLoading: false,
+      loadingMessage: undefined,
+    });
+
+    // Create fresh mock data for each test
+    mockAccountGroup1 = createMockAccountGroup(
+      'entropy:wallet1/group1',
+      'Account 1',
+      ['account1'],
+      true,
+    );
+    mockAccountGroup2 = createMockAccountGroup(
+      'entropy:wallet2/group2',
+      'Account 2',
+      ['account2'],
+      true,
+    );
+    mockState = createTestState(
+      [mockAccountGroup1, mockAccountGroup2],
+      mockAccountGroup1.id,
+    );
+  });
+
+  describe('Search Interacted', () => {
+    const searchInteractedProperties = () =>
+      mockCreateEventBuilder.mock.calls
+        .map(([eventName], index) => ({ eventName, index }))
+        .filter(
+          ({ eventName }) => eventName === MetaMetricsEvents.SEARCH_INTERACTED,
+        )
+        .flatMap(
+          ({ index }) =>
+            mockCreateEventBuilder.mock.results[index].value.addProperties.mock
+              .calls,
+        )
+        .map(([properties]) => properties);
+
+    it('reports focusing the account list search', () => {
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      fireEvent(
+        screen.getByTestId(MULTICHAIN_ACCOUNT_SELECTOR_SEARCH_INPUT_TESTID),
+        'focus',
+      );
+
+      expect(searchInteractedProperties()).toContainEqual({
+        source: 'account_list',
+        interaction_type: 'focused',
+      });
+    });
+
+    it('reports a completed search once the query settles', async () => {
+      jest.useFakeTimers();
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      fireEvent.changeText(
+        screen.getByTestId(MULTICHAIN_ACCOUNT_SELECTOR_SEARCH_INPUT_TESTID),
+        'Acc',
+      );
+      await act(async () => {
+        jest.advanceTimersByTime(250);
+      });
+
+      expect(searchInteractedProperties()).toContainEqual({
+        source: 'account_list',
+        interaction_type: 'searched',
+      });
+      jest.useRealTimers();
+    });
+  });
+
+  describe('Rendering', () => {
+    it('renders the component with account list', () => {
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      // Account list should be rendered
+      expect(
+        screen.getByTestId(AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ID),
+      ).toBeOnTheScreen();
+
+      // Header title should be present
+      expect(screen.getByText('Accounts')).toBeOnTheScreen();
+    });
+
+    it('renders add wallet button by default', () => {
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      const addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      expect(addButton).toBeOnTheScreen();
+      expect(addButton).toHaveTextContent('Add wallet');
+    });
+
+    it('renders the Manage Accounts gear in the header and navigates on press', () => {
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      const manageAccountsButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.MANAGE_ACCOUNTS_BUTTON,
+      );
+      expect(manageAccountsButton).toBeOnTheScreen();
+      expect(manageAccountsButton).toHaveProp(
+        'accessibilityLabel',
+        strings('multichain_accounts.manage_accounts.title'),
+      );
+
+      fireEvent.press(manageAccountsButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.MANAGE_ACCOUNTS_VIEW, {
+        source: ManageAccountsViewedSource.AccountList,
+      });
+    });
+  });
+
+  describe('Add Wallet Button', () => {
+    it('displays "Add wallet" text on the button', () => {
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      const addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      expect(addButton).toHaveTextContent('Add wallet');
+    });
+
+    it('navigates to AddWallet page when Add wallet button is pressed', () => {
+      jest.useRealTimers();
+
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      const addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      fireEvent.press(addButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.SHEET.ADD_WALLET);
+
+      // Footer still shows a single "Add wallet" label; add-wallet UI opens via navigation
+      expect(screen.getByText('Add wallet')).toBeOnTheScreen();
+
+      // Account list remains on this screen (navigation is mocked)
+      expect(
+        screen.getByTestId(AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ID),
+      ).toBeOnTheScreen();
+
+      jest.useFakeTimers();
+    });
+  });
+
+  describe('Loading States', () => {
+    it('displays loading message when account syncing is in progress', () => {
+      mockUseAccountsOperationsLoadingStates.mockReturnValue({
+        isAccountSyncingInProgress: true,
+        areAnyOperationsLoading: true,
+        loadingMessage: 'Syncing...',
+      });
+
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      const addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      expect(addButton).toHaveTextContent('Syncing...');
+    });
+
+    it('shows disabled state when syncing is in progress', () => {
+      mockUseAccountsOperationsLoadingStates.mockReturnValue({
+        isAccountSyncingInProgress: true,
+        areAnyOperationsLoading: true,
+        loadingMessage: 'Syncing...',
+      });
+
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      const addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+
+      // Button should have syncing message and be in disabled state
+      expect(addButton).toHaveTextContent('Syncing...');
+      // Verify the button is disabled
+      expect(addButton).toBeDisabled();
+    });
+
+    it('shows "Add wallet" text when syncing completes', () => {
+      // Start with syncing
+      mockUseAccountsOperationsLoadingStates.mockReturnValue({
+        isAccountSyncingInProgress: true,
+        areAnyOperationsLoading: true,
+        loadingMessage: 'Syncing...',
+      });
+
+      const { unmount } = renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      let addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      expect(addButton).toHaveTextContent('Syncing...');
+
+      unmount();
+
+      // Syncing completes
+      mockUseAccountsOperationsLoadingStates.mockReturnValue({
+        isAccountSyncingInProgress: false,
+        areAnyOperationsLoading: false,
+        loadingMessage: undefined,
+      });
+
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      expect(addButton).toHaveTextContent('Add wallet');
+    });
+
+    it('prioritizes loading message over default button text', () => {
+      mockUseAccountsOperationsLoadingStates.mockReturnValue({
+        isAccountSyncingInProgress: true,
+        areAnyOperationsLoading: true,
+        loadingMessage: 'Creating account...',
+      });
+
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      const addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      // Should show loading message, not "Add wallet"
+      expect(addButton).toHaveTextContent('Creating account...');
+    });
+  });
+
+  describe('disableAddAccountButton prop', () => {
+    it('hides add button when disableAddAccountButton is true', () => {
+      const routeWithDisabledButton: AccountSelectorProps['route'] = {
+        params: {
+          ...defaultRouteParams,
+          disableAddAccountButton: true,
+        },
+      };
+
+      renderScreen(
+        () => <AccountSelector route={routeWithDisabledButton} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+      );
+
+      const addButton = screen.queryByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      expect(addButton).toBeNull();
+    });
+
+    it('shows add button when disableAddAccountButton is false', () => {
+      const routeWithEnabledButton: AccountSelectorProps['route'] = {
+        params: {
+          ...defaultRouteParams,
+          disableAddAccountButton: false,
+        },
+      };
+
+      renderScreen(
+        () => <AccountSelector route={routeWithEnabledButton} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+      );
+
+      const addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      expect(addButton).toBeOnTheScreen();
+    });
+
+    it('shows add button when disableAddAccountButton is undefined', () => {
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      const addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      expect(addButton).toBeOnTheScreen();
+    });
+  });
+
+  describe('Navigation to Add Account Actions', () => {
+    it('navigates directly to AddWallet page when navigateToAddAccountActions is set', async () => {
+      jest.useRealTimers();
+
+      const routeWithNavigation: AccountSelectorProps['route'] = {
+        params: {
+          ...defaultRouteParams,
+          navigateToAddAccountActions:
+            AccountSelectorScreens.MultichainAddWalletActions,
+        },
+      };
+
+      renderScreen(
+        () => <AccountSelector route={routeWithNavigation} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+      );
+
+      await waitFor(() =>
+        expect(mockDispatch).toHaveBeenCalledWith(
+          StackActions.replace(Routes.SHEET.ADD_WALLET),
+        ),
+      );
+
+      expect(
+        screen.queryByTestId(
+          AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ID,
+        ),
+      ).not.toBeOnTheScreen();
+
+      jest.useFakeTimers();
+    });
+  });
+
+  describe('Account Selection', () => {
+    it('calls setSelectedAccountGroup when an account is selected', async () => {
+      jest.useRealTimers();
+
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      // Wait for the account list to render
+      await waitFor(() => {
+        expect(screen.getByText('Account 1')).toBeOnTheScreen();
+      });
+
+      // Find and press an account cell
+      const accountCell = screen.getByText('Account 1');
+      fireEvent.press(accountCell);
+
+      // Verify setSelectedAccountGroup was called
+      await waitFor(() => {
+        expect(
+          Engine.context.AccountTreeController.setSelectedAccountGroup,
+        ).toHaveBeenCalled();
+      });
+
+      jest.useFakeTimers();
+    });
+
+    it('tracks account switch event when account is selected', async () => {
+      jest.useRealTimers();
+
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Account 1')).toBeOnTheScreen();
+      });
+
+      const accountCell = screen.getByText('Account 1');
+      fireEvent.press(accountCell);
+
+      await waitFor(() => {
+        expect(mockCreateEventBuilder).toHaveBeenCalled();
+        expect(mockTrackEvent).toHaveBeenCalled();
+      });
+
+      jest.useFakeTimers();
+    });
+
+    it('invokes the optional onSelectAccount route param with the tapped account group when the user picks a different account', async () => {
+      jest.useRealTimers();
+
+      const onSelectAccount = jest.fn();
+      const params: AccountSelectorParams = {
+        ...defaultRouteParams,
+        onSelectAccount,
+      };
+      const routeWithCallback: AccountSelectorProps['route'] = { params };
+
+      // mockState has selectedAccountGroup = mockAccountGroup1.id, so tapping
+      // Account 2 is a genuine "different account" selection that DOES cause a
+      // Redux state change.
+      renderScreen(
+        () => <AccountSelector route={routeWithCallback} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        params,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Account 2')).toBeOnTheScreen();
+      });
+
+      fireEvent.press(screen.getByText('Account 2'));
+
+      await waitFor(() => {
+        expect(onSelectAccount).toHaveBeenCalledTimes(1);
+      });
+      expect(onSelectAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ id: mockAccountGroup2.id }),
+      );
+
+      jest.useFakeTimers();
+    });
+
+    it('fires onSelectAccount even when the tapped account is already the selected one', async () => {
+      jest.useRealTimers();
+
+      const onSelectAccount = jest.fn();
+      // mockState's selectedAccountGroup is already mockAccountGroup1.id, so
+      // tapping Account 1 will NOT cause a Redux state change. The callback
+      // must still fire so the caller knows a commit happened.
+      const params: AccountSelectorParams = {
+        ...defaultRouteParams,
+        onSelectAccount,
+      };
+
+      renderScreen(
+        () => <AccountSelector route={{ params }} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        params,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Account 1')).toBeOnTheScreen();
+      });
+
+      fireEvent.press(screen.getByText('Account 1'));
+
+      await waitFor(() => {
+        expect(onSelectAccount).toHaveBeenCalledTimes(1);
+      });
+      expect(onSelectAccount).toHaveBeenCalledWith(
+        expect.objectContaining({ id: mockAccountGroup1.id }),
+      );
+
+      jest.useFakeTimers();
+    });
+
+    it('does not throw when onSelectAccount is not provided', async () => {
+      jest.useRealTimers();
+
+      const paramsWithoutCallback: AccountSelectorParams = {
+        disablePrivacyMode: false,
+      };
+
+      renderScreen(
+        () => <AccountSelector route={{ params: paramsWithoutCallback }} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        paramsWithoutCallback,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Account 1')).toBeOnTheScreen();
+      });
+
+      expect(() =>
+        fireEvent.press(screen.getByText('Account 1')),
+      ).not.toThrow();
+
+      await waitFor(() => {
+        expect(
+          Engine.context.AccountTreeController.setSelectedAccountGroup,
+        ).toHaveBeenCalled();
+      });
+
+      jest.useFakeTimers();
+    });
+
+    it('calls setSelectedAccountGroup BEFORE onSelectAccount BEFORE goBack on a single tap', async () => {
+      jest.useRealTimers();
+
+      const onSelectAccount = jest.fn();
+      const params: AccountSelectorParams = {
+        ...defaultRouteParams,
+        onSelectAccount,
+      };
+
+      renderScreen(
+        () => <AccountSelector route={{ params }} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        params,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Account 2')).toBeOnTheScreen();
+      });
+
+      fireEvent.press(screen.getByText('Account 2'));
+
+      await waitFor(() => {
+        expect(onSelectAccount).toHaveBeenCalledTimes(1);
+        expect(mockGoBack).toHaveBeenCalledTimes(1);
+      });
+
+      // Contract: callers reading Redux state inside `onSelectAccount` must
+      // see the updated `selectedAccountGroup`, and the picker must still be
+      // mounted (goBack runs after the callback).
+      const setSelectedCallOrder = (
+        Engine.context.AccountTreeController
+          .setSelectedAccountGroup as jest.Mock
+      ).mock.invocationCallOrder[0];
+      const callbackCallOrder = onSelectAccount.mock.invocationCallOrder[0];
+      const goBackCallOrder = mockGoBack.mock.invocationCallOrder[0];
+
+      expect(setSelectedCallOrder).toBeLessThan(callbackCallOrder);
+      expect(callbackCallOrder).toBeLessThan(goBackCallOrder);
+
+      jest.useFakeTimers();
+    });
+
+    it('passes the full AccountGroupObject (not just the id) to onSelectAccount', async () => {
+      jest.useRealTimers();
+
+      const onSelectAccount = jest.fn();
+      const params: AccountSelectorParams = {
+        ...defaultRouteParams,
+        onSelectAccount,
+      };
+
+      renderScreen(
+        () => <AccountSelector route={{ params }} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        params,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Account 2')).toBeOnTheScreen();
+      });
+
+      fireEvent.press(screen.getByText('Account 2'));
+
+      await waitFor(() => {
+        expect(onSelectAccount).toHaveBeenCalledTimes(1);
+      });
+
+      const receivedGroup = onSelectAccount.mock
+        .calls[0][0] as AccountGroupObject;
+      expect(receivedGroup.id).toBe(mockAccountGroup2.id);
+      expect(receivedGroup.accounts).toEqual(mockAccountGroup2.accounts);
+      expect(receivedGroup.metadata?.name).toBe(
+        mockAccountGroup2.metadata.name,
+      );
+
+      jest.useFakeTimers();
+    });
+
+    it('does NOT invoke onSelectAccount when the user dismisses the picker via the back arrow', async () => {
+      jest.useRealTimers();
+
+      const onSelectAccount = jest.fn();
+      const params: AccountSelectorParams = {
+        ...defaultRouteParams,
+        onSelectAccount,
+      };
+
+      renderScreen(
+        () => <AccountSelector route={{ params }} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        params,
+      );
+
+      await waitFor(() => {
+        expect(
+          screen.getByTestId(CommonSelectorsIDs.BACK_ARROW_BUTTON),
+        ).toBeOnTheScreen();
+      });
+
+      fireEvent.press(screen.getByTestId(CommonSelectorsIDs.BACK_ARROW_BUTTON));
+
+      await waitFor(() => {
+        expect(mockGoBack).toHaveBeenCalledTimes(1);
+      });
+
+      expect(onSelectAccount).not.toHaveBeenCalled();
+      expect(
+        Engine.context.AccountTreeController.setSelectedAccountGroup,
+      ).not.toHaveBeenCalled();
+
+      jest.useFakeTimers();
+    });
+
+    it('invokes onSelectAccount once per tap when the user selects multiple accounts sequentially', async () => {
+      jest.useRealTimers();
+
+      const onSelectAccount = jest.fn();
+      const params: AccountSelectorParams = {
+        ...defaultRouteParams,
+        onSelectAccount,
+      };
+
+      renderScreen(
+        () => <AccountSelector route={{ params }} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        params,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Account 1')).toBeOnTheScreen();
+        expect(screen.getByText('Account 2')).toBeOnTheScreen();
+      });
+
+      fireEvent.press(screen.getByText('Account 2'));
+      fireEvent.press(screen.getByText('Account 1'));
+
+      await waitFor(() => {
+        expect(onSelectAccount).toHaveBeenCalledTimes(2);
+      });
+      expect(onSelectAccount.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ id: mockAccountGroup2.id }),
+      );
+      expect(onSelectAccount.mock.calls[1][0]).toEqual(
+        expect.objectContaining({ id: mockAccountGroup1.id }),
+      );
+
+      jest.useFakeTimers();
+    });
+
+    it('still fires analytics tracking and setSelectedAccountGroup when onSelectAccount is provided', async () => {
+      jest.useRealTimers();
+
+      const onSelectAccount = jest.fn();
+      const params: AccountSelectorParams = {
+        ...defaultRouteParams,
+        onSelectAccount,
+      };
+
+      renderScreen(
+        () => <AccountSelector route={{ params }} />,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        params,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Account 2')).toBeOnTheScreen();
+      });
+
+      fireEvent.press(screen.getByText('Account 2'));
+
+      await waitFor(() => {
+        expect(onSelectAccount).toHaveBeenCalledTimes(1);
+      });
+      expect(
+        Engine.context.AccountTreeController.setSelectedAccountGroup,
+      ).toHaveBeenCalledWith(mockAccountGroup2.id);
+      expect(mockTrackEvent).toHaveBeenCalled();
+      expect(mockCreateEventBuilder).toHaveBeenCalled();
+
+      jest.useFakeTimers();
+    });
+  });
+
+  describe('Reload Accounts', () => {
+    it('dispatches setReloadAccounts(false) on mount when state.accounts.reloadAccounts is true', async () => {
+      jest.useRealTimers();
+
+      const stateWithReload = {
+        ...mockState,
+        accounts: { reloadAccounts: true },
+      };
+
+      const { store } = renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: stateWithReload },
+        mockRoute.params,
+      );
+
+      await waitFor(() => {
+        expect(store.getState().accounts.reloadAccounts).toBe(false);
+      });
+
+      jest.useFakeTimers();
+    });
+
+    it('does NOT dispatch setReloadAccounts when state.accounts.reloadAccounts is already false', async () => {
+      jest.useRealTimers();
+
+      const { store } = renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Account 1')).toBeOnTheScreen();
+      });
+
+      expect(store.getState().accounts.reloadAccounts).toBe(false);
+
+      jest.useFakeTimers();
+    });
+  });
+
+  describe('Screen Navigation', () => {
+    it('navigates to AddWallet page when button is pressed', () => {
+      jest.useRealTimers();
+
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: mockState },
+        mockRoute.params,
+      );
+
+      // Navigate to add wallet actions
+      const addButton = screen.getByTestId(
+        AccountListBottomSheetSelectorsIDs.ACCOUNT_LIST_ADD_BUTTON_ID,
+      );
+      fireEvent.press(addButton);
+
+      expect(mockNavigate).toHaveBeenCalledWith(Routes.SHEET.ADD_WALLET);
+      expect(screen.getByText('Add wallet')).toBeOnTheScreen();
+
+      jest.useFakeTimers();
+    });
+  });
+
+  describe('Empty State', () => {
+    it('handles missing selectedAccountGroup gracefully', () => {
+      // Create state without a selected account group
+      const emptyState = createTestState([mockAccountGroup1]);
+      (
+        emptyState.engine.backgroundState.AccountTreeController as {
+          selectedAccountGroup: string;
+        }
+      ).selectedAccountGroup = '';
+
+      renderScreen(
+        AccountSelectorWrapper,
+        { name: Routes.MULTICHAIN_ACCOUNTS.ACCOUNT_SELECTOR },
+        { state: emptyState },
+        mockRoute.params,
+      );
+
+      // Component should still render without crashing
+      expect(screen.getByText('Accounts')).toBeOnTheScreen();
+    });
+  });
+});

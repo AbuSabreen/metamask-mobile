@@ -8,7 +8,7 @@ import { ThemeContext, mockTheme } from '../../../util/theme';
 import withFaviconAwareness from '../../hooks/useFavicon/withFaviconAwareness';
 import { isNumber } from 'lodash';
 import { isFaviconSVG } from '../../../util/favicon';
-import { SvgUri } from 'react-native-svg/src/xml';
+import { SvgUri } from 'react-native-svg';
 
 const createStyles = (colors) =>
   StyleSheet.create({
@@ -33,8 +33,11 @@ const createStyles = (colors) =>
  * View that renders a website logo depending of the context
  */
 /**
- * @deprecated This `<WebsiteIcon>` component has been deprecated, any new usage of it should use Avatar with the favicon variant instead:
- * https://github.com/MetaMask/metamask-mobile/blob/34f9da127435053a32e5f4e9c69ce8aa1e37c394/app/component-library/components/Avatars/Avatar/README.md#L1
+ * @deprecated The `<WebsiteIcon>` component has been deprecated in favor of `<AvatarFavicon>` from `@metamask/design-system-react-native`.
+ *
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/AvatarFavicon/README.md | AvatarFavicon component}
+ *
+ * Please replace this component with the equivalent component from `@metamask/design-system-react-native`.
  */
 class WebsiteIcon extends PureComponent {
   static propTypes = {
@@ -110,10 +113,12 @@ class WebsiteIcon extends PureComponent {
     let title = this.props.title;
 
     if (title !== undefined) {
-      title =
-        typeof this.props.title === 'string'
-          ? this.props.title.substring(0, 1)
-          : getHost(url).substring(0, 1);
+      if (typeof this.props.title === 'string') {
+        title = this.props.title.substring(0, 1);
+      } else {
+        const host = url && getHost(url);
+        title = host ? host.substring(0, 1) : '';
+      }
     }
 
     if (title && (!apiLogoUrl?.uri || renderIconUrlError)) {

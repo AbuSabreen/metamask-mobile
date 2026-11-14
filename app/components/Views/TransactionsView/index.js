@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { StyleSheet, View, InteractionManager } from 'react-native';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { StyleSheet, View } from 'react-native';
 import PropTypes from 'prop-types';
-import { connect } from 'react-redux';
-import { withNavigation } from '@react-navigation/compat';
+import { connect, useSelector } from 'react-redux';
+import { KnownCaipNamespace } from '@metamask/utils';
+import { useNavigation } from '@react-navigation/native';
 import { showAlert } from '../../../actions/alert';
 import Transactions from '../../UI/Transactions';
 import {
@@ -15,28 +16,31 @@ import {
 import {
   sortTransactions,
   filterByAddressAndNetwork,
+  isTransactionOnChains,
+  buildTrustedAddressSet,
 } from '../../../util/activity';
-import { safeToChecksumAddress } from '../../../util/address';
+import { areAddressesEqual } from '../../../util/address';
 import { addAccountTimeFlagFilter } from '../../../util/transactions';
-import { toLowerCaseEquals } from '../../../util/general';
-import {
-  selectChainId,
-  selectProviderType,
-} from '../../../selectors/networkController';
+import { selectProviderType } from '../../../selectors/networkController';
 import {
   selectConversionRate,
   selectCurrentCurrency,
 } from '../../../selectors/currencyRateController';
 import { selectTokens } from '../../../selectors/tokensController';
 import {
-  selectIdentities,
-  selectSelectedAddress,
-} from '../../../selectors/preferencesController';
-import { WalletViewSelectorsIDs } from '../../../../e2e/selectors/WalletView.selectors';
-import { store } from '../../../store';
-import { NETWORK_ID_LOADING } from '../../../core/redux/slices/inpageProvider';
-import { selectPendingSmartTransactionsBySender } from '../../../selectors/smartTransactionsController';
-import { selectNonReplacedTransactions } from '../../../selectors/transactionController';
+  selectSelectedInternalAccount,
+  selectInternalAccounts,
+} from '../../../selectors/accountsController';
+import { selectAddressBook } from '../../../selectors/addressBookController';
+import { selectSortedTransactions } from '../../../selectors/transactionController';
+import {
+  selectEnabledNetworksByNamespace,
+  selectEVMEnabledNetworks,
+} from '../../../selectors/networkEnablementController';
+import { selectNonEvmTransactions } from '../../../selectors/multichain';
+import { isEvmAccountType } from '@metamask/keyring-api';
+import { toChecksumHexAddress } from '@metamask/controller-utils';
+import { selectBridgeHistoryForAccount } from '../../../selectors/bridgeStatusController';
 
 const styles = StyleSheet.create({
   wrapper: {
@@ -45,126 +49,166 @@ const styles = StyleSheet.create({
 });
 
 const TransactionsView = ({
-  navigation,
   conversionRate,
-  selectedAddress,
-  identities,
+  selectedInternalAccount,
   networkType,
   currentCurrency,
   transactions,
-  chainId,
   tokens,
+  tokenNetworkFilter,
+  addressBook,
+  internalAccounts,
 }) => {
+  const navigation = useNavigation();
   const [allTransactions, setAllTransactions] = useState([]);
   const [submittedTxs, setSubmittedTxs] = useState([]);
   const [confirmedTxs, setConfirmedTxs] = useState([]);
   const [loading, setLoading] = useState();
+  const bridgeHistory = useSelector(selectBridgeHistoryForAccount);
 
-  const filterTransactions = useCallback(
-    (networkId) => {
-      if (networkId === NETWORK_ID_LOADING) return;
+  const enabledNetworksByNamespace = useSelector(
+    selectEnabledNetworksByNamespace,
+  );
 
-      let accountAddedTimeInsertPointFound = false;
-      const addedAccountTime = identities[selectedAddress]?.importTime;
+  const selectedAddress = toChecksumHexAddress(
+    selectedInternalAccount?.address,
+  );
 
-      const submittedTxs = [];
-      const confirmedTxs = [];
-      const submittedNonces = [];
+  const trustedAddresses = useMemo(
+    () =>
+      buildTrustedAddressSet(
+        addressBook,
+        internalAccounts.map((account) => account.address),
+      ),
+    [addressBook, internalAccounts],
+  );
 
-      const allTransactionsSorted = sortTransactions(transactions).filter(
-        (tx, index, self) =>
-          self.findIndex((_tx) => _tx.id === tx.id) === index,
+  const filterTransactions = useCallback(() => {
+    let accountAddedTimeInsertPointFound = false;
+    const addedAccountTime = selectedInternalAccount?.metadata.importTime;
+
+    const submittedTxs = [];
+    const confirmedTxs = [];
+    const submittedNonces = [];
+
+    const allTransactionsSorted = sortTransactions(transactions).filter(
+      (tx, index, self) => self.findIndex((_tx) => _tx.id === tx.id) === index,
+    );
+
+    const allTransactions = allTransactionsSorted.filter((tx) => {
+      const filter = filterByAddressAndNetwork(
+        tx,
+        tokens,
+        selectedAddress,
+        tokenNetworkFilter,
+        allTransactionsSorted,
+        bridgeHistory,
+        trustedAddresses,
       );
 
-      const allTransactions = allTransactionsSorted.filter((tx) => {
-        const filter = filterByAddressAndNetwork(
-          tx,
-          tokens,
-          selectedAddress,
-          networkId,
-          chainId,
-        );
+      if (!filter) return false;
 
-        if (!filter) return false;
+      const insertImportTime = addAccountTimeFlagFilter(
+        tx,
+        addedAccountTime,
+        accountAddedTimeInsertPointFound,
+      );
 
-        tx.insertImportTime = addAccountTimeFlagFilter(
-          tx,
-          addedAccountTime,
-          accountAddedTimeInsertPointFound,
-        );
-        if (tx.insertImportTime) accountAddedTimeInsertPointFound = true;
+      // Create a new transaction object with the insertImportTime property
+      const updatedTx = {
+        ...tx,
+        insertImportTime,
+      };
 
-        switch (tx.status) {
-          case TX_SUBMITTED:
-          case TX_SIGNED:
-          case TX_UNAPPROVED:
-          case TX_PENDING:
-            submittedTxs.push(tx);
-            return false;
-          case TX_CONFIRMED:
-            confirmedTxs.push(tx);
-            break;
-        }
+      if (updatedTx.insertImportTime) accountAddedTimeInsertPointFound = true;
 
-        return filter;
-      });
+      switch (tx.status) {
+        case TX_SUBMITTED:
+        case TX_SIGNED:
+        case TX_UNAPPROVED:
+        case TX_PENDING:
+          submittedTxs.push(updatedTx);
+          return false;
+        case TX_CONFIRMED:
+          confirmedTxs.push(updatedTx);
+          break;
+      }
 
-      const submittedTxsFiltered = submittedTxs.filter(({ txParams }) => {
+      return filter;
+    });
+
+    // TODO: Make sure to come back and check on how Solana transactions are handled
+    const allTransactionsFiltered = allTransactions.filter((tx) => {
+      const enabledChainIds = Object.entries(
+        enabledNetworksByNamespace?.[KnownCaipNamespace.Eip155] ?? {},
+      )
+        .filter(([, enabled]) => enabled)
+        .map(([chainId]) => chainId);
+
+      return isTransactionOnChains(tx, enabledChainIds, allTransactionsSorted);
+    });
+
+    const submittedTxsFiltered = submittedTxs.filter(
+      ({ chainId, txParams }) => {
         const { from, nonce } = txParams;
-        if (!toLowerCaseEquals(from, selectedAddress)) {
+
+        if (!areAddressesEqual(from, selectedAddress)) {
           return false;
         }
-        const alreadySubmitted = submittedNonces.includes(nonce);
+
+        const nonceKey = `${chainId}-${nonce}`;
+        const alreadySubmitted = submittedNonces.includes(nonceKey);
         const alreadyConfirmed = confirmedTxs.find(
           (tx) =>
-            toLowerCaseEquals(
-              safeToChecksumAddress(tx.txParams.from),
-              selectedAddress,
-            ) && tx.txParams.nonce === nonce,
+            areAddressesEqual(tx.txParams.from, selectedAddress) &&
+            tx.chainId === chainId &&
+            tx.txParams.nonce === nonce,
         );
+
         if (alreadyConfirmed) {
           return false;
         }
-        submittedNonces.push(nonce);
+
+        submittedNonces.push(nonceKey);
         return !alreadySubmitted;
-      });
+      },
+    );
 
-      //if the account added insertpoint is not found add it to the last transaction
-      if (
-        !accountAddedTimeInsertPointFound &&
-        allTransactions &&
-        allTransactions.length
-      ) {
-        allTransactions[allTransactions.length - 1].insertImportTime = true;
-      }
+    // If the account added insert point is not found, add it to the last transaction
+    if (
+      !accountAddedTimeInsertPointFound &&
+      allTransactionsFiltered &&
+      allTransactionsFiltered.length
+    ) {
+      const lastIndex = allTransactionsFiltered.length - 1;
+      allTransactionsFiltered[lastIndex] = {
+        ...allTransactionsFiltered[lastIndex],
+        insertImportTime: true,
+      };
+    }
 
-      setAllTransactions(allTransactions);
-      setSubmittedTxs(submittedTxsFiltered);
-      setConfirmedTxs(confirmedTxs);
-      setLoading(false);
-    },
-    [transactions, identities, selectedAddress, tokens, chainId],
-  );
+    setAllTransactions(allTransactionsFiltered);
+    setSubmittedTxs(submittedTxsFiltered);
+    setConfirmedTxs(confirmedTxs);
+    setLoading(false);
+  }, [
+    transactions,
+    selectedInternalAccount,
+    selectedAddress,
+    tokens,
+    tokenNetworkFilter,
+    enabledNetworksByNamespace,
+    bridgeHistory,
+    trustedAddresses,
+  ]);
 
   useEffect(() => {
     setLoading(true);
-    /*
-    Since this screen is always mounted and computations happen on this screen everytime the user changes network
-    using the InteractionManager will help by giving enough time for any animations/screen transactions before it starts
-    computing the transactions which will make the app feel more responsive. Also this takes usually less than 1 seconds
-    so the effect will not be noticeable if the user is in this screen.
-    */
-    InteractionManager.runAfterInteractions(() => {
-      const { networkId } = store.getState().inpageProvider;
-      filterTransactions(networkId);
-    });
+    filterTransactions();
   }, [filterTransactions]);
 
   return (
-    <View
-      style={styles.wrapper}
-      testID={WalletViewSelectorsIDs.WALLET_CONTAINER}
-    >
+    <View style={styles.wrapper}>
       <Transactions
         navigation={navigation}
         transactions={allTransactions}
@@ -190,17 +234,9 @@ TransactionsView.propTypes = {
    */
   currentCurrency: PropTypes.string,
   /**
-  /* Identities object required to get account name
-  */
-  identities: PropTypes.object,
-  /**
-  /* navigation object required to push new views
-  */
-  navigation: PropTypes.object,
-  /**
-   * A string that represents the selected address
+   * InternalAccount object required to get account name, address and import time
    */
-  selectedAddress: PropTypes.string,
+  selectedInternalAccount: PropTypes.object,
   /**
    * An array that represents the user transactions
    */
@@ -214,34 +250,49 @@ TransactionsView.propTypes = {
    */
   tokens: PropTypes.array,
   /**
-   * Current chainId
+   * Array of network tokens filter
    */
-  chainId: PropTypes.string,
+  tokenNetworkFilter: PropTypes.object,
+  /**
+   * Address book from AddressBookController
+   */
+  addressBook: PropTypes.object,
+  /**
+   * Internal accounts from AccountsController
+   */
+  internalAccounts: PropTypes.array,
 };
 
 const mapStateToProps = (state) => {
-  const selectedAddress = selectSelectedAddress(state);
-  const chainId = selectChainId(state);
+  const selectedInternalAccount = selectSelectedInternalAccount(state);
+  const evmTransactions = selectSortedTransactions(state);
 
-  // Remove duplicate confirmed STX
-  // for replaced txs, only hide the ones that are confirmed
-  const nonReplacedTransactions = selectNonReplacedTransactions(state);
+  let allTransactions = evmTransactions;
+  if (
+    selectedInternalAccount &&
+    !isEvmAccountType(selectedInternalAccount.type)
+  ) {
+    const nonEVMTransactions = selectNonEvmTransactions(state);
+    const txs = nonEVMTransactions?.transactions || [];
 
-  const pendingSmartTransactions =
-    selectPendingSmartTransactionsBySender(state);
+    allTransactions = [...evmTransactions, ...txs].sort(
+      (a, b) => (b?.time ?? 0) - (a?.time ?? 0),
+    );
+  }
 
   return {
     conversionRate: selectConversionRate(state),
     currentCurrency: selectCurrentCurrency(state),
     tokens: selectTokens(state),
-    selectedAddress,
-    identities: selectIdentities(state),
-    transactions: [
-      ...nonReplacedTransactions,
-      ...pendingSmartTransactions,
-    ].sort((a, b) => b.time - a.time),
+    selectedInternalAccount,
+    transactions: allTransactions,
     networkType: selectProviderType(state),
-    chainId,
+    tokenNetworkFilter: selectEVMEnabledNetworks(state).reduce(
+      (acc, network) => ({ ...acc, [network]: true }),
+      {},
+    ),
+    addressBook: selectAddressBook(state),
+    internalAccounts: selectInternalAccounts(state),
   };
 };
 
@@ -249,7 +300,4 @@ const mapDispatchToProps = (dispatch) => ({
   showAlert: (config) => dispatch(showAlert(config)),
 });
 
-export default connect(
-  mapStateToProps,
-  mapDispatchToProps,
-)(withNavigation(TransactionsView));
+export default connect(mapStateToProps, mapDispatchToProps)(TransactionsView);

@@ -1,0 +1,155 @@
+import { StackActions, useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import { navigateWithDetails } from '../../../../util/navigation/navUtils';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import Routes from '../../../../constants/navigation/Routes';
+import {
+  ConfirmationLoader,
+  ConfirmationParams,
+} from '../components/confirm/confirm-component';
+import {
+  TransactionMeta,
+  TransactionStatus,
+} from '@metamask/transaction-controller';
+import Engine from '../../../../core/Engine';
+import { providerErrors } from '@metamask/rpc-errors';
+import { createProjectLogger } from '@metamask/utils';
+import { useSelector } from 'react-redux';
+import { selectTransactions } from '../../../../selectors/transactionController';
+
+const log = createProjectLogger('confirm-navigation');
+
+const ROUTE = Routes.FULL_SCREEN_CONFIRMATIONS.REDESIGNED_CONFIRMATIONS;
+const ROUTE_NO_HEADER = Routes.FULL_SCREEN_CONFIRMATIONS.NO_HEADER;
+
+export type ConfirmNavigateOptions = {
+  amount?: string;
+  headerShown?: boolean;
+  replace?: boolean;
+  stack?: string;
+  /**
+   * Push the confirmation on the navigator that called this hook.
+   * `navigate()` from a transparent modal is handled by a parent and comes
+   * back as a page sheet. Pending custom-amount rejections still run first.
+   */
+  pushOnCurrentStack?: boolean;
+} & ConfirmationParams;
+
+export function useConfirmNavigation() {
+  const navigation = useNavigation<AppNavigationProp>();
+  const transactions = useSelector(selectTransactions);
+  const [pendingParams, setPendingParams] = useState<ConfirmNavigateOptions>();
+  const [transactionsToRemove, setTransactionsToRemove] = useState<string[]>();
+
+  const pendingTransactions = useMemo(
+    () =>
+      (transactions ?? []).filter(
+        (tx) => tx.status === TransactionStatus.unapproved,
+      ),
+    [transactions],
+  );
+
+  const navigateToConfirmation = useCallback(
+    (options: ConfirmNavigateOptions) => {
+      const {
+        headerShown,
+        replace = false,
+        stack,
+        pushOnCurrentStack = false,
+        ...params
+      } = options;
+      const { loader } = params;
+
+      if (!loader && stack === Routes.PERPS.ROOT) {
+        params.loader = ConfirmationLoader.CustomAmount;
+      }
+
+      if (
+        params.loader === ConfirmationLoader.CustomAmount &&
+        pendingTransactions.length &&
+        !pendingParams
+      ) {
+        log('Rejecting pending transactions before navigating');
+
+        setPendingParams(options);
+        setTransactionsToRemove(pendingTransactions.map((tx) => tx.id));
+        rejectTransactions(pendingTransactions);
+        return;
+      }
+
+      const isForceBottomSheet = params.forceBottomSheet === true;
+      const route = isForceBottomSheet
+        ? Routes.CONFIRMATION_REQUEST_MODAL
+        : headerShown === false
+          ? ROUTE_NO_HEADER
+          : ROUTE;
+
+      log('Navigating', { route, params, stack, pushOnCurrentStack });
+
+      if (pushOnCurrentStack) {
+        navigation.dispatch(StackActions.push(route, params));
+        return;
+      }
+
+      if (stack && !isForceBottomSheet) {
+        if (replace) {
+          navigation.dispatch(
+            StackActions.replace(stack, { screen: route, params }),
+          );
+          return;
+        }
+
+        // `stack` is a runtime string (a caller-provided parent navigator id),
+        // so the route name can't be validated at compile time.
+        navigateWithDetails(navigation, [stack, { screen: route, params }]);
+        return;
+      }
+
+      if (replace) {
+        navigation.dispatch(StackActions.replace(route, params));
+        return;
+      }
+
+      navigation.navigate(route, params);
+    },
+    [navigation, pendingParams, pendingTransactions],
+  );
+
+  useEffect(() => {
+    if (
+      !pendingParams ||
+      pendingTransactions.some((tx) => transactionsToRemove?.includes(tx.id))
+    ) {
+      return;
+    }
+
+    log('Navigating after rejecting pending transactions');
+
+    navigateToConfirmation(pendingParams);
+    setPendingParams(undefined);
+    setTransactionsToRemove(undefined);
+  }, [
+    pendingTransactions,
+    pendingParams,
+    navigateToConfirmation,
+    transactionsToRemove,
+  ]);
+
+  return { navigateToConfirmation };
+}
+
+function rejectTransactions(transactions: TransactionMeta[]) {
+  const { ApprovalController } = Engine.context;
+
+  for (const tx of transactions) {
+    try {
+      ApprovalController.rejectRequest(
+        tx.id,
+        providerErrors.userRejectedRequest(),
+      );
+      log('Rejected transaction', tx.type, tx.id);
+    } catch {
+      log('Failed to reject transaction', tx.type, tx.id);
+    }
+  }
+}

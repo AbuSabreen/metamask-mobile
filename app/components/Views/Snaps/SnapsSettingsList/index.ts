@@ -1,6 +1,2 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
-/* eslint-disable import/prefer-default-export */
-import SnapsSettingsList from './SnapsSettingsList';
-
-export { SnapsSettingsList };
-///: END:ONLY_INCLUDE_IF
+/* eslint-disable import-x/prefer-default-export */
+export { default as SnapsSettingsList } from './SnapsSettingsList';

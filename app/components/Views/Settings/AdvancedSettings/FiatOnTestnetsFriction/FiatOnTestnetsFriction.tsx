@@ -1,41 +1,42 @@
-import React, { useRef } from 'react';
+import React, { useCallback, useRef } from 'react';
 import { View } from 'react-native';
-import BottomSheet, {
-  BottomSheetRef,
-} from '../../../../../component-library/components/BottomSheets/BottomSheet';
 import { strings } from '../../../../../../locales/i18n';
-import { useTheme } from '../../../../../util/theme';
-import Icon, {
+import {
+  BottomSheet,
+  type BottomSheetRef,
+  Button,
+  ButtonVariant,
+  ButtonSize,
+  Icon,
+  IconColor,
   IconName,
   IconSize,
-} from '../../../../../component-library/components/Icons/Icon';
-import Button, {
-  ButtonSize,
-  ButtonVariants,
-  ButtonWidthTypes,
-} from '../../../../../component-library/components/Buttons/Button';
+} from '@metamask/design-system-react-native';
 import AppConstants from '../../../../../core/AppConstants';
 import createStyles from './FiatOnTestnetsFriction.styles';
 import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
 import Text from '../../../../Base/Text';
 import { useDispatch } from 'react-redux';
 import { setShowFiatOnTestnets } from '../../../../../../app/actions/settings';
-import { FiatOnTestnetsModalSelectorsIDs } from '../../../../../../e2e/selectors/Modals/FiatOnTestnetsModal.selectors';
+import { FiatOnTestnetsBottomSheetSelectorsIDs } from './FiatOnTestnetsBottomSheet.testIds';
 import Routes from '../../../../../constants/navigation/Routes';
 
 const FiatOnTestnetsFriction = () => {
   const dispatch = useDispatch();
-  const navigation = useNavigation();
-  const { colors } = useTheme();
+  const navigation = useNavigation<AppNavigationProp>();
   const styles = createStyles();
   const sheetRef = useRef<BottomSheetRef>(null);
+  const handleGoBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
 
   return (
-    <BottomSheet ref={sheetRef}>
+    <BottomSheet ref={sheetRef} goBack={handleGoBack}>
       <View style={styles.frictionContainer}>
         <Icon
           name={IconName.Danger}
-          color={colors.warning.alternative}
+          color={IconColor.WarningDefault}
           size={IconSize.Xl}
         />
         <Text style={styles.heading}>
@@ -43,7 +44,9 @@ const FiatOnTestnetsFriction = () => {
         </Text>
         <Text style={styles.descriptionText}>
           <Text>
-            {strings('app_settings.show_fiat_on_testnets_modal_description')}{' '}
+            {strings(
+              'app_settings.show_fiat_on_testnets_modal_description',
+            )}{' '}
           </Text>
           <Text
             primary
@@ -63,29 +66,31 @@ const FiatOnTestnetsFriction = () => {
         </Text>
         <View style={styles.buttonsContainer}>
           <Button
-            testID={FiatOnTestnetsModalSelectorsIDs.CANCEL_BUTTON}
-            variant={ButtonVariants.Secondary}
-            width={ButtonWidthTypes.Full}
+            testID={FiatOnTestnetsBottomSheetSelectorsIDs.CANCEL_BUTTON}
+            variant={ButtonVariant.Secondary}
+            isFullWidth
             size={ButtonSize.Lg}
             style={styles.button}
             accessibilityRole={'button'}
             accessible
-            label={strings('navigation.cancel')}
             onPress={() => sheetRef.current?.onCloseBottomSheet()}
-          />
+          >
+            {strings('navigation.cancel')}
+          </Button>
           <Button
-            testID={FiatOnTestnetsModalSelectorsIDs.CONTINUE_BUTTON}
-            variant={ButtonVariants.Primary}
-            width={ButtonWidthTypes.Full}
+            testID={FiatOnTestnetsBottomSheetSelectorsIDs.CONTINUE_BUTTON}
+            variant={ButtonVariant.Primary}
+            isFullWidth
             size={ButtonSize.Lg}
             style={styles.button}
             accessibilityRole={'button'}
-            label={strings('app_settings.show_fiat_on_testnets_modal_button')}
             onPress={() => {
               dispatch(setShowFiatOnTestnets(true));
               sheetRef.current?.onCloseBottomSheet();
             }}
-          />
+          >
+            {strings('app_settings.show_fiat_on_testnets_modal_button')}
+          </Button>
         </View>
       </View>
     </BottomSheet>

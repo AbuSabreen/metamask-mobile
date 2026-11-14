@@ -1,0 +1,71 @@
+import type { BottomSheetFooterButtonProps } from '@metamask/design-system-react-native';
+
+export interface PerpsBottomSheetTooltipProps {
+  /**
+   * Visibility state of the bottom sheet
+   */
+  isVisible: boolean;
+
+  /**
+   * Function called when bottom sheet should close
+   */
+  onClose: () => void;
+
+  /**
+   * Tooltip content key for localization lookup
+   * Maps to strings('perps.tooltips.{contentKey}.title') and strings('perps.tooltips.{contentKey}.content')
+   */
+  contentKey: PerpsTooltipContentKey;
+
+  /**
+   * Optional test ID for testing
+   */
+  testID?: string;
+
+  /**
+   * Optional data to pass to custom content renderers
+   */
+  data?: Record<string, unknown>;
+
+  /**
+   * Optional button config for footer buttons (primary and optionally secondary).
+   */
+  buttonConfig?: BottomSheetFooterButtonProps[];
+
+  /**
+   * Analytics: screen context for button_location tracking.
+   * When provided, overrides the default 'tooltip' button_location
+   * to indicate which screen the tooltip was opened from.
+   */
+  buttonLocation?: string;
+}
+
+export type PerpsTooltipContentKey =
+  | 'leverage'
+  | 'liquidation_price'
+  | 'cross_liquidation_price'
+  | 'cross_no_liquidation_price'
+  | 'liquidation_distance'
+  | 'margin'
+  | 'fees'
+  | 'closing_fees'
+  | 'withdrawal_fees'
+  | 'receive'
+  | 'open_interest'
+  | 'funding_rate'
+  | 'funding_payments'
+  | 'geo_block'
+  | 'estimated_pnl'
+  | 'limit_price'
+  | 'tp_sl'
+  | 'close_position_you_receive'
+  | 'tpsl_count_warning'
+  | 'points'
+  | 'market_hours'
+  | 'after_hours_trading'
+  | 'oracle_price'
+  | 'spread'
+  | 'pay_with'
+  | 'slippage'
+  | 'size_skew'
+  | 'twap_runtime';

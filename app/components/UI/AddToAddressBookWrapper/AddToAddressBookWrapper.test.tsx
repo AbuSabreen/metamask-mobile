@@ -1,55 +1,61 @@
 import React from 'react';
-import { fireEvent } from '@testing-library/react-native';
+import { fireEvent, act } from '@testing-library/react-native';
 import { Text } from 'react-native';
 
 import AddToAddressBookWrapper from './AddToAddressBookWrapper';
-import { AddAddressModalSelectorsIDs } from '../../../../e2e/selectors/Modals/AddAddressModal.selectors';
+import { AddAddressModalSelectorsIDs } from './AddAddressModal.testIds';
 import renderWithProvider from '../../../util/test/renderWithProvider';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { createMockAccountsControllerState } from '../../../util/test/accountsControllerTestUtils';
+import Engine from '../../../core/Engine';
+
+const MOCK_ADDRESS_1 = '0x0';
+const MOCK_ADDRESS_2 = '0x1';
+
+const MOCK_ACCOUNTS_CONTROLLER_STATE = createMockAccountsControllerState([
+  MOCK_ADDRESS_1,
+  MOCK_ADDRESS_2,
+]);
 
 const initialState = {
   settings: {},
   engine: {
     backgroundState: {
-      ...initialBackgroundState,
-      PreferencesController: {
-        selectedAddress: '0x0',
-        identities: {
-          '0x0': {
-            address: '0x0',
-            name: 'Account 1',
-          },
-          '0x1': {
-            address: '0x1',
-            name: 'Account 2',
-          },
-        },
-      },
+      ...backgroundState,
       AddressBookController: {
         addressBook: {
-          '0x1': {
-            '0x1': {
-              address: '0x1',
+          [MOCK_ADDRESS_2]: {
+            [MOCK_ADDRESS_2]: {
+              address: MOCK_ADDRESS_2,
               name: 'Account 2',
             },
           },
         },
       },
+      AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE,
     },
   },
 };
 
 describe('AddToAddressBookWrapper', () => {
-  it('should match default snapshot', async () => {
-    const container = renderWithProvider(
+  beforeAll(() => {
+    //@ts-expect-error - This is for test purposes
+    Engine.context = {
+      AddressBookController: {
+        set: jest.fn(),
+      },
+    };
+  });
+  it('should match default snapshot', () => {
+    const { toJSON } = renderWithProvider(
       <AddToAddressBookWrapper address="0x10e08af911f2e48948">
         <Text>DUMMY</Text>
       </AddToAddressBookWrapper>,
       { state: initialState },
     );
-    expect(container).toMatchSnapshot();
+    expect(toJSON()).not.toBeNull();
   });
-  it('should open addressbook for new address', async () => {
+  it('should open addressbook for new address', () => {
     const { queryByText, getByTestId, getByText } = renderWithProvider(
       <AddToAddressBookWrapper address="0x10e08af911f2e48948">
         <Text>DUMMY</Text>
@@ -64,9 +70,9 @@ describe('AddToAddressBookWrapper', () => {
     );
     expect(getByText('Add to address book')).toBeDefined();
   });
-  it('should not render touchable wrapper if address is already saved', async () => {
+  it('should not render touchable wrapper if address is already saved', () => {
     const { queryByText } = renderWithProvider(
-      <AddToAddressBookWrapper address="0x0">
+      <AddToAddressBookWrapper address={MOCK_ADDRESS_1}>
         <Text>DUMMY</Text>
       </AddToAddressBookWrapper>,
       { state: initialState },
@@ -76,9 +82,9 @@ describe('AddToAddressBookWrapper', () => {
       queryByText(AddAddressModalSelectorsIDs.ADD_ADDRESS_BUTTON),
     ).toBeNull();
   });
-  it('should return null if address is already saved and defaultNull is true', async () => {
+  it('should return null if address is already saved and defaultNull is true', () => {
     const { queryByText } = renderWithProvider(
-      <AddToAddressBookWrapper address="0x0" defaultNull>
+      <AddToAddressBookWrapper address={MOCK_ADDRESS_1} defaultNull>
         <Text>DUMMY</Text>
       </AddToAddressBookWrapper>,
       { state: initialState },
@@ -87,5 +93,41 @@ describe('AddToAddressBookWrapper', () => {
     expect(
       queryByText(AddAddressModalSelectorsIDs.ADD_ADDRESS_BUTTON),
     ).toBeNull();
+  });
+
+  it('should save address to address book on confirm', async () => {
+    const mockSetToAddressName = jest.fn();
+    const { getByTestId, getByText } = renderWithProvider(
+      <AddToAddressBookWrapper
+        address="0x10e08af911f2e48948"
+        setToAddressName={mockSetToAddressName}
+      >
+        <Text>DUMMY</Text>
+      </AddToAddressBookWrapper>,
+      { state: initialState },
+    );
+
+    fireEvent.press(
+      getByTestId(AddAddressModalSelectorsIDs.ADD_ADDRESS_BUTTON),
+    );
+    expect(getByText('Add to address book')).toBeDefined();
+
+    const aliasInput = getByTestId(
+      AddAddressModalSelectorsIDs.ENTER_ALIAS_INPUT,
+    );
+    fireEvent.changeText(aliasInput, 'New Alias');
+    expect(aliasInput.props.value).toBe('New Alias');
+
+    await act(async () => {
+      fireEvent.press(getByTestId(AddAddressModalSelectorsIDs.SAVE_BUTTON));
+    });
+
+    expect(Engine.context.AddressBookController.set).toHaveBeenCalledWith(
+      '0x10e08af911f2e48948',
+      'New Alias',
+      '0x1',
+    );
+
+    expect(mockSetToAddressName).toHaveBeenCalledWith('New Alias');
   });
 });

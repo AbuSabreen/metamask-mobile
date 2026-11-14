@@ -1,0 +1,359 @@
+import React from 'react';
+import { act, fireEvent } from '@testing-library/react-native';
+import AddFundsBottomSheet from './AddFundsBottomSheet';
+import { useOpenSwaps } from '../../hooks/useOpenSwaps';
+import useDepositEnabled from '../../../Ramp/hooks/useDepositEnabled';
+import { isBridgeAllowed } from '../../../Bridge/utils';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { getDecimalChainId } from '../../../../../util/networks';
+import { trace, TraceName } from '../../../../../util/trace';
+import { CardFundingToken, FundingStatus } from '../../types';
+import { renderScreen } from '../../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../../util/test/initial-root-state';
+import { useRampNavigation } from '../../../Ramp/hooks/useRampNavigation';
+import { CardHomeSelectors } from '../../Views/CardHome/CardHome.testIds';
+import { RampsButtonClickData } from '../../../Ramp/hooks/useRampsButtonClickData';
+
+// Mock hooks first - must be hoisted before imports
+const mockUseParams = jest.fn();
+const mockGoBack = jest.fn();
+const mockNavigate = jest.fn();
+const mockGoToBuy = jest.fn();
+
+// Mock dependencies
+jest.mock('../../../Ramp/hooks/useRampNavigation');
+jest.mock('../../hooks/useOpenSwaps', () => ({
+  useOpenSwaps: jest.fn(),
+}));
+
+jest.mock('../../../Ramp/hooks/useDepositEnabled', () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
+jest.mock('../../../Bridge/utils', () => ({
+  isBridgeAllowed: jest.fn(),
+}));
+
+jest.mock('../../../../hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(),
+}));
+
+jest.mock('../../../../../util/networks', () => ({
+  getDecimalChainId: jest.fn(),
+}));
+
+jest.mock('../../../../../util/trace', () => ({
+  trace: jest.fn(),
+  TraceName: {
+    LoadDepositExperience: 'LoadDepositExperience',
+  },
+}));
+
+jest.mock('../../../../../util/theme', () => {
+  const { mockTheme } = jest.requireActual('../../../../../util/theme');
+  return {
+    useTheme: jest.fn(() => mockTheme),
+    mockTheme,
+  };
+});
+
+jest.mock('./AddFundsBottomSheet.styles', () => ({
+  createStyles: jest.fn(() => ({
+    iconContainer: {},
+  })),
+}));
+
+jest.mock('../../../../../util/navigation/navUtils', () => ({
+  useParams: () => mockUseParams(),
+  createNavigationDetails: jest.fn((stackId, screenName) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (params?: any) => [stackId, { screen: screenName, params }],
+  ),
+}));
+
+const mockButtonClickData: RampsButtonClickData = {
+  is_authenticated: false,
+  preferred_provider: undefined,
+  order_count: 0,
+};
+
+jest.mock('../../../Ramp/hooks/useRampsButtonClickData', () => ({
+  useRampsButtonClickData: jest.fn(() => mockButtonClickData),
+}));
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    goBack: mockGoBack,
+    navigate: mockNavigate,
+    isFocused: jest.fn(() => true),
+  }),
+}));
+
+function renderWithProvider(component: React.ComponentType) {
+  return renderScreen(
+    component,
+    {
+      name: 'AddFundsBottomSheet',
+    },
+    {
+      state: {
+        engine: {
+          backgroundState,
+        },
+      },
+    },
+  );
+}
+
+describe('AddFundsBottomSheet', () => {
+  const mockOpenSwaps = jest.fn();
+  const mockTrackEvent = jest.fn();
+  const mockCreateEventBuilder = jest.fn();
+  const mockEventBuilder = {
+    addProperties: jest.fn().mockReturnThis(),
+    build: jest.fn().mockReturnValue({ event: 'built' }),
+  };
+
+  const mockPriorityToken: CardFundingToken = {
+    address: '0x456',
+    symbol: 'USDC',
+    decimals: 6,
+    name: 'USD Coin',
+    caipChainId: 'eip155:59144',
+    fundingStatus: FundingStatus.Enabled,
+    spendableBalance: '1000000',
+  };
+
+  const setupComponent = (
+    priorityToken: CardFundingToken | undefined = mockPriorityToken,
+  ) => {
+    mockUseParams.mockReturnValue({
+      priorityToken,
+    });
+
+    return renderWithProvider(() => <AddFundsBottomSheet />);
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    (useOpenSwaps as jest.Mock).mockReturnValue({
+      openSwaps: mockOpenSwaps,
+    });
+
+    (useRampNavigation as jest.Mock).mockReturnValue({
+      goToBuy: mockGoToBuy,
+    });
+
+    (useDepositEnabled as jest.Mock).mockReturnValue({
+      isDepositEnabled: true,
+    });
+
+    (isBridgeAllowed as jest.Mock).mockReturnValue(true);
+
+    (useAnalytics as jest.Mock).mockReturnValue({
+      trackEvent: mockTrackEvent,
+      createEventBuilder: mockCreateEventBuilder,
+    });
+
+    (getDecimalChainId as jest.Mock).mockReturnValue('59144');
+
+    mockCreateEventBuilder.mockReturnValue(mockEventBuilder);
+  });
+
+  it('renders with both options enabled', () => {
+    const { getByText } = setupComponent();
+
+    expect(getByText('Select method')).toBeOnTheScreen();
+    expect(getByText('Fund with cash')).toBeOnTheScreen();
+    expect(getByText('Fund with crypto')).toBeOnTheScreen();
+  });
+
+  it('renders with only swap option when deposit is disabled', () => {
+    (useDepositEnabled as jest.Mock).mockReturnValue({
+      isDepositEnabled: false,
+    });
+
+    const { getByText, queryByText } = setupComponent();
+
+    expect(getByText('Fund with crypto')).toBeOnTheScreen();
+    expect(queryByText('Fund with cash')).not.toBeOnTheScreen();
+  });
+
+  it('renders with only deposit option when swaps are not allowed', () => {
+    (isBridgeAllowed as jest.Mock).mockReturnValue(false);
+
+    const { getByText, queryByText } = setupComponent();
+
+    expect(getByText('Fund with cash')).toBeOnTheScreen();
+    expect(queryByText('Fund with crypto')).not.toBeOnTheScreen();
+  });
+
+  it('renders with no options when both are disabled', () => {
+    (useDepositEnabled as jest.Mock).mockReturnValue({
+      isDepositEnabled: false,
+    });
+    (isBridgeAllowed as jest.Mock).mockReturnValue(false);
+
+    const { getByText, queryByText } = setupComponent();
+
+    expect(getByText('Select method')).toBeOnTheScreen();
+    expect(queryByText('Fund with cash')).not.toBeOnTheScreen();
+    expect(queryByText('Fund with crypto')).not.toBeOnTheScreen();
+  });
+
+  it('displays the correct header text', () => {
+    const { getByText } = setupComponent();
+
+    expect(getByText('Select method')).toBeTruthy();
+  });
+
+  it('displays correct options when both are enabled', () => {
+    const { getByText } = setupComponent();
+
+    expect(getByText('Fund with cash')).toBeTruthy();
+    expect(getByText('Fund with crypto')).toBeTruthy();
+    expect(getByText('Low-cost card or bank transfer')).toBeTruthy();
+    expect(getByText('Swap tokens into USDC on Linea')).toBeTruthy();
+  });
+
+  it('tracks analytics and trace with UNIFIED_BUY_2 ramp_type when Fund with cash is pressed', async () => {
+    const { getByText } = setupComponent();
+
+    await act(async () => {
+      fireEvent.press(getByText('Fund with cash'));
+    });
+
+    expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+      MetaMetricsEvents.CARD_ADD_FUNDS_DEPOSIT_CLICKED,
+    );
+    expect(mockCreateEventBuilder).toHaveBeenCalledWith(
+      MetaMetricsEvents.RAMPS_BUTTON_CLICKED,
+    );
+    expect(mockEventBuilder.addProperties).toHaveBeenCalledWith(
+      expect.objectContaining({
+        button_text: 'Fund with cash',
+        location: 'CardHome',
+        chain_id_destination: '59144',
+        ramp_type: 'UNIFIED_BUY_2',
+        is_authenticated: false,
+        preferred_provider: undefined,
+        order_count: 0,
+      }),
+    );
+    expect(mockTrackEvent).toHaveBeenCalled();
+    expect(trace).toHaveBeenCalledWith({
+      name: TraceName.LoadDepositExperience,
+    });
+  });
+
+  it('handles swap option press correctly', async () => {
+    const { getByText } = setupComponent();
+
+    await act(async () => {
+      fireEvent.press(getByText('Fund with crypto'));
+    });
+
+    expect(mockOpenSwaps).toHaveBeenCalledWith({
+      beforeNavigate: expect.any(Function),
+    });
+  });
+
+  it('does not render swap option when priority token is null', () => {
+    (isBridgeAllowed as jest.Mock).mockReturnValue(false);
+    const { queryByTestId } = setupComponent(undefined);
+
+    const swapOption = queryByTestId(
+      CardHomeSelectors.ADD_FUNDS_BOTTOM_SHEET_SWAP_OPTION,
+    );
+
+    expect(swapOption).not.toBeOnTheScreen();
+  });
+
+  it('renders correct descriptions for different tokens', () => {
+    const usdtToken = {
+      ...mockPriorityToken,
+      symbol: 'USDT',
+    };
+
+    const { getByText } = setupComponent(usdtToken);
+
+    expect(getByText('Low-cost card or bank transfer')).toBeTruthy();
+    expect(getByText('Swap tokens into USDT on Linea')).toBeTruthy();
+  });
+
+  it('renders both options for USDT token', () => {
+    const usdtToken = {
+      ...mockPriorityToken,
+      symbol: 'USDT',
+      name: 'Tether USD',
+    };
+
+    const { getByText } = setupComponent(usdtToken);
+
+    expect(getByText('Fund with cash')).toBeTruthy();
+    expect(getByText('Fund with crypto')).toBeTruthy();
+  });
+
+  it('renders both options for USDC token', () => {
+    const { getByText } = setupComponent();
+
+    expect(getByText('Fund with cash')).toBeTruthy();
+    expect(getByText('Fund with crypto')).toBeTruthy();
+  });
+
+  it('renders both options for other tokens like ETH', () => {
+    const ethToken = {
+      ...mockPriorityToken,
+      symbol: 'ETH',
+      name: 'Ethereum',
+      decimals: 18,
+    };
+
+    const { getByText } = setupComponent(ethToken);
+
+    expect(getByText('Fund with cash')).toBeTruthy();
+    expect(getByText('Fund with crypto')).toBeTruthy();
+    expect(getByText('Low-cost card or bank transfer')).toBeTruthy();
+    expect(getByText('Swap tokens into ETH on Linea')).toBeTruthy();
+  });
+
+  it('routes Fund with cash through goToBuy (UB2-aware) with the priority token CAIP-19 assetId', async () => {
+    const { getByText } = setupComponent();
+
+    await act(async () => {
+      fireEvent.press(getByText('Fund with cash'));
+    });
+
+    expect(mockGoToBuy).toHaveBeenCalledWith(
+      {
+        assetId: `${mockPriorityToken.caipChainId}/erc20:${mockPriorityToken.address}`,
+      },
+      { surface: 'card' },
+    );
+  });
+
+  it('falls back to goToBuy() with no intent when the priority token has no address', async () => {
+    const tokenWithoutAddress: CardFundingToken = {
+      ...mockPriorityToken,
+      address: null,
+    };
+
+    const { getByText } = setupComponent(tokenWithoutAddress);
+
+    await act(async () => {
+      fireEvent.press(getByText('Fund with cash'));
+    });
+
+    expect(mockGoToBuy).toHaveBeenCalledWith(undefined, { surface: 'card' });
+  });
+
+  it('renders component correctly', () => {
+    const { getByText } = setupComponent();
+
+    expect(getByText('Select method')).toBeOnTheScreen();
+  });
+});

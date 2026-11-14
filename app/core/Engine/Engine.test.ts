@@ -1,0 +1,1751 @@
+import Engine, { Engine as EngineClass } from './Engine';
+import { EngineState } from './types';
+import { ExtendedMessenger } from '../ExtendedMessenger';
+import { backgroundState } from '../../util/test/initial-root-state';
+import {
+  createMockAccountsControllerState,
+  createMockInternalAccount,
+  MOCK_ADDRESS_1,
+} from '../../util/test/accountsControllerTestUtils';
+import { mockNetworkState } from '../../util/test/network';
+import type { AssetsControllerState } from '@metamask/assets-controller';
+import { Hex } from '@metamask/utils';
+import { KeyringControllerState } from '@metamask/keyring-controller';
+import { ClientConfigApiService } from '@metamask/remote-feature-flag-controller';
+import { ConnectivityController } from '@metamask/connectivity-controller';
+import type { AuthenticationControllerState } from '@metamask/profile-sync-controller/auth';
+import type { SubscriptionControllerState } from '@metamask/subscription-controller';
+import { backupVault, clearAllVaultBackups } from '../BackupVault';
+import { getVersion } from 'react-native-device-info';
+import { version as migrationVersion } from '../../store/migrations';
+import { AppState, AppStateStatus } from 'react-native';
+import ReduxService from '../redux';
+import configureStore from '../../util/test/configureStore';
+import { isEmpty } from 'lodash';
+import { store } from '../../store';
+import Logger from '../../util/Logger';
+import { selectBasicFunctionalityEnabled } from '../../selectors/settings';
+
+jest.mock('react-native-device-info', () => ({
+  getVersion: jest.fn().mockReturnValue('7.44.0'),
+  getBundleId: jest.fn().mockReturnValue('io.metamask.MetaMask'),
+}));
+
+jest.mock('redux-persist-filesystem-storage');
+
+jest.mock('../BackupVault', () => ({
+  backupVault: jest.fn().mockResolvedValue({ success: true, vault: 'vault' }),
+  clearAllVaultBackups: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('@react-native-community/netinfo', () => ({
+  __esModule: true,
+  fetch: jest.fn().mockResolvedValue({
+    isConnected: true,
+    isInternetReachable: true,
+  }),
+  addEventListener: jest.fn().mockReturnValue(jest.fn()),
+}));
+jest.unmock('./Engine');
+jest.mock('../../store', () => ({
+  store: {
+    getState: jest.fn(() => ({
+      onboarding: {
+        completedOnboarding: true,
+      },
+      engine: {
+        backgroundState: {
+          RemoteFeatureFlagController: {
+            remoteFeatureFlags: {
+              rewards: true,
+            },
+          },
+        },
+      },
+    })),
+    // Redux's subscribe returns an unsubscribe function. BackendWebSocketService
+    // calls it from Engine.destroy, so a bare jest.fn() fails the whole suite.
+    subscribe: jest.fn(() => jest.fn()),
+  },
+}));
+jest.mock('../../selectors/smartTransactionsController', () => ({
+  selectShouldUseSmartTransaction: jest.fn().mockReturnValue(false),
+  selectSmartTransactionsEnabled: jest.fn().mockReturnValue(false),
+  selectPendingSmartTransactionsBySender: jest.fn().mockReturnValue([]),
+  selectPendingSmartTransactionsForSelectedAccountGroup: jest
+    .fn()
+    .mockReturnValue([]),
+}));
+jest.mock('../../selectors/settings', () => ({
+  ...jest.requireActual('../../selectors/settings'),
+  selectBasicFunctionalityEnabled: jest.fn().mockReturnValue(true),
+}));
+jest.mock('../../util/phishingDetection', () => ({
+  getPhishingTestResultAsync: jest.fn().mockResolvedValue({ result: true }),
+}));
+
+jest.mock('@metamask/assets-controllers', () => {
+  const actualControllers = jest.requireActual('@metamask/assets-controllers');
+  // Mock the RatesController start method since it takes a while to run and causes timeouts in tests
+  class MockRatesController extends actualControllers.RatesController {
+    start = jest.fn().mockImplementation(() => Promise.resolve());
+  }
+  return {
+    ...actualControllers,
+    RatesController: MockRatesController,
+  };
+});
+
+jest.mock('@metamask/remote-feature-flag-controller', () => ({
+  ...jest.requireActual('@metamask/remote-feature-flag-controller'),
+  ClientConfigApiService: jest.fn().mockReturnValue({
+    remoteFeatureFlags: {},
+    cacheTimestamp: 0,
+  }),
+}));
+
+// `__esModule: true` lets the override test mutate
+// `isRemoteFeatureFlagOverrideActivated` live; interop would otherwise snapshot
+// the export. Other exports are preserved via `requireActual`.
+jest.mock('./controllers/remote-feature-flag-controller', () => ({
+  __esModule: true,
+  ...jest.requireActual('./controllers/remote-feature-flag-controller'),
+  isRemoteFeatureFlagOverrideActivated: false,
+}));
+const mockRemoteFeatureFlagControllerModule = jest.requireMock(
+  './controllers/remote-feature-flag-controller',
+) as { isRemoteFeatureFlagOverrideActivated: boolean };
+
+jest.mock('./utils', () => ({
+  ...jest.requireActual('./utils'),
+  rejectOriginApprovals: jest.fn(),
+}));
+
+const ClientConfigApiServiceMock = jest.mocked(ClientConfigApiService);
+
+describe('Engine', () => {
+  // Create a shared mock account for tests
+  const validAddress = MOCK_ADDRESS_1;
+  const mockAccount = createMockInternalAccount(validAddress, 'Test Account');
+  const TEST_ANALYTICS_ID = '59710bcf-06cc-4247-9386-12425e7fc905';
+  let mockAppStateListener: (state: AppStateStatus) => void;
+
+  beforeEach(() => {
+    ReduxService.store = configureStore({});
+  });
+
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    (backupVault as jest.Mock).mockReset();
+    await Engine.destroyEngine();
+    await EngineClass.instance?.destroyEngineInstance();
+  });
+
+  it('exposes an API', () => {
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+    expect(engine.context).toHaveProperty('AddressBookController');
+    expect(engine.context).toHaveProperty('AssetsContractController');
+    expect(engine.context).toHaveProperty('AssetsController');
+    expect(engine.context).toHaveProperty('NftDetectionController');
+    expect(engine.context).toHaveProperty('NftController');
+    expect(engine.context).toHaveProperty('TokensController');
+    expect(engine.context).toHaveProperty('KeyringController');
+    expect(engine.context).toHaveProperty('NetworkController');
+    expect(engine.context).toHaveProperty('PhishingController');
+    expect(engine.context).toHaveProperty('PreferencesController');
+    expect(engine.context).toHaveProperty('RemoteFeatureFlagController');
+    expect(engine.context).toHaveProperty('SignatureController');
+    expect(engine.context).toHaveProperty('LoggingController');
+    expect(engine.context).toHaveProperty('TransactionController');
+    expect(engine.context).toHaveProperty('SmartTransactionsController');
+    expect(engine.context).toHaveProperty('AuthenticationController');
+    expect(engine.context).toHaveProperty('UserStorageController');
+    expect(engine.context).toHaveProperty('NotificationServicesController');
+    expect(engine.context).toHaveProperty('SelectedNetworkController');
+    expect(engine.context).toHaveProperty('SnapInterfaceController');
+    expect(engine.context).toHaveProperty('MultichainNetworkController');
+    expect(engine.context).toHaveProperty('BridgeController');
+    expect(engine.context).toHaveProperty('BridgeStatusController');
+    expect(engine.context).toHaveProperty('EarnController');
+    expect(engine.context).toHaveProperty('MultichainTransactionsController');
+    expect(engine.context).toHaveProperty('DeFiPositionsController');
+    expect(engine.context).toHaveProperty('DeFiPositionsControllerV2');
+    expect(engine.context).toHaveProperty('NetworkEnablementController');
+    expect(engine.context).toHaveProperty('PerpsController');
+    expect(engine.context).toHaveProperty('GatorPermissionsController');
+    expect(engine.context).toHaveProperty('RampsController');
+    expect(engine.context).toHaveProperty('RampsService');
+    expect(engine.context).toHaveProperty('ConnectivityController');
+    expect(engine.context).toHaveProperty('SubscriptionController');
+    expect(engine.context).toHaveProperty('SubscriptionService');
+    expect(engine.context).toHaveProperty('SubscriptionDelegationService');
+    expect(engine.context).toHaveProperty('ShieldController');
+    expect(engine.context).toHaveProperty('ClaimsController');
+    expect(engine.context).toHaveProperty('AiDigestController');
+    expect(engine.context).toHaveProperty('MoneyAccountController');
+  });
+
+  it('exposes v8 subscription methods after the controller upgrade', () => {
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+
+    expect(
+      engine.context.SubscriptionController.startSubscriptionWithCard,
+    ).toEqual(expect.any(Function));
+    expect(
+      engine.context.SubscriptionController.submitSubscriptionCryptoApproval,
+    ).toEqual(expect.any(Function));
+    expect(
+      engine.context.SubscriptionController.cacheLastSelectedPaymentMethod,
+    ).toEqual(expect.any(Function));
+    expect(
+      engine.context.SubscriptionController.startSubscriptionWithCrypto,
+    ).toEqual(expect.any(Function));
+    expect(engine.context.SubscriptionController.stopAllPolling).toEqual(
+      expect.any(Function),
+    );
+    expect(
+      'startShieldSubscriptionWithCard' in
+        engine.context.SubscriptionController,
+    ).toBe(false);
+  });
+
+  it('hydrates representative v7 subscription state without a migration', () => {
+    const v7SubscriptionControllerState = {
+      subscriptions: [
+        {
+          id: 'sub-shield',
+          products: [
+            {
+              name: 'shield',
+              currency: 'usd',
+              unitAmount: 800,
+              unitDecimals: 2,
+            },
+          ],
+          currentPeriodStart: '2026-01-01T00:00:00.000Z',
+          currentPeriodEnd: '2026-02-01T00:00:00.000Z',
+          status: 'active',
+          interval: 'month',
+          paymentMethod: {
+            type: 'card',
+            card: {
+              brand: 'visa',
+              displayBrand: 'visa',
+              last4: '4242',
+            },
+          },
+          cancelType: 'allowed_at_period_end',
+          isEligibleForSupport: true,
+        },
+      ],
+      trialedProducts: ['shield'],
+      lastSelectedPaymentMethod: {
+        shield: {
+          type: 'crypto',
+          plan: 'month',
+          paymentTokenSymbol: 'USDC',
+        },
+      },
+      pricing: {
+        products: [
+          {
+            name: 'shield',
+            prices: [
+              {
+                interval: 'month',
+                unitAmount: 800,
+                unitDecimals: 2,
+                currency: 'usd',
+                trialPeriodDays: 14,
+                minBillingCycles: 12,
+                minBillingCyclesForBalance: 1,
+              },
+            ],
+          },
+        ],
+        paymentMethods: [
+          { type: 'card' },
+          {
+            type: 'crypto',
+            chains: [
+              {
+                chainId: '0x1',
+                paymentAddress: '0x2222222222222222222222222222222222222222',
+                tokens: [
+                  {
+                    symbol: 'USDC',
+                    address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+                    decimals: 6,
+                    conversionRate: { usd: '1.0' },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    } as SubscriptionControllerState;
+
+    const engine = Engine.init(TEST_ANALYTICS_ID, {
+      SubscriptionController: v7SubscriptionControllerState,
+    });
+
+    expect(engine.context.SubscriptionController.state.subscriptions).toEqual(
+      v7SubscriptionControllerState.subscriptions,
+    );
+    expect(engine.context.SubscriptionController.state.trialedProducts).toEqual(
+      ['shield'],
+    );
+    expect(
+      engine.context.SubscriptionController.state.lastSelectedPaymentMethod
+        ?.shield,
+    ).toEqual(v7SubscriptionControllerState.lastSelectedPaymentMethod?.shield);
+    expect(
+      engine.context.SubscriptionController.state.lastSelectedPaymentMethod
+        ?.money_account_plus,
+    ).toBeUndefined();
+  });
+
+  it('hydrates address poisoning known recipients from persisted address book state', () => {
+    const knownAddress = '0x111122223333444455556666777788889999aaaa';
+    const candidateAddress = '0x1111ffffffffffffffffffffffffffffffffaaaa';
+
+    const engine = Engine.init(TEST_ANALYTICS_ID, {
+      AddressBookController: {
+        addressBook: {
+          '0x1': {
+            [knownAddress]: {
+              address: knownAddress,
+              chainId: '0x1',
+              isEns: false,
+              memo: '',
+              name: 'Known recipient',
+            },
+          },
+        },
+      },
+    });
+
+    expect(
+      engine.context.PhishingController.checkAddressPoisoning(candidateAddress),
+    ).toEqual([expect.objectContaining({ knownAddress })]);
+  });
+
+  it('calling Engine.init twice returns the same instance', () => {
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+    const newEngine = Engine.init(TEST_ANALYTICS_ID, {});
+    expect(engine).toStrictEqual(newEngine);
+  });
+
+  it('should backup vault when Engine is initialized and vault exists', () => {
+    (backupVault as jest.Mock).mockResolvedValue({
+      success: true,
+      vault: 'vault',
+    });
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+    const newEngine = Engine.init(TEST_ANALYTICS_ID, {});
+    expect(engine).toStrictEqual(newEngine);
+    // @ts-expect-error accessing protected property for testing
+    engine.keyringController.messenger.publish(
+      'KeyringController:stateChange',
+      {
+        vault: 'vault',
+        isUnlocked: false,
+        keyrings: [],
+      },
+      [],
+    );
+    expect(backupVault).toHaveBeenCalled();
+  });
+
+  it('should not backup vault when Engine is initialized and vault is empty', () => {
+    // backupVault will not be called so return value doesn't matter here
+    (backupVault as jest.Mock).mockResolvedValue(undefined);
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+    const newEngine = Engine.init(TEST_ANALYTICS_ID, {});
+    expect(engine).toStrictEqual(newEngine);
+    // @ts-expect-error accessing protected property for testing
+    engine.keyringController.messenger.publish(
+      'KeyringController:stateChange',
+      {
+        vault: undefined,
+        isUnlocked: false,
+        keyrings: [],
+      } as KeyringControllerState,
+      [],
+    );
+    expect(backupVault).not.toHaveBeenCalled();
+  });
+
+  it('does not back up again when stateChange fires twice with the same vault (burst dedup)', () => {
+    (backupVault as jest.Mock).mockResolvedValue({
+      success: true,
+      vault: 'vault',
+    });
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+    const publish = (vault: string) =>
+      // @ts-expect-error accessing protected property for testing
+      engine.keyringController.messenger.publish(
+        'KeyringController:stateChange',
+        { vault, isUnlocked: false, keyrings: [] },
+        [],
+      );
+
+    publish('vault-a');
+    publish('vault-a');
+
+    expect(backupVault).toHaveBeenCalledTimes(1);
+  });
+
+  it('backs up again on the next unlock after a lock, even for the same vault (self-heal preserved)', () => {
+    (backupVault as jest.Mock).mockResolvedValue({
+      success: true,
+      vault: 'vault',
+    });
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+    // @ts-expect-error accessing protected property for testing
+    const messenger = engine.keyringController.messenger;
+    const publishStateChange = (vault: string) =>
+      messenger.publish(
+        'KeyringController:stateChange',
+        { vault, isUnlocked: false, keyrings: [] },
+        [],
+      );
+
+    publishStateChange('vault-a');
+    messenger.publish('KeyringController:lock');
+    publishStateChange('vault-a');
+
+    expect(backupVault).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not resurrect a cleared vault when a stale stateChange arrives after clearAllVaultBackups', async () => {
+    (backupVault as jest.Mock).mockResolvedValue({
+      success: true,
+      vault: 'vault',
+    });
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+    // @ts-expect-error accessing protected property for testing
+    const messenger = engine.keyringController.messenger;
+    const publishStateChange = (vault: string) =>
+      messenger.publish(
+        'KeyringController:stateChange',
+        { vault, isUnlocked: false, keyrings: [] },
+        [],
+      );
+
+    publishStateChange('vault-being-reset');
+    expect(backupVault).toHaveBeenCalledTimes(1);
+
+    await clearAllVaultBackups();
+
+    // A straggler stateChange event for the same (now stale) vault arrives
+    // with no KeyringController:lock in between — it must not be treated as
+    // a "new" unlock and must not trigger another backup.
+    publishStateChange('vault-being-reset');
+
+    expect(backupVault).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a failed backup on the next stateChange for the same vault, without waiting for a lock', async () => {
+    (backupVault as jest.Mock)
+      .mockResolvedValueOnce({
+        success: false,
+        error: 'Vault backup failed',
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        vault: 'vault-a',
+      });
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+    // @ts-expect-error accessing protected property for testing
+    const messenger = engine.keyringController.messenger;
+    const publishStateChange = (vault: string) =>
+      messenger.publish(
+        'KeyringController:stateChange',
+        { vault, isUnlocked: false, keyrings: [] },
+        [],
+      );
+
+    publishStateChange('vault-a');
+    // Let the failed attempt's .then/.catch settle before the retry.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // No lock happened, but the same vault arrives again — since the prior
+    // attempt failed, this must be treated as a fresh attempt, not skipped
+    // as a burst duplicate.
+    publishStateChange('vault-a');
+
+    expect(backupVault).toHaveBeenCalledTimes(2);
+  });
+
+  it('calling Engine.destroy deletes the old instance', async () => {
+    const engine = Engine.init(TEST_ANALYTICS_ID, {});
+    await engine.destroyEngineInstance();
+    const newEngine = Engine.init(TEST_ANALYTICS_ID, {});
+    expect(engine).not.toStrictEqual(newEngine);
+  });
+
+  // Use this to keep the unit test initial background state fixture up-to-date
+  it('matches initial state fixture', () => {
+    Engine.init(TEST_ANALYTICS_ID, {});
+    const initialBackgroundState = Engine.state;
+
+    // Get the current app version and migration version
+    const currentAppVersion = getVersion();
+    const currentMigrationVersion = migrationVersion;
+
+    // SamplePetnamesController is only registered when
+    // INCLUDE_SAMPLE_FEATURE=true (unset in this test run), so `Engine.state`
+    // omits it entirely even though the fixture has a default value for it.
+    const {
+      SamplePetnamesController: _unusedSamplePetnamesController,
+      ...restBackgroundState
+    } = backgroundState;
+
+    const expectedState = {
+      ...restBackgroundState,
+      // Update application version here, so that we don't have to update
+      // `initial-background-state.json` every release
+      AppMetadataController: {
+        currentAppVersion,
+        previousAppVersion: '',
+        previousMigrationVersion: 0,
+        currentMigrationVersion,
+      },
+      // WARNING: Do not make further changes to expected state here.
+      // Update `initial-background-state.json` instead.
+    };
+
+    expect(initialBackgroundState).toStrictEqual(expectedState);
+  });
+
+  it('setSelectedAccount throws an error if no account exists for the given address', () => {
+    const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+    const invalidAddress = '0xInvalidAddress';
+
+    expect(() => engine.setSelectedAccount(invalidAddress)).toThrow(
+      `No account found for address: ${invalidAddress}`,
+    );
+  });
+
+  it('setSelectedAccount successfully updates selected account when address exists', () => {
+    const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+
+    const getAccountByAddressSpy = jest
+      .spyOn(engine.context.AccountsController, 'getAccountByAddress')
+      .mockReturnValue(mockAccount);
+
+    const setSelectedAccountSpy = jest
+      .spyOn(engine.context.AccountsController, 'setSelectedAccount')
+      .mockImplementation();
+
+    engine.setSelectedAccount(validAddress);
+
+    expect(getAccountByAddressSpy).toHaveBeenCalledWith(validAddress);
+    expect(setSelectedAccountSpy).toHaveBeenCalledWith(mockAccount.id);
+  });
+
+  it('setAccountLabel successfully updates account label when address exists', () => {
+    const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+    const label = 'New Account Name';
+
+    const getAccountByAddressSpy = jest
+      .spyOn(engine.context.AccountsController, 'getAccountByAddress')
+      .mockReturnValue(mockAccount);
+
+    const setAccountNameSpy = jest
+      .spyOn(engine.context.AccountsController, 'setAccountName')
+      .mockImplementation();
+
+    engine.setAccountLabel(validAddress, label);
+
+    expect(getAccountByAddressSpy).toHaveBeenCalledWith(validAddress);
+    expect(setAccountNameSpy).toHaveBeenCalledWith(mockAccount.id, label);
+  });
+
+  it('setAccountLabel throws an error if no account exists for the given address', () => {
+    const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+    const invalidAddress = '0xInvalidAddress';
+    const label = 'Test Account';
+
+    expect(() => engine.setAccountLabel(invalidAddress, label)).toThrow(
+      `No account found for address: ${invalidAddress}`,
+    );
+  });
+
+  describe('RemoteFeatureFlagController startup fetch', () => {
+    const authStateWithCanonicalId = (
+      canonicalProfileId?: string,
+    ): AuthenticationControllerState =>
+      ({
+        isSignedIn: Boolean(canonicalProfileId),
+        srpSessionData: canonicalProfileId
+          ? {
+              'srp-1': { profile: { canonicalProfileId } },
+            }
+          : {},
+      }) as AuthenticationControllerState;
+
+    const spyForcedFlagRefresh = (engine: ReturnType<typeof Engine.init>) => {
+      const updateSpy = jest
+        .spyOn(
+          engine.context.RemoteFeatureFlagController,
+          'updateRemoteFeatureFlags',
+        )
+        .mockResolvedValue(undefined);
+      updateSpy.mockClear();
+      return updateSpy;
+    };
+
+    const publishAuthState = (
+      engine: ReturnType<typeof Engine.init>,
+      state: ReturnType<typeof authStateWithCanonicalId>,
+    ) => {
+      // @ts-expect-error accessing messenger for testing
+      engine.context.AuthenticationController.messenger.publish(
+        'AuthenticationController:stateChange',
+        state,
+        [],
+      );
+    };
+
+    afterEach(() => {
+      // `jest.mock` return values survive `restoreAllMocks()`, so reset the
+      // ones these tests override back to their file-level defaults.
+      ClientConfigApiServiceMock
+        // @ts-expect-error Partial service: matches the file-level default shape.
+        .mockReturnValue({ remoteFeatureFlags: {}, cacheTimestamp: 0 });
+      mockRemoteFeatureFlagControllerModule.isRemoteFeatureFlagOverrideActivated = false;
+      jest.mocked(selectBasicFunctionalityEnabled).mockReturnValue(true);
+    });
+
+    it('logs and skips the fetch when basic functionality is disabled', () => {
+      // The selector is read twice per init (the RFFC instance-options builder
+      // seeds `disabled`, then the Engine startup gate re-reads it), so use a
+      // persistent return rather than `mockReturnValueOnce`.
+      jest.mocked(selectBasicFunctionalityEnabled).mockReturnValue(false);
+      const fetchRemoteFeatureFlags = jest.fn();
+      ClientConfigApiServiceMock
+        // @ts-expect-error Partial service: only `fetchRemoteFeatureFlags` is needed.
+        .mockReturnValue({ fetchRemoteFeatureFlags });
+      const logSpy = jest.spyOn(Logger, 'log');
+
+      Engine.init(TEST_ANALYTICS_ID, {});
+
+      expect(logSpy).toHaveBeenCalledWith('Feature flag controller disabled.');
+      expect(fetchRemoteFeatureFlags).not.toHaveBeenCalled();
+    });
+
+    it('logs and skips the fetch when the override is active', () => {
+      mockRemoteFeatureFlagControllerModule.isRemoteFeatureFlagOverrideActivated = true;
+      const fetchRemoteFeatureFlags = jest.fn();
+      ClientConfigApiServiceMock
+        // @ts-expect-error Partial service: only `fetchRemoteFeatureFlags` is needed.
+        .mockReturnValue({ fetchRemoteFeatureFlags });
+      const logSpy = jest.spyOn(Logger, 'log');
+
+      Engine.init(TEST_ANALYTICS_ID, {});
+
+      expect(logSpy).toHaveBeenCalledWith(
+        'Remote feature flags override activated.',
+      );
+      expect(fetchRemoteFeatureFlags).not.toHaveBeenCalled();
+    });
+
+    it('logs success after the startup fetch resolves', async () => {
+      (Date.now as jest.Mock).mockReturnValue(1000000);
+      ClientConfigApiServiceMock
+        // @ts-expect-error Partial service: only `fetchRemoteFeatureFlags` is needed.
+        .mockReturnValue({
+          fetchRemoteFeatureFlags: jest.fn().mockResolvedValue({
+            remoteFeatureFlags: {},
+            cacheTimestamp: 1,
+          }),
+        });
+      const logSpy = jest.spyOn(Logger, 'log');
+
+      Engine.init(TEST_ANALYTICS_ID, {
+        RemoteFeatureFlagController: {
+          remoteFeatureFlags: {},
+          cacheTimestamp: 0,
+        },
+      });
+
+      while (
+        !logSpy.mock.calls.some(
+          ([message]) => message === 'Feature flags updated',
+        )
+      ) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      }
+
+      expect(logSpy).toHaveBeenCalledWith('Feature flags updated');
+    });
+
+    it('logs failure when the startup fetch rejects', async () => {
+      (Date.now as jest.Mock).mockReturnValue(1000000);
+      const fetchError = new Error('Network error');
+      ClientConfigApiServiceMock
+        // @ts-expect-error Partial service: only `fetchRemoteFeatureFlags` is needed.
+        .mockReturnValue({
+          fetchRemoteFeatureFlags: jest.fn().mockRejectedValue(fetchError),
+        });
+      const logSpy = jest.spyOn(Logger, 'log');
+
+      Engine.init(TEST_ANALYTICS_ID, {
+        RemoteFeatureFlagController: {
+          remoteFeatureFlags: {},
+          cacheTimestamp: 0,
+        },
+      });
+
+      while (
+        !logSpy.mock.calls.some(
+          ([message]) => message === 'Feature flags update failed: ',
+        )
+      ) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      }
+
+      expect(logSpy).toHaveBeenCalledWith(
+        'Feature flags update failed: ',
+        fetchError,
+      );
+    });
+
+    it('clears cached remote flags when basic functionality is disabled at init', () => {
+      jest.mocked(selectBasicFunctionalityEnabled).mockReturnValue(false);
+      const engine = Engine.init(TEST_ANALYTICS_ID, {
+        RemoteFeatureFlagController: {
+          remoteFeatureFlags: { otaUpdatesEnabled: true },
+          rawRemoteFeatureFlags: { otaUpdatesEnabled: true },
+          localOverrides: { testOverride: true },
+          cacheTimestamp: 123,
+        },
+      });
+      const controller = engine.context.RemoteFeatureFlagController;
+
+      expect(controller.state).toEqual(
+        expect.objectContaining({
+          remoteFeatureFlags: {},
+          rawRemoteFeatureFlags: {},
+          localOverrides: { testOverride: true },
+          cacheTimestamp: 0,
+        }),
+      );
+    });
+
+    it('subscribes to basic functionality changes', () => {
+      Engine.init(TEST_ANALYTICS_ID, {});
+
+      expect(store.subscribe).toHaveBeenCalledWith(expect.any(Function));
+    });
+
+    it('syncs controller when basic functionality changes', () => {
+      jest.mocked(store.subscribe).mockClear();
+      const engine = Engine.init(TEST_ANALYTICS_ID, {
+        RemoteFeatureFlagController: {
+          remoteFeatureFlags: { otaUpdatesEnabled: true },
+          rawRemoteFeatureFlags: { otaUpdatesEnabled: true },
+          cacheTimestamp: 123,
+        },
+      });
+      const subscribeCallbacks = jest
+        .mocked(store.subscribe)
+        .mock.calls.map(([callback]) => callback as () => void);
+      const controller = engine.context.RemoteFeatureFlagController;
+      const disableSpy = jest.spyOn(controller, 'disable');
+
+      jest.mocked(selectBasicFunctionalityEnabled).mockReturnValue(false);
+      subscribeCallbacks.forEach((callback) => callback());
+
+      expect(disableSpy).toHaveBeenCalled();
+      expect(controller.state).toEqual(
+        expect.objectContaining({
+          remoteFeatureFlags: {},
+          rawRemoteFeatureFlags: {},
+          cacheTimestamp: 0,
+        }),
+      );
+    });
+
+    it('force-refreshes flags when a canonical profile id first becomes available', () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, {});
+      const updateSpy = spyForcedFlagRefresh(engine);
+
+      publishAuthState(engine, authStateWithCanonicalId('canonical-id'));
+
+      expect(updateSpy).toHaveBeenCalledWith(true);
+    });
+
+    it('does not refresh flags when the canonical profile id is unchanged', () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, {
+        AuthenticationController: authStateWithCanonicalId('canonical-id'),
+      });
+      const updateSpy = spyForcedFlagRefresh(engine);
+
+      publishAuthState(engine, authStateWithCanonicalId('canonical-id'));
+
+      expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it('force-refreshes flags when the canonical profile id changes', () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, {
+        AuthenticationController: authStateWithCanonicalId('canonical-id-1'),
+      });
+      const updateSpy = spyForcedFlagRefresh(engine);
+
+      publishAuthState(engine, authStateWithCanonicalId('canonical-id-2'));
+
+      expect(updateSpy).toHaveBeenCalledWith(true);
+    });
+
+    it('force-refreshes flags when the canonical profile id is cleared', () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, {
+        AuthenticationController: authStateWithCanonicalId('canonical-id'),
+      });
+      const updateSpy = spyForcedFlagRefresh(engine);
+
+      publishAuthState(engine, authStateWithCanonicalId());
+
+      expect(updateSpy).toHaveBeenCalledWith(true);
+    });
+  });
+
+  describe('ConnectivityController startup seeding', () => {
+    it('seeds the initial connectivity status via init() on startup', () => {
+      const initSpy = jest
+        .spyOn(ConnectivityController.prototype, 'init')
+        .mockResolvedValue(undefined);
+
+      Engine.init(TEST_ANALYTICS_ID, {});
+
+      expect(initSpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('getTotalEvmFiatAccountBalance', () => {
+    const selectedAddress = '0x9DeE4BF1dE9E3b930E511Db5cEBEbC8d6F855Db0';
+    const selectedAccountId = 'test-account-id';
+    const ethConversionRate = 4000; // $4,000 / ETH
+    const ethBalance = 1;
+    const stakedEthBalance = 1;
+    const ethAssetId = 'eip155:1/slip44:60';
+    const stakedEthAssetId =
+      'eip155:1/erc20:0x4FEF9D741011476750A243aC70b9789a63dd47Df';
+    const priceLastUpdated = 1732887955694;
+
+    const selectedInternalAccount = {
+      ...createMockInternalAccount(selectedAddress, 'Test Account'),
+      type: 'eip155:eoa' as const,
+    };
+
+    const token1Address = '0x0000000000000000000000000000000000000001' as Hex;
+    const token2Address = '0x0000000000000000000000000000000000000002' as Hex;
+
+    const buildAssetsController = ({
+      ethAmount = String(ethBalance),
+      ethPricePercentChange1d,
+      tokens = [],
+      stakedAmount,
+    }: {
+      ethAmount?: string;
+      ethPricePercentChange1d?: number;
+      tokens?: {
+        address: Hex;
+        balance: number;
+        price: number;
+        pricePercentChange1d: number;
+        decimals: number;
+        symbol: string;
+      }[];
+      stakedAmount?: string;
+    } = {}) => {
+      const assetsInfo: Record<
+        string,
+        {
+          type: 'native' | 'erc20';
+          symbol: string;
+          name: string;
+          decimals: number;
+        }
+      > = {
+        [ethAssetId]: {
+          type: 'native',
+          symbol: 'ETH',
+          name: 'Ethereum',
+          decimals: 18,
+        },
+      };
+      const assetsPrice: Record<
+        string,
+        {
+          assetPriceType: 'fungible';
+          price: number;
+          usdPrice: number;
+          lastUpdated: number;
+          pricePercentChange1d?: number;
+        }
+      > = {
+        [ethAssetId]: {
+          assetPriceType: 'fungible',
+          price: ethConversionRate,
+          usdPrice: ethConversionRate,
+          lastUpdated: priceLastUpdated,
+          ...(ethPricePercentChange1d !== undefined
+            ? { pricePercentChange1d: ethPricePercentChange1d }
+            : {}),
+        },
+      };
+      const accountBalances: Record<string, { amount: string }> = {
+        [ethAssetId]: { amount: ethAmount },
+      };
+
+      tokens.forEach((token) => {
+        const assetId = `eip155:1/erc20:${token.address}`;
+        assetsInfo[assetId] = {
+          type: 'erc20',
+          symbol: token.symbol,
+          name: token.symbol,
+          decimals: token.decimals,
+        };
+        assetsPrice[assetId] = {
+          assetPriceType: 'fungible',
+          price: token.price * ethConversionRate,
+          usdPrice: token.price * ethConversionRate,
+          lastUpdated: priceLastUpdated,
+          pricePercentChange1d: token.pricePercentChange1d,
+        };
+        accountBalances[assetId] = { amount: String(token.balance) };
+      });
+
+      if (stakedAmount !== undefined) {
+        assetsInfo[stakedEthAssetId] = {
+          type: 'erc20',
+          symbol: 'stETH',
+          name: 'Staked ETH',
+          decimals: 18,
+        };
+        accountBalances[stakedEthAssetId] = { amount: stakedAmount };
+      }
+
+      return {
+        selectedCurrency: 'usd',
+        assetsInfo,
+        assetsPrice,
+        assetsBalance: {
+          [selectedAccountId]: accountBalances,
+        },
+        customAssets: {},
+        assetPreferences: {},
+      } as AssetsControllerState;
+    };
+
+    const state: Partial<EngineState> = {
+      AccountsController: {
+        ...createMockAccountsControllerState(
+          [selectedAddress],
+          selectedAddress,
+        ),
+        internalAccounts: {
+          accounts: {
+            [selectedAccountId]: selectedInternalAccount,
+          },
+          selectedAccount: selectedAccountId,
+        },
+      },
+      NetworkController: mockNetworkState({
+        chainId: '0x1',
+        id: '0x1',
+        nickname: 'mainnet',
+        ticker: 'ETH',
+      }),
+      AssetsController: buildAssetsController(),
+    };
+
+    it('calculates when theres no balances', () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, state);
+
+      (store.getState as jest.Mock).mockReturnValueOnce({
+        onboarding: {
+          completedOnboarding: true,
+        },
+        engine: {
+          backgroundState: {
+            ...state,
+            AssetsController: buildAssetsController({ ethAmount: '0' }),
+          },
+        },
+      });
+
+      const totalFiatBalance = engine.getTotalEvmFiatAccountBalance();
+      expect(totalFiatBalance).toStrictEqual({
+        ethFiat: 0,
+        ethFiat1dAgo: 0,
+        tokenFiat: 0,
+        tokenFiat1dAgo: 0,
+        ticker: 'ETH',
+        totalNativeTokenBalance: '0',
+      });
+    });
+
+    it('calculates when theres only ETH', () => {
+      const ethPricePercentChange1d = 5; // up 5%
+
+      const engine = Engine.init(TEST_ANALYTICS_ID, state);
+
+      (store.getState as jest.Mock).mockReturnValueOnce({
+        onboarding: {
+          completedOnboarding: true,
+        },
+        engine: {
+          backgroundState: {
+            ...state,
+            AssetsController: buildAssetsController({
+              ethPricePercentChange1d,
+            }),
+          },
+        },
+      });
+
+      const totalFiatBalance = engine.getTotalEvmFiatAccountBalance();
+
+      const ethFiat = ethBalance * ethConversionRate;
+      expect(totalFiatBalance).toStrictEqual({
+        ethFiat,
+        ethFiat1dAgo: ethFiat / (1 + ethPricePercentChange1d / 100),
+        tokenFiat: 0,
+        tokenFiat1dAgo: 0,
+        ticker: 'ETH',
+        totalNativeTokenBalance: '1',
+      });
+    });
+
+    it('calculates when there are ETH and tokens', () => {
+      const ethPricePercentChange1d = 5;
+
+      const tokens = [
+        {
+          address: token1Address,
+          balance: 1,
+          price: 1,
+          pricePercentChange1d: -1,
+          decimals: 18,
+          symbol: 'TEST1',
+        },
+        {
+          address: token2Address,
+          balance: 2,
+          price: 2,
+          pricePercentChange1d: 2,
+          decimals: 18,
+          symbol: 'TEST2',
+        },
+      ];
+
+      const engine = Engine.init(TEST_ANALYTICS_ID, state);
+
+      (store.getState as jest.Mock).mockReturnValueOnce({
+        onboarding: {
+          completedOnboarding: true,
+        },
+        engine: {
+          backgroundState: {
+            ...state,
+            AssetsController: buildAssetsController({
+              ethPricePercentChange1d,
+              tokens,
+            }),
+          },
+        },
+      });
+
+      const totalFiatBalance = engine.getTotalEvmFiatAccountBalance();
+
+      const ethFiat = ethBalance * ethConversionRate;
+      const [tokenFiat, tokenFiat1dAgo] = tokens.reduce(
+        ([fiat, fiat1d], token) => {
+          const value = Number(token.price) * token.balance * ethConversionRate;
+          return [
+            fiat + value,
+            fiat1d + value / (1 + token.pricePercentChange1d / 100),
+          ];
+        },
+        [0, 0],
+      );
+
+      expect(totalFiatBalance).toStrictEqual({
+        ethFiat,
+        ethFiat1dAgo: ethFiat / (1 + ethPricePercentChange1d / 100),
+        tokenFiat,
+        tokenFiat1dAgo,
+        ticker: 'ETH',
+        totalNativeTokenBalance: '1',
+      });
+    });
+
+    it('calculates when there is ETH and staked ETH and tokens', () => {
+      const ethPricePercentChange1d = 5;
+
+      const tokens = [
+        {
+          address: token1Address,
+          balance: 1,
+          price: 1,
+          pricePercentChange1d: -1,
+          decimals: 18,
+          symbol: 'TEST1',
+        },
+        {
+          address: token2Address,
+          balance: 2,
+          price: 2,
+          pricePercentChange1d: 2,
+          decimals: 18,
+          symbol: 'TEST2',
+        },
+      ];
+
+      const engine = Engine.init(TEST_ANALYTICS_ID, state);
+
+      (store.getState as jest.Mock).mockReturnValueOnce({
+        onboarding: {
+          completedOnboarding: true,
+        },
+        engine: {
+          backgroundState: {
+            ...state,
+            AssetsController: buildAssetsController({
+              ethPricePercentChange1d,
+              tokens,
+              stakedAmount: String(stakedEthBalance),
+            }),
+          },
+        },
+      });
+
+      const totalFiatBalance = engine.getTotalEvmFiatAccountBalance();
+
+      const ethFiat = (ethBalance + stakedEthBalance) * ethConversionRate;
+      const [tokenFiat, tokenFiat1dAgo] = tokens.reduce(
+        ([fiat, fiat1d], token) => {
+          const value = Number(token.price) * token.balance * ethConversionRate;
+          return [
+            fiat + value,
+            fiat1d + value / (1 + token.pricePercentChange1d / 100),
+          ];
+        },
+        [0, 0],
+      );
+
+      expect(totalFiatBalance).toStrictEqual({
+        ethFiat,
+        ethFiat1dAgo: ethFiat / (1 + ethPricePercentChange1d / 100),
+        tokenFiat,
+        tokenFiat1dAgo,
+        ticker: 'ETH',
+        totalNativeTokenBalance: '1',
+      });
+    });
+  });
+
+  it('calls `SnapController:setClientActive` when app state changes to active', () => {
+    (AppState.addEventListener as jest.Mock).mockImplementation(
+      (_, listener) => {
+        mockAppStateListener = listener;
+        return { remove: jest.fn() };
+      },
+    );
+
+    const engine = Engine.init(TEST_ANALYTICS_ID, {
+      ...backgroundState,
+      KeyringController: {
+        ...backgroundState.KeyringController,
+        isUnlocked: true,
+      },
+    });
+
+    const messengerSpy = jest.spyOn(engine.controllerMessenger, 'call');
+
+    // Simulate app state change to active
+    mockAppStateListener('active');
+
+    expect(messengerSpy).toHaveBeenCalledWith(
+      'SnapController:setClientActive',
+      true,
+    );
+  });
+
+  it('calls `SnapController:setClientActive` when app state changes to background', () => {
+    (AppState.addEventListener as jest.Mock).mockImplementation(
+      (_, listener) => {
+        mockAppStateListener = listener;
+        return { remove: jest.fn() };
+      },
+    );
+
+    const engine = Engine.init(TEST_ANALYTICS_ID, {
+      ...backgroundState,
+      KeyringController: {
+        ...backgroundState.KeyringController,
+        isUnlocked: true,
+      },
+    });
+
+    const messengerSpy = jest.spyOn(engine.controllerMessenger, 'call');
+
+    // Simulate app state change to background
+    mockAppStateListener('background');
+
+    expect(messengerSpy).toHaveBeenCalledWith(
+      'SnapController:setClientActive',
+      false,
+    );
+  });
+
+  it('does not call `SnapController:setClientActive` for other app states', () => {
+    (AppState.addEventListener as jest.Mock).mockImplementation(
+      (_, listener) => {
+        mockAppStateListener = listener;
+        return { remove: jest.fn() };
+      },
+    );
+    const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+    const messengerSpy = jest.spyOn(engine.controllerMessenger, 'call');
+
+    // Simulate app state change to inactive
+    mockAppStateListener('inactive');
+
+    expect(messengerSpy).not.toHaveBeenCalledWith(
+      'SnapController:setClientActive',
+      undefined,
+    );
+  });
+
+  it('does not call `SnapController:setClientActive` when the app is locked', () => {
+    (AppState.addEventListener as jest.Mock).mockImplementation(
+      (_, listener) => {
+        mockAppStateListener = listener;
+        return { remove: jest.fn() };
+      },
+    );
+
+    const engine = Engine.init(TEST_ANALYTICS_ID, {
+      ...backgroundState,
+      KeyringController: {
+        ...backgroundState.KeyringController,
+        isUnlocked: false,
+      },
+    });
+
+    const messengerSpy = jest.spyOn(engine.controllerMessenger, 'call');
+
+    // Simulate app state change to active
+    mockAppStateListener('active');
+
+    expect(messengerSpy).not.toHaveBeenCalledWith(
+      'SnapController:setClientActive',
+      undefined,
+    );
+  });
+
+  it('ensures network names are updated for new users', () => {
+    // Create a state without NetworkController to simulate first-time setup
+    const initState = { ...backgroundState };
+    delete (initState as Partial<EngineState>).NetworkController;
+
+    const engine = Engine.init(TEST_ANALYTICS_ID, initState);
+
+    const networkState = engine.context.NetworkController.state;
+    const networks = networkState.networkConfigurationsByChainId;
+
+    // Verify that network names have been updated for new users
+    expect(networks['0x1'].name).toBe('Ethereum');
+    expect(networks['0x2105'].name).toBe('Base');
+    expect(networks['0xe708'].name).toBe('Linea');
+  });
+
+  it('does not update network names for existing users', () => {
+    // Arrange - Create state with existing NetworkController that has original names
+    const initState = {
+      ...backgroundState,
+      NetworkController: mockNetworkState(
+        {
+          chainId: '0x1',
+          nickname: 'Ethereum Mainnet',
+        },
+        {
+          chainId: '0xe708',
+          nickname: 'Linea Mainnet', // Original name from API
+        },
+        {
+          chainId: '0x2105',
+          nickname: 'Base Mainnet', // Original name from API
+        },
+      ),
+    };
+
+    // Act - Initialize engine with existing NetworkController state
+    const engine = Engine.init(TEST_ANALYTICS_ID, initState);
+    const networkState = engine.context.NetworkController.state;
+
+    // Assert - Ethereum network name remains unchanged for existing users
+    expect(networkState.networkConfigurationsByChainId['0x1'].name).toBe(
+      'Ethereum Mainnet',
+    );
+
+    // Assert - Linea network name remains unchanged for existing users
+    expect(networkState.networkConfigurationsByChainId['0xe708'].name).toBe(
+      'Linea Mainnet',
+    );
+
+    // Assert - Base network name remains unchanged for existing users
+    expect(networkState.networkConfigurationsByChainId['0x2105'].name).toBe(
+      'Base Mainnet',
+    );
+  });
+
+  describe('when the sample feature is disabled', () => {
+    it('omits SamplePetnamesController from the context and state', () => {
+      Engine.init(TEST_ANALYTICS_ID, {});
+
+      expect(Engine.context).not.toHaveProperty('SamplePetnamesController');
+      expect(Engine.state).not.toHaveProperty('SamplePetnamesController');
+    });
+  });
+
+  describe('Engine.state', () => {
+    it('throws error when accessing state before Engine exists', () => {
+      expect(() => Engine.state).toThrow('Engine does not exist');
+    });
+
+    it('returns state from all controllers with state', () => {
+      Engine.init(TEST_ANALYTICS_ID, {});
+      const controllersWithState = Object.entries(Engine.context)
+        .filter(
+          ([controllerName, controller]) =>
+            'state' in controller &&
+            Boolean(controller.state) &&
+            (!isEmpty(controller.state) ||
+              controllerName === 'AiDigestController' ||
+              controllerName === 'ComplianceController' ||
+              controllerName === 'DelegationController'),
+        )
+        .map(([controllerName]) => controllerName);
+
+      const state = Engine.state;
+
+      const sortedControllersInState = Object.keys(state).sort();
+      const sortedExpectedControllers = controllersWithState.sort();
+      expect(sortedControllersInState).toEqual(sortedExpectedControllers);
+    });
+  });
+
+  describe('resetState', () => {
+    it('calls MoneyAccountController.clearState', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const clearStateSpy = jest
+        .spyOn(engine.context.MoneyAccountController, 'clearState')
+        .mockImplementation(() => undefined);
+
+      await engine.resetState();
+
+      expect(clearStateSpy).toHaveBeenCalled();
+    });
+
+    it('calls SubscriptionController.clearState', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const clearStateSpy = jest
+        .spyOn(engine.context.SubscriptionController, 'clearState')
+        .mockImplementation(() => undefined);
+
+      await engine.resetState();
+
+      expect(clearStateSpy).toHaveBeenCalled();
+    });
+
+    it('stops subscription polling before clearing subscription state', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const stopAllPollingSpy = jest
+        .spyOn(engine.context.SubscriptionController, 'stopAllPolling')
+        .mockImplementation(() => undefined);
+      const clearStateSpy = jest
+        .spyOn(engine.context.SubscriptionController, 'clearState')
+        .mockImplementation(() => undefined);
+
+      await engine.resetState();
+
+      expect(stopAllPollingSpy).toHaveBeenCalled();
+      expect(clearStateSpy).toHaveBeenCalled();
+      expect(stopAllPollingSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        clearStateSpy.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('calls ShieldController.clearState', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const clearStateSpy = jest
+        .spyOn(engine.context.ShieldController, 'clearState')
+        .mockImplementation(() => undefined);
+
+      await engine.resetState();
+
+      expect(clearStateSpy).toHaveBeenCalled();
+    });
+
+    it('calls ClaimsController.clearState', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const clearStateSpy = jest
+        .spyOn(engine.context.ClaimsController, 'clearState')
+        .mockImplementation(() => undefined);
+
+      await engine.resetState();
+
+      expect(clearStateSpy).toHaveBeenCalled();
+    });
+
+    it('calls KycController.clearState', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const clearStateSpy = jest
+        .spyOn(engine.context.KycController, 'clearState')
+        .mockImplementation(() => undefined);
+
+      await engine.resetState();
+
+      expect(clearStateSpy).toHaveBeenCalled();
+    });
+
+    it('clears asset controllers kept after the legacy cleanup', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const tokensResetSpy = jest
+        .spyOn(engine.context.TokensController, 'resetState')
+        .mockImplementation(() => undefined);
+      const nftResetSpy = jest
+        .spyOn(engine.context.NftController, 'resetState')
+        .mockImplementation(() => undefined);
+
+      await engine.resetState();
+
+      expect(tokensResetSpy).toHaveBeenCalled();
+      expect(nftResetSpy).toHaveBeenCalled();
+    });
+
+    it('abandons PredictNext order commits before awaiting the account-data purge', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const abandonSpy = jest
+        .spyOn(engine.context.PredictOrderService, 'abandonCommits')
+        .mockImplementation(() => undefined);
+      const clearSpy = jest
+        .spyOn(engine.context.PredictPortfolioService, 'clearAccountData')
+        .mockResolvedValue(undefined);
+
+      await engine.resetState();
+
+      expect(abandonSpy).toHaveBeenCalledTimes(1);
+      expect(clearSpy).toHaveBeenCalledTimes(1);
+      // Abandoning first is what stops a receipt from refilling the cache the
+      // purge is about to drop.
+      expect(abandonSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        clearSpy.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('waits for the PredictNext account-data purge before resolving', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      let finishPurge: () => void = () => undefined;
+      jest
+        .spyOn(engine.context.PredictOrderService, 'abandonCommits')
+        .mockImplementation(() => undefined);
+      jest
+        .spyOn(engine.context.PredictPortfolioService, 'clearAccountData')
+        .mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              finishPurge = resolve;
+            }),
+        );
+
+      let resetFinished = false;
+      const reset = engine.resetState().then(() => {
+        resetFinished = true;
+      });
+      for (let tick = 0; tick < 20; tick += 1) {
+        await Promise.resolve();
+      }
+
+      expect(resetFinished).toBe(false);
+
+      finishPurge();
+      await reset;
+
+      expect(resetFinished).toBe(true);
+    });
+
+    it('completes the reset when the PredictNext purge fails', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const loggerSpy = jest.spyOn(Logger, 'error');
+      jest
+        .spyOn(engine.context.PredictOrderService, 'abandonCommits')
+        .mockImplementation(() => undefined);
+      jest
+        .spyOn(engine.context.PredictPortfolioService, 'clearAccountData')
+        .mockRejectedValue(new Error('purge failed'));
+      jest
+        .spyOn(engine.context.PredictDeviceAuthService, 'reset')
+        .mockResolvedValue(undefined);
+
+      await expect(engine.resetState()).resolves.toBeUndefined();
+
+      expect(loggerSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'purge failed' }),
+        'Engine: failed to clear cached PredictNext account data',
+      );
+    });
+
+    it('resets PredictNext device auth when the account-data purge fails', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      jest
+        .spyOn(engine.context.PredictOrderService, 'abandonCommits')
+        .mockImplementation(() => undefined);
+      jest
+        .spyOn(engine.context.PredictPortfolioService, 'clearAccountData')
+        .mockRejectedValue(new Error('purge failed'));
+      const resetSpy = jest
+        .spyOn(engine.context.PredictDeviceAuthService, 'reset')
+        .mockResolvedValue(undefined);
+
+      await expect(engine.resetState()).resolves.toBeUndefined();
+
+      expect(resetSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('forgets the Venue Selection Preference and the last Active Venue', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, {
+        ...backgroundState,
+        PredictVenueController: {
+          venueSelectionPreference: 'kalshi',
+          lastActiveVenue: 'kalshi',
+          sessionDefault: null,
+        },
+      });
+      jest
+        .spyOn(engine.context.PredictPortfolioService, 'clearAccountData')
+        .mockResolvedValue(undefined);
+
+      await engine.resetState();
+
+      expect(engine.context.PredictVenueController.state).toMatchObject({
+        venueSelectionPreference: null,
+        lastActiveVenue: null,
+      });
+    });
+
+    it('forgets the Venue history when the PredictNext purge fails', async () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, {
+        ...backgroundState,
+        PredictVenueController: {
+          venueSelectionPreference: 'kalshi',
+          lastActiveVenue: null,
+          sessionDefault: null,
+        },
+      });
+      jest
+        .spyOn(engine.context.PredictPortfolioService, 'clearAccountData')
+        .mockRejectedValue(new Error('purge failed'));
+
+      await engine.resetState();
+
+      expect(
+        engine.context.PredictVenueController.state.venueSelectionPreference,
+      ).toBeNull();
+    });
+  });
+
+  describe('hasFunds', () => {
+    const hasFundsAccountId = 'mock-account-id-1';
+    const hasFundsAddress = '0xd8da6bf26964af9d7eed9e03e53415d37aa96045';
+    const usdcAssetId =
+      'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+
+    // Real fiat computes to 0 because the only priced native asset has a zero
+    // balance (`ethAmount: '0'`), so `hasFunds` is decided purely by whether a
+    // token balance / NFT is present in this state.
+    const buildHasFundsState = (tokenAmount: string | null) => ({
+      onboarding: { completedOnboarding: true },
+      engine: {
+        backgroundState: {
+          NftController: { nfts: [] },
+          AccountsController: {
+            internalAccounts: {
+              accounts: {
+                [hasFundsAccountId]: {
+                  ...createMockInternalAccount(hasFundsAddress, 'Account 1'),
+                  id: hasFundsAccountId,
+                  type: 'eip155:eoa' as const,
+                },
+              },
+              selectedAccount: hasFundsAccountId,
+            },
+          },
+          NetworkController: mockNetworkState({
+            chainId: '0x1',
+            id: '0x1',
+            nickname: 'mainnet',
+            ticker: 'ETH',
+          }),
+          AssetsController: {
+            selectedCurrency: 'usd',
+            assetsInfo: {
+              'eip155:1/slip44:60': {
+                type: 'native' as const,
+                symbol: 'ETH',
+                name: 'Ethereum',
+                decimals: 18,
+              },
+              [usdcAssetId]: {
+                type: 'erc20' as const,
+                symbol: 'USDC',
+                name: 'USDC',
+                decimals: 6,
+              },
+            },
+            assetsPrice: {
+              'eip155:1/slip44:60': {
+                assetPriceType: 'fungible' as const,
+                price: 0,
+                usdPrice: 0,
+                lastUpdated: 0,
+              },
+            },
+            assetsBalance: {
+              [hasFundsAccountId]: {
+                'eip155:1/slip44:60': { amount: '0' },
+                ...(tokenAmount === null
+                  ? {}
+                  : { [usdcAssetId]: { amount: tokenAmount } }),
+              },
+            },
+            customAssets: {},
+            assetPreferences: {},
+          },
+        },
+      },
+    });
+
+    it('returns falsy when fiat, token balances and NFTs are all empty', () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      (store.getState as jest.Mock).mockReturnValue(buildHasFundsState(null));
+
+      expect(engine.hasFunds()).toBeFalsy();
+    });
+
+    it('returns truthy when a token balance is non-zero', () => {
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      (store.getState as jest.Mock).mockReturnValue(buildHasFundsState('1'));
+
+      expect(engine.hasFunds()).toBeTruthy();
+    });
+  });
+
+  describe('AccountActivityService:balanceUpdated forwarding', () => {
+    const wsAddress = '0xabc';
+    const wsAssetId =
+      'eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    const wsUpdate = {
+      asset: { type: wsAssetId, unit: 'USDC', decimals: 6 },
+      postBalance: { amount: '0xf4240' }, // 1000000 minimal units -> '1' USDC
+    };
+
+    const buildWsPayload = (updates: unknown[]) => ({
+      address: wsAddress,
+      chain: 'eip155:8453',
+      updates,
+    });
+
+    const getHandleAssetsUpdateSpy = (engine: EngineClass) => {
+      const spy = jest.fn().mockResolvedValue(undefined);
+      (
+        engine.context.AssetsController as unknown as {
+          handleAssetsUpdate: unknown;
+        }
+      ).handleAssetsUpdate = spy;
+      return spy;
+    };
+
+    // The root messenger only allows publishing `Root:`-prefixed events, so we
+    // capture the handler Engine subscribes and invoke it directly.
+    type BalanceUpdatedHandler = (payload: unknown) => void;
+    const captureBalanceUpdatedHandler = (): {
+      engine: EngineClass;
+      handler: BalanceUpdatedHandler;
+    } => {
+      // Engine builds a fresh root messenger per init, so spy on the
+      // ExtendedMessenger prototype to catch the constructor's subscription.
+      const subscribeSpy = jest.spyOn(ExtendedMessenger.prototype, 'subscribe');
+      const engine = Engine.init(TEST_ANALYTICS_ID, backgroundState);
+      const balanceUpdatedCall = subscribeSpy.mock.calls.find(
+        ([eventName]) => eventName === 'AccountActivityService:balanceUpdated',
+      );
+      subscribeSpy.mockRestore();
+      if (!balanceUpdatedCall) {
+        throw new Error('balanceUpdated handler was not subscribed');
+      }
+      const handler = balanceUpdatedCall[1] as BalanceUpdatedHandler;
+      return { engine, handler };
+    };
+
+    it('forwards a balance push to AssetsController as a merge update', () => {
+      const { engine, handler } = captureBalanceUpdatedHandler();
+      const handleAssetsUpdateSpy = getHandleAssetsUpdateSpy(engine);
+      jest
+        .spyOn(engine.context.AccountsController, 'getAccountByAddress')
+        .mockReturnValue({ id: 'account-1' } as never);
+
+      handler(buildWsPayload([wsUpdate]));
+
+      expect(handleAssetsUpdateSpy).toHaveBeenCalledWith(
+        {
+          updateMode: 'merge',
+          assetsBalance: {
+            'account-1': { [wsAssetId]: { amount: '1' } },
+          },
+          assetsInfo: {
+            [wsAssetId]: {
+              type: 'erc20',
+              symbol: 'USDC',
+              name: 'USDC',
+              decimals: 6,
+            },
+          },
+        },
+        'BackendWebsocketDataSource',
+      );
+    });
+
+    it('does not forward when the address resolves to no account', () => {
+      const { engine, handler } = captureBalanceUpdatedHandler();
+      const handleAssetsUpdateSpy = getHandleAssetsUpdateSpy(engine);
+      jest
+        .spyOn(engine.context.AccountsController, 'getAccountByAddress')
+        .mockReturnValue(undefined as never);
+
+      handler(buildWsPayload([wsUpdate]));
+
+      expect(handleAssetsUpdateSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not forward when the push has no applicable updates', () => {
+      const { engine, handler } = captureBalanceUpdatedHandler();
+      const handleAssetsUpdateSpy = getHandleAssetsUpdateSpy(engine);
+      jest
+        .spyOn(engine.context.AccountsController, 'getAccountByAddress')
+        .mockReturnValue({ id: 'account-1' } as never);
+
+      handler(buildWsPayload([]));
+
+      expect(handleAssetsUpdateSpy).not.toHaveBeenCalled();
+    });
+  });
+});

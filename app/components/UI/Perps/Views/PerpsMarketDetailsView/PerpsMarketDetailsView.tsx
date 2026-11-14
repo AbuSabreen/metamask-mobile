@@ -1,0 +1,2578 @@
+import {
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+  Button as DSButton,
+  ButtonIcon,
+  ButtonIconSize,
+  ButtonIconVariant,
+  ButtonVariant,
+  ButtonSize as ButtonSizeRNDesignSystem,
+  FilterButtonVariant,
+  IconName,
+  Text,
+  TextColor,
+  TextVariant,
+  useHeaderStandardAnimated,
+} from '@metamask/design-system-react-native';
+import {
+  useNavigation,
+  useRoute,
+  type RouteProp,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  Linking,
+  Platform,
+  RefreshControl,
+  View,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+} from 'react-native';
+import Animated, { useAnimatedScrollHandler } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
+import {
+  CandlePeriod,
+  PerpsMode,
+  TimeDuration,
+  PERPS_CONSTANTS,
+  getPerpsDisplaySymbol,
+  type Position,
+  type PerpsMarketData,
+  type TPSLTrackingData,
+} from '@metamask/perps-controller';
+import {
+  PERPS_EVENT_PROPERTY,
+  PERPS_EVENT_VALUE,
+} from '@metamask/perps-controller/constants';
+import { useSelector } from 'react-redux';
+import { strings } from '../../../../../../locales/i18n';
+import { useStyles } from '../../../../../component-library/hooks';
+import Routes from '../../../../../constants/navigation/Routes';
+import Logger from '../../../../../util/Logger';
+import { ImpactMoment, playImpact } from '../../../../../util/haptics';
+import { isNotificationsFeatureEnabled } from '../../../../../util/notifications';
+import { trace, TraceName, TraceOperation } from '../../../../../util/trace';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import ComponentErrorBoundary from '../../../ComponentErrorBoundary';
+import PerpsBottomSheetTooltip from '../../components/PerpsBottomSheetTooltip/PerpsBottomSheetTooltip';
+import type { PerpsTooltipContentKey } from '../../components/PerpsBottomSheetTooltip/PerpsBottomSheetTooltip.types';
+import {
+  CandlePeriodBottomSheet,
+  CandlePeriodSelector,
+} from '../../../Charts/CandlePeriodSelector';
+import PerpsChartFullscreenModal from '../../components/PerpsChartFullscreenModal/PerpsChartFullscreenModal';
+import ChartCandleSkeleton from '../../../Charts/ChartCandleSkeleton';
+import PerpsCompactOrderRow from '../../components/PerpsCompactOrderRow';
+import PerpsFlipPositionConfirmSheet from '../../components/PerpsFlipPositionConfirmSheet';
+import {
+  PerpsMarketDetailsViewSelectorsIDs,
+  PerpsMarketHeaderSelectorsIDs,
+  PerpsOrderViewSelectorsIDs,
+  PerpsTutorialSelectorsIDs,
+  PerpsCompactOrderRowSelectorsIDs,
+} from '../../Perps.testIds';
+import PerpsMarketHeader, {
+  createLiteMarketHeaderTestIDs,
+} from '../../components/PerpsMarketHeader';
+import { usePerpsMarketHeaderInsets } from '../../components/PerpsMarketHeader/usePerpsMarketHeaderInsets';
+import PerpsMarketSummary from '../../components/PerpsMarketSummary';
+import PerpsMarketAboutSection from '../../components/PerpsMarketAboutSection';
+import PerpsMarketHoursBanner from '../../components/PerpsMarketHoursBanner';
+import PerpsMarketStatisticsCard from '../../components/PerpsMarketStatisticsCard';
+import PerpsMarketTradesList from '../../components/PerpsMarketTradesList';
+import PerpsMoreSection, {
+  type PerpsMoreItem,
+} from '../../components/PerpsMoreSection';
+import PerpsNotificationTooltip from '../../components/PerpsNotificationTooltip';
+import PerpsOHLCVBar from '../../components/PerpsOHLCVBar';
+import PerpsOICapWarning from '../../components/PerpsOICapWarning';
+import PerpsPositionCard from '../../components/PerpsPositionCard';
+import PerpsPriceDeviationWarning from '../../components/PerpsPriceDeviationWarning';
+import PerpsRelatedMarkets from '../../components/PerpsRelatedMarkets';
+import PerpsHomeSection from '../../components/PerpsHomeSection/PerpsHomeSection';
+import PerpsHomeSectionList from '../../components/PerpsHomeSectionList';
+import PerpsMarketSocialTabs from '../../components/PerpsMarketSocialTabs';
+import type { PerpsMarketSocialTab } from '../../components/PerpsMarketSocialTabs/PerpsMarketSocialTabs';
+import SocialFeedVirtualized from '../../../SocialFeed/components/SocialFeedVirtualized';
+import { HYPERLIQUID_CAIP2_CHAIN_ID, toFeedAssetId } from '../../../SocialFeed';
+import { HYPERLIQUID_CHAIN_NAME } from '../../../SocialFeed/utils/perp';
+import type { SocialFeedPageHandle } from '../../../SocialFeed/types';
+import { useSocialFeedPostNavigation } from '../../../../Views/SocialLeaderboard/hooks/useSocialFeedPostNavigation';
+import { selectSocialLeaderboardEnabled } from '../../../../../selectors/featureFlagController/socialLeaderboard';
+import PerpsPostToFeedButton from '../../components/PerpsPostToFeedButton';
+import { usePerpsSocialEnabled } from '../../hooks/usePerpsSocialEnabled';
+import PerpsServiceInterruptionBanner from '../../components/PerpsServiceInterruptionBanner';
+import PerpsStopLossPromptBanner from '../../components/PerpsStopLossPromptBanner';
+import TradingViewChart, {
+  type OhlcData,
+  type TradingViewChartRef,
+} from '../../components/TradingViewChart';
+import PerpsAdvancedChart from '../../components/PerpsAdvancedChart/PerpsAdvancedChart';
+import {
+  selectPerpsAdvancedChartEnabledFlag,
+  selectPerpsOrderBookEnabledFlag,
+  selectPerpsProModeEnabledFlag,
+  selectPerpsRelatedMarketsEnabledFlag,
+  selectPerpsServiceInterruptionBannerEnabledFlag,
+  selectPerpsPriceAlertsEnabledFlag,
+} from '../../selectors/featureFlags';
+import { PERPS_CHART_CONFIG } from '../../constants/chartConfig';
+import {
+  PERPS_MIN_BALANCE_THRESHOLD,
+  PROVIDER_CONFIG,
+} from '../../constants/perpsConfig';
+import {
+  usePerpsConnection,
+  usePerpsNavigation,
+  usePositionManagement,
+  usePerpsTrading,
+  usePerpsMarketData,
+  usePerpsMarketAboutTracking,
+} from '../../hooks';
+import { usePerpsMarketHeaderActions } from '../../hooks/usePerpsMarketHeaderActions';
+import { usePerpsScreenVsBottomSheetAbTest } from '../../hooks/usePerpsScreenVsBottomSheetAbTest';
+import type { ConfirmationLoader } from '../../../../Views/confirmations/components/confirm/confirm-component';
+import { useConfirmNavigation } from '../../../../Views/confirmations/hooks/useConfirmNavigation';
+import { useDefaultPayWithTokenWhenNoPerpsBalance } from '../../hooks/useDefaultPayWithTokenWhenNoPerpsBalance';
+import {
+  createDepositConfirmationGuard,
+  createDepositPrepSession,
+  type DepositConfirmationNavigation,
+  type DepositPrepSession,
+} from '../../utils/depositConfirmationGuard';
+import {
+  usePerpsLiveAccount,
+  usePerpsLiveOrders,
+  usePerpsLivePrices,
+  usePerpsLiveFocusedPrice,
+} from '../../hooks/stream';
+import { useHasExistingPosition } from '../../hooks/useHasExistingPosition';
+import { useIsPriceDeviatedAboveThreshold } from '../../hooks/useIsPriceDeviatedAboveThreshold';
+import {
+  usePerpsDataMonitor,
+  type DataMonitorParams,
+} from '../../hooks/usePerpsDataMonitor';
+import { usePerpsEventTracking } from '../../hooks/usePerpsEventTracking';
+import { usePerpsRecordMarketViewed } from '../../hooks/usePerpsRecordMarketViewed';
+import { usePerpsChartInteractions } from '../../hooks/usePerpsChartInteractions';
+import { usePerpsMarkets } from '../../hooks/usePerpsMarkets';
+import { usePerpsMarketStats } from '../../hooks/usePerpsMarketStats';
+import { usePerpsMarketContext } from '../../hooks/usePerpsMarketContext';
+import { usePerpsMeasurement } from '../../hooks/usePerpsMeasurement';
+import { usePerpsPrewarmDepositOrder } from '../../hooks/usePerpsPrewarmDepositOrder';
+import { usePerpsVisibleCandleCount } from '../../hooks/usePerpsVisibleCandleCount';
+import { usePerpsMarketDetailLiveMeasurement } from '../../hooks/usePerpsMarketDetailLiveMeasurement';
+import {
+  PERPS_MARKET_DETAIL_SECTION,
+  type PerpsMarketDetailSectionState,
+  usePerpsMarketDetailSession,
+} from '../../hooks/usePerpsMarketDetailSession';
+import { usePerpsSyncedChartPrice } from '../../hooks/usePerpsSyncedChartPrice';
+import {
+  buildChartOverlayLines,
+  getChartLimitOrderLines,
+} from '../../utils/chartOverlayLines';
+import { usePerpsOICap } from '../../hooks/usePerpsOICap';
+import { usePerpsSharePosition } from '../../hooks/usePerpsSharePosition';
+import { usePerpsTPSLUpdate } from '../../hooks/usePerpsTPSLUpdate';
+import { useStopLossPrompt } from '../../hooks/useStopLossPrompt';
+import usePerpsToasts from '../../hooks/usePerpsToasts';
+import {
+  getPerpsChartAnalyticsProperties,
+  getPerpsChartLibrary,
+} from '../../utils/chartAnalytics';
+import {
+  getRelatedMarketsForMarket,
+  hasRelatedMarketsCategory,
+} from '../../utils/relatedMarkets';
+import { selectPerpsChartPreferredCandlePeriod } from '../../selectors/chartPreferences';
+import {
+  MarketInsightsEntryCard,
+  MarketInsightsEntryCardSkeleton,
+  MarketInsightsDisclaimerBottomSheet,
+  getMarketInsightsTraceId,
+  getMarketInsightsTraceTags,
+  useMarketInsights,
+  useMarketInsightsEntryTrace,
+} from '../../../MarketInsights';
+import { MarketInsightsSelectorsIDs } from '../../../MarketInsights/MarketInsights.testIds';
+import { selectMarketInsightsPerpsEnabled } from '../../../../../selectors/featureFlagController/marketInsights';
+import {
+  selectPerpsEligibility,
+  selectPerpsProvider,
+} from '../../selectors/perpsController';
+import { useComplianceGate } from '../../../Compliance';
+import { selectSelectedInternalAccountAddress } from '../../../../../selectors/accountsController';
+import PerpsDirectionButton from '../../components/PerpsDirectionButton';
+import { getMarketHoursStatus, isEquityAsset } from '../../utils/marketHours';
+import {
+  resolvePerpsSocialOrderSource,
+  toPerpsEntryAttribution,
+} from '../../utils/perpsAnalyticsAttribution';
+import { refreshLightweightChartViewport } from '../../utils/refreshLightweightChartViewport';
+import { normalizeMarketDetailsOrders } from '../../normalization/normalizeMarketDetailsOrders';
+import { ensureError } from '../../../../../util/errorUtils';
+import {
+  type TransactionActiveAbTestEntry,
+  withPendingTransactionActiveAbTests,
+} from '../../../../../util/transactions/transaction-active-ab-test-attribution-registry';
+import type { NavigationAnalyticsRouteParams } from '../../../../../util/analytics/navigationAnalyticsAttribution';
+import PerpsSelectAdjustMarginActionView from '../PerpsSelectAdjustMarginActionView';
+import PerpsSelectModifyActionView from '../PerpsSelectModifyActionView';
+import { createStyles } from './PerpsMarketDetailsView.styles';
+import type { PerpsMarketDetailsViewProps } from './PerpsMarketDetailsView.types';
+
+interface MarketDetailsRouteParams extends NavigationAnalyticsRouteParams {
+  market: PerpsMarketData;
+  monitoringIntent?: Partial<DataMonitorParams>;
+  isNavigationFromOrderSuccess?: boolean;
+  source?: string;
+  source_section?: string;
+  transactionActiveAbTests?: TransactionActiveAbTestEntry[];
+}
+
+const resolveMarketSource = (
+  hasRouteMetadata: boolean,
+  hasStreamMetadata: boolean,
+): 'route' | 'stream_enrichment' | 'unknown' => {
+  if (hasRouteMetadata) return 'route';
+  if (hasStreamMetadata) return 'stream_enrichment';
+  return 'unknown';
+};
+
+const resolveBasicSectionState = (
+  hasContent: boolean,
+  isLoading: boolean,
+  hasError: boolean,
+): PerpsMarketDetailSectionState => {
+  if (hasContent) return 'content';
+  if (isLoading) return 'loading';
+  return hasError ? 'error' : 'empty';
+};
+
+const resolveChartSectionState = ({
+  isContextReady,
+  isAdvanced,
+  advancedState,
+  isFallbackReady,
+  hasFallbackData,
+}: {
+  isContextReady: boolean;
+  isAdvanced: boolean;
+  advancedState?: Extract<PerpsMarketDetailSectionState, 'content' | 'empty'>;
+  isFallbackReady: boolean;
+  hasFallbackData: boolean;
+}): PerpsMarketDetailSectionState => {
+  if (!isContextReady) return 'loading';
+  if (isAdvanced) return advancedState ?? 'loading';
+  if (!isFallbackReady) return 'loading';
+  return hasFallbackData ? 'content' : 'empty';
+};
+
+const resolveInsightsSectionState = ({
+  enabled,
+  loading,
+  error,
+  hasCurrentReport,
+}: {
+  enabled: boolean;
+  loading: boolean;
+  error: boolean;
+  hasCurrentReport: boolean;
+}): PerpsMarketDetailSectionState => {
+  if (!enabled) return 'not_applicable';
+  if (loading) return 'loading';
+  if (error) return 'error';
+  return hasCurrentReport ? 'content' : 'empty';
+};
+
+const resolveAccountSectionState = (
+  loading: boolean,
+  hasAccount: boolean,
+): PerpsMarketDetailSectionState => {
+  if (loading) return 'loading';
+  return hasAccount ? 'content' : 'empty';
+};
+
+const PERPS_FEED_CHAINS = [HYPERLIQUID_CAIP2_CHAIN_ID];
+
+type PerpsFeedScrollerProps = Omit<
+  React.ComponentProps<typeof SocialFeedVirtualized>,
+  'scrollMode' | 'onAuthorPress' | 'onPositionPress'
+>;
+
+/**
+ * The screen's scroller when social is on. Owns the post navigation so the
+ * profile lookup behind it only runs for users who can see the feed.
+ */
+const PerpsFeedScroller: React.FC<PerpsFeedScrollerProps> = (props) => {
+  const { onAuthorPress, onPositionPress } = useSocialFeedPostNavigation();
+  return (
+    <SocialFeedVirtualized
+      {...props}
+      scrollMode="virtualized"
+      onAuthorPress={onAuthorPress}
+      onPositionPress={onPositionPress}
+    />
+  );
+};
+
+const PerpsMarketDetailsView: React.FC<PerpsMarketDetailsViewProps> = ({
+  generationTrigger = 'initial',
+  edgeInsets,
+}) => {
+  // Use centralized navigation hook for all Perps navigation
+  const {
+    navigateToOrder,
+    navigateToTutorial,
+    navigateToAdjustMargin,
+    navigateToClosePosition,
+  } = usePerpsNavigation();
+  const { useBottomSheet } = usePerpsScreenVsBottomSheetAbTest();
+
+  // Use position management hook for bottom sheet state and handlers
+  const {
+    showModifyActionSheet,
+    showAdjustMarginActionSheet,
+    showReversePositionSheet,
+    modifyActionSheetRef,
+    adjustMarginActionSheetRef,
+    reversePositionSheetRef,
+    openModifySheet,
+    openAdjustMarginSheet,
+    closeModifySheet,
+    closeAdjustMarginSheet,
+    closeReversePositionSheet,
+    handleReversePosition,
+  } = usePositionManagement();
+
+  // Hook for updating TP/SL on existing positions
+  const { handleUpdateTPSL } = usePerpsTPSLUpdate();
+
+  // Keep direct navigation for configuration methods (setOptions, setParams)
+  const navigation = useNavigation<AppNavigationProp>();
+  const { sharePosition, findSocialPosition } = usePerpsSharePosition();
+  const route =
+    useRoute<RouteProp<{ params: MarketDetailsRouteParams }, 'params'>>();
+  const {
+    market: routeMarket,
+    monitoringIntent,
+    source,
+    source_section,
+    transactionActiveAbTests,
+    analyticsContext,
+  } = route.params || {};
+  const { track } = usePerpsEventTracking();
+  const activeProvider = useSelector(selectPerpsProvider);
+  const isRelatedMarketsEnabled = useSelector(
+    selectPerpsRelatedMarketsEnabledFlag,
+  );
+  const isPerpsSocialEnabled = usePerpsSocialEnabled();
+  const { showToast, PerpsToastOptions } = usePerpsToasts();
+
+  // Get full market data from stream to ensure all fields (including maxLeverage) are available
+  // This handles cases where navigation passes minimal market data (e.g., from Recent Activity)
+  // Skip fetching if routeMarket already has a formatted maxLeverage.
+  const hasFormattedMaxLeverage =
+    typeof routeMarket?.maxLeverage === 'string' &&
+    routeMarket.maxLeverage.endsWith('x');
+  const needsEnrichment = !hasFormattedMaxLeverage;
+  const needsMarketsForRelated =
+    isRelatedMarketsEnabled && hasRelatedMarketsCategory(routeMarket);
+  const { markets } = usePerpsMarkets({
+    skipInitialFetch: !needsEnrichment && !needsMarketsForRelated,
+  });
+  const market = useMemo(() => {
+    // If route market already has all required fields, use it directly
+    if (!needsEnrichment) return routeMarket;
+
+    const defaultCandidateProvider =
+      activeProvider !== undefined &&
+      activeProvider !== PROVIDER_CONFIG.AggregatedProvider
+        ? activeProvider
+        : PROVIDER_CONFIG.DefaultProvider;
+    const preferredProvider =
+      routeMarket?.providerId ?? defaultCandidateProvider;
+    // Case-insensitive: deeplinks can carry a differently cased symbol
+    // (e.g. 'KPEPE' for 'kPEPE') when the canonical lookup was unavailable.
+    const routeSymbol = routeMarket?.symbol?.toLowerCase();
+    const fullMarket = markets.find(
+      (candidate) =>
+        candidate.symbol.toLowerCase() === routeSymbol &&
+        (candidate.providerId ?? defaultCandidateProvider) ===
+          preferredProvider,
+    );
+
+    return fullMarket ?? routeMarket;
+  }, [activeProvider, markets, routeMarket, needsEnrichment]);
+
+  // About section: fires displayed (on render) + viewed (on scroll into view)
+  // analytics and gates the section's visibility on an available description.
+  const {
+    hasDescription: hasAboutDescription,
+    handleAboutLayout,
+    handleAboutContainerLayout,
+    setAboutTrackingEnabled,
+    handleAboutScroll,
+  } = usePerpsMarketAboutTracking({
+    symbol: market?.symbol,
+    marketType: market?.marketType,
+    description: market?.description,
+  });
+
+  const [isEligibilityModalVisible, setIsEligibilityModalVisible] =
+    useState(false);
+  const [isMarketHoursModalVisible, setIsMarketHoursModalVisible] =
+    useState(false);
+  const [isInsightsDisclaimerVisible, setIsInsightsDisclaimerVisible] =
+    useState(false);
+  const [selectedTooltip, setSelectedTooltip] =
+    useState<PerpsTooltipContentKey | null>(null);
+
+  // Stop loss prompt banner state - for loading/success when setting stop loss via banner
+  const [isSettingStopLoss, setIsSettingStopLoss] = useState(false);
+  const [isStopLossSuccess, setIsStopLossSuccess] = useState(false);
+  // Preserve banner variant during success fade-out (hook's variant becomes null after SL is set)
+  const preservedBannerVariantRef = useRef<'stop_loss' | 'add_margin' | null>(
+    null,
+  );
+  // Track current market symbol for staleness checks in async callbacks
+  // Using a ref allows reading the CURRENT value at execution time, not closure-captured value
+  const currentMarketSymbolRef = useRef<string | undefined>(market?.symbol);
+  // Track current position for callbacks that are stored (e.g., route params) and called later
+  // This prevents stale closure issues where the captured position is outdated
+  // Initialized to null, will be updated via useEffect when existingPosition is available
+  const currentPositionRef = useRef<Position | null>(null);
+  const depositPrepSessionRef = useRef<DepositPrepSession | null>(null);
+  const scrollViewRef = useRef<Animated.ScrollView>(null);
+  const feedPageRef = useRef<SocialFeedPageHandle>(null);
+
+  const isEligible = useSelector(selectPerpsEligibility);
+
+  // Compliance gate
+  const selectedAddress = useSelector(selectSelectedInternalAccountAddress);
+  const { gate, isBlocked } = useComplianceGate(selectedAddress ?? '');
+
+  // Limit the approval prewarm to the bottom-sheet treatment that needs the
+  // tap-to-sheet performance improvement. Control keeps its existing flow.
+  usePerpsPrewarmDepositOrder({
+    enabled: isEligible && !isBlocked && useBottomSheet,
+    marketProviderId: market?.providerId,
+    transactionActiveAbTests,
+  });
+
+  // Feature flags
+  const isOrderBookEnabled = useSelector(selectPerpsOrderBookEnabledFlag);
+  const isAdvancedChartEnabled = useSelector(
+    selectPerpsAdvancedChartEnabledFlag,
+  );
+  const configuredChartLibrary = useMemo(
+    () => getPerpsChartLibrary(isAdvancedChartEnabled),
+    [isAdvancedChartEnabled],
+  );
+  const [effectiveChartLibrary, setEffectiveChartLibrary] = useState(
+    configuredChartLibrary,
+  );
+  const chartLibrary = isAdvancedChartEnabled
+    ? effectiveChartLibrary
+    : PERPS_EVENT_VALUE.CHART_LIBRARY.LIGHTWEIGHT;
+  const chartAnalyticsProperties = useMemo(
+    () => getPerpsChartAnalyticsProperties(chartLibrary),
+    [chartLibrary],
+  );
+  const isServiceInterruptionBannerEnabled = useSelector(
+    selectPerpsServiceInterruptionBannerEnabledFlag,
+  );
+  const { headerTopInset, headerInset } = usePerpsMarketHeaderInsets(
+    edgeInsets,
+    isServiceInterruptionBannerEnabled,
+  );
+
+  // Feature flag for Market Insights in Perps
+  const isPerpsInsightsEnabled = useSelector(selectMarketInsightsPerpsEnabled);
+  const {
+    report: perpsInsightsReport,
+    reportAssetId: perpsInsightsAssetId,
+    timeAgo: perpsInsightsTimeAgo,
+    isLoading: isPerpsInsightsLoading,
+    error: perpsInsightsError,
+    cacheState: perpsInsightsCacheState,
+  } = useMarketInsights(market?.symbol, isPerpsInsightsEnabled, {
+    source: 'perps',
+    stage: 'entry_card',
+    assetType: 'perps',
+  });
+  const perpsInsightsEntryTraceId = useMarketInsightsEntryTrace({
+    assetIdentifier: market?.symbol,
+    assetType: 'perps',
+    cacheState: perpsInsightsCacheState,
+    enabled: isPerpsInsightsEnabled,
+    error: perpsInsightsError,
+    isLoading: isPerpsInsightsLoading,
+    report: perpsInsightsReport,
+    source: 'perps',
+  });
+  const previousInsightsSymbolRef = useRef(market?.symbol);
+  const isInsightsStateForCurrentSymbol =
+    previousInsightsSymbolRef.current === market?.symbol;
+  useEffect(() => {
+    previousInsightsSymbolRef.current = market?.symbol;
+  }, [market?.symbol]);
+
+  const isPerpsProModeEnabled = useSelector(selectPerpsProModeEnabledFlag);
+  const isPriceAlertsEnabled = useSelector(selectPerpsPriceAlertsEnabledFlag);
+  const {
+    perpsMode,
+    isWatchlist,
+    handleBackPress,
+    handleMarketListPress,
+    handleFavoritePress,
+    handlePerpsModeChange,
+  } = usePerpsMarketHeaderActions({
+    symbol: market?.symbol,
+    backFallback: 'home',
+  });
+
+  // Keep current market symbol ref in sync for staleness checks in async callbacks
+  useEffect(() => {
+    currentMarketSymbolRef.current = market?.symbol;
+  }, [market?.symbol]);
+
+  // Auto-scroll to top when navigating to a different market (e.g. related markets)
+  useEffect(() => {
+    scrollViewRef.current?.scrollTo({ y: 0, animated: false });
+    feedPageRef.current?.scrollToOffset(0);
+  }, [market?.symbol]);
+
+  // Record the view for the Recently Viewed rail — fires for every entry
+  // path into this screen (market list, watchlist, related markets,
+  // homepage, deep links, trade-again), not just market-list taps.
+  usePerpsRecordMarketViewed(market?.symbol);
+
+  const {
+    scrollY: scrollYShared,
+    setTitleSectionHeight,
+    titleSectionHeightSv,
+  } = useHeaderStandardAnimated();
+
+  const handleMarketSummaryLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const { height } = event.nativeEvent.layout;
+      if (height > 0) {
+        setTitleSectionHeight(height);
+      }
+    },
+    [setTitleSectionHeight],
+  );
+
+  const handleAboutScrollEvent = useCallback(
+    (scrollY: number, viewportHeight: number) => {
+      handleAboutScroll({
+        nativeEvent: {
+          contentOffset: { x: 0, y: scrollY },
+          layoutMeasurement: { width: 0, height: viewportHeight },
+        } as NativeScrollEvent,
+      });
+    },
+    [handleAboutScroll],
+  );
+
+  const handleAboutScrollEventRef = useRef(handleAboutScrollEvent);
+  handleAboutScrollEventRef.current = handleAboutScrollEvent;
+  const scheduleAboutScrollOnRN = useCallback(
+    (scrollY: number, viewportHeight: number) => {
+      handleAboutScrollEventRef.current(scrollY, viewportHeight);
+    },
+    [],
+  );
+
+  const scrollHandler = useAnimatedScrollHandler({
+    onScroll: (event) => {
+      'worklet';
+      // eslint-disable-next-line react-compiler/react-compiler -- Reanimated shared values are intentionally mutated from worklets.
+      scrollYShared.value = event.contentOffset.y;
+      scheduleOnRN(
+        scheduleAboutScrollOnRN,
+        event.contentOffset.y,
+        event.layoutMeasurement.height,
+      );
+    },
+  });
+
+  // Get persisted candle period preference from Redux store
+  const selectedCandlePeriod = useSelector(
+    selectPerpsChartPreferredCandlePeriod,
+  );
+  const { visibleCandleCount, onVisibleCandleCountChange } =
+    usePerpsVisibleCandleCount(market?.symbol);
+  const [isMoreCandlePeriodsVisible, setIsMoreCandlePeriodsVisible] =
+    useState(false);
+  const chartRef = useRef<TradingViewChartRef>(null);
+  const [advancedChartResolution, setAdvancedChartResolution] = useState<{
+    key: string;
+    state: Extract<PerpsMarketDetailSectionState, 'content' | 'empty'>;
+  } | null>(null);
+  const [advancedChartResetKey, setAdvancedChartResetKey] = useState(0);
+  const [chartDeliveryRevision, setChartDeliveryRevision] = useState(0);
+  const previousIntervalRef = useRef<CandlePeriod | null>(null);
+
+  const [refreshing, setRefreshing] = useState(false);
+  // iOS loses a progressViewOffset set before the refresh control attaches, so it waits for the first layout.
+  const [isScrollLaidOut, setIsScrollLaidOut] = useState(false);
+  const handleScrollLayout = useCallback(() => setIsScrollLaidOut(true), []);
+  const [isFullscreenChartVisible, setIsFullscreenChartVisible] =
+    useState(false);
+  const [ohlcData, setOhlcData] = useState<OhlcData | null>(null);
+
+  // Get real-time open orders via WebSocket
+  const {
+    orders: ordersData,
+    isInitialLoading: areOrdersInitiallyLoading,
+    deliveryRevision: ordersDeliveryRevision = 0,
+  } = usePerpsLiveOrders({});
+
+  // Filter orders for the current market
+  const openOrders = useMemo(() => {
+    if (!ordersData?.length || !market?.symbol) return [];
+    return ordersData.filter((order) => order.symbol === market.symbol);
+  }, [ordersData, market?.symbol]);
+
+  // Sort orders by time
+  const sortedOrders = useMemo(
+    () =>
+      [...openOrders].sort((a, b) => {
+        const timeA = a.timestamp || 0;
+        const timeB = b.timestamp || 0;
+        return timeB - timeA;
+      }),
+    [openOrders],
+  );
+
+  // Subscribe to live prices for current position price (allMids baseline, ~2 s)
+  const livePrices = usePerpsLivePrices({
+    symbols: market?.symbol ? [market.symbol] : [],
+    throttleMs: 1000,
+  });
+
+  // Fast focused price via activeAssetCtx projection (~0.5 s, TAT-3334).
+  // Prefer focused price on this detail screen; fall back to the allMids
+  // baseline so the display is never blank on first render.
+  const focusedPrice = usePerpsLiveFocusedPrice({
+    symbol: market?.symbol ?? '',
+    enabled: Boolean(market?.symbol),
+  });
+
+  // Get current price for the symbol
+  // Use mark price (oracle price) for stop loss calculations to reduce manipulation risk
+  // Falls back to mid price if mark price unavailable
+  const currentPrice = useMemo(() => {
+    if (!market?.symbol) return 0;
+    // Prefer the fast focused price; fall back to allMids baseline
+    const priceData = focusedPrice ?? livePrices[market.symbol];
+    if (priceData?.markPrice) {
+      return parseFloat(priceData.markPrice);
+    }
+    if (priceData?.price) {
+      return parseFloat(priceData.price);
+    }
+    return 0;
+  }, [focusedPrice, livePrices, market?.symbol]);
+
+  usePerpsConnection();
+
+  // Check if market is at open interest cap
+  const { isAtCap: isAtOICap } = usePerpsOICap(market?.symbol);
+
+  // Check if trading is halted due to price deviation
+  const {
+    isDeviatedAboveThreshold: isTradingHalted,
+    isLoading: isLoadingTradingHalted,
+  } = useIsPriceDeviatedAboveThreshold(market?.symbol);
+
+  // Handle data-driven monitoring when coming from order success
+  // Clear monitoringIntent after processing to allow fresh monitoring next time
+  const handleDataDetected = useCallback(() => {
+    navigation.setParams({ monitoringIntent: undefined });
+  }, [navigation]);
+
+  usePerpsDataMonitor({
+    asset: monitoringIntent?.asset,
+    monitorOrders: monitoringIntent?.monitorOrders,
+    monitorPositions: monitoringIntent?.monitorPositions,
+    timeoutMs: monitoringIntent?.timeoutMs,
+    onDataDetected: handleDataDetected,
+    enabled: !!(monitoringIntent && market && monitoringIntent.asset),
+  });
+
+  // Get comprehensive market statistics
+  const marketStats = usePerpsMarketStats(market?.symbol || '');
+  const {
+    key: marketContextKey,
+    isReady: isMarketContextReady,
+    isUserReady: isUserContextReady,
+  } = usePerpsMarketContext();
+  useEffect(() => {
+    setEffectiveChartLibrary(configuredChartLibrary);
+  }, [configuredChartLibrary, market?.symbol, marketContextKey]);
+
+  const {
+    candleData,
+    isLoading: isLoadingHistory,
+    hasHistoricalData,
+    fetchMoreHistory,
+    syncedChartCurrentPrice,
+    setAdvancedChartCurrentPrice,
+    priceDeliveryRevision,
+  } = usePerpsSyncedChartPrice({
+    symbol: market?.symbol || '',
+    interval: selectedCandlePeriod,
+    isAdvancedChartEnabled,
+    marketContextKey,
+    isMarketContextReady,
+  });
+  const previousPriceDeliveryRevisionRef = useRef(priceDeliveryRevision);
+  useEffect(() => {
+    if (
+      chartLibrary !== PERPS_EVENT_VALUE.CHART_LIBRARY.ADVANCED &&
+      priceDeliveryRevision > previousPriceDeliveryRevisionRef.current
+    ) {
+      setChartDeliveryRevision((revision) => revision + 1);
+    }
+    previousPriceDeliveryRevisionRef.current = priceDeliveryRevision;
+  }, [chartLibrary, priceDeliveryRevision]);
+  useEffect(() => {
+    if (!isMarketContextReady) {
+      setOhlcData(null);
+      setIsFullscreenChartVisible(false);
+    }
+  }, [isMarketContextReady, marketContextKey]);
+
+  // Auto-zoom to latest candle when interval changes and new data arrives
+  // This ensures the chart shows the most recent data after interval change
+  useEffect(() => {
+    // Check if the interval has actually changed
+    const hasIntervalChanged =
+      previousIntervalRef.current !== selectedCandlePeriod;
+
+    // Only zoom when:
+    // 1. The interval has changed (user pressed button)
+    // 2. New data exists and matches the selected period
+    if (hasIntervalChanged && candleData?.interval === selectedCandlePeriod) {
+      chartRef.current?.zoomToLatestCandle(visibleCandleCount);
+      // Update the ref to track this interval change
+      previousIntervalRef.current = selectedCandlePeriod;
+    }
+  }, [candleData, selectedCandlePeriod, visibleCandleCount]);
+
+  // Check if user has an existing position for this market
+  const {
+    isLoading: isLoadingPosition,
+    existingPosition,
+    positionOpenedTimestamp,
+    deliveryRevision: positionsDeliveryRevision,
+  } = useHasExistingPosition({
+    asset: market?.symbol || '',
+    loadOnMount: true,
+  });
+
+  const {
+    account,
+    isInitialLoading: isLoadingAccount,
+    deliveryRevision: accountDeliveryRevision = 0,
+  } = usePerpsLiveAccount();
+  const defaultPayTokenWhenNoPerpsBalance =
+    useDefaultPayWithTokenWhenNoPerpsBalance();
+  const { depositWithConfirmation } = usePerpsTrading();
+  const { navigateToConfirmation } = useConfirmNavigation();
+  const spendableBalance = Number.parseFloat(
+    account?.spendableBalance?.toString() ?? '0',
+  );
+  const hasDirectOrderFundingPath =
+    !isLoadingAccount &&
+    (spendableBalance >= PERPS_MIN_BALANCE_THRESHOLD ||
+      defaultPayTokenWhenNoPerpsBalance !== null);
+
+  const clearDepositPrepSession = useCallback(() => {
+    depositPrepSessionRef.current?.dispose();
+    depositPrepSessionRef.current = null;
+  }, []);
+
+  useEffect(() => clearDepositPrepSession, [clearDepositPrepSession]);
+
+  const handleAddFunds = useCallback(() => {
+    playImpact(ImpactMoment.PrimaryCTA).catch(() => undefined);
+
+    if (!isEligible) {
+      track(MetaMetricsEvents.PERPS_SCREEN_VIEWED, {
+        [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+          PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+        [PERPS_EVENT_PROPERTY.SOURCE]:
+          PERPS_EVENT_VALUE.SOURCE.ADD_FUNDS_ACTION,
+      });
+      setIsEligibilityModalVisible(true);
+      return;
+    }
+    try {
+      navigateToConfirmation({
+        loader: 'customAmount' as ConfirmationLoader,
+        stack: Routes.PERPS.ROOT,
+      });
+      depositPrepSessionRef.current ??= createDepositPrepSession();
+      depositPrepSessionRef.current.attachGuard(
+        createDepositConfirmationGuard(
+          navigation as unknown as DepositConfirmationNavigation,
+        ),
+      );
+      depositPrepSessionRef.current.ensureScheduled(
+        () =>
+          withPendingTransactionActiveAbTests(transactionActiveAbTests, () =>
+            depositWithConfirmation(),
+          ),
+        {
+          onSuccess: () => {
+            depositPrepSessionRef.current = null;
+          },
+          onFailure: (err) => {
+            Logger.error(
+              ensureError(err, 'PerpsMarketDetailsView.handleAddFunds'),
+              {
+                tags: {
+                  feature: PERPS_CONSTANTS.FeatureName,
+                  component: 'PerpsMarketDetailsView',
+                  action: 'financial_deposit',
+                  operation: 'financial_operations',
+                },
+              },
+            );
+          },
+        },
+      );
+    } catch (err) {
+      Logger.error(ensureError(err, 'PerpsMarketDetailsView.handleAddFunds'), {
+        tags: {
+          feature: PERPS_CONSTANTS.FeatureName,
+          component: 'PerpsMarketDetailsView',
+          action: 'financial_deposit',
+          operation: 'financial_operations',
+        },
+      });
+    }
+  }, [
+    isEligible,
+    track,
+    navigation,
+    navigateToConfirmation,
+    depositWithConfirmation,
+    transactionActiveAbTests,
+  ]);
+
+  // Keep current position ref in sync for callbacks stored in route params
+  // This must be after useHasExistingPosition since it depends on existingPosition
+  useEffect(() => {
+    currentPositionRef.current = existingPosition;
+  }, [existingPosition]);
+
+  // Show non-reduce-only orders and standalone TP/SL orders in Orders section.
+  // Full-position TP/SL remains in the Auto-close section.
+  const displayOrders = useMemo(
+    () =>
+      normalizeMarketDetailsOrders({
+        orders: sortedOrders,
+        existingPosition: existingPosition ?? undefined,
+      }),
+    [sortedOrders, existingPosition],
+  );
+
+  // Position TP/SL/liq plus resting limit orders for the chart overlay.
+  // Limit lines are memoized off openOrders only so price ticks do not
+  // allocate a new array and tear down Advanced Chart overlays.
+  const limitOrders = useMemo(
+    () => getChartLimitOrderLines(openOrders),
+    [openOrders],
+  );
+
+  const tpslLines = useMemo(() => {
+    const chartPriceStr =
+      syncedChartCurrentPrice > 0
+        ? syncedChartCurrentPrice.toString()
+        : undefined;
+
+    return buildChartOverlayLines({
+      currentPrice: chartPriceStr,
+      existingPosition,
+      limitOrders,
+    });
+  }, [existingPosition, syncedChartCurrentPrice, limitOrders]);
+
+  // Stop loss prompt banner logic
+  // Hook handles visibility orchestration including fade-out animation
+  const {
+    variant: bannerVariantFromHook,
+    liquidationDistance,
+    suggestedStopLossPrice,
+    suggestedStopLossPercent,
+    isVisible: isBannerVisible,
+    onDismissComplete: handleBannerDismissComplete,
+  } = useStopLossPrompt({
+    position: existingPosition,
+    currentPrice,
+    positionOpenedTimestamp,
+  });
+
+  // Reset stop loss success state when market or position changes.
+  // Runs before the preserve effect below so a remount/symbol change clears
+  // first, then the current variant is re-captured.
+  useEffect(() => {
+    setIsStopLossSuccess(false);
+    preservedBannerVariantRef.current = null;
+  }, [market?.symbol, existingPosition?.symbol]);
+
+  // Preserve banner variant when we have a valid one (for use during success fade-out)
+  // The hook's variant becomes null after SL is set, but we need to keep rendering
+  // Use useEffect to avoid ref mutation during render (React best practice)
+  useEffect(() => {
+    if (bannerVariantFromHook && !isStopLossSuccess) {
+      preservedBannerVariantRef.current = bannerVariantFromHook;
+    }
+  }, [bannerVariantFromHook, isStopLossSuccess]);
+
+  // Use preserved variant during success fade-out, otherwise use hook's variant
+  const bannerVariant = isStopLossSuccess
+    ? preservedBannerVariantRef.current
+    : bannerVariantFromHook;
+
+  // Track Perps asset screen load performance with simplified API
+  usePerpsMeasurement({
+    traceName: TraceName.PerpsPositionDetailsView,
+    conditions: [
+      !!market,
+      !!marketStats,
+      !isLoadingHistory,
+      !isLoadingPosition,
+    ],
+    debugContext: {
+      symbol: market?.symbol,
+      hasMarketStats: !!marketStats,
+      loadingStates: { isLoadingHistory, isLoadingPosition },
+    },
+  });
+
+  const marketDetailsScreenViewedProperties = useMemo(
+    () => ({
+      [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+        PERPS_EVENT_VALUE.SCREEN_TYPE.ASSET_DETAILS,
+      [PERPS_EVENT_PROPERTY.ASSET]: market?.symbol || '',
+      [PERPS_EVENT_PROPERTY.SOURCE]:
+        source || PERPS_EVENT_VALUE.SOURCE.PERP_MARKETS,
+      ...chartAnalyticsProperties,
+      ...(source_section && {
+        [PERPS_EVENT_PROPERTY.SOURCE_SECTION]: source_section,
+      }),
+      [PERPS_EVENT_PROPERTY.OPEN_POSITION]: existingPosition ? 1 : 0,
+      [PERPS_EVENT_PROPERTY.OPEN_ORDER]: openOrders.length,
+      [PERPS_EVENT_PROPERTY.WATCHLISTED]: isWatchlist,
+      market_insights_displayed:
+        isPerpsInsightsEnabled && Boolean(perpsInsightsReport),
+      [PERPS_EVENT_PROPERTY.OUTAGE_BANNER_SHOWN]:
+        isServiceInterruptionBannerEnabled,
+    }),
+    [
+      market?.symbol,
+      source,
+      chartAnalyticsProperties,
+      source_section,
+      existingPosition,
+      openOrders.length,
+      isWatchlist,
+      isPerpsInsightsEnabled,
+      perpsInsightsReport,
+      isServiceInterruptionBannerEnabled,
+    ],
+  );
+
+  const marketDetailsScreenViewResetKey = `${
+    market?.symbol || ''
+  }:${chartLibrary}`;
+  const isMarketDetailsScreenViewReady =
+    !!market &&
+    !!marketStats &&
+    !isLoadingHistory &&
+    !isLoadingPosition &&
+    !isPerpsInsightsLoading &&
+    // Guard against stale insights from a prior symbol (the loading flag
+    // may not flip to true until the next render after a symbol change).
+    // Uses reportAssetId (the input identifier) instead of report.asset
+    // to avoid casing mismatches between the API response and market symbol.
+    (!isPerpsInsightsEnabled ||
+      !perpsInsightsReport ||
+      perpsInsightsAssetId === market?.symbol);
+
+  // Track asset screen viewed event - declarative (main's event name).
+  // Waits for market insights to finish loading so market_insights_displayed
+  // reflects the actual display state rather than a loading-time snapshot.
+  usePerpsEventTracking({
+    eventName: MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+    resetKey: marketDetailsScreenViewResetKey,
+    conditions: [isMarketDetailsScreenViewReady],
+    navigationAnalyticsContext: source ? undefined : analyticsContext,
+    properties: marketDetailsScreenViewedProperties,
+  });
+
+  const handleAdvancedChartError = useCallback(() => {
+    setEffectiveChartLibrary(PERPS_EVENT_VALUE.CHART_LIBRARY.LIGHTWEIGHT);
+  }, []);
+
+  const { handleCandlePeriodChange, handleChartError } =
+    usePerpsChartInteractions({
+      asset: market?.symbol,
+      chartAnalyticsProperties,
+      chartErrorMessage: 'Chart rendering error in market details view',
+      isAdvancedChartEnabled,
+      onAdvancedChartError: handleAdvancedChartError,
+    });
+
+  const handleMorePress = useCallback(() => {
+    setIsMoreCandlePeriodsVisible(true);
+  }, []);
+
+  const handleMoreCandlePeriodsClose = useCallback(() => {
+    setIsMoreCandlePeriodsVisible(false);
+  }, []);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+
+    try {
+      // Snap the viewport to the latest candles; keep the persisted zoom.
+      if (isAdvancedChartEnabled) {
+        setEffectiveChartLibrary(configuredChartLibrary);
+        setAdvancedChartResetKey((key) => key + 1);
+      } else {
+        refreshLightweightChartViewport(chartRef.current, visibleCandleCount);
+      }
+
+      // WebSocket streaming provides real-time data - no manual refresh needed
+      // Just reset the UI state and the chart will update automatically
+    } catch (error) {
+      Logger.error(ensureError(error, 'PerpsMarketDetailsView.handleRefresh'), {
+        tags: { feature: PERPS_CONSTANTS.FeatureName },
+        context: { name: 'PerpsMarketDetailsView.handleRefresh', data: {} },
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [configuredChartLibrary, isAdvancedChartEnabled, visibleCandleCount]);
+
+  // Check if notifications feature is enabled once
+  const isNotificationsEnabled = isNotificationsFeatureEnabled();
+
+  const {
+    marketData,
+    isLoading: isLoadingMarketData,
+    error: marketDataError,
+  } = usePerpsMarketData({
+    asset: market?.symbol || '',
+  });
+
+  const advancedChartSeriesKey = `${market?.symbol ?? ''}|${selectedCandlePeriod}`;
+  const advancedChartIdentity = `${advancedChartSeriesKey}|${configuredChartLibrary}|${marketContextKey}`;
+  const advancedChartReadinessKey = advancedChartIdentity;
+  const handleAdvancedChartResolved = useCallback(
+    (
+      resolvedSeriesKey: string,
+      state: Extract<PerpsMarketDetailSectionState, 'content' | 'empty'>,
+    ) => {
+      if (
+        resolvedSeriesKey === advancedChartSeriesKey ||
+        resolvedSeriesKey.startsWith(`${advancedChartSeriesKey}|`)
+      ) {
+        setAdvancedChartResolution({ key: advancedChartReadinessKey, state });
+      }
+    },
+    [advancedChartReadinessKey, advancedChartSeriesKey],
+  );
+
+  const marketHasResolvedMetadata = Boolean(
+    market?.symbol &&
+      ((typeof market.maxLeverage === 'string' &&
+        market.maxLeverage.endsWith('x')) ||
+        marketData?.name === market.symbol),
+  );
+  const detailMarketSource = resolveMarketSource(
+    typeof market?.maxLeverage === 'string' && market.maxLeverage.endsWith('x'),
+    marketData?.name === market?.symbol,
+  );
+  const marketSectionState = resolveBasicSectionState(
+    marketHasResolvedMetadata,
+    isLoadingMarketData,
+    Boolean(marketDataError),
+  );
+  const priceSectionState: PerpsMarketDetailSectionState =
+    isMarketContextReady && syncedChartCurrentPrice > 0 ? 'content' : 'loading';
+  const currentAdvancedChartState =
+    advancedChartResolution?.key === advancedChartReadinessKey
+      ? advancedChartResolution.state
+      : undefined;
+  const chartSectionState = resolveChartSectionState({
+    isContextReady: isMarketContextReady,
+    isAdvanced: isAdvancedChartEnabled,
+    advancedState: currentAdvancedChartState,
+    isFallbackReady: Boolean(
+      market?.symbol &&
+        candleData?.symbol === market.symbol &&
+        candleData.interval === selectedCandlePeriod &&
+        !isLoadingHistory,
+    ),
+    hasFallbackData: hasHistoricalData,
+  });
+  const hasCurrentLiveMarketStats =
+    !marketStats.hasError &&
+    marketStats.dataSymbol === market?.symbol &&
+    marketStats.hasLiveData;
+  const statsSectionState = resolveBasicSectionState(
+    hasCurrentLiveMarketStats,
+    !marketStats.hasError && !hasCurrentLiveMarketStats,
+    Boolean(marketStats.hasError),
+  );
+  const insightsSectionState = resolveInsightsSectionState({
+    enabled: isPerpsInsightsEnabled,
+    loading: !isInsightsStateForCurrentSymbol || isPerpsInsightsLoading,
+    error: Boolean(perpsInsightsError),
+    hasCurrentReport: Boolean(
+      perpsInsightsReport && perpsInsightsAssetId === market?.symbol,
+    ),
+  });
+  const accountSectionState = resolveAccountSectionState(
+    !isMarketContextReady || !isUserContextReady || isLoadingAccount,
+    Boolean(account),
+  );
+  const positionsOrdersSectionState = resolveAccountSectionState(
+    !isMarketContextReady ||
+      !isUserContextReady ||
+      isLoadingPosition ||
+      areOrdersInitiallyLoading,
+    Boolean(existingPosition || displayOrders.length > 0),
+  );
+  const detailSections = useMemo(
+    () => ({
+      [PERPS_MARKET_DETAIL_SECTION.MARKET]: marketSectionState,
+      [PERPS_MARKET_DETAIL_SECTION.PRICE]: priceSectionState,
+      [PERPS_MARKET_DETAIL_SECTION.CHART]: chartSectionState,
+      [PERPS_MARKET_DETAIL_SECTION.STATS]: statsSectionState,
+      [PERPS_MARKET_DETAIL_SECTION.INSIGHTS]: insightsSectionState,
+      [PERPS_MARKET_DETAIL_SECTION.ACCOUNT]: accountSectionState,
+      [PERPS_MARKET_DETAIL_SECTION.POSITIONS_ORDERS]:
+        positionsOrdersSectionState,
+    }),
+    [
+      accountSectionState,
+      chartSectionState,
+      insightsSectionState,
+      marketSectionState,
+      positionsOrdersSectionState,
+      priceSectionState,
+      statsSectionState,
+    ],
+  );
+  const detailSession = usePerpsMarketDetailSession({
+    mode: 'lite',
+    symbol: market?.symbol,
+    deliveryRevisions: {
+      account: accountDeliveryRevision,
+      chart: chartDeliveryRevision,
+      orders: ordersDeliveryRevision,
+      positions: positionsDeliveryRevision,
+      price: priceDeliveryRevision,
+    },
+    configuredChartLibrary,
+    renderedChartLibrary: chartLibrary,
+    marketSource: detailMarketSource,
+    surfaceTrigger: generationTrigger,
+    entrySource: source,
+    configurationKey: String(isPerpsInsightsEnabled),
+    sections: detailSections,
+  });
+
+  usePerpsMarketDetailLiveMeasurement({
+    detailMode: 'lite',
+    detailSession,
+    marketSectionState,
+    priceSectionState,
+    statsSectionState,
+    accountSectionState,
+    totalBalance: account?.totalBalance,
+  });
+
+  const handleTradeAction = useCallback(
+    (direction: 'long' | 'short') => {
+      playImpact(ImpactMoment.SecondaryCTA).catch(() => undefined);
+      return gate(async () => {
+        if (!isEligible) {
+          // Track geo-block screen viewed
+          track(MetaMetricsEvents.PERPS_SCREEN_VIEWED, {
+            [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+              PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+            [PERPS_EVENT_PROPERTY.SOURCE]:
+              PERPS_EVENT_VALUE.SOURCE.TRADE_ACTION,
+          });
+          setIsEligibilityModalVisible(true);
+          return;
+        }
+
+        // Check for cross-margin position (MetaMask only supports isolated margin)
+        if (existingPosition?.leverage?.type === 'cross') {
+          navigation.navigate(Routes.PERPS.MODALS.ROOT, {
+            screen: Routes.PERPS.MODALS.CROSS_MARGIN_WARNING,
+          });
+
+          track(MetaMetricsEvents.PERPS_ERROR, {
+            [PERPS_EVENT_PROPERTY.ERROR_TYPE]:
+              PERPS_EVENT_VALUE.ERROR_TYPE.VALIDATION,
+            [PERPS_EVENT_PROPERTY.ERROR_MESSAGE]:
+              'Cross margin position detected',
+            [PERPS_EVENT_PROPERTY.SCREEN_NAME]:
+              PERPS_EVENT_VALUE.SCREEN_NAME.PERPS_MARKET_DETAILS,
+            [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+              PERPS_EVENT_VALUE.SCREEN_TYPE.ASSET_DETAILS,
+          });
+
+          return;
+        }
+
+        navigateToOrder({
+          direction,
+          asset: market.symbol,
+          ...(market.providerId ? { providerId: market.providerId } : {}),
+          source: resolvePerpsSocialOrderSource(
+            source,
+            PERPS_EVENT_VALUE.SOURCE.PERP_ASSET_SCREEN,
+          ),
+          ...(source_section ? { source_section } : {}),
+          chartLibrary,
+          defaultSzDecimals: marketData?.szDecimals,
+          defaultMaxLeverage: marketData?.maxLeverage,
+          ...(useBottomSheet ? { useBottomSheet: true } : {}),
+          ...(transactionActiveAbTests?.length
+            ? { transactionActiveAbTests }
+            : {}),
+        });
+      });
+    },
+    [
+      gate,
+      isEligible,
+      existingPosition,
+      navigation,
+      track,
+      navigateToOrder,
+      source,
+      source_section,
+      transactionActiveAbTests,
+      market?.symbol,
+      market?.providerId,
+      marketData,
+      chartLibrary,
+      useBottomSheet,
+    ],
+  );
+
+  const handleLongPress = () => {
+    handleTradeAction('long').catch(() => undefined);
+  };
+
+  const handleShortPress = () => {
+    handleTradeAction('short').catch(() => undefined);
+  };
+
+  const handleTradingViewPress = useCallback(() => {
+    Linking.openURL('https://www.tradingview.com/').catch((error: unknown) => {
+      Logger.error(
+        ensureError(error, 'PerpsMarketDetailsView.handleTradingViewPress'),
+        {
+          tags: { feature: PERPS_CONSTANTS.FeatureName },
+          context: {
+            name: 'PerpsMarketDetailsView.handleTradingViewPress',
+            data: {},
+          },
+        },
+      );
+    });
+  }, []);
+
+  const handleMarketHoursInfoPress = useCallback(() => {
+    setIsMarketHoursModalVisible(true);
+  }, []);
+
+  // Position card handlers
+  const handleAutoClosePress = useCallback(() => {
+    if (!existingPosition) return;
+
+    return gate(async () => {
+      // Geo-restriction check for auto-close (TP/SL) action
+      if (!isEligible) {
+        track(MetaMetricsEvents.PERPS_SCREEN_VIEWED, {
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+          [PERPS_EVENT_PROPERTY.SOURCE]:
+            PERPS_EVENT_VALUE.SOURCE.AUTO_CLOSE_ACTION,
+        });
+        setIsEligibilityModalVisible(true);
+        return;
+      }
+
+      navigation.navigate(Routes.PERPS.TPSL, {
+        asset: existingPosition.symbol,
+        currentPrice,
+        position: existingPosition,
+        initialTakeProfitPrice: existingPosition.takeProfitPrice,
+        initialStopLossPrice: existingPosition.stopLossPrice,
+        ...(useBottomSheet ? { useBottomSheet: true } : {}),
+        onConfirm: async (
+          positionFromRoute?: Position,
+          takeProfitPrice?: string,
+          stopLossPrice?: string,
+          trackingData?: TPSLTrackingData,
+        ) => {
+          // Prefer position passed from TPSL view (from route params); fallback to ref to avoid "No position found" when ref is stale
+          const positionToUse = positionFromRoute ?? currentPositionRef.current;
+          if (!positionToUse) {
+            return { success: false };
+          }
+          const result = await handleUpdateTPSL(
+            positionToUse,
+            takeProfitPrice,
+            stopLossPrice,
+            trackingData,
+          );
+          return result;
+        },
+      });
+    });
+  }, [
+    gate,
+    existingPosition,
+    currentPrice,
+    navigation,
+    handleUpdateTPSL,
+    isEligible,
+    track,
+    useBottomSheet,
+  ]);
+
+  const handleMarginPress = useCallback(() => {
+    if (!existingPosition) return;
+
+    return gate(async () => {
+      // Geo-restriction check for add/remove margin action
+      if (!isEligible) {
+        track(MetaMetricsEvents.PERPS_SCREEN_VIEWED, {
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+          [PERPS_EVENT_PROPERTY.SOURCE]:
+            PERPS_EVENT_VALUE.SOURCE.ADJUST_MARGIN_ACTION,
+        });
+        setIsEligibilityModalVisible(true);
+        return;
+      }
+
+      // The bottom sheet treatment carries its own add/remove toggle, so the
+      // separate action-choice sheet is redundant there.
+      if (useBottomSheet) {
+        navigateToAdjustMargin(existingPosition, 'add', {
+          useBottomSheet: true,
+        });
+        return;
+      }
+
+      openAdjustMarginSheet();
+    });
+  }, [
+    gate,
+    existingPosition,
+    openAdjustMarginSheet,
+    isEligible,
+    track,
+    navigateToAdjustMargin,
+    useBottomSheet,
+  ]);
+
+  const handleSharePress = useCallback(() => {
+    if (!existingPosition) return;
+
+    sharePosition(existingPosition, currentPrice.toString());
+  }, [existingPosition, currentPrice, sharePosition]);
+
+  // Stats card tooltip handler
+  const handleTooltipPress = useCallback(
+    (contentKey: PerpsTooltipContentKey) => {
+      setSelectedTooltip(contentKey);
+    },
+    [],
+  );
+
+  const handleTooltipClose = useCallback(() => {
+    setSelectedTooltip(null);
+  }, []);
+
+  // Order book handler - navigates to order book view
+  const handleOrderBookPress = useCallback(() => {
+    if (!market?.symbol) return;
+
+    track(MetaMetricsEvents.PERPS_UI_INTERACTION, {
+      [PERPS_EVENT_PROPERTY.INTERACTION_TYPE]:
+        PERPS_EVENT_VALUE.INTERACTION_TYPE.TAP,
+      [PERPS_EVENT_PROPERTY.ASSET]: market.symbol,
+    });
+
+    navigation.navigate(Routes.PERPS.ORDER_BOOK, {
+      symbol: market.symbol,
+      marketData: market,
+    });
+  }, [market, navigation, track]);
+
+  // Close position handler
+  const handleClosePosition = useCallback(() => {
+    if (!existingPosition) return;
+
+    playImpact(ImpactMoment.SecondaryCTA).catch(() => undefined);
+    return gate(async () => {
+      // Geo-restriction check for close position action
+      if (!isEligible) {
+        track(MetaMetricsEvents.PERPS_SCREEN_VIEWED, {
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+          [PERPS_EVENT_PROPERTY.SOURCE]:
+            PERPS_EVENT_VALUE.SOURCE.CLOSE_POSITION_ACTION,
+        });
+        setIsEligibilityModalVisible(true);
+        return;
+      }
+
+      navigateToClosePosition(
+        existingPosition,
+        PERPS_EVENT_VALUE.SOURCE.PERP_ASSET_SCREEN,
+        {
+          buttonClicked: PERPS_EVENT_VALUE.BUTTON_CLICKED.CLOSE,
+          buttonLocation: PERPS_EVENT_VALUE.BUTTON_LOCATION.ASSET_DETAILS,
+        },
+      );
+    });
+  }, [gate, existingPosition, navigateToClosePosition, isEligible, track]);
+
+  // Modify position handler - opens the modify action sheet
+  const handleModifyPress = useCallback(() => {
+    if (!existingPosition) return;
+
+    return gate(async () => {
+      // Geo-restriction check for modify position action
+      if (!isEligible) {
+        track(MetaMetricsEvents.PERPS_SCREEN_VIEWED, {
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+          [PERPS_EVENT_PROPERTY.SOURCE]:
+            PERPS_EVENT_VALUE.SOURCE.MODIFY_POSITION_ACTION,
+        });
+        setIsEligibilityModalVisible(true);
+        return;
+      }
+
+      openModifySheet();
+    });
+  }, [gate, existingPosition, openModifySheet, isEligible, track]);
+
+  // Handler for "Add Margin" from stop loss prompt banner
+  const handleAddMarginFromBanner = useCallback(() => {
+    if (!existingPosition) return;
+
+    return gate(async () => {
+      // Geo-restriction check for add margin from banner
+      if (!isEligible) {
+        track(MetaMetricsEvents.PERPS_SCREEN_VIEWED, {
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+          [PERPS_EVENT_PROPERTY.SOURCE]:
+            PERPS_EVENT_VALUE.SOURCE.STOP_LOSS_PROMPT_ADD_MARGIN,
+        });
+        setIsEligibilityModalVisible(true);
+        return;
+      }
+
+      navigateToAdjustMargin(existingPosition, 'add', {
+        useBottomSheet,
+      });
+
+      // Track the interaction - use ADD_MARGIN interaction type for banner clicks
+      track(MetaMetricsEvents.PERPS_UI_INTERACTION, {
+        [PERPS_EVENT_PROPERTY.INTERACTION_TYPE]:
+          PERPS_EVENT_VALUE.INTERACTION_TYPE.ADD_MARGIN,
+        [PERPS_EVENT_PROPERTY.ASSET]: existingPosition.symbol,
+        [PERPS_EVENT_PROPERTY.SOURCE]:
+          PERPS_EVENT_VALUE.SOURCE.STOP_LOSS_PROMPT_BANNER,
+      });
+    });
+  }, [
+    gate,
+    existingPosition,
+    track,
+    isEligible,
+    navigateToAdjustMargin,
+    useBottomSheet,
+  ]);
+
+  // Handler for "Set Stop Loss" from stop loss prompt banner
+  const handleSetStopLossFromBanner = useCallback(() => {
+    if (!existingPosition || !suggestedStopLossPrice) return;
+
+    return gate(async () => {
+      // Geo-restriction check for set stop loss from banner
+      if (!isEligible) {
+        track(MetaMetricsEvents.PERPS_SCREEN_VIEWED, {
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.GEO_BLOCK_NOTIF,
+          [PERPS_EVENT_PROPERTY.SOURCE]:
+            PERPS_EVENT_VALUE.SOURCE.STOP_LOSS_PROMPT_SET_SL,
+        });
+        setIsEligibilityModalVisible(true);
+        return;
+      }
+
+      // Capture symbol before async to detect market changes during API call
+      const originalSymbol = existingPosition.symbol;
+
+      setIsSettingStopLoss(true);
+
+      try {
+        // Build tracking data
+        const riskSource =
+          PERPS_EVENT_VALUE.RISK_MANAGEMENT_SOURCE.STOP_LOSS_PROMPT_BANNER;
+        const trackingData: TPSLTrackingData = {
+          direction: parseFloat(existingPosition.size) >= 0 ? 'long' : 'short',
+          source: riskSource,
+          ...toPerpsEntryAttribution({ source: riskSource }),
+          positionSize: Math.abs(parseFloat(existingPosition.size)),
+        };
+
+        // Set the stop loss using the suggested price (keep existing TP if any)
+        const result = await handleUpdateTPSL(
+          existingPosition,
+          existingPosition.takeProfitPrice, // Keep existing TP
+          suggestedStopLossPrice, // Use suggested SL
+          trackingData,
+        );
+
+        // Only trigger success state if the update actually succeeded
+        if (!result.success) {
+          // Error toast is already shown by handleUpdateTPSL
+          return;
+        }
+
+        // Staleness check: user may have navigated to a different market during API call
+        // Use ref to get CURRENT market symbol, not the closure-captured value
+        if (originalSymbol !== currentMarketSymbolRef.current) {
+          return;
+        }
+
+        // Trigger success state to start fade-out animation
+        setIsStopLossSuccess(true);
+
+        // Track the interaction - use STOP_LOSS_ONE_CLICK_PROMPT for one-click stop loss from banner
+        track(MetaMetricsEvents.PERPS_UI_INTERACTION, {
+          [PERPS_EVENT_PROPERTY.INTERACTION_TYPE]:
+            PERPS_EVENT_VALUE.INTERACTION_TYPE.STOP_LOSS_ONE_CLICK_PROMPT,
+          [PERPS_EVENT_PROPERTY.ASSET]: existingPosition.symbol,
+          [PERPS_EVENT_PROPERTY.SOURCE]:
+            PERPS_EVENT_VALUE.SOURCE.STOP_LOSS_PROMPT_BANNER,
+          [PERPS_EVENT_PROPERTY.STOP_LOSS_PRICE]: suggestedStopLossPrice,
+        });
+      } catch (error) {
+        Logger.error(
+          ensureError(
+            error,
+            'PerpsMarketDetailsView.handleSetStopLossFromBanner',
+          ),
+          {
+            tags: { feature: PERPS_CONSTANTS.FeatureName },
+            context: {
+              name: 'PerpsMarketDetailsView.handleSetStopLossFromBanner',
+              data: {},
+            },
+          },
+        );
+      } finally {
+        setIsSettingStopLoss(false);
+      }
+    });
+  }, [
+    gate,
+    existingPosition,
+    suggestedStopLossPrice,
+    handleUpdateTPSL,
+    track,
+    isEligible,
+  ]);
+
+  // Handler for when banner fade-out animation completes
+  const handleBannerFadeOutComplete = useCallback(() => {
+    // Reset success state for potential future displays
+    setIsStopLossSuccess(false);
+    // Notify hook that dismiss animation is complete
+    handleBannerDismissComplete();
+  }, [handleBannerDismissComplete]);
+
+  // Handler for market insights card tap - navigates to full market insights view
+  const handleMarketInsightsPress = useCallback(() => {
+    if (!market?.symbol) return;
+    track(MetaMetricsEvents.MARKET_INSIGHTS_OPENED, {
+      perps_market: market.symbol,
+      source: 'perps',
+      ...(perpsInsightsReport && {
+        asset_symbol: perpsInsightsReport.asset,
+        digest_id: perpsInsightsReport.digestId,
+      }),
+    });
+    const traceId = getMarketInsightsTraceId(
+      market.symbol,
+      'perps',
+      'full_view',
+    );
+    trace({
+      name: TraceName.MarketInsightsViewLoad,
+      op: TraceOperation.MarketInsightsLoad,
+      id: traceId,
+      tags: getMarketInsightsTraceTags(
+        { source: 'perps', stage: 'full_view', assetType: 'perps' },
+        'warm',
+      ),
+    });
+    navigation.navigate(Routes.MARKET_INSIGHTS.VIEW, {
+      assetSymbol: market.symbol,
+      assetIdentifier: market.symbol,
+      isPerps: true,
+      hasPerpsPosition: !!existingPosition,
+      isAtOICap,
+      source: 'perps',
+    });
+  }, [
+    market?.symbol,
+    navigation,
+    track,
+    perpsInsightsReport,
+    existingPosition,
+    isAtOICap,
+  ]);
+
+  // Handler for order selection - navigates to order details
+  const handleOrderSelect = useCallback(
+    (order: (typeof displayOrders)[number]) => {
+      navigation.navigate(Routes.PERPS.ORDER_DETAILS, {
+        order,
+      });
+    },
+    [navigation],
+  );
+
+  const handleFullscreenChartOpen = useCallback(() => {
+    setIsFullscreenChartVisible(true);
+
+    // Track full screen chart interaction
+    track(MetaMetricsEvents.PERPS_UI_INTERACTION, {
+      [PERPS_EVENT_PROPERTY.INTERACTION_TYPE]:
+        PERPS_EVENT_VALUE.INTERACTION_TYPE.FULL_SCREEN_CHART,
+      [PERPS_EVENT_PROPERTY.ASSET]: market?.symbol || '',
+      ...chartAnalyticsProperties,
+    });
+  }, [chartAnalyticsProperties, market?.symbol, track]);
+
+  const handlePriceAlertsPress = useCallback(() => {
+    if (!market) return;
+    // Prefer the stable backend-issued id from the v3 Terminal snapshot; fall back to
+    // deriving it from symbol + provider + network for HyperLiquid-direct paths.
+    // providerId is 'hyperliquid', not 'hyperliquid-mainnet', so we append '-mainnet'.
+    const marketId =
+      market.id ??
+      `${market.symbol.toLowerCase()}-${market.providerId ?? 'hyperliquid'}-mainnet`;
+    // Display symbol strips any provider prefix (e.g. "xyz:BTC" → "BTC")
+    const displaySymbol = getPerpsDisplaySymbol(market.symbol);
+    navigation.navigate(Routes.PERPS.PRICE_ALERTS, {
+      symbol: displaySymbol,
+      ticker: displaySymbol,
+      currentPrice,
+      currentCurrency: 'usd',
+      assetId: market.symbol,
+      mode: 'perps',
+      marketId,
+      szDecimals: marketData?.szDecimals,
+    });
+  }, [market, marketData?.szDecimals, currentPrice, navigation]);
+
+  const handleFullscreenChartClose = useCallback(() => {
+    setIsFullscreenChartVisible(false);
+  }, []);
+
+  // Determine market hours content key based on current status - recalculated on each render to stay current
+  const marketHoursContentKey = (() => {
+    const status = getMarketHoursStatus();
+    return status.isOpen ? 'market_hours' : 'after_hours_trading';
+  })();
+
+  // Determine risk disclaimer source and HIP type based on market
+  const riskDisclaimerParams = useMemo(() => {
+    const isHip3 = !!market?.marketSource;
+    return {
+      source: isHip3 ? market.marketSource : 'Hyperliquid',
+    };
+  }, [market?.marketSource]);
+
+  // Determine if any action buttons will be visible
+  const hasLongShortButtons = useMemo(
+    () => !isLoadingPosition,
+    [isLoadingPosition],
+  );
+
+  // Define navigation items for the card
+  const moreItems: PerpsMoreItem[] = useMemo(
+    () => [
+      {
+        label: strings('perps.tutorial.card.title'),
+        startIconName: IconName.Book,
+        onPress: () => navigateToTutorial(),
+        testID: PerpsTutorialSelectorsIDs.TUTORIAL_CARD,
+      },
+    ],
+    [navigateToTutorial],
+  );
+
+  const { styles } = useStyles(createStyles, {});
+
+  const isRelatedMarketsVisible = useMemo(
+    () =>
+      isRelatedMarketsEnabled &&
+      getRelatedMarketsForMarket(market, markets) !== null,
+    [isRelatedMarketsEnabled, market, markets],
+  );
+
+  const shouldShowPerpsMarketInsightsSection = useMemo(
+    () =>
+      isPerpsInsightsEnabled &&
+      Boolean(market?.symbol) &&
+      (Boolean(perpsInsightsReport) || isPerpsInsightsLoading),
+    [
+      isPerpsInsightsEnabled,
+      market?.symbol,
+      perpsInsightsReport,
+      isPerpsInsightsLoading,
+    ],
+  );
+
+  const existingSocialPosition = useMemo(
+    () => (existingPosition ? findSocialPosition(existingPosition) : undefined),
+    [existingPosition, findSocialPosition],
+  );
+
+  const preMarketInsightsSections = useMemo(
+    () => [
+      {
+        key: 'position',
+        visible: Boolean(existingPosition),
+        content: existingPosition ? (
+          <PerpsPositionCard
+            position={existingPosition}
+            currentPrice={currentPrice}
+            szDecimals={marketData?.szDecimals}
+            onAutoClosePress={handleAutoClosePress}
+            onMarginPress={handleMarginPress}
+            postToFeedButton={
+              existingSocialPosition ? (
+                <PerpsPostToFeedButton
+                  position={existingPosition}
+                  socialPosition={existingSocialPosition}
+                />
+              ) : undefined
+            }
+            onSharePress={handleSharePress}
+            variant={isPerpsSocialEnabled ? 'tabs' : 'default'}
+          />
+        ) : null,
+      },
+      {
+        key: 'orders',
+        visible: displayOrders.length > 0,
+        content: (
+          <Box paddingBottom={3}>
+            <PerpsHomeSection
+              title={strings('perps.market.orders')}
+              isLoading={false}
+              isEmpty={displayOrders.length === 0}
+              showWhenEmpty={false}
+              renderSkeleton={() => null}
+            >
+              <View style={styles.positionsOrdersContainer}>
+                {displayOrders.map((order, index) => (
+                  <PerpsCompactOrderRow
+                    key={order.orderId}
+                    order={order}
+                    onPress={() => handleOrderSelect(order)}
+                    testID={
+                      index === 0
+                        ? PerpsCompactOrderRowSelectorsIDs.FIRST_ROW
+                        : `compact-order-${order.orderId}`
+                    }
+                  />
+                ))}
+              </View>
+            </PerpsHomeSection>
+          </Box>
+        ),
+      },
+    ],
+    [
+      existingPosition,
+      currentPrice,
+      marketData?.szDecimals,
+      handleAutoClosePress,
+      existingSocialPosition,
+      handleMarginPress,
+      handleSharePress,
+      isPerpsSocialEnabled,
+      displayOrders,
+      handleOrderSelect,
+      styles.positionsOrdersContainer,
+    ],
+  );
+
+  const postMarketInsightsSections = useMemo(
+    () => [
+      {
+        key: 'stats',
+        visible: true,
+        content: (
+          <PerpsMarketStatisticsCard
+            symbol={market?.symbol || ''}
+            marketStats={marketStats}
+            onTooltipPress={handleTooltipPress}
+            nextFundingTime={market?.nextFundingTime}
+            fundingIntervalHours={market?.fundingIntervalHours}
+            dexName={market?.marketSource || undefined}
+            onOrderBookPress={
+              isOrderBookEnabled ? handleOrderBookPress : undefined
+            }
+          />
+        ),
+      },
+      {
+        key: 'about',
+        // Outer guard avoids mounting the component when there is no
+        // description; the component also returns null defensively for
+        // direct/standalone use. Placed below stats per TAT-2308 follow-up.
+        visible: hasAboutDescription,
+        onLayout: handleAboutLayout,
+        content: (
+          <PerpsMarketAboutSection
+            description={market?.description}
+            assetName={market?.name}
+          />
+        ),
+      },
+      {
+        key: 'related-markets',
+        // Mirrors PerpsRelatedMarkets' own render gate (no peers -> null) so
+        // PerpsHomeSectionList does not render an orphan divider.
+        visible: isRelatedMarketsVisible,
+        content: market ? <PerpsRelatedMarkets currentMarket={market} /> : null,
+      },
+      {
+        key: 'recent-trades',
+        visible: Boolean(market?.symbol),
+        content: market?.symbol ? (
+          <PerpsMarketTradesList symbol={market.symbol} />
+        ) : null,
+      },
+      {
+        key: 'more',
+        visible: moreItems.length > 0,
+        content: (
+          <PerpsMoreSection
+            items={moreItems}
+            testID={PerpsMarketDetailsViewSelectorsIDs.MORE_SECTION}
+          />
+        ),
+      },
+    ],
+    [
+      market,
+      marketStats,
+      handleTooltipPress,
+      isOrderBookEnabled,
+      handleOrderBookPress,
+      isRelatedMarketsVisible,
+      moreItems,
+      hasAboutDescription,
+      handleAboutLayout,
+    ],
+  );
+
+  const positionSections = useMemo(
+    () =>
+      preMarketInsightsSections.filter((section) => section.key === 'position'),
+    [preMarketInsightsSections],
+  );
+
+  const overviewSections = useMemo(
+    () => [
+      ...preMarketInsightsSections.filter(
+        (section) => section.key !== 'position',
+      ),
+      ...postMarketInsightsSections,
+    ],
+    [preMarketInsightsSections, postMarketInsightsSections],
+  );
+
+  // Social tabs: the Feed tab's posts are rows of the screen's own list.
+  const isSocialLeaderboardEnabled = useSelector(
+    selectSocialLeaderboardEnabled,
+  );
+  const [activeSocialTab, setActiveSocialTab] =
+    useState<PerpsMarketSocialTab>('overview');
+  const feedAssetIds = useMemo(() => {
+    const assetId = market?.symbol
+      ? toFeedAssetId({
+          chain: HYPERLIQUID_CHAIN_NAME,
+          tokenAddress: market.symbol,
+        })
+      : null;
+    return assetId ? [assetId] : null;
+  }, [market?.symbol]);
+
+  if (!market) {
+    return (
+      <View style={styles.container}>
+        <View
+          style={styles.errorContainer}
+          testID={PerpsMarketDetailsViewSelectorsIDs.ERROR}
+        >
+          <Text variant={TextVariant.BodySm} color={TextColor.ErrorDefault}>
+            {strings('perps.market.details.error_message')}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  const marketInsightsCard = perpsInsightsReport ? (
+    <MarketInsightsEntryCard
+      report={perpsInsightsReport}
+      timeAgo={perpsInsightsTimeAgo}
+      onPress={handleMarketInsightsPress}
+      onDisclaimerPress={() => setIsInsightsDisclaimerVisible(true)}
+      traceId={perpsInsightsEntryTraceId}
+      source="perps"
+      testID={MarketInsightsSelectorsIDs.ENTRY_CARD}
+    />
+  ) : (
+    <MarketInsightsEntryCardSkeleton />
+  );
+
+  const shouldShowNewPositionActions =
+    hasLongShortButtons && !existingPosition && !isAtOICap;
+  const shouldShowAddFundsCTASection =
+    shouldShowNewPositionActions &&
+    isEligible &&
+    !isLoadingAccount &&
+    !isLoadingPosition &&
+    !hasDirectOrderFundingPath;
+  const shouldShowLongShortButtonsOnly =
+    shouldShowNewPositionActions && !shouldShowAddFundsCTASection;
+
+  let detailChartContent: React.ReactNode = (
+    <ChartCandleSkeleton
+      height={PERPS_CHART_CONFIG.LAYOUT.DETAIL_VIEW_HEIGHT}
+      testID={`${PerpsMarketDetailsViewSelectorsIDs.CONTAINER}-chart-skeleton`}
+    />
+  );
+  if (isMarketContextReady && isAdvancedChartEnabled && market?.symbol) {
+    detailChartContent = (
+      <PerpsAdvancedChart
+        key={`${market.symbol}-${marketContextKey}-${advancedChartResetKey}`}
+        symbol={market.symbol}
+        interval={selectedCandlePeriod}
+        visibleCandleCount={
+          visibleCandleCount ?? PERPS_CHART_CONFIG.CANDLE_COUNT.DEFAULT
+        }
+        height={PERPS_CHART_CONFIG.LAYOUT.DETAIL_VIEW_HEIGHT}
+        tpslLines={tpslLines}
+        positionSize={existingPosition?.size}
+        szDecimals={marketData?.szDecimals}
+        onCrosshairDataChange={setOhlcData}
+        onLatestPriceChange={setAdvancedChartCurrentPrice}
+        onResolved={handleAdvancedChartResolved}
+        onFreshDelivery={() =>
+          setChartDeliveryRevision((revision) => revision + 1)
+        }
+        onError={handleChartError}
+        onVisibleCandleCountChange={onVisibleCandleCountChange}
+        fallbackCandleData={candleData}
+        fallbackDeliveryRevision={priceDeliveryRevision}
+        fallbackFetchMoreHistory={fetchMoreHistory}
+        paginationDuration={TimeDuration.YearToDate}
+      />
+    );
+  } else if (
+    isMarketContextReady &&
+    market?.symbol &&
+    candleData?.symbol === market.symbol &&
+    candleData.interval === selectedCandlePeriod &&
+    !isLoadingHistory
+  ) {
+    detailChartContent = (
+      <TradingViewChart
+        ref={chartRef}
+        candleData={candleData}
+        height={PERPS_CHART_CONFIG.LAYOUT.DETAIL_VIEW_HEIGHT}
+        visibleCandleCount={visibleCandleCount}
+        tpslLines={tpslLines}
+        symbol={market.symbol}
+        showOverlay={false}
+        coloredVolume
+        onOhlcDataChange={setOhlcData}
+        onNeedMoreHistory={fetchMoreHistory}
+        onVisibleCandleCountChange={onVisibleCandleCountChange}
+        testID={`${PerpsMarketDetailsViewSelectorsIDs.CONTAINER}-tradingview-chart`}
+      />
+    );
+  }
+
+  const hasActionsFooter = hasLongShortButtons && !isTradingHalted;
+  const isFeedScroller = isPerpsSocialEnabled && feedAssetIds !== null;
+  // One FlashList scrolls every tab. The disclaimer stays inside Overview
+  // and Top traders, which unmount on Feed. A list footer would be recycled
+  // and paint that label when the next page loads.
+  const isFeedTabActive = isFeedScroller && activeSocialTab === 'feed';
+  const bottomInsetSpacer = edgeInsets && !hasActionsFooter && (
+    <View
+      style={{ height: edgeInsets.bottom }}
+      testID={PerpsMarketDetailsViewSelectorsIDs.BOTTOM_INSET_SPACER}
+    />
+  );
+
+  const riskDisclaimer = (
+    <>
+      <View
+        style={styles.chromeBlock}
+        testID={PerpsMarketDetailsViewSelectorsIDs.RISK_DISCLAIMER}
+      >
+        <Text
+          style={styles.riskDisclaimer}
+          variant={TextVariant.BodyXs}
+          color={TextColor.TextAlternative}
+        >
+          {strings('perps.risk_disclaimer', riskDisclaimerParams)}{' '}
+          <Text
+            variant={TextVariant.BodyXs}
+            color={TextColor.TextAlternative}
+            onPress={handleTradingViewPress}
+          >
+            TradingView.
+          </Text>
+        </Text>
+      </View>
+      {bottomInsetSpacer}
+    </>
+  );
+
+  // Built once per render of this view and returned unchanged by
+  // `renderScreenContent`, so the list's own re-renders (page loads, age tick)
+  // do not re-render the chart and the rest of the screen.
+  const screenContent = (
+    <>
+      {/* A spacer, not contentInset: iOS drops a reused ScrollView's contentInset (fixed in RN 0.88). */}
+      {headerInset > 0 && (
+        <View
+          style={{ height: headerInset }}
+          testID={PerpsMarketDetailsViewSelectorsIDs.HEADER_SPACER}
+        />
+      )}
+      <PerpsMarketSummary
+        symbol={market.symbol}
+        currentPrice={syncedChartCurrentPrice}
+        testID={PerpsMarketDetailsViewSelectorsIDs.MARKET_SUMMARY}
+        testIDPrice={PerpsMarketHeaderSelectorsIDs.PRICE}
+        testIDChange={PerpsMarketHeaderSelectorsIDs.PRICE_CHANGE}
+        size="large"
+        onLayout={handleMarketSummaryLayout}
+        endAccessory={
+          isPriceAlertsEnabled ? (
+            <ButtonIcon
+              iconName={IconName.Notification}
+              size={ButtonIconSize.Md}
+              variant={ButtonIconVariant.Filled}
+              onPress={handlePriceAlertsPress}
+              isDisabled={!isMarketContextReady}
+              style={styles.marketSummaryFullscreenButton}
+              accessibilityLabel={strings('perps.price_alerts.open')}
+              testID={PerpsMarketDetailsViewSelectorsIDs.PRICE_ALERTS_BUTTON}
+            />
+          ) : undefined
+        }
+      />
+
+      {/* TradingView Chart Section */}
+      <View style={[styles.section, styles.chartSection]}>
+        {/* Chart nav row — mirrors Pro layout exactly */}
+        <Box
+          flexDirection={BoxFlexDirection.Row}
+          alignItems={BoxAlignItems.Center}
+          twClassName="mt-2 mb-2 gap-6"
+        >
+          <CandlePeriodSelector
+            selectedPeriod={selectedCandlePeriod}
+            onPeriodChange={handleCandlePeriodChange}
+            onMorePress={handleMorePress}
+            twClassName="flex-1 py-0"
+            groupTwClassName="gap-2"
+            filterVariant={FilterButtonVariant.Secondary}
+            periodButtonTwClassName="h-8 rounded-lg px-1"
+            moreButtonTwClassName="h-8 rounded-lg px-1"
+            textVariant={TextVariant.BodySm}
+            fillWidth
+            testID={`${PerpsMarketDetailsViewSelectorsIDs.CONTAINER}-candle-period-selector`}
+          />
+          <ButtonIcon
+            iconName={IconName.Expand}
+            size={ButtonIconSize.Sm}
+            onPress={handleFullscreenChartOpen}
+            isDisabled={!isMarketContextReady}
+            testID={PerpsMarketDetailsViewSelectorsIDs.FULLSCREEN_CHART_BUTTON}
+            accessibilityLabel={strings(
+              'perps.market_details.fullscreen_chart',
+            )}
+          />
+        </Box>
+        <ComponentErrorBoundary
+          componentLabel="PerpsMarketDetailsChart"
+          onError={handleChartError}
+        >
+          {/* OHLCV Bar - Shows above chart when interacting */}
+          {isMarketContextReady && ohlcData && (
+            <PerpsOHLCVBar
+              open={ohlcData.open}
+              high={ohlcData.high}
+              low={ohlcData.low}
+              close={ohlcData.close}
+              volume={ohlcData.volume}
+              testID={`${PerpsMarketDetailsViewSelectorsIDs.CONTAINER}-ohlcv-bar`}
+            />
+          )}
+
+          <View style={styles.chartTouchContainer}>
+            {Platform.OS === 'ios' && (
+              <View
+                style={styles.chartEdgeGuard}
+                pointerEvents="box-only"
+                testID={PerpsMarketDetailsViewSelectorsIDs.CHART_EDGE_GUARD}
+              />
+            )}
+            {detailChartContent}
+          </View>
+        </ComponentErrorBoundary>
+      </View>
+
+      {/* Price Deviation Warning - outside chart section so px-4 isn't doubled with section padding */}
+      {Boolean(market?.symbol) &&
+        isTradingHalted &&
+        !isLoadingTradingHalted && (
+          <Box twClassName="px-4 mb-4">
+            <PerpsPriceDeviationWarning
+              testID={`${PerpsMarketDetailsViewSelectorsIDs.CONTAINER}-price-deviation-warning`}
+            />
+          </Box>
+        )}
+
+      {/* OI Cap Warning - Shows when market is at capacity */}
+      {isAtOICap && market.symbol ? (
+        <Box twClassName="px-4 mb-4">
+          <PerpsOICapWarning symbol={market.symbol} variant="banner" />
+        </Box>
+      ) : null}
+
+      {/* Market Hours Banner - Hidden when OI cap warning is showing */}
+      {!isAtOICap && isEquityAsset(market?.marketType) && (
+        <Box twClassName="px-4 mb-4">
+          <PerpsMarketHoursBanner
+            marketType={market?.marketType}
+            onInfoPress={handleMarketHoursInfoPress}
+            testID={PerpsMarketDetailsViewSelectorsIDs.MARKET_HOURS_BANNER}
+          />
+        </Box>
+      )}
+
+      {/* Stop Loss Prompt Banner - Shows when position needs attention */}
+      {/* Keep mounted while isStopLossSuccess is true to allow fade animation to complete */}
+      {(isBannerVisible || isStopLossSuccess) && bannerVariant && (
+        <Box twClassName="px-4 mb-4">
+          <PerpsStopLossPromptBanner
+            variant={bannerVariant}
+            liquidationDistance={liquidationDistance ?? 0}
+            suggestedStopLossPrice={suggestedStopLossPrice ?? undefined}
+            suggestedStopLossPercent={suggestedStopLossPercent ?? undefined}
+            onSetStopLoss={handleSetStopLossFromBanner}
+            onAddMargin={handleAddMarginFromBanner}
+            isLoading={isSettingStopLoss}
+            isSuccess={isStopLossSuccess}
+            onFadeOutComplete={handleBannerFadeOutComplete}
+            testID={PerpsMarketDetailsViewSelectorsIDs.STOP_LOSS_PROMPT_BANNER}
+          />
+        </Box>
+      )}
+
+      {shouldShowPerpsMarketInsightsSection && !isPerpsSocialEnabled ? (
+        <Box twClassName="mb-4">{marketInsightsCard}</Box>
+      ) : null}
+
+      {isPerpsSocialEnabled ? (
+        <>
+          <PerpsHomeSectionList sections={positionSections} />
+          <PerpsMarketSocialTabs
+            symbol={market.symbol}
+            onOverviewLayout={handleAboutContainerLayout}
+            onOverviewVisibilityChange={setAboutTrackingEnabled}
+            onTabChange={setActiveSocialTab}
+            footer={isFeedScroller ? riskDisclaimer : undefined}
+            overview={
+              <PerpsHomeSectionList
+                sections={[
+                  {
+                    key: 'market-insights',
+                    visible: shouldShowPerpsMarketInsightsSection,
+                    content: (
+                      <Box twClassName="pt-3 pb-6">{marketInsightsCard}</Box>
+                    ),
+                  },
+                  ...overviewSections,
+                ]}
+                hideLeadingDivider
+              />
+            }
+          />
+        </>
+      ) : (
+        <>
+          <PerpsHomeSectionList sections={preMarketInsightsSections} />
+          <PerpsHomeSectionList sections={postMarketInsightsSections} />
+        </>
+      )}
+
+      {isFeedScroller ? null : riskDisclaimer}
+    </>
+  );
+  const renderScreenContent = (): React.ReactNode => screenContent;
+
+  return (
+    <View
+      style={styles.mainContainer}
+      testID={PerpsMarketDetailsViewSelectorsIDs.CONTAINER}
+    >
+      {/* Service Interruption Banner — pinned above the header; collapses to
+          its title row once the content is scrolled. Outer flag guard avoids
+          mounting the padded wrapper (and banner hooks) when disabled. */}
+      {isServiceInterruptionBannerEnabled && (
+        <Box twClassName="px-4 pb-2" style={{ paddingTop: edgeInsets?.top }}>
+          <PerpsServiceInterruptionBanner
+            scrollY={scrollYShared}
+            testID={
+              PerpsMarketDetailsViewSelectorsIDs.SERVICE_INTERRUPTION_BANNER
+            }
+          />
+        </Box>
+      )}
+
+      <View style={styles.scrollableContentContainer}>
+        <PerpsMarketHeader
+          market={market}
+          testIDs={createLiteMarketHeaderTestIDs()}
+          onBackPress={handleBackPress}
+          onIdentityPress={handleMarketListPress}
+          onFavoritePress={handleFavoritePress}
+          isFavorite={isWatchlist}
+          mode={isPerpsProModeEnabled ? perpsMode : undefined}
+          onModeChange={
+            isPerpsProModeEnabled ? handlePerpsModeChange : undefined
+          }
+          enableHaptics={perpsMode === PerpsMode.Pro}
+          enableModeHaptics={isPerpsProModeEnabled}
+          scrollY={scrollYShared}
+          priceSectionHeight={titleSectionHeightSv}
+          currentPrice={syncedChartCurrentPrice}
+          topInset={headerTopInset}
+        />
+        {isFeedScroller ? (
+          <View
+            style={styles.mainContentScrollView}
+            onLayout={handleScrollLayout}
+          >
+            <PerpsFeedScroller
+              enabled={activeSocialTab === 'feed' && isSocialLeaderboardEnabled}
+              isActive={activeSocialTab === 'feed'}
+              refreshProgressViewOffset={isScrollLaidOut ? headerInset : 0}
+              scope="all"
+              chains={PERPS_FEED_CHAINS}
+              assetIds={feedAssetIds}
+              location="perps_market_details"
+              analyticsSource={PERPS_EVENT_VALUE.SOURCE.PERP_ASSET_SCREEN}
+              renderHeader={renderScreenContent}
+              onScroll={scrollHandler}
+              onRefresh={handleRefresh}
+              pageRef={feedPageRef}
+              scrollTestID={PerpsMarketDetailsViewSelectorsIDs.SCROLL_VIEW}
+            />
+            {isFeedTabActive ? bottomInsetSpacer : null}
+          </View>
+        ) : (
+          <Animated.ScrollView
+            ref={scrollViewRef}
+            style={styles.mainContentScrollView}
+            contentContainerStyle={styles.scrollViewContent}
+            showsVerticalScrollIndicator={false}
+            onScroll={scrollHandler}
+            scrollEventThrottle={16}
+            testID={PerpsMarketDetailsViewSelectorsIDs.SCROLL_VIEW}
+            onLayout={handleScrollLayout}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                progressViewOffset={isScrollLaidOut ? headerInset : 0}
+              />
+            }
+          >
+            {screenContent}
+          </Animated.ScrollView>
+        )}
+      </View>
+
+      {/* Fixed Actions Footer */}
+      {hasActionsFooter && (
+        <View style={styles.actionsFooter}>
+          {/* Show Modify/Close buttons when position exists */}
+          {hasLongShortButtons && existingPosition && (
+            <View style={styles.actionsContainer} accessible={false}>
+              <DSButton
+                variant={ButtonVariant.Secondary}
+                size={ButtonSizeRNDesignSystem.Lg}
+                onPress={handleModifyPress}
+                style={styles.actionButtonWrapper}
+                testID={PerpsMarketDetailsViewSelectorsIDs.MODIFY_BUTTON}
+              >
+                {strings('perps.market.modify')}
+              </DSButton>
+
+              <DSButton
+                variant={ButtonVariant.Primary}
+                size={ButtonSizeRNDesignSystem.Lg}
+                onPress={handleClosePosition}
+                style={styles.actionButtonWrapper}
+                testID={PerpsMarketDetailsViewSelectorsIDs.CLOSE_BUTTON}
+              >
+                {parseFloat(existingPosition.size) >= 0
+                  ? strings('perps.market.close_long')
+                  : strings('perps.market.close_short')}
+              </DSButton>
+            </View>
+          )}
+
+          {/* Show Add funds CTA when no perps balance and no allowlist token to preselect */}
+          {shouldShowAddFundsCTASection && (
+            <View style={styles.actionsContainer} accessible={false}>
+              <DSButton
+                variant={ButtonVariant.Primary}
+                size={ButtonSizeRNDesignSystem.Lg}
+                onPress={handleAddFunds}
+                style={styles.actionButtonWrapper}
+                testID={PerpsMarketDetailsViewSelectorsIDs.ADD_FUNDS_BUTTON}
+              >
+                {strings('perps.add_funds')}
+              </DSButton>
+            </View>
+          )}
+          {/* Show Long/Short buttons when no position exists and user can trade */}
+          {shouldShowLongShortButtonsOnly && (
+            <View style={styles.actionsContainer} accessible={false}>
+              <PerpsDirectionButton
+                direction="long"
+                onPress={handleLongPress}
+                size={ButtonSizeRNDesignSystem.Lg}
+                isDisabled={isAtOICap}
+                style={styles.actionButtonWrapper}
+                testID={PerpsMarketDetailsViewSelectorsIDs.LONG_BUTTON}
+              >
+                {strings('perps.market.long')}
+              </PerpsDirectionButton>
+
+              <PerpsDirectionButton
+                direction="short"
+                onPress={handleShortPress}
+                size={ButtonSizeRNDesignSystem.Lg}
+                isDisabled={isAtOICap}
+                style={styles.actionButtonWrapper}
+                testID={PerpsMarketDetailsViewSelectorsIDs.SHORT_BUTTON}
+              >
+                {strings('perps.market.short')}
+              </PerpsDirectionButton>
+            </View>
+          )}
+          {edgeInsets && (
+            <View
+              style={{ height: edgeInsets.bottom }}
+              testID={PerpsMarketDetailsViewSelectorsIDs.BOTTOM_INSET_SPACER}
+            />
+          )}
+        </View>
+      )}
+
+      {/* More Candle Periods Bottom Sheet - Rendered at root level */}
+      <CandlePeriodBottomSheet
+        isVisible={isMoreCandlePeriodsVisible}
+        onClose={handleMoreCandlePeriodsClose}
+        selectedPeriod={selectedCandlePeriod}
+        selectedDuration={TimeDuration.YearToDate} // Not used when showAllPeriods is true
+        onPeriodChange={handleCandlePeriodChange}
+        showAllPeriods
+        onViewed={(period) => {
+          track(MetaMetricsEvents.PERPS_UI_INTERACTION, {
+            [PERPS_EVENT_PROPERTY.INTERACTION_TYPE]:
+              PERPS_EVENT_VALUE.INTERACTION_TYPE.CANDLE_PERIOD_VIEWED,
+            [PERPS_EVENT_PROPERTY.ASSET]: market?.symbol || '',
+            [PERPS_EVENT_PROPERTY.CANDLE_PERIOD]: period,
+            [PERPS_EVENT_PROPERTY.SOURCE]:
+              PERPS_EVENT_VALUE.SOURCE.PERP_ASSET_SCREEN,
+          });
+        }}
+        testID={`${PerpsMarketDetailsViewSelectorsIDs.CONTAINER}-more-candle-periods-bottom-sheet`}
+      />
+
+      {isEligibilityModalVisible && (
+        <PerpsBottomSheetTooltip
+          isVisible
+          onClose={() => setIsEligibilityModalVisible(false)}
+          contentKey={'geo_block'}
+          testID={
+            PerpsMarketDetailsViewSelectorsIDs.GEO_BLOCK_BOTTOM_SHEET_TOOLTIP
+          }
+        />
+      )}
+
+      {/* Market Hours Bottom Sheet */}
+      {isMarketHoursModalVisible && (
+        <PerpsBottomSheetTooltip
+          isVisible
+          onClose={() => setIsMarketHoursModalVisible(false)}
+          contentKey={marketHoursContentKey}
+          testID={
+            PerpsMarketDetailsViewSelectorsIDs.MARKET_HOURS_BOTTOM_SHEET_TOOLTIP
+          }
+        />
+      )}
+
+      {/* Statistics Tooltip Bottom Sheet */}
+      {selectedTooltip && (
+        <PerpsBottomSheetTooltip
+          isVisible
+          onClose={handleTooltipClose}
+          contentKey={selectedTooltip}
+          testID={PerpsMarketDetailsViewSelectorsIDs.BOTTOM_SHEET_TOOLTIP}
+          buttonLocation={PERPS_EVENT_VALUE.BUTTON_LOCATION.PERP_MARKET_DETAILS}
+        />
+      )}
+
+      {/* Notification Tooltip - Shows after first successful order */}
+      {isNotificationsEnabled && !!monitoringIntent && (
+        <PerpsNotificationTooltip
+          orderSuccess={!!monitoringIntent}
+          testID={PerpsOrderViewSelectorsIDs.NOTIFICATION_TOOLTIP}
+        />
+      )}
+
+      {/* Fullscreen Chart Modal */}
+      {isMarketContextReady && (
+        <PerpsChartFullscreenModal
+          isVisible={isFullscreenChartVisible}
+          candleData={candleData}
+          tpslLines={tpslLines}
+          selectedInterval={selectedCandlePeriod}
+          visibleCandleCount={visibleCandleCount}
+          onClose={handleFullscreenChartClose}
+          onIntervalChange={handleCandlePeriodChange}
+          onVisibleCandleCountChange={onVisibleCandleCountChange}
+          isAdvancedChartEnabled={isAdvancedChartEnabled}
+          symbol={market?.symbol}
+          positionSize={existingPosition?.size}
+          szDecimals={marketData?.szDecimals}
+          fallbackFetchMoreHistory={fetchMoreHistory}
+        />
+      )}
+
+      {/* Market Insights Disclaimer Bottom Sheet */}
+      {isInsightsDisclaimerVisible && (
+        <MarketInsightsDisclaimerBottomSheet
+          onClose={() => setIsInsightsDisclaimerVisible(false)}
+        />
+      )}
+
+      {/* Modify Action Bottom Sheet - Rendered conditionally using PerpsHomeView pattern */}
+      {showModifyActionSheet && (
+        <PerpsSelectModifyActionView
+          sheetRef={modifyActionSheetRef}
+          position={existingPosition ?? undefined}
+          onClose={closeModifySheet}
+          onReversePosition={handleReversePosition}
+          testID={PerpsMarketDetailsViewSelectorsIDs.MODIFY_ACTION_SHEET}
+          useBottomSheet={useBottomSheet}
+        />
+      )}
+
+      {/* Adjust Margin Action Bottom Sheet - Rendered conditionally using PerpsHomeView pattern */}
+      {showAdjustMarginActionSheet && (
+        <PerpsSelectAdjustMarginActionView
+          sheetRef={adjustMarginActionSheetRef}
+          position={existingPosition ?? undefined}
+          onClose={closeAdjustMarginSheet}
+          useBottomSheet={useBottomSheet}
+        />
+      )}
+
+      {/* Flip Position Confirm Bottom Sheet - Rendered conditionally using PerpsHomeView pattern */}
+      {showReversePositionSheet && existingPosition && (
+        <PerpsFlipPositionConfirmSheet
+          position={existingPosition}
+          sheetRef={reversePositionSheetRef}
+          onClose={closeReversePositionSheet}
+          onConfirm={closeReversePositionSheet}
+        />
+      )}
+    </View>
+  );
+};
+
+// Enable Why Did You Render in development
+// Uncomment to enable WDYR for debugging re-renders
+// if (__DEV__) {
+//   // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+//   const { shouldEnableWhyDidYouRender } = require('../../../../../../wdyr');
+//   if (shouldEnableWhyDidYouRender()) {
+//     // @ts-expect-error - whyDidYouRender is added by the WDYR library
+//     PerpsMarketDetailsView.whyDidYouRender = {
+//       logOnDifferentValues: true,
+//       customName: 'PerpsMarketDetailsView',
+//     };
+//   }
+// }
+
+export default PerpsMarketDetailsView;

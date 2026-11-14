@@ -1,0 +1,900 @@
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  useNavigation,
+  useRoute,
+  type RouteProp,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { navigateWithDetails } from '../../../../../util/navigation/navUtils';
+import {
+  Box,
+  ButtonIcon,
+  ButtonIconSize,
+  IconName,
+  TextField,
+  AvatarAccount,
+  AvatarBaseSize,
+} from '@metamask/design-system-react-native';
+import Routes from '../../../../../constants/navigation/Routes';
+import { strings } from '../../../../../../locales/i18n';
+import OnboardingStep from './OnboardingStep';
+import { validateEmail } from '../../../Ramp/utils/depositUtils';
+import { useDebouncedValue } from '../../../../hooks/useDebouncedValue';
+import useEmailVerificationSend from '../../hooks/useEmailVerificationSend';
+import useRegions from '../../hooks/useRegions';
+import { setContactVerificationId } from '../../../../../core/redux/slices/card';
+import { useDispatch, useSelector } from 'react-redux';
+import Engine from '../../../../../core/Engine';
+import { validatePassword } from '../../util/validatePassword';
+import { selectSelectedInternalAccountByScope } from '../../../../../selectors/multichainAccounts/accounts';
+import { selectPrimaryMoneyAccount } from '../../../../../selectors/moneyAccountController';
+import {
+  selectCardImmersveCountries,
+  selectCardImmersveEnabled,
+} from '../../../../../selectors/featureFlagController/card';
+import { useIsImmersveMoneyAccountCountry } from '../../hooks/useImmersveFundingChannel';
+import {
+  MoneyAccountRequired,
+  MoneyAccountIdentity,
+} from '../MoneyAccountRow/MoneyAccountRow';
+import { useAccountGroupName } from '../../../../hooks/multichainAccounts/useAccountGroupName';
+import { createAccountSelectorNavDetails } from '../../../../Views/AccountSelector';
+import { safeToChecksumAddress } from '../../../../../util/address';
+import { useImmersveResumeOnboarding } from '../../hooks/useImmersveResumeOnboarding';
+import { getCardProviderErrorMessage } from '../../util/getCardProviderErrorMessage';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import {
+  CardActions,
+  CardEntryPoint,
+  CardFlow,
+  buildCardMigrationBadgeReasons,
+  mapUkMigrationPhaseToAnalytics,
+  withCardProvider,
+} from '../../util/metrics';
+import { CardProviderIds } from '../../../../../core/Engine/controllers/card-controller/provider-types';
+import { Keyboard } from 'react-native';
+import {
+  clearOnValueChange,
+  createRegionSelectorModalNavigationDetails,
+  setOnValueChange,
+} from './RegionSelectorModal';
+import CountrySelectField from './CountrySelectField';
+import SelectField from './SelectField';
+import CardFormField from './CardFormField';
+import { mapCountryToLocation } from '../../util/mapCountryToLocation';
+import { UK_MIGRATION_COUNTRY_CODE } from '../../util/countryPrefill';
+import { useSignUpCountryPrefill } from '../../hooks/useSignUpCountryPrefill';
+import type { Region } from '../../types';
+import { HUBSPOT_WAITLIST_URL } from '../../constants';
+import { useCardPostAuthRedirect } from '../../hooks/useCardPostAuthRedirect';
+import { useCardUkMigrationState } from '../../hooks/useCardUkMigrationState';
+import { useCardUkMigrationUpdateBadge } from '../../hooks/useCardUkMigrationUpdateBadge';
+import useImmersveSupportedRegions from '../../hooks/useImmersveSupportedRegions';
+import ImmersveLegalClickwrap from './ImmersveLegalClickwrap';
+import type { CardOnboardingStackParamList } from '../../types/navigation';
+import Logger from '../../../../../util/Logger';
+import { isValidLocalPhoneNumber } from '../../util/contactDetails';
+import { selectAvatarAccountType } from '../../../../../selectors/settings';
+import { AvatarAccountType } from '../../../../../component-library/components/Avatars/Avatar';
+import { getAvatarAccountVariant } from '../../../../../component-library/components-temp/MultichainAccounts/avatarAccountVariant';
+
+const buildWaitlistUrl = (countryName: string, email?: string): string => {
+  // country must come first per HubSpot field ordering
+  let query = `country=${encodeURIComponent(countryName)}`;
+  if (email) query += `&email=${encodeURIComponent(email)}`;
+  return `${HUBSPOT_WAITLIST_URL}?${query}`;
+};
+
+const normalizeCallingCode = (code: string | null | undefined): string =>
+  (code ?? '').replace(/\D/g, '');
+
+const matchPhoneRegionByCallingCode = (
+  callingCode: string,
+  allRegions: Region[],
+  getRegionByCode: (code: string | null | undefined) => Region | null,
+  options: {
+    fromMigration: boolean;
+    selectedCountryKey?: string;
+  },
+): Region | null => {
+  if (!callingCode) {
+    return null;
+  }
+
+  const preferredCountryKey = options.fromMigration
+    ? UK_MIGRATION_COUNTRY_CODE
+    : options.selectedCountryKey;
+
+  if (preferredCountryKey) {
+    const preferredRegion = getRegionByCode(preferredCountryKey);
+    if (preferredRegion?.areaCode === callingCode) {
+      return preferredRegion;
+    }
+  }
+
+  return allRegions.find((region) => region.areaCode === callingCode) ?? null;
+};
+
+const ImmersveAccountField = ({
+  isMoneyAccountMode,
+  immersveAddress,
+  accountName,
+  avatarAccountType,
+  onSelect,
+}: {
+  isMoneyAccountMode: boolean;
+  immersveAddress: string | undefined;
+  accountName: string | null;
+  avatarAccountType: AvatarAccountType;
+  onSelect: () => void;
+}) => {
+  if (isMoneyAccountMode && immersveAddress) {
+    return (
+      <Box
+        twClassName="flex-row items-center px-4 py-3 bg-background-muted rounded-xl"
+        testID="signup-immersve-money-account-row"
+      >
+        <MoneyAccountIdentity testID="signup-immersve-money-account" />
+      </Box>
+    );
+  }
+
+  if (isMoneyAccountMode) {
+    return (
+      <MoneyAccountRequired
+        returnTo="onboarding"
+        testID="signup-money-account-required"
+      />
+    );
+  }
+
+  return (
+    <SelectField
+      value={accountName ?? undefined}
+      onPress={onSelect}
+      testID="signup-immersve-account-select"
+      startAccessory={
+        immersveAddress ? (
+          <AvatarAccount
+            address={immersveAddress}
+            variant={getAvatarAccountVariant(avatarAccountType)}
+            size={AvatarBaseSize.Sm}
+            testID="signup-immersve-account-avatar"
+          />
+        ) : undefined
+      }
+    />
+  );
+};
+
+const SignUp = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const route =
+    useRoute<RouteProp<CardOnboardingStackParamList, 'CardOnboardingSignUp'>>();
+  const fromMigration = Boolean(route.params?.fromMigration);
+  const dispatch = useDispatch();
+  const [email, setEmail] = useState('');
+  const [isEmailError, setIsEmailError] = useState(false);
+  const [isEmailValid, setIsEmailValid] = useState(false);
+  const [password, setPassword] = useState('');
+  const [isPasswordError, setIsPasswordError] = useState(false);
+  const [isPasswordValid, setIsPasswordValid] = useState(false);
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
+  const [selectedCountry, setSelectedCountry] = useState<Region | null>(null);
+  const hasPrefillAttempted = useRef(false);
+  const hasUserEditedEmail = useRef(false);
+  const hasUserEditedPhoneNumber = useRef(false);
+  const hasUserEditedPhoneRegion = useRef(false);
+  const immersveCountries = useSelector(selectCardImmersveCountries);
+  const immersveOnboardingEnabled = useSelector(selectCardImmersveEnabled);
+  const {
+    state: { phase: ukMigrationPhase },
+  } = useCardUkMigrationState();
+  const cardUpdateBadgeSeverity = useCardUkMigrationUpdateBadge();
+  const migrationAnalyticsProps = useMemo(() => {
+    if (!fromMigration) {
+      return {};
+    }
+    const migrationPhase = mapUkMigrationPhaseToAnalytics(ukMigrationPhase);
+    const badgeReasons = buildCardMigrationBadgeReasons(
+      Boolean(cardUpdateBadgeSeverity),
+    );
+    return {
+      flow: CardFlow.MIGRATION,
+      ...(migrationPhase ? { migration_phase: migrationPhase } : {}),
+      ...(badgeReasons ? { badge_reasons: badgeReasons } : {}),
+    };
+  }, [cardUpdateBadgeSeverity, fromMigration, ukMigrationPhase]);
+  const {
+    allRegions,
+    getRegionByCode,
+    isLoading: isLoadingRegistrationSettings,
+    isRegistrationSettingsFetched,
+  } = useRegions();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const postAuthRedirect = useCardPostAuthRedirect();
+
+  // Immersve onboarding entry: SIWE binds to the currently-selected EVM account.
+  const accountName = useAccountGroupName();
+  const avatarAccountType = useSelector(selectAvatarAccountType);
+  const selectAccountByScope = useSelector(
+    selectSelectedInternalAccountByScope,
+  );
+  const selectedImmersveAccount = selectAccountByScope('eip155:0');
+  const primaryMoneyAccount = useSelector(selectPrimaryMoneyAccount);
+  const isMoneyAccountMode = useIsImmersveMoneyAccountCountry(
+    selectedCountry?.key,
+  );
+  const immersveAddress = safeToChecksumAddress(
+    isMoneyAccountMode
+      ? primaryMoneyAccount?.address
+      : selectedImmersveAccount?.address,
+  );
+  const resumeImmersveOnboarding = useImmersveResumeOnboarding();
+  const [isImmersveSubmitting, setIsImmersveSubmitting] = useState(false);
+  const [immersveError, setImmersveError] = useState<string | null>(null);
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [phoneRegion, setPhoneRegion] = useState<Region | null>(null);
+  const [isPhoneNumberError, setIsPhoneNumberError] = useState(false);
+  const debouncedPhoneNumber = useDebouncedValue(phoneNumber, 1000);
+
+  const handleAlreadyHaveAccountPress = useCallback(() => {
+    navigation.navigate(
+      Routes.CARD.AUTHENTICATION,
+      postAuthRedirect ? { postAuthRedirect } : undefined,
+      { pop: true, merge: true },
+    );
+  }, [navigation, postAuthRedirect]);
+
+  const {
+    sendEmailVerification,
+    isLoading: emailVerificationIsLoading,
+    isError: emailVerificationIsError,
+    error: emailVerificationError,
+    reset: resetEmailVerificationSend,
+  } = useEmailVerificationSend();
+
+  const debouncedEmail = useDebouncedValue(email, 1000);
+  const debouncedPassword = useDebouncedValue(password, 1000);
+
+  useSignUpCountryPrefill({
+    fromMigration,
+    allRegions,
+    getRegionByCode,
+    isRegistrationSettingsFetched,
+    immersveCountries,
+    immersveOnboardingEnabled,
+    migrationAnalyticsProps,
+    selectedCountry,
+    setSelectedCountry,
+    setPhoneRegion,
+  });
+
+  useEffect(() => {
+    if (!fromMigration) {
+      return;
+    }
+    hasUserEditedEmail.current = false;
+    hasUserEditedPhoneNumber.current = false;
+    hasUserEditedPhoneRegion.current = false;
+    hasPrefillAttempted.current = false;
+  }, [fromMigration]);
+
+  // Best-effort contact prefill for UK migration while Baanx is still active.
+  useEffect(() => {
+    if (!fromMigration || !allRegions.length || hasPrefillAttempted.current) {
+      return;
+    }
+
+    let cancelled = false;
+    Engine.context.CardController.getUserDetails()
+      .then((user) => {
+        if (cancelled || hasPrefillAttempted.current) {
+          return;
+        }
+        hasPrefillAttempted.current = true;
+        if (user.email && !hasUserEditedEmail.current) {
+          setEmail(user.email);
+        }
+        if (user.phoneNumber && !hasUserEditedPhoneNumber.current) {
+          setPhoneNumber(user.phoneNumber.replace(/\D/g, ''));
+        }
+        const callingCode = normalizeCallingCode(user.phoneCountryCode);
+        if (
+          user.phoneNumber &&
+          !hasUserEditedPhoneNumber.current &&
+          !hasUserEditedPhoneRegion.current &&
+          callingCode &&
+          allRegions.length
+        ) {
+          const matchedPhoneRegion = matchPhoneRegionByCallingCode(
+            callingCode,
+            allRegions,
+            getRegionByCode,
+            { fromMigration },
+          );
+          if (matchedPhoneRegion) {
+            setPhoneRegion(matchedPhoneRegion);
+          }
+        }
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        hasPrefillAttempted.current = true;
+        Logger.error(error as Error, {
+          tags: { feature: 'card' },
+          context: {
+            name: 'SignUp',
+            data: { method: 'fromMigrationPrefill' },
+          },
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // Intentionally omit selectedCountry: migration prefers GB via fromMigration,
+    // and depending on selectedCountry re-fires this effect after UK auto-select.
+  }, [allRegions, fromMigration, getRegionByCode]);
+
+  useEffect(() => {
+    if (!debouncedEmail) {
+      return;
+    }
+    const isValid = validateEmail(debouncedEmail);
+    setIsEmailError(!isValid);
+    setIsEmailValid(isValid);
+  }, [debouncedEmail]);
+
+  useEffect(() => {
+    if (!debouncedPassword) {
+      return;
+    }
+    const isValid = validatePassword(debouncedPassword);
+    setIsPasswordError(!isValid);
+    setIsPasswordValid(isValid);
+  }, [debouncedPassword]);
+
+  useEffect(() => {
+    if (!debouncedPhoneNumber) {
+      setIsPhoneNumberError(false);
+      return;
+    }
+    setIsPhoneNumberError(!isValidLocalPhoneNumber(debouncedPhoneNumber));
+  }, [debouncedPhoneNumber]);
+
+  const isImmersveCountry = Boolean(
+    immersveOnboardingEnabled &&
+      selectedCountry &&
+      immersveCountries.includes(selectedCountry.key),
+  );
+
+  const {
+    onboardingDocuments,
+    isLoading: isLegalDocsLoading,
+    error: legalDocsError,
+    refetch: refetchLegalDocs,
+  } = useImmersveSupportedRegions(
+    isImmersveCountry ? selectedCountry?.key : undefined,
+  );
+
+  const isWaitlistMode = Boolean(
+    selectedCountry && !selectedCountry.canSignUp && !isImmersveCountry,
+  );
+
+  const isPhoneValid = Boolean(
+    phoneNumber &&
+      phoneRegion?.areaCode &&
+      isValidLocalPhoneNumber(phoneNumber),
+  );
+
+  const isDisabled = useMemo(() => {
+    if (isWaitlistMode) {
+      return false;
+    }
+    if (isImmersveCountry) {
+      // Email + phone are collected; SIWE binds to the selected account.
+      // Legal docs must be loaded before Continue (clickwrap agreement).
+      return (
+        !email ||
+        !isPhoneValid ||
+        !immersveAddress ||
+        isImmersveSubmitting ||
+        isLegalDocsLoading ||
+        Boolean(legalDocsError) ||
+        onboardingDocuments.length === 0
+      );
+    }
+    return (
+      !email ||
+      !password ||
+      !selectedCountry ||
+      !isEmailValid ||
+      !isPasswordValid ||
+      emailVerificationIsError ||
+      emailVerificationIsLoading
+    );
+  }, [
+    isWaitlistMode,
+    isImmersveCountry,
+    immersveAddress,
+    isImmersveSubmitting,
+    isLegalDocsLoading,
+    legalDocsError,
+    onboardingDocuments.length,
+    email,
+    isPhoneValid,
+    password,
+    selectedCountry,
+    isEmailValid,
+    isPasswordValid,
+    emailVerificationIsError,
+    emailVerificationIsLoading,
+  ]);
+
+  const openAccountSelector = useCallback(() => {
+    navigateWithDetails(
+      navigation,
+      createAccountSelectorNavDetails({
+        isEvmOnly: true,
+        isSelectOnly: true,
+        disableAddAccountButton: true,
+      }),
+    );
+  }, [navigation]);
+
+  const handleImmersveContinue = useCallback(async () => {
+    if (
+      !immersveAddress ||
+      !selectedCountry ||
+      !email ||
+      !phoneNumber ||
+      !phoneRegion?.areaCode
+    ) {
+      return;
+    }
+    if (!isValidLocalPhoneNumber(phoneNumber)) {
+      setIsPhoneNumberError(true);
+      return;
+    }
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.CARD_BUTTON_CLICKED)
+        .addProperties(
+          withCardProvider(CardProviderIds.Immersve, {
+            action: CardActions.SIGN_UP_BUTTON,
+            ...migrationAnalyticsProps,
+            ...(fromMigration
+              ? {
+                  country_of_residence: selectedCountry.key,
+                  phone_number_country_code: phoneRegion.areaCode,
+                }
+              : {}),
+          }),
+        )
+        .build(),
+    );
+    setImmersveError(null);
+    setIsImmersveSubmitting(true);
+    try {
+      if (fromMigration) {
+        Engine.context.CardController.requestLegacyAccountClosure().catch(
+          () => undefined,
+        );
+        Engine.context.CardController.beginMigration();
+      }
+      await resumeImmersveOnboarding({
+        country: selectedCountry.key,
+        address: immersveAddress,
+        email,
+        phone: `+${phoneRegion.areaCode}${phoneNumber}`,
+        entrypoint: CardEntryPoint.SIGN_UP,
+      });
+    } catch (e) {
+      if (fromMigration) {
+        Engine.context.CardController.cancelMigration();
+      }
+      setImmersveError(getCardProviderErrorMessage(e));
+    } finally {
+      setIsImmersveSubmitting(false);
+    }
+  }, [
+    immersveAddress,
+    selectedCountry,
+    email,
+    phoneNumber,
+    phoneRegion?.areaCode,
+    fromMigration,
+    migrationAnalyticsProps,
+    resumeImmersveOnboarding,
+    trackEvent,
+    createEventBuilder,
+  ]);
+
+  const handleJoinWaitlist = useCallback(() => {
+    if (!selectedCountry) return;
+    navigation.navigate(Routes.CARD.MODALS.ID, {
+      screen: Routes.CARD.MODALS.WAITLIST_FORM,
+      params: {
+        url: buildWaitlistUrl(selectedCountry.name, email || undefined),
+      },
+    });
+  }, [selectedCountry, email, navigation]);
+
+  const handleEmailChange = useCallback(
+    (emailText: string) => {
+      if (fromMigration) {
+        hasUserEditedEmail.current = true;
+      }
+      resetEmailVerificationSend();
+      setEmail(emailText);
+    },
+    [fromMigration, resetEmailVerificationSend],
+  );
+
+  const handlePasswordChange = useCallback(
+    (passwordText: string) => {
+      resetEmailVerificationSend();
+      setPassword(passwordText);
+    },
+    [resetEmailVerificationSend],
+  );
+
+  const handleContinue = useCallback(async () => {
+    // Use actual values, not debounced ones
+    if (!email || !password || !selectedCountry) {
+      return;
+    }
+
+    const isCurrentEmailValid = validateEmail(email);
+    const isCurrentPasswordValid = validatePassword(password);
+
+    if (!isCurrentEmailValid || !isCurrentPasswordValid) {
+      // Set error states
+      setIsEmailError(!isCurrentEmailValid);
+      setIsPasswordError(!isCurrentPasswordValid);
+      return;
+    }
+
+    try {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.CARD_BUTTON_CLICKED)
+          .addProperties(
+            withCardProvider(CardProviderIds.Baanx, {
+              action: CardActions.SIGN_UP_BUTTON,
+            }),
+          )
+          .build(),
+      );
+      const { contactVerificationId } = await sendEmailVerification(email);
+
+      dispatch(setContactVerificationId(contactVerificationId));
+
+      if (contactVerificationId) {
+        navigation.navigate(Routes.CARD.ONBOARDING.CONFIRM_EMAIL, {
+          email,
+          password,
+          countryKey: selectedCountry.key,
+        });
+      } else {
+        // If no contactVerificationId, assume user is registered or email not valid
+        setIsEmailError(true);
+      }
+    } catch {
+      // Allow error message to display
+    }
+  }, [
+    email,
+    password,
+    trackEvent,
+    createEventBuilder,
+    sendEmailVerification,
+    dispatch,
+    navigation,
+    selectedCountry,
+  ]);
+
+  const handleCountrySelect = useCallback(() => {
+    if (fromMigration || isLoadingRegistrationSettings) return;
+    resetEmailVerificationSend();
+    setOnValueChange((region) => {
+      setSelectedCountry(region);
+      setPhoneRegion(region);
+      Engine.context.CardController.setUserLocation(
+        mapCountryToLocation(region.key),
+      );
+      Engine.context.CardController.setSelectedCountry(region.key);
+    });
+
+    navigateWithDetails(
+      navigation,
+      createRegionSelectorModalNavigationDetails({
+        regions: allRegions,
+        selectedRegionKey: selectedCountry?.key ?? null,
+      }),
+    );
+  }, [
+    fromMigration,
+    navigation,
+    allRegions,
+    selectedCountry?.key,
+    resetEmailVerificationSend,
+    isLoadingRegistrationSettings,
+  ]);
+
+  const handlePhoneRegionSelect = useCallback(() => {
+    setOnValueChange((region) => {
+      if (fromMigration) {
+        hasUserEditedPhoneRegion.current = true;
+      }
+      setPhoneRegion(region);
+    });
+
+    navigateWithDetails(
+      navigation,
+      createRegionSelectorModalNavigationDetails({
+        regions: allRegions,
+        renderAreaCode: true,
+        selectedRegionKey: phoneRegion?.key ?? selectedCountry?.key ?? null,
+      }),
+    );
+  }, [
+    fromMigration,
+    navigation,
+    allRegions,
+    phoneRegion?.key,
+    selectedCountry?.key,
+  ]);
+
+  const handlePhoneNumberChange = useCallback(
+    (text: string) => {
+      if (fromMigration) {
+        hasUserEditedPhoneNumber.current = true;
+      }
+      setPhoneNumber(text.replace(/\D/g, ''));
+    },
+    [fromMigration],
+  );
+
+  useEffect(() => () => clearOnValueChange(), []);
+
+  const emailErrorText = isImmersveCountry
+    ? null
+    : email.length > 0 && emailVerificationIsError
+      ? emailVerificationError
+      : isEmailError
+        ? strings('card.card_onboarding.sign_up.invalid_email')
+        : null;
+
+  const renderFormFields = () => (
+    <>
+      <CountrySelectField
+        label={strings('card.card_onboarding.sign_up.country_label')}
+        placeholder={strings(
+          'card.card_onboarding.sign_up.country_placeholder',
+        )}
+        selectedCountry={selectedCountry}
+        isLoading={isLoadingRegistrationSettings}
+        isDisabled={fromMigration}
+        onPress={handleCountrySelect}
+        testID="signup-country-select"
+        loadingTestID="signup-country-loading"
+        helpText={
+          isWaitlistMode
+            ? strings('card.card_onboarding.sign_up.country_not_available')
+            : undefined
+        }
+        helpTextTestID="signup-country-not-available-text"
+      />
+
+      <CardFormField
+        label={strings('card.card_onboarding.sign_up.email_label')}
+        errorText={emailErrorText}
+        errorTestID="signup-email-error-text"
+      >
+        <TextField
+          onChangeText={handleEmailChange}
+          value={email}
+          isError={
+            !isImmersveCountry && debouncedEmail.length > 0 && isEmailError
+          }
+          inputProps={{
+            autoCapitalize: 'none',
+            autoCorrect: false,
+            autoComplete: 'email',
+            textContentType: 'emailAddress',
+            numberOfLines: 1,
+            keyboardType: 'email-address',
+            maxLength: 255,
+            accessibilityLabel: strings(
+              'card.card_onboarding.sign_up.email_label',
+            ),
+            testID: 'signup-email-input',
+          }}
+        />
+      </CardFormField>
+
+      {isImmersveCountry && (
+        <>
+          <CardFormField
+            label={strings(
+              'card.card_onboarding.sign_up.phone_number_label_immersve',
+            )}
+            errorText={
+              isPhoneNumberError
+                ? strings(
+                    'card.card_onboarding.set_phone_number.invalid_phone_number',
+                  )
+                : null
+            }
+            errorTestID="signup-immersve-phone-number-error"
+          >
+            <Box twClassName="flex-row items-center gap-2">
+              <Box twClassName="w-28">
+                <SelectField
+                  value={`${phoneRegion?.emoji ?? ''} +${phoneRegion?.areaCode ?? ''}`}
+                  onPress={handlePhoneRegionSelect}
+                  hideIcon
+                  testID="signup-immersve-phone-area-code-select"
+                />
+              </Box>
+              <Box twClassName="flex-1">
+                <TextField
+                  onChangeText={handlePhoneNumberChange}
+                  value={phoneNumber}
+                  isError={isPhoneNumberError}
+                  inputProps={{
+                    autoCapitalize: 'none',
+                    numberOfLines: 1,
+                    autoComplete: 'one-time-code',
+                    keyboardType: 'phone-pad',
+                    maxLength: 255,
+                    accessibilityLabel: strings(
+                      'card.card_onboarding.sign_up.phone_number_label_immersve',
+                    ),
+                    testID: 'signup-immersve-phone-number-input',
+                    onSubmitEditing: Keyboard.dismiss,
+                    returnKeyType: 'done',
+                    blurOnSubmit: true,
+                  }}
+                />
+              </Box>
+            </Box>
+          </CardFormField>
+          <CardFormField
+            label={strings(
+              'card.card_onboarding.sign_up.account_label_immersve',
+            )}
+            helpText={strings(
+              'card.card_onboarding.sign_up.account_description_immersve',
+            )}
+            errorText={immersveError}
+            errorTestID="signup-immersve-error-text"
+          >
+            <ImmersveAccountField
+              isMoneyAccountMode={isMoneyAccountMode}
+              immersveAddress={immersveAddress}
+              accountName={accountName}
+              avatarAccountType={avatarAccountType}
+              onSelect={openAccountSelector}
+            />
+          </CardFormField>
+        </>
+      )}
+
+      {!isWaitlistMode && !isImmersveCountry && (
+        <CardFormField
+          label={strings('card.card_onboarding.sign_up.password_label')}
+          helpText={
+            debouncedPassword.length > 0 && isPasswordError
+              ? undefined
+              : strings('card.card_onboarding.sign_up.password_description')
+          }
+          errorText={
+            debouncedPassword.length > 0 && isPasswordError
+              ? strings('card.card_onboarding.sign_up.invalid_password')
+              : null
+          }
+          errorTestID="signup-password-error-text"
+        >
+          <TextField
+            onChangeText={handlePasswordChange}
+            value={password}
+            isError={debouncedPassword.length > 0 && isPasswordError}
+            endAccessory={
+              <ButtonIcon
+                iconName={isPasswordVisible ? IconName.EyeSlash : IconName.Eye}
+                size={ButtonIconSize.Md}
+                onPress={() => setIsPasswordVisible(!isPasswordVisible)}
+                accessibilityLabel={strings(
+                  isPasswordVisible
+                    ? 'choose_password.hide'
+                    : 'choose_password.show',
+                )}
+                testID="signup-password-visibility-toggle"
+              />
+            }
+            inputProps={{
+              autoCapitalize: 'none',
+              numberOfLines: 1,
+              maxLength: 255,
+              secureTextEntry: !isPasswordVisible,
+              autoComplete: 'one-time-code',
+              accessibilityLabel: strings(
+                'card.card_onboarding.sign_up.password_label',
+              ),
+              testID: 'signup-password-input',
+            }}
+          />
+        </CardFormField>
+      )}
+    </>
+  );
+
+  return (
+    <OnboardingStep
+      title={strings('card.card_onboarding.sign_up.title')}
+      description={strings('card.card_onboarding.sign_up.description')}
+      formFields={renderFormFields()}
+      footerContent={
+        isImmersveCountry ? (
+          <ImmersveLegalClickwrap
+            documents={onboardingDocuments}
+            isLoading={isLegalDocsLoading}
+            error={legalDocsError}
+            treatEmptyAsError
+            suffix={
+              fromMigration
+                ? strings(
+                    'card.card_onboarding.sign_up.clickwrap_suffix_migration',
+                  )
+                : undefined
+            }
+            onRetry={() => {
+              refetchLegalDocs().catch(() => undefined);
+            }}
+          />
+        ) : undefined
+      }
+      primaryButtonProps={{
+        children: isWaitlistMode
+          ? strings('card.card_onboarding.sign_up.join_waitlist')
+          : strings('card.card_onboarding.continue_button'),
+        onPress: isImmersveCountry
+          ? handleImmersveContinue
+          : isWaitlistMode
+            ? handleJoinWaitlist
+            : handleContinue,
+        isDisabled,
+        isLoading: isImmersveCountry
+          ? isImmersveSubmitting
+          : !isWaitlistMode && emailVerificationIsLoading,
+        testID: 'signup-continue-button',
+      }}
+      tertiaryButtonProps={
+        fromMigration
+          ? undefined
+          : {
+              children: strings(
+                isImmersveCountry
+                  ? 'card.card_onboarding.sign_up.i_already_have_an_account_immersve'
+                  : 'card.card_onboarding.sign_up.i_already_have_an_account',
+              ),
+              onPress: handleAlreadyHaveAccountPress,
+              testID: 'signup-i-already-have-an-account-text',
+            }
+      }
+      headerMode="back"
+    />
+  );
+};
+
+export default SignUp;

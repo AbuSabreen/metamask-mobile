@@ -1,0 +1,1232 @@
+# MetaMask Mobile Deeplink Handling Guide
+
+> 💡 **Visual Learner?** Check out the [Deeplink Visual Flowcharts](./deeplinking-diagrams.md) for interactive diagrams of the entire flow!
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Link Types](#link-types)
+- [How Link Processing Works](#how-link-processing-works) → [See Visual Flow](./deeplinking-diagrams.md#complete-deeplink-flow-with-signature-verification)
+- [Creating New Links](#creating-new-links)
+- [Adding New Handlers](#adding-new-handlers)
+- [Signature Verification](#signature-verification) → [See Verification Diagrams](./deeplinking-diagrams.md#signature-creation-and-verification-detail)
+- [Analytics](#analytics) → [See Analytics Documentation](./deeplink-analytics.md)
+- [Performance (Sentry CUFs)](#performance-sentry-cufs) → [See Deeplink Sentry Performance](../engagement/deeplink-sentry-performance.md)
+- [Testing Links](#testing-links)
+- [Security Considerations](#security-considerations)
+- [Custom Schemes Explained](#custom-uri-schemes-explained)
+
+Please note that custom `metamask://...` schemed links are being phased out in favor of universal links: `https://link.metamask.io/somePath?someParam=someValue`
+
+## Overview
+
+### In-app Support:
+
+- UI element link routing
+- In-app-browser web view selection
+- QR code scanning
+
+### External Support:
+
+- External app link selection
+- External browser website link selection
+- External camera QR code link scan
+
+### ⚠️ Does not support:
+
+- Pasting link into external browser
+
+MetaMask Mobile supports multiple deeplink protocols to enable various app interactions:
+
+- **Universal Links** (iOS) / **App Links** (Android): `https://link.metamask.io/*`
+- **Custom URI Schemes**: `metamask://`, `ethereum://`, `wc://`
+- **Test Environment Links**: `https://link-test.metamask.io/*`
+
+All deeplinks are processed through a unified pipeline that handles security verification, user consent, and routing to appropriate handlers.
+
+> [!IMPORTANT]
+> Each new deeplink must have a matching identical deeplink in the [MetaMask extension](https://github.com/MetaMask/metamask-extension) client and an entry in the Branch LinkHub. **Failure to do so will lead to broken user flows.**
+> If you are creating a deeplink for an experience that is only supported on the mobile app, create a matching deeplink on extension that shows a QR code so the user can open it in the mobile app ([example](https://github.com/MetaMask/metamask-extension/pull/44080)) or redirects to a webpage which guides users to try that experience on the mobile app ([example](https://github.com/MetaMask/metamask-extension/pull/39375)). This is very easy to do with a coding agent, just point it to the example and ask it to the same thing for your use case.
+> To create an entry in the Branch LinkHub, reach out to the Engagement team or the Growth Marketing team for assistance.
+
+## Link Types
+
+> 📊 **[View Scenario Examples](./deeplinking-diagrams.md#common-scenarios)** - See visual flows for each link type
+
+### 1. Public / Unsigned Links
+
+Used for general marketing and public-facing features:
+
+```
+https://link.metamask.io/buy
+https://link.metamask.io/swap?from=eip155:1/slip44:60
+```
+
+- **User Experience**: Shows interstitial warning about untrusted links
+- **Use Cases**: Marketing campaigns, documentation, public features
+
+### 2. Private / Signed Links
+
+Cryptographically signed links for trusted internal use:
+
+```
+https://link.metamask.io/perps?sig=ABC123...&sig_params=screen,symbol
+```
+
+- **User Experience**: Shows confirmation dialog (can be disabled)
+- **Use Cases**: Internal testing, controlled feature rollouts, trusted campaigns
+
+### 3. Invalid Links
+
+Links with invalid domains or unsupported actions (without valid signature):
+
+- **User Experience**: Shows modal with "This page doesn't exist" message and option to update app or go home
+- **Examples**: Wrong domain, malformed URL, unsupported action without signature
+
+> ⚠️ **Note**: A tampered/invalid signature does NOT make a link "invalid". Instead, it demotes the link to a PUBLIC link (showing the security warning). Only invalid domains or unsupported actions result in the INVALID modal.
+
+### 4. Unsupported Links
+
+Links with valid signature but unsupported action in current app version:
+
+- **User Experience**: Shows modal with "This page is not supported in current version" message
+- **Examples**: New feature not yet available in user's app version
+
+## Link Formats
+
+| Type   | Format                                                                         | Example                                                          |
+| ------ | ------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| Public | `https://link.metamask.io/{action}?{params}`                                   | `https://link.metamask.io/swap?from=eip155:1/slip44:60`          |
+| Signed | `https://link.metamask.io/{action}?{params}&sig_params={list}&sig={signature}` | `https://link.metamask.io/swap?from=...&sig_params=from&sig=XXX` |
+| Test   | `https://link-test.metamask.io/{action}?{params}`                              | `https://link-test.metamask.io/swap`                             |
+| Legacy | `metamask://{action}?{params}`                                                 | `metamask://wc?uri=wc:123...`                                    |
+
+## How Link Processing Works
+
+> 📊 **[View Complete Flow Diagram](./deeplinking-diagrams.md#complete-deeplink-flow-with-signature-verification)** - Interactive Mermaid flowchart showing the entire process
+
+### 1. Entry Points
+
+```
+User Clicks Link
+       ↓
+Branch.io / React Native Linking / FCM Notifications
+       ↓
+handleDeeplink() [Early SDKConnectV2/MWP interception]
+       ↓
+DeeplinkManager.parse()
+       ↓
+parseDeeplink()
+```
+
+### 2. URL Classification
+
+```typescript
+// In app/core/DeeplinkManager/utils/parseDeeplink.ts
+const { urlObj, params } = extractURLParams(url);
+
+// Determine protocol and route accordingly
+switch (urlObj.protocol.replace(':', '')) {
+  case PROTOCOLS.METAMASK:
+  case PROTOCOLS.HTTP:
+  case PROTOCOLS.HTTPS:
+    // All converted to universal link format and handled uniformly
+    → handleUniversalLink()
+  case PROTOCOLS.WC:
+    → connectWithWC()      // WalletConnect connections
+  case PROTOCOLS.ETHEREUM:
+    → handleEthereumUrl()  // EIP-681 payment requests
+  case PROTOCOLS.DAPP:
+    → handleDappUrl()      // In-app browser navigation
+}
+```
+
+> **Note**: `metamask://` URLs are automatically converted to `https://link.metamask.io/` format before processing.
+
+### 3. Signature Verification (for HTTPS links)
+
+```typescript
+// In app/core/DeeplinkManager/handlers/handleUniversalLink.ts
+if (hasSignature(validatedUrl)) {
+  const result = await verifyDeeplinkSignature(validatedUrl);
+
+  switch (result) {
+    case VALID: // Signature verified ✅
+      isPrivateLink = true;
+      break;
+    case INVALID: // Signature failed ❌
+    case MISSING: // No signature
+      isPrivateLink = false;
+      break;
+  }
+}
+```
+
+### 4. User Consent Modal
+
+Unless the action is whitelisted or bypassed, users see an interstitial:
+
+- **Public Links**: Security warning about untrusted source
+- **Private Links**: Confirmation dialog (can remember choice)
+- **Invalid Links**: "Page doesn't exist" modal with update/home options
+- **Unsupported Links**: "Not supported in current version" modal
+
+**Modal Bypass Conditions:**
+
+- Action is in `WHITELISTED_ACTIONS` (see [Security Considerations](#4-action-whitelisting); includes `HOME`, `WC`, `SWAP`, and others)
+- URL starts with `interstitialWhitelistUrls` (currently empty; if configured, these bypass regardless of action)
+- Link is PUBLIC or PRIVATE AND originated from a trusted in-app source (carousel, notification, push notification, Braze, perps outreach). QR-code and in-app-browser origins are **not** trusted.
+
+### 5. Action Routing
+
+```typescript
+// In app/core/DeeplinkManager/handlers/handleUniversalLink.ts
+switch (action) {
+  case SUPPORTED_ACTIONS.SWAP:
+    handleSwapUrl({ swapPath });
+    break;
+  case SUPPORTED_ACTIONS.PERPS:
+  case SUPPORTED_ACTIONS.PERPS_MARKETS:
+    handlePerpsUrl({ perpsPath });
+    break;
+  case SUPPORTED_ACTIONS.PREDICT:
+    handlePredictUrl({ predictPath, origin });
+    break;
+  // ... other actions
+}
+```
+
+## Creating New Links
+
+### Basic Structure
+
+```
+https://link.metamask.io/{action}?{parameters}
+```
+
+### Examples
+
+#### Public Link (Marketing)
+
+```
+https://link.metamask.io/buy?chain=1&token=ETH
+```
+
+### Explore Search Campaign Link
+
+Use this mobile deeplink for campaigns about a real-world name or event that
+can match multiple instrument types:
+
+```
+https://link.metamask.io/trending?screen=search&q=Apple
+```
+
+Contract:
+
+- Minimum MetaMask Mobile version: `8.3.0`.
+- `screen=search` is required. A standalone `q` or `query` parameter opens the
+  default Explore feed instead of Search.
+- `q` is the canonical query parameter. `query` is an alias used only when `q`
+  is missing, empty, or whitespace. If both are non-empty, `q` wins.
+- Values are URL-decoded and trimmed before prefilling the search input. Encode
+  spaces and special characters, for example:
+  `https://link.metamask.io/trending?screen=search&q=Apple%20Inc`.
+- A missing, empty, or whitespace-only query still opens Explore Search with
+  an empty input.
+- The prefilled query runs through the same Explore Search feeds and ranking as
+  a query entered in-app. Feed availability can still vary by app version and
+  feature configuration.
+- Users can clear or edit the query normally.
+- Search-open analytics reports `entry_point: deeplink`; normal deeplink
+  analytics also records the `trending` route and supported UTM parameters.
+- This is a mobile destination. Universal Links on iOS and App Links on Android
+  support `link.metamask.io`; campaign links must also be configured in the
+  Branch LinkHub as described in [Overview](#overview).
+
+For test builds, replace the host:
+
+```
+https://link-test.metamask.io/trending?screen=search&q=Apple
+```
+
+Generate dynamic links with `URLSearchParams` instead of concatenating an
+unescaped query:
+
+```javascript
+const url = new URL('https://link.metamask.io/trending');
+url.searchParams.set('screen', 'search');
+url.searchParams.set('q', campaignQuery);
+```
+
+### Notification Settings Link
+
+Opens notification settings, or a specific preference section when `section` is
+set:
+
+```
+https://link.metamask.io/notifications-settings
+https://link.metamask.io/notifications-settings?section=wallet-activity
+https://link.metamask.io/notifications-settings?section=price-alerts
+```
+
+Contract:
+
+- `section` is optional. A missing, empty, or unknown value opens the main
+  notification settings page.
+- Supported `section` values: `wallet-activity`, `perps`, `social-ai`,
+  `agentic-cli`, `marketing`, `price-alerts`. CamelCase type names
+  (`walletActivity`, `priceAlerts`) are accepted as aliases.
+- If notifications are turned off, the main settings page is shown so the user
+  can enable them. After enabling, a still-pending valid `section` opens that
+  preference screen.
+- This is a mobile destination. Campaign links must also be configured in the
+  Branch LinkHub as described in [Overview](#overview).
+
+#### Swap Link (CAIP-19 Format)
+
+```
+https://link.metamask.io/swap?from=eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48&to=eip155:137/erc20:0x2791bca1f2de4661ed88a30c99a7a9449aa84174&amount=1000000
+```
+
+Missing or unsupported `tab` values open the Market tab.
+
+#### Limit Order Link
+
+Use the existing `swap` action with `tab=limit`:
+
+```
+https://link.metamask.io/swap?tab=limit&from=eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48&to=eip155:1/erc20:0xdac17f958d2ee523a2206206994597c13d831ec7&amount=1000000&expiresInMinutes=10080&priceTolerance=0.5
+```
+
+- `from`, `to`, and `amount` are optional and use the same CAIP-19 and atomic-unit formats as market swap links.
+- `expiresInMinutes` optionally selects an existing expiration preset: `10`, `60`, `1440`, `4320`, `10080`, or `43200`.
+- `priceTolerance` optionally sets a percentage greater than `0` and less than `100`, with at most two decimal places. Do not include the `%` sign.
+- Missing or invalid Limit Order settings use the existing defaults: 60 minutes and 2% price tolerance.
+- The limit price initializes from the live market price.
+- Limit Orders require an eligible same-chain pair. Unsupported or cross-chain inputs are replaced with a supported pair, and an amount that no longer applies is cleared.
+- If the Limit Orders tab is unavailable, the link falls back to the Market tab.
+
+#### Recurring Buy Link
+
+Use the existing `swap` action with `tab=recurring`:
+
+```
+https://link.metamask.io/swap?tab=recurring&from=eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48&to=eip155:1/erc20:0xdac17f958d2ee523a2206206994597c13d831ec7&amount=1000000&every=2&unit=week&repeatCount=8
+```
+
+- `from`, `to`, and `amount` are optional and use the same CAIP-19 and atomic-unit formats as market swap links.
+- `every` and `unit` form an optional interval pair. If either is missing or invalid, the interval uses the default of every 1 hour.
+- `unit` accepts `minute`, `hour`, `day`, `week`, or `month`.
+- `every` must be a positive integer. Its maximum is 60 minutes, 24 hours, 7 days, 4 weeks, or 6 months, depending on `unit`.
+- `repeatCount` is optional. A missing or invalid value uses the default of 10 repeats.
+- A valid `repeatCount` is preserved when the interval pair falls back to its default.
+- The complete schedule cannot exceed 180 days. A month is treated as 30 days for this validation.
+- If the schedule exceeds 180 days after applying the supplied or default repeat count, the complete default schedule is used: every 1 hour, repeated 10 times.
+- Recurring Buys require an eligible same-chain pair. Unsupported or cross-chain inputs are replaced with a supported pair, and an amount that no longer applies is cleared.
+- If the Recurring Buy tab is unavailable, the link falls back to the Market tab.
+
+#### Money account deposit link
+
+```
+https://link.metamask.io/money-account-deposit
+metamask://money-account-deposit
+https://link.metamask.io/money-account-deposit?tokenType=atoken
+metamask://money-account-deposit?tokenType=atoken
+```
+
+Both forms enter the same React bridge route. The bridge checks the Money
+feature flag and geo eligibility before entering the Money account deposit flow.
+The action bypasses the deeplink interstitial. When Money is unavailable or the
+user is geo-blocked, the existing Money deeplink messaging is shown. Eligible
+users who have not seen Money onboarding are sent through onboarding first,
+then continue to the deposit confirmation. Users who have already seen
+onboarding open the editable deposit confirmation directly.
+
+`tokenType` is optional. `tokenType=atoken` prefers pre-selecting positive-balance Aave
+output token with the highest fiat balance as the deposit payment token. If the
+user has no positive-balance aToken, the link opens the normal deposit flow
+without a preferred token. Missing and unsupported `tokenType` values also keep
+the normal deposit behavior, allowing new token types to be added without
+changing the route.
+
+#### Money referral code (`ref`)
+
+```
+https://link.metamask.io/home?ref=KOL123
+https://link.metamask.io/rewards?ref=KOL123
+```
+
+Any universal link can carry a Money referral code in `ref`. The link still
+opens its own destination; the code never changes routing.
+
+- The code is read only after the interstitial resolves in favor of the link
+  (or the action skips it). A rejected link stores nothing.
+- The code is trimmed and uppercased. Codes that are not 3–24 alphanumeric
+  characters are discarded, matching the invite sheet's validation.
+- The code is kept for the current app session only, in
+  `rewardsMoney.pendingReferralCode`. A newer link replaces it. A code the
+  user already answered this session (`answeredReferralCode`) is not stored
+  again, so the same link does not prompt twice.
+- New users keep the link pending through onboarding. It is parsed once
+  onboarding hands over to `MainNavigator` (`parseDeeplinkAfterOnboarding`),
+  however long the remaining onboarding steps take (including an auto-lock in
+  between), so main-stack destinations such as Swap still open. SDK and
+  WalletConnect links are excluded: they only need an unlocked keychain and
+  keep the usual ready timeout.
+- If the wallet is reset before `MainNavigator` mounts — including the
+  social-login or SRP creation retry buttons, which call `deleteWallet()` — the
+  stale destination is dropped, but the validated `ref` is kept so the invite
+  can still be offered for the new wallet. Only the acquisition code survives,
+  not the old swap/dapp/home destination.
+- The link's destination, the invite sheet, and the push notification
+  pre-prompt follow each other, never overlapping:
+  1. While `handleDeeplinkSaga` parses a link carrying `ref`, it sets
+     `rewardsMoney.isReferralLinkPending` (session only). The flag covers the
+     wait for `MainNavigator` and the interstitial: it is cleared once the
+     deeplink pipeline calls `onHandled`, right after the interstitial is
+     answered, or when the parse rejects the link, fails, or is cancelled.
+  2. Once the flag is off, `PendingMoneyReferralInvite` reads referral me and
+     opens the Money invite sheet (`RewardsMoneyInviteSheet`) over the
+     destination, prefilled with the code. Users who are already a referrer
+     or referee, users in an excluded region, failed reads, and reads slower
+     than 5 seconds drop the code without a prompt. With basic functionality
+     or Rewards Money off, the code is dropped.
+  3. The push notification pre-prompt waits while the flag is on or a code is
+     pending. Closing the sheet without accepting clears the code; after an
+     accept, the accepted splash clears it when it closes.
+- No referral is created from the link. Only accepting the invite registers
+  the user as a referee.
+- `DEEP_LINK_USED` reports the normalized code as `referral_code`.
+- Every `Rewards Money Referral Offer Interacted` event from an invite opened
+  by a link carries `entry_type`: `restored_context` in the first session after
+  installing from a Branch link (the same check as `was_app_installed` on
+  `DEEP_LINK_USED`), `deeplink` otherwise.
+
+#### Private Link (Signed)
+
+To create a signed link, use the `link-signer-api`:
+
+1. **Server-Side Signing Process**:
+
+```javascript
+// The server takes your URL with parameters
+const url = 'https://link.metamask.io/perps?screen=asset&symbol=BTC';
+
+// Lists ALL parameters in sig_params
+// sig_params = "screen,symbol"
+
+// Signs the canonical URL including sig_params
+// Adds signature as 'sig' parameter
+// Final URL:
+('https://link.metamask.io/perps?screen=asset&sig_params=screen,symbol&symbol=BTC&sig=ABC123...');
+```
+
+2. **Dynamic Parameters with sig_params**:
+
+```
+// Only 'screen' is signed, 'debug' can be added without breaking signature
+https://link.metamask.io/perps?screen=asset&sig_params=screen&sig=XXX&debug=true
+```
+
+## Adding New Handlers
+
+### Step 1: Define the Action
+
+```typescript
+// app/constants/deeplinks.ts
+export enum ACTIONS {
+  // ... existing actions
+  YOUR_NEW_ACTION = 'your-new-action',
+}
+```
+
+### Step 2: Add to Supported Actions
+
+```typescript
+// app/core/DeeplinkManager/handlers/handleUniversalLink.ts
+enum SUPPORTED_ACTIONS {
+  // ... existing actions
+  YOUR_NEW_ACTION = ACTIONS.YOUR_NEW_ACTION,
+}
+```
+
+### Step 3: Create Handler Function
+
+```typescript
+// app/core/DeeplinkManager/handlers/legacy/handleYourAction.ts
+import NavigationService from '../../../NavigationService';
+import Routes from '../../../../constants/navigation/Routes';
+import DevLogger from '../../../SDKConnect/utils/DevLogger';
+
+interface HandleYourActionParams {
+  actionPath: string;
+}
+
+export const handleYourAction = async ({
+  actionPath,
+}: HandleYourActionParams) => {
+  DevLogger.log('[handleYourAction] Starting with path:', actionPath);
+
+  try {
+    // Parse parameters from path
+    const urlParams = new URLSearchParams(
+      actionPath.includes('?') ? actionPath.split('?')[1] : '',
+    );
+    const someParam = urlParams.get('someParam');
+
+    // Navigate or perform action
+    NavigationService.navigation.navigate(Routes.YOUR_SCREEN, {
+      someParam,
+    });
+  } catch (error) {
+    DevLogger.log('Failed to handle your action deeplink:', error);
+    // Fallback navigation on error
+    NavigationService.navigation.navigate(Routes.WALLET.HOME);
+  }
+};
+```
+
+### Step 4: Import and Add Routing Logic
+
+```typescript
+// app/core/DeeplinkManager/handlers/handleUniversalLink.ts
+import { handleYourAction } from './handleYourAction';
+
+async function handleUniversalLink(/* ... */) {
+  // ... existing code
+
+  switch (action) {
+    // ... existing cases
+    case SUPPORTED_ACTIONS.YOUR_NEW_ACTION: {
+      handleYourAction({
+        actionPath: actionBasedRampPath,
+      });
+      break;
+    }
+  }
+}
+```
+
+### Step 5: Add Tests
+
+```typescript
+// app/core/DeeplinkManager/handlers/legacy/__tests__/handleYourAction.test.ts
+import { handleYourAction } from '../handleYourAction';
+import NavigationService from '../../../../NavigationService';
+import Routes from '../../../../../constants/navigation/Routes';
+
+jest.mock('../../../../NavigationService', () => ({
+  navigation: {
+    navigate: jest.fn(),
+  },
+}));
+
+describe('handleYourAction', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('navigates to YOUR_SCREEN with correct params', async () => {
+    const actionPath = '?someParam=value';
+
+    await handleYourAction({ actionPath });
+
+    expect(NavigationService.navigation.navigate).toHaveBeenCalledWith(
+      Routes.YOUR_SCREEN,
+      { someParam: 'value' },
+    );
+  });
+});
+```
+
+## Signature Verification
+
+> 📊 **[View Signature Flow Diagrams](./deeplinking-diagrams.md#signature-creation-and-verification-detail)** - See how signing and verification work visually
+
+### How It Works
+
+1. **Server Signs URL**:
+   - Includes all parameters listed in `sig_params`
+   - Uses ECDSA with P-256 curve
+   - Produces base64url-encoded signature
+
+2. **Client (metamask-mobile) Verifies**:
+
+   ```typescript
+   // Canonicalization (with sig_params)
+   if (params.has('sig_params')) {
+     const signedParams = sigParamsList.split(',');
+     // Only include params listed in sig_params
+     signedParams.forEach((param) => {
+       if (params.has(param)) {
+         canonicalParams.set(param, params.get(param));
+       }
+     });
+     // Always include sig_params itself
+     canonicalParams.set('sig_params', sigParamsList);
+   }
+
+   // Verification
+   const valid = await crypto.verify(
+     algorithm,
+     publicKey,
+     signature,
+     canonicalUrl,
+   );
+   ```
+
+### Verification Results
+
+- `MISSING`: No `sig` parameter (public link)
+- `VALID`: Signature verified successfully
+- `INVALID`: Signature present but verification failed
+
+### Benefits of Dynamic Signing (sig_params)
+
+> 📊 **[View Dynamic Parameters Diagram](./deeplinking-diagrams.md#dynamic-parameters-example)** - See how unsigned params can be added
+
+- **Selective Signing**: Only critical params need signing
+- **Forward Compatibility**: Add new unsigned params without breaking signatures
+- **Flexible Testing**: Add debug params to signed production links
+
+## Analytics
+
+MetaMask Mobile tracks deep link usage through a consolidated `DEEP_LINK_USED` analytics event that captures:
+
+- Route information and user actions
+- App installation status (deferred vs. regular deep links via Branch.io)
+- Signature validation results
+- Interstitial modal interactions
+- UTM parameters for attribution
+- Route-specific sensitive properties (deprecated leftover; see [Deep Link Analytics](./deeplink-analytics.md))
+
+`DEEP_LINK_USED` still attaches those sensitive fields today, which triggers dual anonymous / non-anonymous emission. `addSensitiveProperties` is deprecated. New tracking, including new deep link routes, uses `addProperties` only. When you edit this event, review each sensitive field and drop it or move it to `addProperties` when that is safe.
+
+For the full property list and extraction, see [Deep Link Analytics](./deeplink-analytics.md).
+
+## Performance (Sentry CUFs)
+
+Sentry traces measure **how long** a deeplink takes to process and to commit navigation. They are separate from `DEEP_LINK_USED`.
+
+| Trace                | Measures                                                   |
+| -------------------- | ---------------------------------------------------------- |
+| `Deeplink Processed` | App-side processing until immediately before navigate      |
+| `Deeplink Navigated` | Unlock submit or link intake until navigation state commit |
+
+Catalog, tags, and how to extend: [Deeplink Sentry Performance](../engagement/deeplink-sentry-performance.md).
+
+### Quick Overview
+
+The analytics system:
+
+- Fetches Branch.io parameters once per deep link to detect deferred deep links
+- Creates analytics contexts with all relevant information
+- Tracks a single `DEEP_LINK_USED` event. Standard fields go through `addProperties`; leftover route-specific fields still go through deprecated `addSensitiveProperties`
+- Handles errors gracefully without blocking deep link processing
+
+## Testing Links
+
+### Development Environment
+
+```bash
+# Test link format
+https://link-test.metamask.io/{action}
+
+# iOS Simulator
+xcrun simctl openurl booted "https://link-test.metamask.io/swap"
+
+# Android Emulator
+adb shell am start -W -a android.intent.action.VIEW \
+  -d "https://link-test.metamask.io/swap" \
+  com.metamask.debug
+```
+
+### Testing Signed Links
+
+1. **Generate Test Signature** (using link-signer-api):
+
+   ```bash
+   curl -X POST https://your-signer-api/sign \
+     -d "url=https://link.metamask.io/perps?screen=asset"
+   ```
+
+2. **Verify Locally**:
+   ```typescript
+   // Add test in verifySignature.test.ts
+   it('verifies production signed link', async () => {
+     const url = new URL('your-signed-url-here');
+     const result = await verifyDeeplinkSignature(url);
+     expect(result).toBe(VALID);
+   });
+   ```
+
+### Common Test Scenarios
+
+- ✅ Valid signed link with all params
+- ✅ Valid signed link with sig_params subset
+- ✅ Public link without signature
+- ✅ Tampered signature
+- ✅ Missing parameters referenced in sig_params
+- ✅ Expired signatures (if implemented)
+- ✅ Wrong domain
+
+## Security Considerations
+
+### 1. Signature Verification
+
+- **Always verify** signatures for sensitive actions
+- **Never trust** client-provided sig_params without verification
+- **Reject** if signature doesn't match canonical URL
+
+### 2. Parameter Validation
+
+```typescript
+// Always validate and sanitize parameters
+const symbol = params.get('symbol');
+if (!isValidSymbol(symbol)) {
+  throw new Error('Invalid symbol parameter');
+}
+```
+
+### 3. Domain Validation
+
+```typescript
+const isSupportedDomain =
+  urlObj.hostname === MM_UNIVERSAL_LINK_HOST ||
+  urlObj.hostname === MM_IO_UNIVERSAL_LINK_HOST ||
+  urlObj.hostname === MM_IO_UNIVERSAL_LINK_TEST_HOST;
+
+if (!isSupportedDomain) {
+  // Reject as invalid
+}
+```
+
+### 4. Action Whitelisting
+
+Actions in `WHITELISTED_ACTIONS` in
+`app/core/DeeplinkManager/handlers/handleUniversalLink.ts` skip the
+interstitial. That list is the source of truth and currently includes:
+
+- Navigation and trading: `HOME`, `DAPP`, `SWAP`, `BATCH_SELL`, `BUY`,
+  `BUY_CRYPTO`, `SELL`, `SELL_CRYPTO`, `ASSET`, `ON_RAMP`
+- Perps: `PERPS`, `PERPS_MARKETS`, `PERPS_ASSET`, `PERPS_OUTREACH`
+- Rewards and Money: `REWARDS`, `MONEY`, `MONEY_ACCOUNT_DEPOSIT`, `EARN_MUSD`
+- Trading and social: `PREDICT`, `TRENDING`, `WHATS_HAPPENING`, `TOP_TRADERS`,
+  `SOCIAL`, `SOCIAL_TRADER`, `SOCIAL_TRADER_POSITION`
+- Card: `CARD_ONBOARDING`, `CARD_HOME`, `CARD_KYC_NOTIFICATION`
+- Other: `WC`, `SHIELD`, `AGENTIC_CLI`, `NOTIFICATIONS_SETTINGS`
+
+`HOME` is whitelisted. The Money referral share link uses it
+(`https://link.metamask.io/home?ref=...`). The home handler always navigates
+to `Routes.WALLET.HOME`; `homePath` is only read for `openNetworkSelector`.
+`ref` only stores a session-only pending referral code, and the user must accept
+the invite for a referral to be created.
+
+`interstitialWhitelistUrls` is currently empty. If you add an entry, prefer an
+exact URL match over `startsWith`; the current `startsWith` check can be
+widened by extra query parameters.
+
+Trusted in-app sources (`trustedInAppSources`) skip the modal only when the
+link is also PUBLIC or PRIVATE. They are the carousel, notification, push
+notification, Braze, and perps outreach origins. QR-code and in-app-browser
+origins are **not** trusted.
+
+## Best Practices
+
+### Do's ✅
+
+- **Test all link variations** before deploying
+- **Use signed links** for internal/trusted features
+- **Validate all parameters** before using them
+- **Log deeplink events** for debugging
+- **Handle errors gracefully** with user feedback
+- **Document your handlers** with usage examples
+
+### Don'ts ❌
+
+- **Don't bypass** signature verification for convenience
+- **Don't trust** user-provided parameters without validation
+- **Don't expose** sensitive features via public links
+- **Don't forget** to test edge cases (missing params, etc.)
+- **Don't hardcode** URLs - use constants
+
+## Troubleshooting
+
+### Link Not Opening App
+
+1. Check domain is correctly configured
+2. Verify app association files (iOS/Android)
+3. Ensure Branch.io is configured
+4. Check if app is installed
+
+### Signature Verification Failing
+
+1. Verify public key configuration (metamask-mobile only uses production signatures)
+2. Check sig_params includes all signed parameters
+3. Ensure base64 encoding is correct
+4. Verify canonical URL generation
+
+### Handler Not Called
+
+1. Check action is in SUPPORTED_ACTIONS
+2. Verify routing logic in handleUniversalLink
+3. Check for early returns or exceptions
+4. Review interstitial modal behavior
+
+## References
+
+- [MetaMask Signer (Consensys employees only)](https://api.signer.link.metamask.consensys.io)
+- [Signature Verification Implementation](../../app/core/DeeplinkManager/utils/verifySignature.ts)
+- [Universal Link Handler](../../app/core/DeeplinkManager/handlers/handleUniversalLink.ts)
+- [Deeplink Constants](../../app/constants/deeplinks.ts)
+- [Test Suite](../../app/core/DeeplinkManager/handlers/__tests__/handleUniversalLink.test.ts)
+- [Link Signer API](https://github.com/MetaMask/link-signer-api)
+
+## Example: Complete Flow
+
+```mermaid
+graph TD
+    A[User clicks link] --> B{Protocol?}
+    B -->|HTTPS/HTTP/metamask| C[handleUniversalLink]
+    B -->|wc://| D[connectWithWC]
+    B -->|ethereum://| E[handleEthereumUrl]
+    B -->|dapp://| F[handleDappUrl]
+
+    C --> G{Has signature?}
+    G -->|Yes| H[Verify signature]
+    G -->|No| I[Public link]
+
+    H -->|Valid| J[Private link]
+    H -->|Invalid| I
+
+    J --> K[Show confirmation]
+    I --> L[Show warning]
+
+    K -->|Continue| M[Route to handler]
+    L -->|Continue| M
+
+    M --> N[Execute action]
+```
+
+# Deeplink Guide Appendix: Creating Signed Links
+
+## Using the Link Signer API
+
+The `link-signer-api` is a separate service that creates cryptographically signed deeplinks for MetaMask Mobile.
+
+### How the Signer Works
+
+1. **Input**: A URL with parameters
+2. **Process**:
+   - Lists all parameter keys in `sig_params`
+   - Sorts parameters alphabetically
+   - Signs the complete URL with ECDSA P-256
+3. **Output**: URL with `sig_params` and `sig` added
+
+### Server-Side Signing Process
+
+MetaMask internal links can be signed [here](https://api.signer.link.metamask.consensys.io)
+
+### Example: Creating a Signed Link
+
+#### Step 1: Original URL
+
+```
+https://link.metamask.io/perps?screen=asset&symbol=BTC
+```
+
+#### Step 2: Server Processing
+
+```
+Parameters found: screen, symbol
+Creates sig_params: "screen,symbol"
+Signs: https://link.metamask.io/perps?screen=asset&sig_params=screen%2Csymbol&symbol=BTC
+```
+
+#### Step 3: Final Signed URL
+
+```
+https://link.metamask.io/perps?screen=asset&sig_params=screen,symbol&symbol=BTC&sig=MEUCIQDx...
+```
+
+## Dynamic Parameter Signing
+
+### The Power of sig_params
+
+The `sig_params` parameter enables flexible link creation:
+
+```javascript
+// Only 'action' and 'chainId' are signed
+// 'debug' and 'timestamp' can be added later without breaking signature
+const signedUrl =
+  'https://link.metamask.io/swap?action=swap&chainId=1&sig_params=action,chainId&sig=XXX';
+
+// Client can add unsigned parameters
+const urlWithDebug = signedUrl + '&debug=true&timestamp=123456';
+// ✅ Signature still valid!
+```
+
+### Use Cases
+
+1. **A/B Testing**: Add tracking params to signed production links
+2. **Debugging**: Add debug flags without re-signing
+3. **Analytics**: Add UTM parameters post-signature
+4. **Personalization**: Add user-specific params client-side
+
+## Creating Links Programmatically
+
+### For Development/Testing
+
+```javascript
+// Quick test link generator
+function createTestLink(action, params = {}) {
+  const url = new URL(`https://link-test.metamask.io/${action}`);
+
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.append(key, value);
+  });
+
+  return url.toString();
+}
+
+// Usage - Swap with CAIP-19 format
+const swapLink = createTestLink('swap', {
+  from: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+  to: 'eip155:137/erc20:0x2791bca1f2de4661ed88a30c99a7a9449aa84174',
+  amount: '1000000',
+});
+```
+
+### For Production (Requires Signing)
+
+```javascript
+// Using the link-signer-api
+async function createSignedLink(action, params = {}) {
+  const url = new URL(`https://link.metamask.io/${action}`);
+
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.append(key, value);
+  });
+
+  // Call your signing endpoint
+  const response = await fetch('https://your-signer-api/sign', {
+    method: 'POST',
+    body: new URLSearchParams({ url: url.toString() }),
+  });
+
+  const { result } = await response.json();
+  return result; // Signed URL
+}
+```
+
+## Signature Verification Edge Cases
+
+### Case 1: Missing Parameters in sig_params
+
+```
+URL: ?param1=value1&sig_params=param1,param2,param3&sig=XXX
+```
+
+- `param2` and `param3` listed but not present
+- Canonical URL only includes `param1` and `sig_params`
+- Signature will FAIL (different from what was signed)
+
+### Case 2: Extra Parameters Not in sig_params
+
+```
+URL: ?param1=value1&param2=value2&sig_params=param1&sig=XXX
+```
+
+- `param2` not listed in sig_params
+- Canonical URL only includes `param1` and `sig_params`
+- Signature VALID (param2 ignored)
+
+### Case 3: Empty sig_params
+
+```
+URL: ?sig_params=&sig=XXX
+```
+
+- No parameters are signed (except sig_params itself)
+- Valid use case for simple signed confirmation
+
+### Case 4: No sig_params (Legacy)
+
+```
+URL: ?param1=value1&param2=value2&sig=XXX
+```
+
+- Falls back to old behavior
+- ALL parameters (except sig) are verified
+- Maintains backward compatibility
+
+## Security Implementation Details
+
+### Client-Side Canonicalization
+
+```typescript
+function canonicalize(url: URL): string {
+  const params = new URLSearchParams(url.searchParams);
+
+  if (params.has('sig_params')) {
+    // New behavior: selective parameter verification
+    const sigParamsList = params.get('sig_params') || '';
+    const signedParams = sigParamsList.split(',').filter(Boolean);
+    const canonicalParams = new URLSearchParams();
+
+    // Include only listed params
+    signedParams.forEach((paramName) => {
+      const value = params.get(paramName);
+      if (value !== null) {
+        canonicalParams.set(paramName, value);
+      }
+    });
+
+    // Always include sig_params itself
+    canonicalParams.set('sig_params', sigParamsList);
+    canonicalParams.sort();
+
+    const queryString = canonicalParams.toString();
+    return url.origin + url.pathname + (queryString ? `?${queryString}` : '');
+  }
+
+  // Legacy behavior: verify all params except sig
+  params.delete('sig');
+  params.sort();
+  const queryString = params.toString();
+  return url.origin + url.pathname + (queryString ? `?${queryString}` : '');
+}
+```
+
+### Why This Design?
+
+1. **Forward Compatibility**: New parameters can be added without breaking old signatures
+2. **Selective Security**: Choose which params need cryptographic protection
+3. **Performance**: Only verify what matters
+4. **Flexibility**: Mix signed and unsigned data
+
+## Common Pitfalls
+
+### ❌ Don't Include 'sig' in sig_params
+
+```javascript
+// WRONG - sig should never be in sig_params
+'?sig_params=action,sig&sig=XXX';
+
+// The server can't create this (sig doesn't exist yet when signing)
+```
+
+### ❌ Don't Modify Parameters Listed in sig_params
+
+```javascript
+// Original signed URL
+'?action=swap&chainId=1&sig_params=action,chainId&sig=XXX';
+
+// WRONG - Modifying signed parameter
+'?action=send&chainId=1&sig_params=action,chainId&sig=XXX';
+// ❌ Signature verification will fail
+```
+
+### ✅ Only Modify Unlisted Parameters
+
+```javascript
+// Original signed URL
+'?action=swap&sig_params=action&sig=XXX';
+
+// OK - Adding unsigned parameter
+'?action=swap&chainId=1&sig_params=action&sig=XXX';
+// ✅ Signature still valid (chainId not in sig_params)
+```
+
+## Testing Signature Verification
+
+### Unit Test Examples
+
+```typescript
+describe('Dynamic signature verification', () => {
+  it('verifies with sig_params subset', async () => {
+    // Only param1 and param2 are signed
+    const url = new URL(
+      'https://link.metamask.io/test?param1=a&param2=b&param3=c&sig_params=param1,param2&sig=VALID_SIG',
+    );
+
+    const result = await verifyDeeplinkSignature(url);
+    expect(result).toBe(VALID);
+  });
+
+  it('allows unsigned parameters', async () => {
+    // debug is not in sig_params, so it's ignored
+    const url = new URL(
+      'https://link.metamask.io/test?action=swap&sig_params=action&debug=true&sig=VALID_SIG',
+    );
+
+    const result = await verifyDeeplinkSignature(url);
+    expect(result).toBe(VALID);
+  });
+
+  it('fails when signed param is modified', async () => {
+    // action is in sig_params, so changing it breaks signature
+    const url = new URL(
+      'https://link.metamask.io/test?action=send&sig_params=action&sig=SWAP_SIGNATURE',
+    );
+
+    const result = await verifyDeeplinkSignature(url);
+    expect(result).toBe(INVALID);
+  });
+});
+```
+
+## Quick Reference
+
+### Verification Results
+
+| Result    | Meaning               | User Experience                                  |
+| --------- | --------------------- | ------------------------------------------------ |
+| `MISSING` | No signature present  | Shows public link warning                        |
+| `VALID`   | Signature verified ✅ | Shows trusted link confirmation                  |
+| `INVALID` | Signature failed ❌   | Shows public link warning (demoted from private) |
+
+> ⚠️ **Important**: An invalid/tampered signature does NOT show an "invalid link" error. Instead, the link is treated as a public (unsigned) link. Only invalid domains or unsupported actions show the "invalid" modal.
+
+### Supported Actions
+
+The `deposit` / `metamask://deposit` deeplink is **deprecated** and no longer opens the cash deposit flow; use buy/universal on-ramp entry points instead.
+
+| Action                   | Purpose                     | Handler Function                 | Notes                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------ | --------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `swap`                   | Token swap/bridge (CAIP-19) | `handleSwapUrl`                  | Params: `from`, `to`, `amount` (CAIP-19); `tab=limit` opens the Limit Order form and accepts `expiresInMinutes` and `priceTolerance`; `tab=recurring` opens the Recurring Buy form and accepts the optional `every`/`unit` interval pair and optional `repeatCount`                                                                                                                                                                |
+| `buy` / `buy-crypto`     | Buy crypto                  | `handleRampUrl`                  |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `sell` / `sell-crypto`   | Sell crypto                 | `handleRampUrl`                  |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `send`                   | Send transaction            | Recursive `parse()` call         |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `home`                   | Navigate home               | `navigateToHomeUrl`              | Params: `openNetworkSelector`                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `asset`                  | Asset overview              | `handleAssetUrl`                 | Params: `assetId` (CAIP-19)                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `dapp`                   | Open dApp browser           | `handleBrowserUrl`               |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `create-account`         | Create new account          | `handleCreateAccountUrl`         |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `perps`                  | Perpetuals trading          | `handlePerpsUrl`                 | Params: `screen` (tabs/markets/asset), `symbol`, `mode=pro` (persists Pro mode when the Pro flag is on; `symbol` defaults to BTC when omitted with `screen=asset&mode=pro`). Example: `https://link.metamask.io/perps?screen=asset&symbol=ETH&mode=pro`                                                                                                                                                                            |
+| `perps-markets`          | Perps markets list          | `handlePerpsUrl`                 |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `perps-asset`            | Perps specific asset        | `handlePerpsUrl`                 | Params: `symbol` (defaults to the markets list when omitted), `mode=pro` (persists Pro mode when the Pro flag is on, then opens that market; `symbol` defaults to BTC when omitted with `mode=pro`; first-time users still see the tutorial). Examples: `https://link.metamask.io/perps-asset?symbol=ETH`, `https://link.metamask.io/perps-asset?mode=pro`, `https://link.metamask.io/perps-asset?symbol=ETH&mode=pro`             |
+| `predict`                | Prediction markets          | `handlePredictUrl`               | Params: `market`/`marketId`, `feed` (generic ids), `tab`, `filter`, `q`/`query`, `utm_source`, `venue` (`kalshi`: `event`, `feed`, `tab`). See `app/components/UI/PredictNext/docs/v1-deep-links.md`                                                                                                                                                                                                                               |
+| `rewards`                | Rewards program             | `handleRewardsUrl`               | Params: `page=campaigns\|musd\|benefits`, `campaign=ondo\|season1\|perps-comp\|predict-the-pitch\|money`                                                                                                                                                                                                                                                                                                                           |
+| `trending`               | Explore / Trending          | `handleTrendingUrl`              | Params: `tab=now\|crypto\|perps\|rwas\|sports\|sites`, `screen=stocks\|trending-tokens\|sites\|favorite-sites\|search`, `q`/`query` (prefills search when `screen=search`), `chainId` (CAIP, e.g. `eip155:4663`; chain-filters the trending tokens list when `screen=trending-tokens`; invalid values are dropped), `timeframe=5m\|1h\|6h\|24h` (preselects the trending tokens time filter) (unknown values fall back to Explore) |
+| `social`                 | Social                      | `handleSocialUrl`                | Canonical paths: `/social`, `/social/profile?traderId=`, `/social/profile/position?positionId=&traderId=`. Empty or unknown subpaths open Social home. `tab` on `/social` matches `top-traders`                                                                                                                                                                                                                                    |
+| `top-traders`            | Social home (legacy)        | `handleSocialLeaderboardUrl`     | Existing Social v0 link. Still opens Social home for V0 or V1 from `socialAiTSA1122AbtestSocialBundleV1`. Params: `tab=trending\|following\|leaderboard\|live-trades` (V1 only; missing or unknown values land on trending)                                                                                                                                                                                                        |
+| `social-trader`          | Trader profile (legacy)     | `handleSocialTraderUrl`          | Still accepted. Params: `traderId`. Treatment opens Social V1 profile; control opens the V0 profile. Missing `traderId` falls back to Social home                                                                                                                                                                                                                                                                                  |
+| `social-trader-position` | Trader position (legacy)    | `handleSocialTraderPositionUrl`  | Existing Social v0 notification link. Still accepted. Params: `positionId`, `traderId`. Same screen for V0 and V1; `isSocialV1` follows `socialAiTSA1122AbtestSocialBundleV1`                                                                                                                                                                                                                                                      |
+| `privacy`                | Security & Privacy settings | `handlePrivacyUrl`               | Params: `setting=metametrics\|data-collection` (scrolls to that section; unknown values fall back to `metametrics`)                                                                                                                                                                                                                                                                                                                |
+| `notifications-settings` | Notification settings       | `handleNotificationsSettingsUrl` | Params: `section=wallet-activity\|perps\|social-ai\|agentic-cli\|marketing\|price-alerts` (opens that preference section; unknown or missing values land on the main notification settings page)                                                                                                                                                                                                                                   |
+| `money-account-deposit`  | Money account deposit       | `handleMoneyDeposit`             | Rechecks Money account feature enablement and user geo eligibility in the MoneyDepositDeeplinkBridge; eligible users continue through onboarding when needed, then to the Money account deposit screen                                                                                                                                                                                                                             |
+| `wc`                     | WalletConnect               | Recursive `parse()` call         |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `onboarding`             | Fast onboarding             | `handleFastOnboarding`           |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `enable-card-button`     | Enable card feature         | `handleEnableCardButton`         |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `bind`                   | Android SDK binding         | `handleMetaMaskDeeplink`         |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `connect`                | SDK connection              | `handleMetaMaskDeeplink`         |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `mmsdk`                  | MetaMask SDK message        | `handleMetaMaskDeeplink`         |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+
+## Custom URI Schemes Explained
+
+MetaMask Mobile supports four custom URI schemes, each serving a specific purpose:
+
+### `metamask://` - MetaMask App Actions
+
+The primary custom scheme for MetaMask-specific actions and features. Used for:
+
+- **App navigation**: `metamask://home`, `metamask://create-account`
+- **Financial operations**: `metamask://swap`, `metamask://send?to=0x123`
+- **Feature access**: `metamask://rewards`, `metamask://perps`, `metamask://perps-asset?symbol=BTC&mode=pro`
+- **SDK connections**: `metamask://connect?channelId=abc&pubkey=xyz` (dapp-to-wallet pairing)
+
+**Flow**: Converts to universal link format internally (`https://link.metamask.io/...`) → Routes through `handleUniversalLink` → Executes action
+
+**Example**:
+
+```
+# Swap using CAIP-19 format
+metamask://swap?from=eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48&to=eip155:137/erc20:0x2791bca1f2de4661ed88a30c99a7a9449aa84174&amount=1000000
+# Opens the swap/bridge screen with USDC (Ethereum) → USDC (Polygon) pre-filled
+```
+
+### `wc://` - WalletConnect Protocol
+
+Industry-standard protocol for connecting MetaMask to dapps via WalletConnect v2. Used for:
+
+- **QR code connections**: User scans WalletConnect QR code from a dapp
+- **Deep link connections**: Dapp triggers connection via mobile deep link
+- **Cross-app communication**: Establishes encrypted channel between dapp and wallet
+
+**Flow**: WalletConnect URI → WC2Manager → Connection approval modal → Establishes session
+
+**Example**:
+
+```
+wc:abc123def456@2?relay-protocol=irn&symKey=xyz789
+# WalletConnect v2 pairing URI (typically from QR code)
+
+metamask://wc?uri=wc:abc123def456@2?relay-protocol=irn&symKey=xyz789
+# Same connection via deep link redirect
+```
+
+**Parameters**:
+
+- `abc123def456` = Topic/Channel ID
+- `@2` = WalletConnect protocol version
+- `relay-protocol` = Relay server type
+- `symKey` = Symmetric encryption key
+
+### `ethereum://` - EIP-681 Payment Requests
+
+[EIP-681](https://eips.ethereum.org/EIPS/eip-681) standard for Ethereum payment and transaction requests. Used for:
+
+- **Simple transfers**: Send ETH to an address
+- **Token approvals**: Approve token spending
+- **Contract interactions**: Call contract functions with parameters
+- **QR code payments**: Payment request QR codes
+
+**Flow**: Parses EIP-681 format → Switches to correct network → Opens Send/Approval screen
+
+**Examples**:
+
+```
+# Simple ETH transfer
+ethereum:0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb?value=1.5e18
+
+# Token transfer (calls ERC-20 transfer function)
+ethereum:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48/transfer?address=0x123&uint256=1000000
+
+# Contract function call with parameters
+ethereum:0x123ABC@1/approve?address=0x456DEF&uint256=1000000000000000000
+```
+
+**Supported Actions** (from `eth-url-parser`):
+
+- `transfer` - ERC-20 token transfers
+- `approve` - Token spending approvals
+- Generic sends (when only `value` parameter provided)
+
+**Network Handling**: The `@1` suffix specifies chain ID (e.g., `@1` = Mainnet, `@137` = Polygon)
+
+### `dapp://` - In-App Browser Navigation
+
+Opens external websites in MetaMask's built-in browser (similar to opening links in the browser tab). Used for:
+
+- **Direct dapp access**: Navigate to specific dapps
+- **Deep paths**: Open specific pages within dapps
+- **Trusted integrations**: Coinbase Commerce, payment flows
+
+**Flow**: Converts `dapp://` → `https://` → Opens in MetaMask browser → No security modal
+
+**Examples**:
+
+```
+# Basic dapp opening
+dapp://uniswap.org
+# → Opens https://uniswap.org in MetaMask browser
+
+# With deep path
+dapp://app.1inch.io/#/1/simple/swap/ETH/DAI
+# → Opens https://app.1inch.io/#/1/simple/swap/ETH/DAI
+
+# Via universal link (shows security modal)
+https://metamask.app.link/dapp/commerce.coinbase.com
+```
+
+**Key Difference**: `dapp://` bypasses the interstitial warning modal, making it ideal for trusted payment flows and in-app navigation.

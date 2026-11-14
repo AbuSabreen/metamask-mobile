@@ -1,0 +1,167 @@
+import React from 'react';
+import renderWithProvider, {
+  DeepPartial,
+} from '../../../../../../util/test/renderWithProvider';
+import { useTransactionDetails } from '../../../hooks/activity/useTransactionDetails';
+import {
+  TransactionMeta,
+  TransactionType,
+} from '@metamask/transaction-controller';
+import { TransactionDetailsTotalRow } from './transaction-details-total-row';
+import { useTokenAmount } from '../../../hooks/useTokenAmount';
+import { RootState } from '../../../../../../reducers';
+
+jest.mock('../../../hooks/activity/useTransactionDetails');
+jest.mock('../../../hooks/useTokenAmount');
+
+const PAY_TOTAL = '123.45';
+const TOKEN_TOTAL = '234.56';
+
+const MOCK_STATE: DeepPartial<RootState> = {
+  engine: {
+    backgroundState: {
+      AssetsController: {
+        assetsInfo: {},
+        assetsBalance: {},
+        assetsPrice: {},
+        assetPreferences: {},
+        customAssets: {},
+        selectedCurrency: 'usd',
+      },
+    },
+  },
+};
+
+function render() {
+  return renderWithProvider(<TransactionDetailsTotalRow />, {
+    state: MOCK_STATE,
+  });
+}
+
+describe('TransactionDetailsTotalRow', () => {
+  const useTransactionDetailsMock = jest.mocked(useTransactionDetails);
+  const useTokenAmountMock = jest.mocked(useTokenAmount);
+
+  beforeEach(() => {
+    jest.resetAllMocks();
+
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        metamaskPay: {
+          totalFiat: PAY_TOTAL,
+        },
+      } as unknown as TransactionMeta,
+    });
+
+    useTokenAmountMock.mockReturnValue({
+      amountUnformatted: TOKEN_TOTAL,
+    } as ReturnType<typeof useTokenAmount>);
+  });
+
+  it('renders total from pay metadata', () => {
+    const { getByText } = render();
+    expect(getByText(`$${PAY_TOTAL}`)).toBeOnTheScreen();
+  });
+
+  it('renders total from token amount', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        metamaskPay: {},
+        type: TransactionType.predictWithdraw,
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText } = render();
+
+    expect(getByText(`$${TOKEN_TOTAL}`)).toBeOnTheScreen();
+  });
+
+  it('renders nothing if no total fiat and type not supported', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        metamaskPay: {},
+      } as unknown as TransactionMeta,
+    });
+
+    const { toJSON } = render();
+
+    expect(toJSON()).toBeNull();
+  });
+
+  it('renders targetFiat instead of totalFiat for receive-type transactions', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        type: TransactionType.predictWithdraw,
+        metamaskPay: {
+          totalFiat: PAY_TOTAL,
+          targetFiat: '99.99',
+        },
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText } = render();
+
+    expect(getByText('$99.99')).toBeOnTheScreen();
+  });
+
+  it('falls back to totalFiat when targetFiat is missing on receive-type', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        type: TransactionType.predictWithdraw,
+        metamaskPay: {
+          totalFiat: PAY_TOTAL,
+        },
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText } = render();
+
+    expect(getByText(`$${PAY_TOTAL}`)).toBeOnTheScreen();
+  });
+
+  it('renders total from fiat amount for musdClaim with user currency', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        metamaskPay: {},
+        type: TransactionType.musdClaim,
+      } as unknown as TransactionMeta,
+    });
+
+    useTokenAmountMock.mockReturnValue({
+      amountUnformatted: '100', // Token amount (mUSD)
+      fiatUnformatted: '123.45', // Converted to user's currency
+    } as ReturnType<typeof useTokenAmount>);
+
+    const { getByText } = render();
+
+    // Uses fiatUnformatted and user's currency formatter
+    expect(getByText('$123.45')).toBeOnTheScreen();
+  });
+
+  it('falls back to token amount for moneyAccountWithdraw without pay totals', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        metamaskPay: {},
+        type: TransactionType.moneyAccountWithdraw,
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText } = render();
+    expect(getByText(`$${TOKEN_TOTAL}`)).toBeOnTheScreen();
+  });
+
+  it('renders targetFiat for moneyAccountWithdraw as a receive-type', () => {
+    useTransactionDetailsMock.mockReturnValue({
+      transactionMeta: {
+        type: TransactionType.moneyAccountWithdraw,
+        metamaskPay: {
+          totalFiat: PAY_TOTAL,
+          targetFiat: '88.88',
+        },
+      } as unknown as TransactionMeta,
+    });
+
+    const { getByText } = render();
+    expect(getByText('$88.88')).toBeOnTheScreen();
+  });
+});

@@ -1,0 +1,343 @@
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import {
+  Box,
+  Button,
+  ButtonVariant,
+  FontWeight,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+
+import { strings } from '../../../../../../../locales/i18n';
+import TextFieldSearch from '../../../../../../component-library/components/Form/TextFieldSearch';
+import { useAssetSelectionMetrics } from '../../../hooks/send/metrics/useAssetSelectionMetrics';
+import { useSendNavbar } from '../../../hooks/send/useSendNavbar';
+import { useTokenSearch } from '../../../hooks/send/useTokenSearch';
+import { TokenList } from '../../token-list';
+import { TokenTagRenderer } from '../../UI/token';
+import { NftList } from '../../nft-list';
+
+import {
+  AssetType,
+  HighlightedItem as HighlightedItemType,
+  isHighlightedItemInAssetList,
+  isHighlightedItemOutsideAssetList,
+  TokenListItem,
+} from '../../../types/token';
+import { NetworkFilter } from '../../network-filter';
+import { useEVMNfts } from '../../../hooks/send/useNfts';
+import { useSendTokens } from '../../../hooks/send/useSendTokens';
+import { useAccountTokensLoading } from '../../../hooks/send/useAccountTokensLoading';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ScrollView } from 'react-native-gesture-handler';
+import { HighlightedItem } from '../../UI/highlighted-item';
+import { TransactionPayComponentIDs } from '../../../ConfirmationView.testIds';
+import { Skeleton } from '../../../../../../component-library/components-temp/Skeleton';
+
+export interface AssetProps {
+  hideNfts?: boolean;
+  includeNoBalance?: boolean;
+  onTokenSelect?: (token: AssetType) => void;
+  tokenFilter?: (assets: AssetType[]) => TokenListItem[];
+  tagRenderers?: TokenTagRenderer[];
+  hideNetworkFilter?: boolean;
+  // Hides the in-body send navbar. Set by consumers that render their own
+  // header (e.g. pay-with-modal) while reusing this asset picker.
+  hideHeader?: boolean;
+}
+
+// Rendered only inside the send flow so that consumers reusing this picker
+// (e.g. pay-with-modal) don't pull in useSendNavbar's dependency chain.
+const AssetSendHeader = () => {
+  const { header: renderHeader } = useSendNavbar().Asset;
+  return renderHeader();
+};
+
+const SKELETON_ROW_COUNT = 4;
+/** Shared so Tokens and NFTs keep the same space below the section label. */
+const ASSET_SECTION_LABEL_TW = 'mx-4 mb-2';
+
+/**
+ * Placeholder rows shown while a first-time asset load is in flight for a pay
+ * account override. Prevents the picker from claiming the account has no assets
+ * before its balances have ever been fetched.
+ */
+const TokenListSkeleton = () => (
+  <Box
+    twClassName="px-4"
+    testID={TransactionPayComponentIDs.PAY_WITH_TOKEN_LIST_SKELETON}
+  >
+    {Array.from({ length: SKELETON_ROW_COUNT }).map((_, index) => (
+      <Box
+        key={`token-skeleton-${index}`}
+        twClassName="flex-row items-center gap-4 py-2"
+      >
+        <Skeleton width={40} height={40} twClassName="rounded-full" />
+        <Box twClassName="flex-1 gap-1">
+          <Skeleton width={120} height={16} />
+          <Skeleton width={80} height={12} />
+        </Box>
+      </Box>
+    ))}
+  </Box>
+);
+
+export const Asset: React.FC<AssetProps> = (props = {}) => {
+  const {
+    hideNfts = false,
+    includeNoBalance = false,
+    onTokenSelect,
+    tokenFilter,
+    tagRenderers,
+    hideNetworkFilter = false,
+    hideHeader = false,
+  } = props;
+
+  const originalTokens = useSendTokens({ includeNoBalance });
+  const isLoadingTokens = useAccountTokensLoading();
+
+  const tokenItems = useMemo(
+    () => (tokenFilter ? tokenFilter(originalTokens) : originalTokens),
+    [originalTokens, tokenFilter],
+  );
+
+  const {
+    tokens,
+    highlightedItemsInAssetList,
+    highlightedItemsOutsideAssetList,
+  }: {
+    tokens: AssetType[];
+    highlightedItemsInAssetList: HighlightedItemType[];
+    highlightedItemsOutsideAssetList: HighlightedItemType[];
+  } = useMemo(() => {
+    const mappedTokens: AssetType[] = [];
+    const mappedHighlightedItemsInAssetList: HighlightedItemType[] = [];
+    const mappedHighlightedItemsOutsideAssetList: HighlightedItemType[] = [];
+
+    tokenItems.forEach((item) => {
+      if (isHighlightedItemOutsideAssetList(item)) {
+        mappedHighlightedItemsOutsideAssetList.push(item);
+        return;
+      }
+
+      if (isHighlightedItemInAssetList(item)) {
+        mappedHighlightedItemsInAssetList.push(item);
+        return;
+      }
+
+      mappedTokens.push(item);
+    });
+
+    return {
+      tokens: mappedTokens,
+      highlightedItemsInAssetList: mappedHighlightedItemsInAssetList,
+      highlightedItemsOutsideAssetList: mappedHighlightedItemsOutsideAssetList,
+    };
+  }, [tokenItems]);
+
+  const { nfts } = useEVMNfts();
+  const [filteredTokensByNetwork, setFilteredTokensByNetwork] =
+    useState<AssetType[]>(tokens);
+  const [selectedNetworkFilter, setSelectedNetworkFilter] =
+    useState<string>('all');
+  const { bottom: bottomOffset } = useSafeAreaInsets();
+
+  const {
+    searchQuery,
+    setSearchQuery,
+    filteredTokens,
+    filteredNfts,
+    clearSearch,
+  } = useTokenSearch(filteredTokensByNetwork, nfts, selectedNetworkFilter);
+
+  const {
+    setAssetListSize,
+    setNoneAssetFilterMethod,
+    setSearchAssetFilterMethod,
+  } = useAssetSelectionMetrics();
+
+  const [hasActiveNetworkFilter, setHasActiveNetworkFilter] = useState(false);
+
+  const [clearNetworkFilters, setClearNetworkFilters] = useState<
+    (() => void) | null
+  >(null);
+
+  const filteredHighlightedItemsInAssetList = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return highlightedItemsInAssetList;
+    }
+
+    const query = searchQuery.toLowerCase().trim();
+
+    return highlightedItemsInAssetList.filter((item) => {
+      if (item.name.toLowerCase().includes(query)) {
+        return true;
+      }
+
+      if (item.name_description.toLowerCase().includes(query)) {
+        return true;
+      }
+
+      return false;
+    });
+  }, [highlightedItemsInAssetList, searchQuery]);
+
+  const handleFilteredTokensChange = useCallback(
+    (newFilteredTokens: AssetType[]) => {
+      setFilteredTokensByNetwork(newFilteredTokens);
+    },
+    [],
+  );
+
+  const handleNetworkFilterStateChange = useCallback(
+    (hasActiveFilter: boolean) => {
+      setHasActiveNetworkFilter(hasActiveFilter);
+    },
+    [],
+  );
+
+  const handleNetworkFilterChange = useCallback((networkFilter: string) => {
+    setSelectedNetworkFilter(networkFilter);
+  }, []);
+
+  const handleExposeFilterControls = useCallback((clearFilters: () => void) => {
+    setClearNetworkFilters(() => clearFilters);
+  }, []);
+
+  const hasActiveFilters = searchQuery.length > 0 || hasActiveNetworkFilter;
+  const hasNoTokenResults =
+    filteredTokens.length === 0 &&
+    filteredHighlightedItemsInAssetList.length === 0;
+  const hasNoResults = hasNoTokenResults && filteredNfts.length === 0;
+
+  const handleClearAllFilters = useCallback(() => {
+    clearSearch();
+    clearNetworkFilters?.();
+  }, [clearSearch, clearNetworkFilters]);
+
+  useEffect(() => {
+    if (hideNetworkFilter) {
+      setFilteredTokensByNetwork(tokens);
+    }
+  }, [hideNetworkFilter, tokens]);
+
+  useEffect(() => {
+    const visibleTokenCount =
+      filteredTokens.length + filteredHighlightedItemsInAssetList.length;
+    setAssetListSize(visibleTokenCount ? visibleTokenCount.toString() : '');
+  }, [
+    filteredTokens,
+    filteredHighlightedItemsInAssetList.length,
+    setAssetListSize,
+  ]);
+
+  useEffect(() => {
+    if (searchQuery.length) {
+      setSearchAssetFilterMethod();
+    } else {
+      setNoneAssetFilterMethod();
+    }
+  }, [searchQuery, setNoneAssetFilterMethod, setSearchAssetFilterMethod]);
+
+  return (
+    <Box twClassName="flex-1">
+      {!hideHeader && <AssetSendHeader />}
+      {highlightedItemsOutsideAssetList.length > 0 && (
+        <Box marginBottom={2}>
+          {highlightedItemsOutsideAssetList.map((item, index) => (
+            <HighlightedItem
+              key={`highlighted-action-${item.name}-${index}`}
+              item={item}
+            />
+          ))}
+        </Box>
+      )}
+      <Box twClassName="w-full px-4 pt-1 pb-2">
+        <TextFieldSearch
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholder={
+            hideNfts
+              ? strings('send.search_tokens')
+              : strings('send.search_tokens_and_nfts')
+          }
+          onPressClearButton={clearSearch}
+        />
+      </Box>
+      {!hideNetworkFilter && (
+        <NetworkFilter
+          tokens={tokens}
+          onFilteredTokensChange={handleFilteredTokensChange}
+          onNetworkFilterStateChange={handleNetworkFilterStateChange}
+          onExposeFilterControls={handleExposeFilterControls}
+          onNetworkFilterChange={handleNetworkFilterChange}
+        />
+      )}
+      <ScrollView
+        testID={TransactionPayComponentIDs.PAY_WITH_TOKEN_LIST}
+        contentContainerStyle={{
+          paddingBottom: bottomOffset,
+        }}
+      >
+        {hasNoResults && isLoadingTokens ? (
+          <TokenListSkeleton />
+        ) : hasNoResults && hasActiveFilters ? (
+          <Box twClassName="items-center py-8 px-4">
+            <Text variant={TextVariant.BodyMd} twClassName="text-center mb-4">
+              {strings('send.no_tokens_match_filters')}
+            </Text>
+            <Button
+              variant={ButtonVariant.Secondary}
+              onPress={handleClearAllFilters}
+            >
+              {strings('send.clear_filters')}
+            </Button>
+          </Box>
+        ) : hasNoResults && !hasActiveFilters ? (
+          <Box twClassName="items-center py-8 px-4">
+            <Text variant={TextVariant.BodyMd} twClassName="text-center">
+              {strings('send.no_assets_available')}
+            </Text>
+          </Box>
+        ) : (
+          <>
+            {!hideNfts &&
+              (filteredTokens.length > 0 ||
+                filteredHighlightedItemsInAssetList.length > 0) && (
+                <Text
+                  twClassName={`${ASSET_SECTION_LABEL_TW} mt-2`}
+                  variant={TextVariant.BodyMd}
+                  color={TextColor.TextAlternative}
+                  fontWeight={FontWeight.Medium}
+                >
+                  {strings('send.tokens')}
+                </Text>
+              )}
+            <TokenList
+              tokens={filteredTokens}
+              highlightedAssets={filteredHighlightedItemsInAssetList}
+              onSelect={onTokenSelect}
+              tagRenderers={tagRenderers}
+            />
+            {!hideNfts && (
+              <>
+                {filteredNfts.length > 0 && (
+                  <Text
+                    twClassName={`${ASSET_SECTION_LABEL_TW} mt-4`}
+                    variant={TextVariant.BodyMd}
+                    color={TextColor.TextAlternative}
+                    fontWeight={FontWeight.Medium}
+                  >
+                    {strings('send.nfts')}
+                  </Text>
+                )}
+                <NftList nfts={filteredNfts} />
+              </>
+            )}
+          </>
+        )}
+      </ScrollView>
+    </Box>
+  );
+};

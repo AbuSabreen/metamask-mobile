@@ -1,0 +1,186 @@
+// eslint-disable-next-line import-x/no-namespace
+import * as ConfusablesUtils from '../../../../util/confusables';
+import {
+  getConfusableCharacterInfo,
+  validateBitcoinAddress,
+  validateHexAddress,
+  validateSolanaAddress,
+  validateStellarAddress,
+  validateTronAddress,
+} from './send-address-validations';
+jest.mock('./token', () => ({
+  memoizedGetTokenStandardAndDetails: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../../../../core/Engine', () => ({
+  context: {
+    NetworkController: {
+      findNetworkClientIdByChainId: () => 'mainnet',
+    },
+  },
+}));
+
+describe('validateHexAddress', () => {
+  it('returns error if address is zero address', async () => {
+    expect(
+      await validateHexAddress(
+        '0x0000000000000000000000000000000000000000',
+        '0x1',
+      ),
+    ).toStrictEqual({
+      error: 'Invalid address',
+    });
+  });
+
+  it('returns warning if address is dead address', async () => {
+    expect(
+      await validateHexAddress(
+        '0x000000000000000000000000000000000000dead',
+        '0x1',
+      ),
+    ).toStrictEqual({
+      warning: 'Invalid address',
+    });
+    expect(
+      await validateHexAddress(
+        '0x000000000000000000000000000000000000dEaD',
+        '0x1',
+      ),
+    ).toStrictEqual({
+      warning: 'Invalid address',
+    });
+  });
+  it('does not return error for valid evm address', async () => {
+    expect(
+      await validateHexAddress(
+        '0xdB055877e6c13b6A6B25aBcAA29B393777dD0a73',
+        '0x1',
+      ),
+    ).toStrictEqual({});
+  });
+  it('return error if address is contract address of asset', async () => {
+    expect(
+      await validateHexAddress(
+        '0xdB055877e6c13b6A6B25aBcAA29B393777dD0a73',
+        '0x1',
+        '0xdB055877e6c13b6A6B25aBcAA29B393777dD0a73',
+      ),
+    ).toStrictEqual({
+      error:
+        "You are sending tokens to the token's contract address. This may result in the loss of these tokens.",
+    });
+  });
+  it('returns empty object when chainId is undefined', async () => {
+    expect(
+      await validateHexAddress('0xdB055877e6c13b6A6B25aBcAA29B393777dD0a73'),
+    ).toStrictEqual({});
+  });
+
+  it('does not flag token contract addresses (handled in send flow alerts)', async () => {
+    expect(
+      await validateHexAddress(
+        '0x935E73EDb9fF52E23BaC7F7e043A1ecD06d05477',
+        '0x1',
+      ),
+    ).toStrictEqual({});
+  });
+});
+
+describe('validateSolanaAddress', () => {
+  it('returns error if address is burn address', () => {
+    expect(
+      validateSolanaAddress('1nc1nerator11111111111111111111111111111111'),
+    ).toStrictEqual({
+      error: 'Invalid address',
+    });
+    expect(
+      validateSolanaAddress('So11111111111111111111111111111111111111112'),
+    ).toStrictEqual({
+      error: 'Invalid address',
+    });
+  });
+  it('returns error if send is of type solana and address is not solana address', () => {
+    expect(
+      validateSolanaAddress('0x935E73EDb9fF52E23BaC7F7e043A1ecD06d05477'),
+    ).toStrictEqual({
+      error: 'Invalid address',
+    });
+  });
+  it('does not returns error if address is solana address', () => {
+    expect(
+      validateSolanaAddress('14grJpemFaf88c8tiVb77W7TYg2W3ir6pfkKz3YjhhZ5'),
+    ).toStrictEqual({});
+  });
+});
+
+describe('validateStellarAddress', () => {
+  it('returns error if address is not stellar address', () => {
+    expect(
+      validateStellarAddress('0x935E73EDb9fF52E23BaC7F7e043A1ecD06d05477'),
+    ).toStrictEqual({
+      error: 'Invalid address',
+    });
+  });
+
+  it('does not return error if address is stellar address', () => {
+    expect(
+      validateStellarAddress(
+        'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NYMPL5AFHTDXUDT7JOZZYNQLEI',
+      ),
+    ).toStrictEqual({});
+  });
+});
+
+describe('validateTronAddress', () => {
+  it('returns error if address is not tron address', () => {
+    expect(
+      validateTronAddress('0x935E73EDb9fF52E23BaC7F7e043A1ecD06d05477'),
+    ).toStrictEqual({
+      error: 'Invalid address',
+    });
+  });
+
+  it('does not returns error if address is solana address', () => {
+    expect(
+      validateTronAddress('TA9vN2KmER9cuVBaHxQjzzRtXnBCdF7D4u'),
+    ).toStrictEqual({});
+  });
+});
+
+describe('validateBitcoinAddress', () => {
+  it('returns error if address is not a valid Bitcoin mainnet address', () => {
+    expect(validateBitcoinAddress('not-a-bitcoin-address')).toStrictEqual({
+      error: 'Invalid address',
+    });
+  });
+
+  it('returns empty object for valid Bitcoin mainnet address', () => {
+    expect(
+      validateBitcoinAddress('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq'),
+    ).toStrictEqual({});
+  });
+});
+
+describe('getConfusableCharacterInfo', () => {
+  it('returns empty object if there is no error', async () => {
+    expect(getConfusableCharacterInfo('test.eth')).toStrictEqual({});
+  });
+
+  it('returns warning for confusables', async () => {
+    jest.spyOn(ConfusablesUtils, 'collectConfusables').mockReturnValue(['ⅼ']);
+    expect(getConfusableCharacterInfo('test.eth')).toStrictEqual({
+      warning:
+        "We have detected a confusable character in the ENS name. Check the ENS name to avoid a potential scam. - 'ⅼ' is similar to 'l'",
+    });
+  });
+
+  it('returns error and warning for confusables if it has hasZeroWidthPoints', async () => {
+    jest.spyOn(ConfusablesUtils, 'collectConfusables').mockReturnValue(['ⅼ']);
+    jest.spyOn(ConfusablesUtils, 'hasZeroWidthPoints').mockReturnValue(true);
+    expect(getConfusableCharacterInfo('test.eth')).toStrictEqual({
+      error: 'Invalid address',
+      warning:
+        'We detected an invisible character in the ENS name. Check the ENS name to avoid a potential scam.',
+    });
+  });
+});

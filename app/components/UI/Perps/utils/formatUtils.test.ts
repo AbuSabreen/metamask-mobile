@@ -1,0 +1,2895 @@
+/**
+ * Unit tests for formatting utilities
+ */
+
+import {
+  formatPerpsBalance,
+  formatPerpsFiat,
+  formatPnl,
+  formatPercentage,
+  formatLargeNumber,
+  formatVolume,
+  formatCoinVolume,
+  formatPositionSize,
+  formatLeverage,
+  formatLiquidationDistance,
+  parseCurrencyString,
+  truncateToTwoDecimals,
+  parsePercentageString,
+  formatTransactionDate,
+  formatProOrderCardTimestamp,
+  formatDateSection,
+  formatFundingRate,
+  PRICE_RANGES_UNIVERSAL,
+  PRICE_RANGES_MINIMAL_VIEW,
+  formatPositiveFiat,
+  formatLimitPriceInput,
+  formatPerpsPrice,
+  formatPositionTriggerSummary,
+  getUniversalPriceFractionDigits,
+  formatPerpsInput,
+  getPerpsFormattedInputSelection,
+  normalizePerpsNumericInput,
+} from './formatUtils';
+import {
+  countSignificantFigures,
+  hasExceededSignificantFigures,
+  roundToSignificantFigures,
+} from '@metamask/perps-controller';
+import { FUNDING_RATE_CONFIG } from '../constants/perpsConfig';
+
+// Mock the formatWithThreshold utility
+jest.mock('../../../../util/assets', () => ({
+  formatWithThreshold: (
+    value: number,
+    _threshold: number,
+    locale: string,
+    options: Intl.NumberFormatOptions,
+  ) => {
+    const formatter = new Intl.NumberFormat(locale, options);
+    return formatter.format(value);
+  },
+}));
+
+// Mock the strings function
+jest.mock('../../../../../locales/i18n', () => ({
+  __esModule: true,
+  default: { locale: 'en-US' },
+  strings: (key: string, params?: { count?: number }) => {
+    const mockStrings: Record<string, string> = {
+      today: 'Today',
+      'perps.position.card.tpsl_count_multiple': '{{count}} orders',
+      'notifications.yesterday': 'Yesterday',
+      'perps.today': 'Today',
+      'perps.yesterday': 'Yesterday',
+    };
+    const template = mockStrings[key] || key;
+    return params?.count === undefined
+      ? template
+      : template.replace('{{count}}', String(params.count));
+  },
+}));
+
+describe('formatUtils', () => {
+  describe('formatFundingRate', () => {
+    it('displays zero display value when input is undefined', () => {
+      // Given an undefined funding rate value
+      const value = undefined;
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should return the zero display constant
+      expect(result).toBe(FUNDING_RATE_CONFIG.ZeroDisplay);
+    });
+
+    it('displays zero display value when input is null', () => {
+      // Given a null funding rate value
+      const value = null;
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should return the zero display constant
+      expect(result).toBe(FUNDING_RATE_CONFIG.ZeroDisplay);
+    });
+
+    it('formats positive funding rate correctly', () => {
+      // Given a positive funding rate as decimal
+      const value = 0.0005; // 0.05%
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should return percentage with correct decimals
+      expect(result).toBe('0.0500%');
+    });
+
+    it('formats negative funding rate correctly', () => {
+      // Given a negative funding rate as decimal
+      const value = -0.0001; // -0.01%
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should return negative percentage with correct decimals
+      expect(result).toBe('-0.0100%');
+    });
+
+    it('displays zero display value when input is exactly zero', () => {
+      // Given a zero funding rate
+      const value = 0;
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should return the zero display constant
+      expect(result).toBe(FUNDING_RATE_CONFIG.ZeroDisplay);
+    });
+
+    it('formats very small positive funding rate correctly', () => {
+      // Given a very small positive funding rate
+      const value = 0.000001; // 0.0001%
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should return the formatted percentage
+      expect(result).toBe('0.0001%');
+    });
+
+    it('formats very small negative funding rate correctly', () => {
+      // Given a very small negative funding rate
+      const value = -0.000001; // -0.0001%
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should return the formatted percentage
+      expect(result).toBe('-0.0001%');
+    });
+
+    it('formats large positive funding rate correctly', () => {
+      // Given a large positive funding rate
+      const value = 0.01; // 1%
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should return the formatted percentage
+      expect(result).toBe('1.0000%');
+    });
+
+    it('formats large negative funding rate correctly', () => {
+      // Given a large negative funding rate
+      const value = -0.02; // -2%
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should return the formatted percentage
+      expect(result).toBe('-2.0000%');
+    });
+
+    it('returns empty string when showZero option is false and value is undefined', () => {
+      // Given an undefined value with showZero set to false
+      const value = undefined;
+      const options = { showZero: false };
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value, options);
+
+      // Then it should return empty string
+      expect(result).toBe('');
+    });
+
+    it('returns empty string when showZero option is false and value is null', () => {
+      // Given a null value with showZero set to false
+      const value = null;
+      const options = { showZero: false };
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value, options);
+
+      // Then it should return empty string
+      expect(result).toBe('');
+    });
+
+    it('displays threshold when positive value is below display precision', () => {
+      const value = 0.000000001;
+
+      const result = formatFundingRate(value);
+
+      expect(result).toBe('<0.0001%');
+    });
+
+    it('handles number precision edge cases correctly', () => {
+      // Given a value with many decimal places
+      const value = 0.00054321; // 0.054321%
+
+      // When formatting the funding rate
+      const result = formatFundingRate(value);
+
+      // Then it should round to configured decimal places
+      expect(result).toBe('0.0543%');
+    });
+  });
+
+  describe('formatPositiveFiat', () => {
+    it('returns "$0" when fee is exactly zero', () => {
+      // Given a fee of exactly zero
+      const fee = 0;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it returns "$0"
+      expect(result).toBe('$0');
+    });
+
+    it('returns "< $0.01" when fee is below threshold', () => {
+      // Given a fee below the 0.01 threshold
+      const fee = 0.005;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it returns "< $0.01"
+      expect(result).toBe('< $0.01');
+    });
+
+    it('formats fee normally when exactly at 0.01 threshold', () => {
+      // Given a fee at exactly the 0.01 threshold
+      const fee = 0.01;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it formats normally
+      expect(result).toBe('$0.01');
+    });
+
+    it('formats fee normally when above threshold', () => {
+      // Given a fee above the 0.01 threshold
+      const fee = 1.5;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it formats normally
+      expect(result).toBe('$1.50');
+    });
+
+    it('returns "< $0.01" for very small positive fees', () => {
+      // Given a very small positive fee
+      const fee = 0.0001;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it returns "< $0.01"
+      expect(result).toBe('< $0.01');
+    });
+
+    it('returns "< $0.01" for fee just below threshold', () => {
+      // Given a fee just below the 0.01 threshold
+      const fee = 0.0099;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it returns "< $0.01"
+      expect(result).toBe('< $0.01');
+    });
+
+    it('formats fee normally when just above threshold', () => {
+      // Given a fee just above the 0.01 threshold
+      const fee = 0.0101;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it formats normally (rounded to $0.01)
+      expect(result).toBe('$0.01');
+    });
+
+    it('formats large fees with proper decimals', () => {
+      // Given a large fee value
+      const fee = 123.45;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it formats with proper decimals
+      expect(result).toBe('$123.45');
+    });
+
+    it('strips trailing zeros for whole number fees', () => {
+      // Given a whole number fee
+      const fee = 100;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then trailing zeros are stripped
+      expect(result).toBe('$100');
+    });
+
+    it('handles fees with many decimal places', () => {
+      // Given a fee with many decimal places
+      const fee = 1.23456789;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it rounds appropriately
+      expect(result).toBe('$1.23');
+    });
+
+    it('returns "$0" for negative zero', () => {
+      // Given a negative zero value
+      const fee = -0;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it returns "$0"
+      expect(result).toBe('$0');
+    });
+
+    it('returns "< $0.01" for smallest representable positive fee', () => {
+      // Given the smallest positive fee
+      const fee = 0.00000001;
+
+      // When formatting the fee
+      const result = formatPositiveFiat(fee);
+
+      // Then it returns "< $0.01"
+      expect(result).toBe('< $0.01');
+    });
+  });
+
+  describe('formatPerpsFiat', () => {
+    it('should format balance with default 2 decimal places (fiat-style stripping)', () => {
+      expect(formatPerpsFiat(1234.56)).toBe('$1,234.56'); // Has meaningful decimals: preserved
+      expect(formatPerpsFiat('5000')).toBe('$5,000'); // No meaningful decimals: strips .00
+      expect(formatPerpsFiat(100)).toBe('$100'); // No meaningful decimals: strips .00
+      expect(formatPerpsFiat(100.5)).toBe('$100.50'); // Has meaningful decimals: preserved
+    });
+
+    it('should handle large numbers', () => {
+      expect(formatPerpsFiat(1000000)).toBe('$1,000,000'); // >= $1000: strips trailing zeros
+      expect(formatPerpsFiat(999999.99)).toBe('$999,999.99');
+      expect(formatPerpsFiat('123456.789')).toBe('$123,456.79');
+    });
+
+    it('should handle small decimal values', () => {
+      expect(formatPerpsFiat(0.1)).toBe('$0.10'); // < $1000: preserves trailing zeros
+    });
+
+    it('should return placeholder for NaN values', () => {
+      expect(formatPerpsFiat('invalid')).toBe('$---');
+      expect(formatPerpsFiat('')).toBe('$---');
+      expect(formatPerpsFiat('abc')).toBe('$---');
+    });
+
+    describe('stripTrailingZeros option', () => {
+      it('strips .00 by default (PRICE_RANGES_MINIMAL_VIEW with fiat-style)', () => {
+        expect(formatPerpsFiat(1250, { minimumDecimals: 2 })).toBe('$1,250'); // Strips .00
+        expect(formatPerpsFiat(100.0, { minimumDecimals: 2 })).toBe('$100'); // Strips .00
+        expect(formatPerpsFiat(0, { minimumDecimals: 2 })).toBe('$0'); // Strips .00
+        expect(formatPerpsFiat(100.1, { minimumDecimals: 2 })).toBe('$100.10'); // Preserves meaningful decimals
+      });
+
+      it('can be explicitly controlled via stripTrailingZeros option (only strips .00)', () => {
+        expect(
+          formatPerpsFiat(1250, {
+            minimumDecimals: 2,
+            stripTrailingZeros: true, // Explicitly enable stripping (only .00)
+          }),
+        ).toBe('$1,250');
+        expect(
+          formatPerpsFiat(100.0, {
+            minimumDecimals: 2,
+            stripTrailingZeros: true, // Explicitly enable stripping (only .00)
+          }),
+        ).toBe('$100');
+        expect(
+          formatPerpsFiat(100.1, {
+            minimumDecimals: 2,
+            stripTrailingZeros: true, // Preserves 2 decimals (not $100.1)
+          }),
+        ).toBe('$100.10');
+        expect(
+          formatPerpsFiat(0, { minimumDecimals: 2, stripTrailingZeros: true }),
+        ).toBe('$0');
+      });
+
+      it('preserves meaningful decimals (never shows partial decimals)', () => {
+        expect(formatPerpsFiat(1250.5, { minimumDecimals: 2 })).toBe(
+          '$1,250.50', // >= $1000: preserves 2 decimals (never partial like $1,250.5)
+        );
+        expect(formatPerpsFiat(1250.05, { minimumDecimals: 2 })).toBe(
+          '$1,250.05',
+        );
+        expect(formatPerpsFiat(1250.123, { maximumDecimals: 2 })).toBe(
+          '$1,250.12',
+        );
+      });
+
+      it('range-based trailing zero behavior (only strips .00)', () => {
+        expect(formatPerpsFiat(1250.1, { minimumDecimals: 2 })).toBe(
+          '$1,250.10', // >= $1000: preserves 2 decimals (not $1,250.1)
+        );
+        expect(formatPerpsFiat(1250.01, { minimumDecimals: 2 })).toBe(
+          '$1,250.01',
+        );
+        expect(formatPerpsFiat(1250.1, { maximumDecimals: 3 })).toBe(
+          '$1,250.10', // >= $1000: preserves 2 decimals (not $1,250.1)
+        );
+      });
+
+      it('works with custom ranges', () => {
+        // Custom range without stripTrailingZeros set will default to true (default behavior)
+        expect(
+          formatPerpsFiat(50000, {
+            ranges: [
+              {
+                condition: () => true,
+                minimumDecimals: 2,
+                maximumDecimals: 2,
+              },
+            ],
+          }),
+        ).toBe('$50,000'); // Default: strips trailing zeros
+
+        // Explicit stripTrailingZeros: false preserves trailing zeros
+        expect(
+          formatPerpsFiat(50000, {
+            ranges: [
+              {
+                condition: () => true,
+                minimumDecimals: 2,
+                maximumDecimals: 2,
+              },
+            ],
+            stripTrailingZeros: false,
+          }),
+        ).toBe('$50,000.00');
+      });
+
+      it('explicit options stripTrailingZeros overrides range config', () => {
+        // Explicit options.stripTrailingZeros: false always wins (user intent)
+        expect(
+          formatPerpsFiat(1250, {
+            ranges: [
+              {
+                condition: () => true,
+                minimumDecimals: 2,
+                maximumDecimals: 2,
+                stripTrailingZeros: true,
+              },
+            ],
+            stripTrailingZeros: false,
+          }),
+        ).toBe('$1,250.00'); // Options wins: preserves .00
+
+        // Range config only matters when options.stripTrailingZeros is not explicitly set
+        expect(
+          formatPerpsFiat(1250, {
+            ranges: [
+              {
+                condition: () => true,
+                minimumDecimals: 2,
+                maximumDecimals: 2,
+                stripTrailingZeros: false,
+              },
+            ],
+            // stripTrailingZeros not set at options level
+          }),
+        ).toBe('$1,250.00'); // Range config applied: preserves .00
+      });
+    });
+  });
+
+  describe('locale-aware input formatting', () => {
+    it('preserves locale decimal separators and trailing zeros', () => {
+      expect(formatPerpsInput('1200.50', 'en-US')).toBe('1,200.50');
+      expect(formatPerpsInput('1200.50', 'de-DE')).toBe('1.200,50');
+      expect(formatPerpsInput('1200.50', 'fr-FR')).toBe('1\u202f200,50');
+    });
+
+    it('uses primary and secondary locale grouping widths', () => {
+      const value = '1234567890123.125';
+
+      const formattedValue = formatPerpsInput(value, 'hi-IN');
+
+      expect(formattedValue).toBe('12,34,56,78,90,123.125');
+    });
+
+    it('localizes integer digits for Arabic locales', () => {
+      const value = '1200.50';
+      const locale = 'ar-EG';
+      const numberFormatter = new Intl.NumberFormat(locale, {
+        useGrouping: true,
+        maximumFractionDigits: 0,
+      });
+      const decimalFormatter = new Intl.NumberFormat(locale, {
+        useGrouping: false,
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      });
+      const decimalSeparator = Array.from(decimalFormatter.format(1.1))
+        .slice(1, -1)
+        .join('');
+
+      const formattedValue = formatPerpsInput(value, locale);
+
+      expect(formattedValue).toBe(
+        `${numberFormatter.format(1200)}${decimalSeparator}50`,
+      );
+    });
+
+    it('normalizes localized Arabic digits from editable input', () => {
+      const formattedValue = formatPerpsInput('1200.50', 'ar-EG');
+
+      expect(normalizePerpsNumericInput(formattedValue, 'ar-EG')).toBe(
+        '1200.50',
+      );
+    });
+
+    it('preserves integer digits beyond the safe integer range', () => {
+      expect(formatPerpsInput('9007199254740993.125', 'en-US')).toBe(
+        '9,007,199,254,740,993.125',
+      );
+      expect(formatPerpsInput('9007199254740993.125', 'de-DE')).toBe(
+        '9.007.199.254.740.993,125',
+      );
+    });
+
+    it('formats editable values without BigInt support', () => {
+      const bigIntDescriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        'BigInt',
+      );
+      Object.defineProperty(globalThis, 'BigInt', {
+        configurable: true,
+        value: undefined,
+      });
+      let formattedValue = '';
+
+      try {
+        formattedValue = formatPerpsInput('9007199254740993.125', 'en-US');
+      } finally {
+        if (bigIntDescriptor) {
+          Object.defineProperty(globalThis, 'BigInt', bigIntDescriptor);
+        } else {
+          Reflect.deleteProperty(globalThis, 'BigInt');
+        }
+      }
+
+      expect(formattedValue).toBe('9,007,199,254,740,993.125');
+    });
+
+    it('formats and normalizes input without formatToParts support', () => {
+      const numberFormatPrototype = Intl.NumberFormat.prototype;
+      const formatToPartsDescriptor = Object.getOwnPropertyDescriptor(
+        numberFormatPrototype,
+        'formatToParts',
+      );
+
+      Object.defineProperty(numberFormatPrototype, 'formatToParts', {
+        configurable: true,
+        value: undefined,
+      });
+
+      try {
+        const formattedEnglishInput = formatPerpsInput('1200.50', 'en-US');
+        const formattedGermanInput = formatPerpsInput('1200.50', 'de-DE');
+        const formattedFrenchInput = formatPerpsInput('1200.50', 'fr-FR');
+        const normalizedGermanInput = normalizePerpsNumericInput(
+          formattedGermanInput,
+          'de-DE',
+        );
+        const formattedPartialInput = formatPerpsInput('1000.', 'en-US');
+
+        expect(formattedEnglishInput).toBe('1,200.50');
+        expect(formattedGermanInput).toBe('1.200,50');
+        expect(formattedFrenchInput).toBe('1\u202f200,50');
+        expect(normalizedGermanInput).toBe('1200.50');
+        expect(formattedPartialInput).toBe('1,000.');
+      } finally {
+        if (formatToPartsDescriptor) {
+          Object.defineProperty(
+            numberFormatPrototype,
+            'formatToParts',
+            formatToPartsDescriptor,
+          );
+        } else {
+          Reflect.deleteProperty(numberFormatPrototype, 'formatToParts');
+        }
+      }
+    });
+
+    it('normalizes grouped values to canonical decimal input', () => {
+      expect(normalizePerpsNumericInput('1,200.50', 'en-US')).toBe('1200.50');
+      expect(normalizePerpsNumericInput('1.200,50', 'de-DE')).toBe('1200.50');
+      expect(normalizePerpsNumericInput('1200,50', 'de-DE')).toBe('1200.50');
+      expect(normalizePerpsNumericInput('1200,', 'de-DE')).toBe('1200.');
+      expect(normalizePerpsNumericInput('$1,200.50', 'de-DE')).toBe('1200.50');
+      expect(normalizePerpsNumericInput('1\u202f200,50', 'fr-FR')).toBe(
+        '1200.50',
+      );
+    });
+
+    it.each([
+      ['en-US', '1,200', '1200'],
+      ['en-US', '1.200', '1.200'],
+      ['de-DE', '1,200', '1.200'],
+      ['de-DE', '1.200', '1200'],
+      ['de-DE', '1.5', '1.5'],
+      ['fr-FR', '1,200', '1.200'],
+      ['fr-FR', '1.5', '1.5'],
+      ['fr-FR', '1\u202f200', '1200'],
+    ])('normalizes %s input "%s" to "%s"', (locale, input, expected) => {
+      expect(normalizePerpsNumericInput(input, locale)).toBe(expected);
+    });
+
+    it.each([
+      ['appending', '1.2000', '12000'],
+      ['backspacing', '1.20', '120'],
+    ])(
+      'preserves a German grouping period while %s a live-formatted integer',
+      (_operation, nextValue, expected) => {
+        const context = {
+          previousDisplayValue: '1.200',
+          previousSelection: { start: 5, end: 5 },
+        };
+
+        const normalizedValue = normalizePerpsNumericInput(
+          nextValue,
+          'de-DE',
+          context,
+        );
+
+        expect(normalizedValue).toBe(expected);
+      },
+    );
+
+    it.each([
+      ['appending', '1.2000', '12000'],
+      ['backspacing', '1.20', '120'],
+    ])(
+      'infers an end edit when %s a German grouped integer without selection context',
+      (_operation, nextValue, expected) => {
+        const context = {
+          previousDisplayValue: '1.200',
+        };
+
+        const normalizedValue = normalizePerpsNumericInput(
+          nextValue,
+          'de-DE',
+          context,
+        );
+
+        expect(normalizedValue).toBe(expected);
+      },
+    );
+
+    it('parses a whole German replacement independently when selection context is missing', () => {
+      const context = {
+        previousDisplayValue: '1.234,50',
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1.234.567',
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe('1234567');
+    });
+
+    it('falls back to standalone parsing when the reported selection cannot explain the edit', () => {
+      const nextValue = '1.234.50';
+      const context = {
+        previousDisplayValue: '1.234,50',
+        previousSelection: { start: 0, end: 0 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        nextValue,
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe(
+        normalizePerpsNumericInput(nextValue, 'de-DE'),
+      );
+      expect(normalizedValue).toBe('1.23450');
+    });
+
+    it('treats a selected German grouped value replaced with a period as decimal input', () => {
+      const context = {
+        previousDisplayValue: '1.200',
+        previousSelection: { start: 0, end: 5 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1.5',
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe('1.5');
+    });
+
+    it('treats a new period after a German grouped integer as a decimal', () => {
+      const context = {
+        previousDisplayValue: '1.000',
+        previousSelection: { start: 5, end: 5 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1.000.',
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe('1000.');
+    });
+
+    it.each([
+      ['backspacing', { start: 6, end: 6 }],
+      ['forward deleting', { start: 5, end: 5 }],
+    ])(
+      'preserves German grouping when %s a decimal separator',
+      (_operation, previousSelection) => {
+        const context = {
+          previousDisplayValue: '1.234,50',
+          previousSelection,
+        };
+
+        const normalizedValue = normalizePerpsNumericInput(
+          '1.23450',
+          'de-DE',
+          context,
+        );
+
+        expect(normalizedValue).toBe('123450');
+      },
+    );
+
+    it('treats a period replacing a German decimal separator as decimal input', () => {
+      const context = {
+        previousDisplayValue: '1.234,50',
+        previousSelection: { start: 5, end: 6 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1.234.50',
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe('1234.50');
+    });
+
+    it('preserves a German grouped integer that replaces the full decimal value', () => {
+      const context = {
+        previousDisplayValue: '1.234,50',
+        previousSelection: { start: 0, end: 8 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1.234.567',
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe('1234567');
+    });
+
+    it('preserves remaining German grouping after deleting a selected decimal span', () => {
+      const context = {
+        previousDisplayValue: '1.234.567,89',
+        previousSelection: { start: 5, end: 11 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1.2349',
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe('12349');
+    });
+
+    it('concatenates digits when a selection removes a German decimal and adjacent digit', () => {
+      const context = {
+        previousDisplayValue: '1.234,50',
+        previousSelection: { start: 5, end: 7 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1.2340',
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe('12340');
+    });
+
+    it('keeps a replacement period as decimal when the result resembles grouping', () => {
+      const context = {
+        previousDisplayValue: '1.234,500',
+        previousSelection: { start: 5, end: 6 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1.234.500',
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe('1234.500');
+    });
+
+    it('keeps grouping when a selected separator is replaced with itself', () => {
+      const context = {
+        previousDisplayValue: '1.234',
+        previousSelection: { start: 1, end: 2 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1.234',
+        'de-DE',
+        context,
+      );
+
+      expect(normalizedValue).toBe('1234');
+    });
+
+    it.each([
+      ['en-US', '1.5', '1.5,'],
+      ['de-DE', '1,5', '1,5.'],
+    ])(
+      'ignores an alternate repeated decimal separator in %s',
+      (locale, previousDisplayValue, nextValue) => {
+        const context = {
+          previousDisplayValue,
+          previousSelection: {
+            start: previousDisplayValue.length,
+            end: previousDisplayValue.length,
+          },
+        };
+
+        const normalizedValue = normalizePerpsNumericInput(
+          nextValue,
+          locale,
+          context,
+        );
+
+        expect(normalizedValue).toBe('1.5');
+      },
+    );
+
+    it('treats an inserted comma as a decimal key in an English input', () => {
+      const context = {
+        previousDisplayValue: '1',
+        previousSelection: { start: 1, end: 1 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1,',
+        'en-US',
+        context,
+      );
+
+      expect(normalizedValue).toBe('1.');
+    });
+
+    it('applies contextual edits to localized Arabic digits', () => {
+      const previousDisplayValue = formatPerpsInput('1200.5', 'ar-EG');
+      const localizedZero = formatPerpsInput('0', 'ar-EG');
+      const context = {
+        previousDisplayValue,
+        previousSelection: {
+          start: previousDisplayValue.length,
+          end: previousDisplayValue.length,
+        },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        `${previousDisplayValue}${localizedZero}`,
+        'ar-EG',
+        context,
+      );
+
+      expect(normalizedValue).toBe('1200.50');
+    });
+
+    it('applies and maps an appended digit with Indian grouping', () => {
+      const previousDisplayValue = formatPerpsInput('1234567', 'hi-IN');
+      const nextDisplayValue = `${previousDisplayValue}8`;
+      const context = {
+        previousDisplayValue,
+        previousSelection: {
+          start: previousDisplayValue.length,
+          end: previousDisplayValue.length,
+        },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        nextDisplayValue,
+        'hi-IN',
+        context,
+      );
+      const formattedValue = formatPerpsInput(normalizedValue, 'hi-IN');
+      const selection = getPerpsFormattedInputSelection({
+        ...context,
+        nextDisplayValue,
+        nextFormattedValue: formattedValue,
+        locale: 'hi-IN',
+      });
+
+      expect(normalizedValue).toBe('12345678');
+      expect(formattedValue).toBe('1,23,45,678');
+      expect(selection).toEqual({
+        start: formattedValue.length,
+        end: formattedValue.length,
+      });
+    });
+
+    it('preserves French grouping when deleting a decimal separator', () => {
+      const context = {
+        previousDisplayValue: '1\u202f234,50',
+        previousSelection: { start: 6, end: 6 },
+      };
+
+      const normalizedValue = normalizePerpsNumericInput(
+        '1\u202f23450',
+        'fr-FR',
+        context,
+      );
+
+      expect(normalizedValue).toBe('123450');
+    });
+
+    it.each([
+      ['en-US', '1.5.', '1.5'],
+      ['de-DE', '1,5,', '1.5'],
+      ['en-US', '1,200.5.', '1200.5'],
+      ['de-DE', '1.200,5,', '1200.5'],
+    ])(
+      'ignores a repeated decimal separator in %s input "%s"',
+      (locale, input, expected) => {
+        const normalizedValue = normalizePerpsNumericInput(input, locale);
+
+        expect(normalizedValue).toBe(expected);
+      },
+    );
+
+    it('preserves partial decimal input', () => {
+      expect(normalizePerpsNumericInput('1000.', 'en-US')).toBe('1000.');
+      expect(normalizePerpsNumericInput('1000,', 'de-DE')).toBe('1000.');
+      expect(normalizePerpsNumericInput('1000.', 'de-DE')).toBe('1000.');
+      expect(formatPerpsInput('1000.', 'en-US')).toBe('1,000.');
+      expect(formatPerpsInput('1000.', 'de-DE')).toBe('1.000,');
+    });
+
+    it('returns non-numeric input unchanged', () => {
+      expect(normalizePerpsNumericInput('12abc.3', 'en-US')).toBe('12abc.3');
+      expect(formatPerpsInput('12abc.3', 'en-US')).toBe('12abc.3');
+    });
+
+    it('keeps the cursor at the end when live grouping inserts a separator', () => {
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue: '7,600',
+          nextDisplayValue: '7,6000',
+          nextFormattedValue: '76,000',
+          previousSelection: { start: 5, end: 5 },
+          locale: 'en-US',
+        }),
+      ).toEqual({ start: 6, end: 6 });
+    });
+
+    it('keeps the cursor at the end when live grouping removes a separator', () => {
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue: '76,000',
+          nextDisplayValue: '76,00',
+          nextFormattedValue: '7,600',
+          previousSelection: { start: 6, end: 6 },
+          locale: 'en-US',
+        }),
+      ).toEqual({ start: 5, end: 5 });
+    });
+
+    it('preserves the cursor when editing before a grouping separator', () => {
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue: '76,000',
+          nextDisplayValue: '765,000',
+          nextFormattedValue: '765,000',
+          previousSelection: { start: 2, end: 2 },
+          locale: 'en-US',
+        }),
+      ).toEqual({ start: 3, end: 3 });
+    });
+
+    it('preserves the cursor when inserting within repeated digits', () => {
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue: '111',
+          nextDisplayValue: '1111',
+          nextFormattedValue: '1,111',
+          previousSelection: { start: 1, end: 1 },
+          locale: 'en-US',
+        }),
+      ).toEqual({ start: 3, end: 3 });
+    });
+
+    it('preserves the cursor when backspacing within repeated digits', () => {
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue: '1,111',
+          nextDisplayValue: '1,11',
+          nextFormattedValue: '111',
+          previousSelection: { start: 3, end: 3 },
+          locale: 'en-US',
+        }),
+      ).toEqual({ start: 1, end: 1 });
+    });
+
+    it('maps selected text replacement to the formatted cursor position', () => {
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue: '76,000',
+          nextDisplayValue: '1200',
+          nextFormattedValue: '1,200',
+          previousSelection: { start: 0, end: 6 },
+          locale: 'en-US',
+        }),
+      ).toEqual({ start: 5, end: 5 });
+    });
+
+    it('maps a German grouped replacement cursor to the end of the field', () => {
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue: '1.234,50',
+          nextDisplayValue: '1.234.567',
+          nextFormattedValue: '1.234.567',
+          previousSelection: { start: 0, end: 8 },
+          locale: 'de-DE',
+        }),
+      ).toEqual({ start: 9, end: 9 });
+    });
+
+    it('maps the cursor after deleting a selected German decimal span', () => {
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue: '1.234.567,89',
+          nextDisplayValue: '1.2349',
+          nextFormattedValue: '12.349',
+          previousSelection: { start: 5, end: 11 },
+          locale: 'de-DE',
+        }),
+      ).toEqual({ start: 5, end: 5 });
+    });
+
+    it('uses locale-specific grouping when mapping live cursor position', () => {
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue: '7.600',
+          nextDisplayValue: '7.6000',
+          nextFormattedValue: '76.000',
+          previousSelection: { start: 5, end: 5 },
+          locale: 'de-DE',
+        }),
+      ).toEqual({ start: 6, end: 6 });
+    });
+
+    it('maps the cursor across localized Arabic digits', () => {
+      const locale = 'ar-EG';
+      const previousDisplayValue = formatPerpsInput('1200.5', locale);
+      const localizedZero = formatPerpsInput('0', locale);
+      const nextDisplayValue = `${previousDisplayValue}${localizedZero}`;
+      const nextFormattedValue = formatPerpsInput('1200.50', locale);
+
+      expect(
+        getPerpsFormattedInputSelection({
+          previousDisplayValue,
+          nextDisplayValue,
+          nextFormattedValue,
+          previousSelection: {
+            start: previousDisplayValue.length,
+            end: previousDisplayValue.length,
+          },
+          locale,
+        }),
+      ).toEqual({
+        start: nextFormattedValue.length,
+        end: nextFormattedValue.length,
+      });
+    });
+  });
+
+  describe('formatPerpsFiat with PRICE_RANGES_UNIVERSAL', () => {
+    it('should format large whole numbers (trailing zeros stripped by default)', () => {
+      expect(formatPerpsFiat(123456, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$123,456',
+      );
+      expect(formatPerpsFiat(121300, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$121,300',
+      );
+      expect(formatPerpsFiat(50000, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$50,000',
+      );
+    });
+
+    it('should format large numbers following new decimal rules', () => {
+      // > $10k: no decimals
+      expect(formatPerpsFiat(121308, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$121,308',
+      );
+      expect(
+        formatPerpsFiat(123456.78, { ranges: PRICE_RANGES_UNIVERSAL }),
+      ).toBe('$123,457'); // Rounded, no decimals
+
+      // $1k-$10k: 1 decimal max, 5 sig figs
+      expect(formatPerpsFiat(4123.45, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$4,123.4',
+      ); // 5 sig figs: 4,1,2,3,4 → 1 decimal
+    });
+
+    it('should format medium numbers following new decimal rules', () => {
+      // $10-$100: max 4 decimals, 5 sig figs
+      expect(formatPerpsFiat(56.123, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$56.123', // 5 sig figs: 5,6,1,2,3 = 3 decimals needed
+      );
+
+      // <= $10: 5 significant figures
+      expect(formatPerpsFiat(2.875, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$2.875',
+      );
+      expect(formatPerpsFiat(1.234, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$1.234',
+      );
+    });
+
+    it('should format small numbers with 4 sig figs', () => {
+      // Task examples
+      expect(formatPerpsFiat(0.1234, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$0.1234',
+      );
+      expect(formatPerpsFiat(0.01234, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$0.01234',
+      );
+    });
+
+    it('should preserve precision and strip trailing zeros', () => {
+      // Preserve higher precision (3+ decimals)
+      expect(formatPerpsFiat(1.234, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$1.234',
+      );
+      // Keep natural 2 decimals
+      expect(formatPerpsFiat(1.23, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$1.23',
+      );
+      // Strip trailing zero
+      expect(formatPerpsFiat(10.5, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$10.5',
+      );
+    });
+
+    it('should format zero (trailing zeros stripped)', () => {
+      expect(formatPerpsFiat(0, { ranges: PRICE_RANGES_UNIVERSAL })).toBe('$0');
+    });
+
+    it('should handle edge cases', () => {
+      // Very small numbers (<$0.01: 4 sig figs)
+      expect(
+        formatPerpsFiat(0.0001234, { ranges: PRICE_RANGES_UNIVERSAL }),
+      ).toBe('$0.000123'); // 4 sig figs: 1,2,3,4
+
+      // Numbers just below rounding threshold
+      expect(formatPerpsFiat(999.99, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$999.99',
+      );
+      expect(formatPerpsFiat(1000, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+        '$1,000',
+      );
+    });
+
+    it('should enforce 6 decimal cap for very small numbers', () => {
+      // Rules: <$0.01 uses 4 sig figs with max 6 decimals
+      // $0.0000012 has sig figs 1,2 → needs 4 sig figs → $0.000001 (rounded)
+      expect(
+        formatPerpsFiat(0.0000012, { ranges: PRICE_RANGES_UNIVERSAL }),
+      ).toBe('$0.000001'); // 4 sig figs: 1,2,0,0 → rounds to $0.000001
+
+      // Very small value below VERY_SMALL threshold (0.000001) → <$0 prefix
+      expect(
+        formatPerpsFiat(0.00000045, { ranges: PRICE_RANGES_UNIVERSAL }),
+      ).toBe('<$0'); // Below threshold: shows <$X prefix
+
+      // Edge case: exactly at 6 decimal boundary
+      expect(
+        formatPerpsFiat(0.000001, { ranges: PRICE_RANGES_UNIVERSAL }),
+      ).toBe('$0.000001'); // 1 sig fig at boundary
+
+      // Example from rules-decimals.md: 0.0000004 → below threshold → <$0 prefix
+      expect(
+        formatPerpsFiat(0.0000004, { ranges: PRICE_RANGES_UNIVERSAL }),
+      ).toBe('<$0');
+    });
+
+    describe('PRICE_RANGES_UNIVERSAL boundary testing', () => {
+      it('handles $10,000 exactly (boundary between 1 decimal and 0 decimal ranges)', () => {
+        expect(formatPerpsFiat(10000, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+          '$10,000',
+        );
+      });
+
+      it('handles $10,000.01 (just above $10k boundary)', () => {
+        expect(
+          formatPerpsFiat(10000.01, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$10,000'); // Rounds to 0 decimals in >$10k range
+      });
+
+      it('handles $9,999.99 (just below $10k boundary)', () => {
+        expect(
+          formatPerpsFiat(9999.99, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$10,000'); // Rounds up with 1 decimal → $10,000
+      });
+
+      it('handles $100,000 exactly (high value boundary)', () => {
+        expect(
+          formatPerpsFiat(100000, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$100,000');
+      });
+
+      it('handles very small positive and negative values symmetrically', () => {
+        const pos = formatPerpsFiat(0.001234, {
+          ranges: PRICE_RANGES_UNIVERSAL,
+        });
+        const neg = formatPerpsFiat(-0.001234, {
+          ranges: PRICE_RANGES_UNIVERSAL,
+        });
+        // Strip any potential comma from pos (though shouldn't be any) and add minus sign
+        expect(neg).toBe(`-${pos.replace(/,/g, '')}`);
+        // Verify the actual values
+        expect(pos).toBe('$0.001234');
+        expect(neg).toBe('-$0.001234');
+      });
+    });
+  });
+
+  describe('getUniversalPriceFractionDigits', () => {
+    it('matches the decimals shown for a mid-range price like HYPE', () => {
+      expect(getUniversalPriceFractionDigits(84.491)).toBe(3);
+    });
+
+    it('matches the decimals shown for a hundreds price like ZEC', () => {
+      expect(getUniversalPriceFractionDigits(983.81)).toBe(2);
+    });
+
+    it('uses 1 decimal for prices between $1k and $10k', () => {
+      expect(getUniversalPriceFractionDigits(3000)).toBe(1);
+    });
+
+    it('uses 0 decimals for prices above $10k', () => {
+      expect(getUniversalPriceFractionDigits(123456)).toBe(0);
+    });
+
+    it('returns 0 for zero and non-finite prices', () => {
+      expect(getUniversalPriceFractionDigits(0)).toBe(0);
+      expect(getUniversalPriceFractionDigits(Number.NaN)).toBe(0);
+      expect(getUniversalPriceFractionDigits(Number.POSITIVE_INFINITY)).toBe(0);
+    });
+
+    it('returns 2 when no universal price range matches', () => {
+      const originalRanges = [...PRICE_RANGES_UNIVERSAL];
+      PRICE_RANGES_UNIVERSAL.splice(0, PRICE_RANGES_UNIVERSAL.length, {
+        condition: () => false,
+        minimumDecimals: 0,
+        maximumDecimals: 4,
+      });
+
+      try {
+        expect(getUniversalPriceFractionDigits(12.34)).toBe(2);
+      } finally {
+        PRICE_RANGES_UNIVERSAL.splice(
+          0,
+          PRICE_RANGES_UNIVERSAL.length,
+          ...originalRanges,
+        );
+      }
+    });
+
+    it('uses maximum decimals when the matching range has no significant digits', () => {
+      const originalRanges = [...PRICE_RANGES_UNIVERSAL];
+      PRICE_RANGES_UNIVERSAL.splice(0, PRICE_RANGES_UNIVERSAL.length, {
+        condition: () => true,
+        minimumDecimals: 0,
+        maximumDecimals: 4,
+      });
+
+      try {
+        expect(getUniversalPriceFractionDigits(12.34)).toBe(4);
+      } finally {
+        PRICE_RANGES_UNIVERSAL.splice(
+          0,
+          PRICE_RANGES_UNIVERSAL.length,
+          ...originalRanges,
+        );
+      }
+    });
+  });
+
+  describe('formatPnl', () => {
+    it('should format positive PnL with + prefix', () => {
+      expect(formatPnl(100)).toBe('+$100.00');
+      expect(formatPnl('250.75')).toBe('+$250.75');
+      expect(formatPnl(0)).toBe('+$0.00');
+    });
+
+    it('should format negative PnL with - prefix', () => {
+      expect(formatPnl(-100)).toBe('-$100.00');
+      expect(formatPnl('-250.75')).toBe('-$250.75');
+    });
+
+    it('should handle large numbers', () => {
+      expect(formatPnl(123456.78)).toBe('+$123,456.78');
+      expect(formatPnl(-987654.32)).toBe('-$987,654.32');
+    });
+
+    it('should handle invalid inputs', () => {
+      expect(formatPnl('invalid')).toBe('$0.00');
+      expect(formatPnl(NaN)).toBe('$0.00');
+      expect(formatPnl('')).toBe('$0.00');
+    });
+
+    it('should round to 2 decimal places', () => {
+      expect(formatPnl(100.999)).toBe('+$101.00');
+      expect(formatPnl(-50.123)).toBe('-$50.12');
+    });
+  });
+
+  describe('formatPercentage', () => {
+    it('should format positive percentages with + prefix', () => {
+      expect(formatPercentage(5.67)).toBe('+5.67%');
+      expect(formatPercentage('10.5')).toBe('+10.50%');
+      expect(formatPercentage(0)).toBe('+0.00%');
+    });
+
+    it('should format negative percentages', () => {
+      expect(formatPercentage(-3.45)).toBe('-3.45%');
+      expect(formatPercentage('-8.2')).toBe('-8.20%');
+    });
+
+    it('should handle large percentages', () => {
+      expect(formatPercentage(150.789)).toBe('+150.79%');
+      expect(formatPercentage(-99.999)).toBe('-100.00%');
+    });
+
+    it('should handle invalid inputs', () => {
+      expect(formatPercentage('invalid')).toBe('0.00%');
+      expect(formatPercentage(NaN)).toBe('0.00%');
+      expect(formatPercentage('')).toBe('0.00%');
+    });
+
+    it('should round to 2 decimal places', () => {
+      expect(formatPercentage(12.345)).toBe('+12.35%');
+      expect(formatPercentage(-7.891)).toBe('-7.89%');
+    });
+  });
+
+  describe('formatLargeNumber', () => {
+    it('should format billions with B suffix (default no decimals)', () => {
+      expect(formatLargeNumber(1000000000)).toBe('1B');
+      expect(formatLargeNumber('2500000000')).toBe('3B');
+      expect(formatLargeNumber(12300000000)).toBe('12B');
+    });
+
+    it('should format billions with configured decimals', () => {
+      expect(formatLargeNumber(1000000000, { decimals: 1 })).toBe('1.0B');
+      expect(formatLargeNumber('2500000000', { decimals: 1 })).toBe('2.5B');
+      expect(formatLargeNumber(12300000000, { decimals: 2 })).toBe('12.30B');
+    });
+
+    it('should format millions with M suffix (default no decimals)', () => {
+      expect(formatLargeNumber(1000000)).toBe('1M');
+      expect(formatLargeNumber('2500000')).toBe('3M');
+      expect(formatLargeNumber(123456789)).toBe('123M');
+    });
+
+    it('should format millions with configured decimals', () => {
+      expect(formatLargeNumber(1000000, { decimals: 1 })).toBe('1.0M');
+      expect(formatLargeNumber('2500000', { decimals: 1 })).toBe('2.5M');
+      expect(formatLargeNumber(123456789, { decimals: 2 })).toBe('123.46M');
+    });
+
+    it('should format thousands with K suffix (default no decimals)', () => {
+      expect(formatLargeNumber(1000)).toBe('1K');
+      expect(formatLargeNumber('2500')).toBe('3K');
+      expect(formatLargeNumber(123456)).toBe('123K');
+    });
+
+    it('should format thousands with configured decimals', () => {
+      expect(formatLargeNumber(1000, { decimals: 1 })).toBe('1.0K');
+      expect(formatLargeNumber('2500', { decimals: 2 })).toBe('2.50K');
+      expect(formatLargeNumber(123456, { decimals: 1 })).toBe('123.5K');
+    });
+
+    it('should format numbers < 1000 with 2 decimal places by default', () => {
+      expect(formatLargeNumber(999)).toBe('999.00');
+      expect(formatLargeNumber('123.45')).toBe('123.45');
+      expect(formatLargeNumber(0)).toBe('0.00');
+    });
+
+    it('should format numbers < 1000 with configured raw decimals', () => {
+      expect(formatLargeNumber(999, { rawDecimals: 0 })).toBe('999');
+      expect(formatLargeNumber('123.45', { rawDecimals: 3 })).toBe('123.450');
+      expect(formatLargeNumber(0, { rawDecimals: 1 })).toBe('0.0');
+    });
+
+    it('should handle invalid inputs', () => {
+      expect(formatLargeNumber('invalid')).toBe('0');
+      expect(formatLargeNumber(NaN)).toBe('0');
+      expect(formatLargeNumber('')).toBe('0');
+    });
+
+    it('should handle negative numbers', () => {
+      expect(formatLargeNumber(-1000000)).toBe('-1M');
+      expect(formatLargeNumber(-2500)).toBe('-3K');
+      expect(formatLargeNumber(-999)).toBe('-999.00');
+    });
+
+    it('should handle negative numbers with decimals', () => {
+      expect(formatLargeNumber(-1000000, { decimals: 1 })).toBe('-1.0M');
+      expect(formatLargeNumber(-2500, { decimals: 2 })).toBe('-2.50K');
+      expect(formatLargeNumber(-999, { rawDecimals: 0 })).toBe('-999');
+    });
+
+    it('should handle edge cases at boundaries', () => {
+      expect(formatLargeNumber(999999999)).toBe('1000M');
+      expect(formatLargeNumber(999999)).toBe('1000K');
+      expect(formatLargeNumber(999.99)).toBe('999.99');
+    });
+  });
+
+  describe('formatVolume', () => {
+    it('should format volume with appropriate decimals by default', () => {
+      expect(formatVolume(1234567890)).toBe('$1.23B'); // B: 2 decimals
+      expect(formatVolume(12345678)).toBe('$12.35M'); // M: 2 decimals
+      expect(formatVolume(123456)).toBe('$123K'); // K: 0 decimals
+      expect(formatVolume(999)).toBe('$999.00'); // Under 1K: 2 decimals
+    });
+
+    it('should allow configurable decimals', () => {
+      expect(formatVolume(1234567890, 0)).toBe('$1B');
+      expect(formatVolume(12345678, 1)).toBe('$12.3M');
+      expect(formatVolume(123456, 3)).toBe('$123.456K');
+    });
+
+    it('should handle zero volume', () => {
+      expect(formatVolume(0)).toBe('$0.00');
+      expect(formatVolume('0')).toBe('$0.00');
+      expect(formatVolume(0, 0)).toBe('$0');
+    });
+
+    it('should handle invalid inputs', () => {
+      expect(formatVolume('invalid')).toBe('$---');
+      expect(formatVolume(NaN)).toBe('$---');
+      expect(formatVolume(Infinity)).toBe('$---');
+    });
+
+    it('should handle negative volume', () => {
+      expect(formatVolume(-1000000)).toBe('-$1.00M'); // M: 2 decimals
+      expect(formatVolume(-1234)).toBe('-$1K'); // K: 0 decimals by default
+      expect(formatVolume(-1234, 0)).toBe('-$1K'); // Explicit 0 decimals
+    });
+
+    it('should handle very large volumes', () => {
+      expect(formatVolume(1000000000000)).toBe('$1.00T');
+      expect(formatVolume(2500000000000)).toBe('$2.50T');
+      expect(formatVolume(2500000000000, 0)).toBe('$3T');
+    });
+  });
+
+  describe('formatCoinVolume', () => {
+    it('formats candle volume without a USD prefix', () => {
+      const volume = 0.33;
+
+      const result = formatCoinVolume(volume);
+
+      expect(result).toBe('0.33');
+    });
+
+    it('keeps magnitude suffixes without a dollar sign', () => {
+      const volume = 123456;
+
+      const result = formatCoinVolume(volume);
+
+      expect(result).toBe('123K');
+    });
+
+    it('keeps the minus sign in front of negative coin volume', () => {
+      const volume = -1000000;
+
+      const result = formatCoinVolume(volume);
+
+      expect(result).toBe('-1.00M');
+    });
+  });
+
+  describe('formatPositionSize', () => {
+    it('should format very small numbers without trailing zeros', () => {
+      expect(formatPositionSize(0.001)).toBe('0.001');
+      expect(formatPositionSize('0.0001')).toBe('0.0001');
+      expect(formatPositionSize(-0.005)).toBe('-0.005');
+      expect(formatPositionSize(0.00009)).toBe('0.00009'); // Task example
+    });
+
+    it('should format small numbers without trailing zeros', () => {
+      expect(formatPositionSize(0.1234)).toBe('0.1234');
+      expect(formatPositionSize('0.9999')).toBe('0.9999');
+      expect(formatPositionSize(-0.5)).toBe('-0.5');
+      expect(formatPositionSize(0.0024)).toBe('0.0024'); // Task example
+    });
+
+    it('should format normal numbers without trailing zeros', () => {
+      expect(formatPositionSize(1.2345)).toBe('1.23');
+      expect(formatPositionSize('100.9876')).toBe('100.99');
+      expect(formatPositionSize(-50.123)).toBe('-50.12');
+      expect(formatPositionSize(44)).toBe('44'); // Task example
+      expect(formatPositionSize(0.23)).toBe('0.23'); // Task example
+    });
+
+    it('should handle edge case at boundaries', () => {
+      expect(formatPositionSize(0.01)).toBe('0.01'); // exactly at threshold
+      expect(formatPositionSize(1)).toBe('1'); // exactly at threshold
+    });
+
+    it('should handle invalid inputs', () => {
+      expect(formatPositionSize('invalid')).toBe('0');
+      expect(formatPositionSize(NaN)).toBe('0');
+      expect(formatPositionSize('')).toBe('0');
+    });
+
+    it('should handle zero', () => {
+      expect(formatPositionSize(0)).toBe('0');
+      expect(formatPositionSize('0')).toBe('0');
+    });
+
+    it('should handle large numbers without trailing zeros', () => {
+      expect(formatPositionSize(1000.567)).toBe('1000.57');
+      expect(formatPositionSize('999999.123')).toBe('999999.12');
+      expect(formatPositionSize(1000)).toBe('1000'); // No decimals for whole number
+    });
+
+    describe('with szDecimals parameter', () => {
+      it('should format BTC with 5 decimals (szDecimals=5)', () => {
+        expect(formatPositionSize(0.00009, 5)).toBe('0.00009');
+        expect(formatPositionSize(1.234567, 5)).toBe('1.23457');
+        expect(formatPositionSize(44.000001, 5)).toBe('44');
+      });
+
+      it('should format ETH with 4 decimals (szDecimals=4)', () => {
+        expect(formatPositionSize(0.0024, 4)).toBe('0.0024');
+        expect(formatPositionSize(10.56789, 4)).toBe('10.5679');
+        expect(formatPositionSize(100, 4)).toBe('100');
+      });
+
+      it('should format DOGE with 1 decimal (szDecimals=1)', () => {
+        expect(formatPositionSize(44.567, 1)).toBe('44.6');
+        expect(formatPositionSize(1000.123, 1)).toBe('1000.1');
+        expect(formatPositionSize(5.0, 1)).toBe('5');
+      });
+
+      it('should format with 0 decimals (szDecimals=0)', () => {
+        expect(formatPositionSize(44.567, 0)).toBe('45');
+        expect(formatPositionSize(1000.999, 0)).toBe('1001');
+        expect(formatPositionSize(5.0, 0)).toBe('5');
+      });
+
+      it('should remove trailing zeros even with szDecimals', () => {
+        expect(formatPositionSize(44.0, 5)).toBe('44');
+        expect(formatPositionSize(0.001, 5)).toBe('0.001');
+        expect(formatPositionSize(123.1, 4)).toBe('123.1');
+      });
+
+      it('should fallback to magnitude-based when szDecimals is undefined', () => {
+        // These should match the existing non-szDecimals behavior
+        expect(formatPositionSize(0.00009, undefined)).toBe('0.00009');
+        expect(formatPositionSize(0.0024, undefined)).toBe('0.0024');
+        expect(formatPositionSize(44, undefined)).toBe('44');
+      });
+    });
+  });
+
+  describe('formatLiquidationDistance', () => {
+    it('formats the distance from entry to liquidation as a percentage', () => {
+      expect(formatLiquidationDistance(100, 70)).toBe('30.00%');
+      expect(formatLiquidationDistance(100, 130)).toBe('30.00%');
+      expect(formatLiquidationDistance('103.02', '70.45')).toBe('31.62%');
+    });
+
+    it('returns undefined when either price is unusable', () => {
+      expect(formatLiquidationDistance(100, undefined)).toBeUndefined();
+      expect(formatLiquidationDistance(null, 70)).toBeUndefined();
+      expect(formatLiquidationDistance(100, '0')).toBeUndefined();
+      expect(formatLiquidationDistance(0, 70)).toBeUndefined();
+      expect(formatLiquidationDistance(100, 'abc')).toBeUndefined();
+      expect(formatLiquidationDistance(100, Infinity)).toBeUndefined();
+    });
+  });
+
+  describe('formatLeverage', () => {
+    it('should format leverage with x suffix', () => {
+      expect(formatLeverage(2)).toBe('2.0x');
+      expect(formatLeverage('5.5')).toBe('5.5x');
+      expect(formatLeverage(10.25)).toBe('10.3x');
+    });
+
+    it('should handle edge cases', () => {
+      expect(formatLeverage(0)).toBe('0.0x');
+      expect(formatLeverage('1')).toBe('1.0x');
+      expect(formatLeverage(100.999)).toBe('101.0x');
+    });
+
+    it('should handle invalid inputs', () => {
+      expect(formatLeverage('invalid')).toBe('1x');
+      expect(formatLeverage(NaN)).toBe('1x');
+      expect(formatLeverage('')).toBe('1x');
+    });
+
+    it('should handle negative leverage', () => {
+      expect(formatLeverage(-2.5)).toBe('-2.5x');
+    });
+
+    it('should round to 1 decimal place', () => {
+      expect(formatLeverage(2.789)).toBe('2.8x');
+      expect(formatLeverage(15.123)).toBe('15.1x');
+    });
+
+    it('should handle very large leverage values', () => {
+      expect(formatLeverage(999.9)).toBe('999.9x');
+      expect(formatLeverage('1000')).toBe('1000.0x');
+    });
+  });
+
+  describe('parseCurrencyString', () => {
+    it('should parse formatted currency strings', () => {
+      expect(parseCurrencyString('$1,234.56')).toBe(1234.56);
+      expect(parseCurrencyString('$1,000')).toBe(1000);
+      expect(parseCurrencyString('$0.00')).toBe(0);
+      expect(parseCurrencyString('$-123.45')).toBe(-123.45);
+    });
+
+    it('should handle strings without currency symbols', () => {
+      expect(parseCurrencyString('1234.56')).toBe(1234.56);
+      expect(parseCurrencyString('1,000')).toBe(1000);
+    });
+
+    it('should handle invalid inputs', () => {
+      expect(parseCurrencyString('')).toBe(0);
+      expect(parseCurrencyString('invalid')).toBe(0);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(parseCurrencyString(null as any)).toBe(0);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(parseCurrencyString(undefined as any)).toBe(0);
+    });
+
+    // A dust balance below 1e-6 serializes to exponential notation, whose
+    // exponent sign was being read as a negative amount.
+    it('reads exponential dust balances as small positives, not negatives', () => {
+      expect(parseCurrencyString('1.1e-7')).toBe(1.1e-7);
+      expect(parseCurrencyString('1e-7')).toBe(1e-7);
+      expect(parseCurrencyString('2.5e-8')).toBe(2.5e-8);
+    });
+
+    it('keeps a genuinely negative exponential negative', () => {
+      expect(parseCurrencyString('-1.1e-7')).toBe(-1.1e-7);
+    });
+
+    it('formats an exponential dust balance as zero rather than a negative', () => {
+      expect(formatPerpsBalance('1.1e-7')).toBe('$0');
+    });
+  });
+
+  describe('truncateToTwoDecimals', () => {
+    it('truncates without rounding up', () => {
+      expect(truncateToTwoDecimals(16.069)).toBe(16.06);
+      expect(truncateToTwoDecimals(16.999)).toBe(16.99);
+      expect(truncateToTwoDecimals(0.009)).toBe(0);
+    });
+
+    it('preserves values with 2 or fewer decimals', () => {
+      expect(truncateToTwoDecimals(16.07)).toBe(16.07);
+      expect(truncateToTwoDecimals(16)).toBe(16);
+      expect(truncateToTwoDecimals(0)).toBe(0);
+    });
+
+    it('handles IEEE 754 edge cases correctly', () => {
+      expect(truncateToTwoDecimals(10.29)).toBe(10.29);
+      expect(truncateToTwoDecimals(1.005)).toBe(1);
+      expect(truncateToTwoDecimals(0.1 + 0.2)).toBe(0.3);
+    });
+
+    it('handles negative values', () => {
+      expect(truncateToTwoDecimals(-16.069)).toBe(-16.06);
+      expect(truncateToTwoDecimals(-10.29)).toBe(-10.29);
+    });
+  });
+
+  describe('formatPerpsBalance', () => {
+    it('truncates values that would otherwise round up under halfExpand', () => {
+      // Without truncation, Intl.NumberFormat would render $50.39 for 50.389.
+      // formatPerpsBalance must show $50.38 so the Max button and
+      // insufficient-balance comparisons stay consistent.
+      expect(formatPerpsBalance('50.389')).toBe('$50.38');
+      expect(formatPerpsBalance('50.385')).toBe('$50.38');
+      expect(formatPerpsBalance('50.399')).toBe('$50.39');
+    });
+
+    it('preserves values that already have two decimals', () => {
+      expect(formatPerpsBalance('50.39')).toBe('$50.39');
+    });
+
+    it('accepts numeric input', () => {
+      expect(formatPerpsBalance(50.389)).toBe('$50.38');
+      expect(formatPerpsBalance(0)).toBe('$0');
+    });
+
+    it('strips currency formatting from input strings', () => {
+      expect(formatPerpsBalance('$1,232.39')).toBe('$1,232.39');
+      expect(formatPerpsBalance('$50.389')).toBe('$50.38');
+    });
+
+    it('returns zero for null, undefined, or empty input', () => {
+      expect(formatPerpsBalance(null)).toBe('$0');
+      expect(formatPerpsBalance(undefined)).toBe('$0');
+      expect(formatPerpsBalance('')).toBe('$0');
+    });
+  });
+
+  describe('parsePercentageString', () => {
+    it('should parse formatted percentage strings', () => {
+      expect(parsePercentageString('+2.50%')).toBe(2.5);
+      expect(parsePercentageString('-10.75%')).toBe(-10.75);
+      expect(parsePercentageString('5%')).toBe(5);
+      expect(parsePercentageString('0%')).toBe(0);
+      expect(parsePercentageString('+0.00%')).toBe(0);
+    });
+
+    it('should handle strings without percentage symbols', () => {
+      expect(parsePercentageString('2.5')).toBe(2.5);
+      expect(parsePercentageString('-10.75')).toBe(-10.75);
+      expect(parsePercentageString('+5')).toBe(5);
+    });
+
+    it('should handle spaces in the string', () => {
+      expect(parsePercentageString('+ 2.50 %')).toBe(2.5);
+      expect(parsePercentageString(' -10.75% ')).toBe(-10.75);
+    });
+
+    it('should handle invalid inputs', () => {
+      expect(parsePercentageString('')).toBe(0);
+      expect(parsePercentageString('abc')).toBe(0);
+      expect(parsePercentageString('%')).toBe(0);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(parsePercentageString(undefined as any)).toBe(0);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(parsePercentageString(null as any)).toBe(0);
+    });
+  });
+
+  describe('formatTransactionDate', () => {
+    it('should format timestamp to readable date string with time', () => {
+      const timestamp = 1642492800000; // January 18, 2022 at 12:00 AM UTC
+      expect(formatTransactionDate(timestamp)).toMatch(
+        /January 18, 2022 at \d{1,2}:\d{2} (AM|PM)/,
+      );
+    });
+
+    it('should handle different months correctly', () => {
+      // Use a timestamp that accounts for timezone - add 12 hours to ensure we're in the right day
+      const julyTimestamp = 1658188800000 + 12 * 60 * 60 * 1000; // July 19, 2022 12:00:00 UTC
+      expect(formatTransactionDate(julyTimestamp)).toMatch(
+        /July 19, 2022 at \d{1,2}:\d{2} (AM|PM)/,
+      );
+    });
+
+    it('should handle edge cases', () => {
+      // Use a timestamp that accounts for timezone - add 12 hours to ensure we're in the right day
+      const newYear = 1577836800000 + 12 * 60 * 60 * 1000; // January 1, 2020 12:00:00 UTC
+      expect(formatTransactionDate(newYear)).toMatch(
+        /January 1, 2020 at \d{1,2}:\d{2} (AM|PM)/,
+      );
+    });
+
+    it('should handle zero timestamp', () => {
+      // Use a timestamp that accounts for timezone - add 12 hours to ensure we're in the right day
+      const zeroTimestamp = 0 + 12 * 60 * 60 * 1000; // January 1, 1970 12:00:00 UTC
+      expect(formatTransactionDate(zeroTimestamp)).toMatch(
+        /January 1, 1970 at \d{1,2}:\d{2} (AM|PM)/,
+      );
+    });
+  });
+
+  describe('formatProOrderCardTimestamp', () => {
+    it('formats order placement time in Figma pro-card style', () => {
+      // Local timezone-aware: construct from Date parts so the assertion is stable.
+      const date = new Date(2026, 3, 6, 19, 13, 54);
+      expect(formatProOrderCardTimestamp(date.getTime())).toBe(
+        '06 Apr 26 • 19:13:54',
+      );
+    });
+
+    it('returns empty string for invalid timestamps', () => {
+      expect(formatProOrderCardTimestamp(Number.NaN)).toBe('');
+    });
+  });
+
+  describe('Real-world price formatting examples', () => {
+    // All price test cases consolidated into a single array for parameterized testing
+    const allPrices = [
+      // $100k+ range (> $10k: 0 decimals)
+      {
+        value: 126123.2345,
+        priceRange: '$100k+',
+        expected4SF: '$126,123',
+        expectedDetailed: '$126,123.23',
+        expectedMinimal: '$126,123.23',
+        expectedUserInput: '$126,123.2345',
+      },
+      {
+        value: 95123.45,
+        priceRange: '$100k+',
+        expected4SF: '$95,123',
+        expectedDetailed: '$95,123.45',
+        expectedMinimal: '$95,123.45',
+        expectedUserInput: '$95,123.45',
+      },
+      {
+        value: 100000,
+        priceRange: '$100k+',
+        expected4SF: '$100,000',
+        expectedDetailed: '$100,000',
+        expectedMinimal: '$100,000',
+        expectedUserInput: '$100,000',
+      },
+      {
+        value: 99999.99,
+        priceRange: '$100k+',
+        expected4SF: '$100,000',
+        expectedDetailed: '$99,999.99',
+        expectedMinimal: '$99,999.99',
+        expectedUserInput: '$99,999.99',
+      },
+      // $1k-$10k range ($1k-$10k: 1 decimal max)
+      {
+        value: 3456.789,
+        priceRange: '$1k-$10k',
+        expected4SF: '$3,456.8',
+        expectedDetailed: '$3,456.79',
+        expectedMinimal: '$3,456.79',
+        expectedUserInput: '$3,456.789',
+      },
+      {
+        value: 2801.5,
+        priceRange: '$1k-$10k',
+        expected4SF: '$2,801.5',
+        expectedDetailed: '$2,801.5',
+        expectedMinimal: '$2,801.50', // Fiat-style: preserves 2 decimals
+        expectedUserInput: '$2,801.5',
+      },
+      {
+        value: 5000,
+        priceRange: '$1k-$10k',
+        expected4SF: '$5,000',
+        expectedDetailed: '$5,000',
+        expectedMinimal: '$5,000',
+        expectedUserInput: '$5,000',
+      },
+      {
+        value: 1234.56789,
+        priceRange: '$1k-$10k',
+        expected4SF: '$1,234.6',
+        expectedDetailed: '$1,234.57',
+        expectedMinimal: '$1,234.57',
+        expectedUserInput: '$1,234.56789',
+      },
+      // $100-$1000 range ($100-$1k: 2 decimals max)
+      {
+        value: 234.567,
+        priceRange: '$100-$1000',
+        expected4SF: '$234.57',
+        expectedDetailed: '$234.57',
+        expectedMinimal: '$234.57',
+        expectedUserInput: '$234.567',
+      },
+      {
+        value: 150.123456,
+        priceRange: '$100-$1000',
+        expected4SF: '$150.12',
+        expectedDetailed: '$150.12',
+        expectedMinimal: '$150.12',
+        expectedUserInput: '$150.123456',
+      },
+      {
+        value: 999.99,
+        priceRange: '$100-$1000',
+        expected4SF: '$999.99',
+        expectedDetailed: '$999.99',
+        expectedMinimal: '$999.99',
+        expectedUserInput: '$999.99',
+      },
+      // $10-$100 range ($10-$100: max 4 decimals, 5 sig figs)
+      {
+        value: 56.123,
+        priceRange: '$10-$100',
+        expected4SF: '$56.123',
+        expectedDetailed: '$56.12',
+        expectedMinimal: '$56.12',
+        expectedUserInput: '$56.123',
+      },
+      {
+        value: 45.6789,
+        priceRange: '$10-$100',
+        expected4SF: '$45.679',
+        expectedDetailed: '$45.68',
+        expectedMinimal: '$45.68',
+        expectedUserInput: '$45.6789',
+      },
+      {
+        value: 99.99,
+        priceRange: '$10-$100',
+        expected4SF: '$99.99',
+        expectedDetailed: '$99.99',
+        expectedMinimal: '$99.99',
+        expectedUserInput: '$99.99',
+      },
+      {
+        value: 10.5,
+        priceRange: '$10-$100',
+        expected4SF: '$10.5',
+        expectedDetailed: '$10.5',
+        expectedMinimal: '$10.50', // Fiat-style: preserves 2 decimals
+        expectedUserInput: '$10.5',
+      },
+      // $1-$10 range (<= $10: 5 sig figs)
+      {
+        value: 2.87555,
+        priceRange: '$1-$10',
+        expected4SF: '$2.8756',
+        expectedDetailed: '$2.876',
+        expectedMinimal: '$2.88',
+        expectedUserInput: '$2.87555',
+      },
+      {
+        value: 5.1234,
+        priceRange: '$1-$10',
+        expected4SF: '$5.1234',
+        expectedDetailed: '$5.123',
+        expectedMinimal: '$5.12',
+        expectedUserInput: '$5.1234',
+      },
+      {
+        value: 1.234,
+        priceRange: '$1-$10',
+        expected4SF: '$1.234',
+        expectedDetailed: '$1.234',
+        expectedMinimal: '$1.23',
+        expectedUserInput: '$1.234',
+      },
+      {
+        value: 9.99,
+        priceRange: '$1-$10',
+        expected4SF: '$9.99',
+        expectedDetailed: '$9.99',
+        expectedMinimal: '$9.99',
+        expectedUserInput: '$9.99',
+      },
+      {
+        value: 1.0,
+        priceRange: '$1-$10',
+        expected4SF: '$1',
+        expectedDetailed: '$1',
+        expectedMinimal: '$1',
+        expectedUserInput: '$1',
+      },
+      // $0.1-$1 range (<= $10: 5 sig figs)
+      {
+        value: 0.12345,
+        priceRange: '$0.1-$1',
+        expected4SF: '$0.12345',
+        expectedDetailed: '$0.1235',
+        expectedMinimal: '$0.12',
+        expectedUserInput: '$0.12345',
+      },
+      {
+        value: 0.5678,
+        priceRange: '$0.1-$1',
+        expected4SF: '$0.5678',
+        expectedDetailed: '$0.5678',
+        expectedMinimal: '$0.57',
+        expectedUserInput: '$0.5678',
+      },
+      {
+        value: 0.999,
+        priceRange: '$0.1-$1',
+        expected4SF: '$0.999',
+        expectedDetailed: '$0.999',
+        expectedMinimal: '$1',
+        expectedUserInput: '$0.999',
+      },
+      {
+        value: 0.1,
+        priceRange: '$0.1-$1',
+        expected4SF: '$0.1',
+        expectedDetailed: '$0.1',
+        expectedMinimal: '$0.10', // Fiat-style: preserves 2 decimals
+        expectedUserInput: '$0.1',
+      },
+      // $0.00001-$0.0001 range (<$0.01: 4 sig figs)
+      {
+        value: 0.000012345,
+        priceRange: '$0.00001-$0.0001',
+        expected4SF: '$0.000012',
+        expectedDetailed: '$0.00001234',
+        expectedMinimal: '<$0.01',
+        expectedUserInput: '$0.000012345',
+      },
+      {
+        value: 0.000098765,
+        priceRange: '$0.00001-$0.0001',
+        expected4SF: '$0.000099',
+        expectedDetailed: '$0.00009876',
+        expectedMinimal: '<$0.01',
+        expectedUserInput: '$0.000098765',
+      },
+      {
+        value: 0.00005,
+        priceRange: '$0.00001-$0.0001',
+        expected4SF: '$0.00005',
+        expectedDetailed: '$0.00005',
+        expectedMinimal: '<$0.01',
+        expectedUserInput: '$0.00005',
+      },
+      // <$0.00001 range (<$0.01: 4 sig figs)
+      {
+        value: 0.00000123,
+        priceRange: '<$0.00001',
+        expected4SF: '$0.000001',
+        expectedDetailed: '$0.00000123',
+        expectedMinimal: '<$0.01',
+        expectedUserInput: '$0.00000123',
+      },
+      {
+        value: 0.00004321,
+        priceRange: '<$0.00001',
+        expected4SF: '$0.000043',
+        expectedDetailed: '$0.00004321',
+        expectedMinimal: '<$0.01',
+        expectedUserInput: '$0.00004321',
+      },
+      // Edge cases
+      {
+        value: 0,
+        priceRange: 'Edge cases',
+        expected4SF: '$0',
+        expectedDetailed: '$0',
+        expectedMinimal: '$0',
+        expectedUserInput: '$0',
+      },
+      {
+        value: 1,
+        priceRange: 'Edge cases',
+        expected4SF: '$1',
+        expectedDetailed: '$1',
+        expectedMinimal: '$1',
+        expectedUserInput: '$1',
+      },
+      {
+        value: 1000,
+        priceRange: 'Edge cases',
+        expected4SF: '$1,000',
+        expectedDetailed: '$1,000',
+        expectedMinimal: '$1,000',
+        expectedUserInput: '$1,000',
+      },
+      {
+        value: 1000000,
+        priceRange: 'Edge cases',
+        expected4SF: '$1,000,000',
+        expectedDetailed: '$1,000,000',
+        expectedMinimal: '$1,000,000',
+        expectedUserInput: '$1,000,000',
+      },
+    ];
+
+    // Test all prices with PRICE_RANGES_UNIVERSAL and PRICE_RANGES_MINIMAL_VIEW
+    it.each(allPrices)(
+      'formats $value ($priceRange) correctly with all configs',
+      ({ value, expected4SF, expectedMinimal }) => {
+        // PRICE_RANGES_UNIVERSAL (comprehensive formatting)
+        expect(formatPerpsFiat(value, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+          expected4SF,
+        );
+
+        // Minimal view (balances/margins - 2 decimals)
+        expect(
+          formatPerpsFiat(value, { ranges: PRICE_RANGES_MINIMAL_VIEW }),
+        ).toBe(expectedMinimal);
+      },
+    );
+
+    describe('High precision formatting with PRICE_RANGES_UNIVERSAL', () => {
+      it('should preserve appropriate precision based on magnitude', () => {
+        // PRICE_RANGES_UNIVERSAL preserves up to 6 decimals dynamically
+        expect(
+          formatPerpsFiat(2.87555, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$2.8756');
+        expect(
+          formatPerpsFiat(0.00012345, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$0.000123');
+        expect(
+          formatPerpsFiat(121432.0132, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$121,432');
+      });
+
+      it('should still strip trailing zeros with PRICE_RANGES_UNIVERSAL', () => {
+        expect(formatPerpsFiat(2.87, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+          '$2.87',
+        );
+        expect(formatPerpsFiat(100.0, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+          '$100',
+        );
+        expect(formatPerpsFiat(0.123, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+          '$0.123',
+        );
+      });
+    });
+
+    describe('stripTrailingZeros interaction with different configs', () => {
+      it('should respect stripTrailingZeros: false with MINIMAL_VIEW', () => {
+        expect(
+          formatPerpsFiat(1250, {
+            ranges: PRICE_RANGES_MINIMAL_VIEW,
+            stripTrailingZeros: false,
+          }),
+        ).toBe('$1,250.00');
+      });
+
+      it('should strip zeros by default even with minimumDecimals', () => {
+        expect(formatPerpsFiat(1250, { minimumDecimals: 2 })).toBe('$1,250');
+        expect(formatPerpsFiat(100.0, { minimumDecimals: 2 })).toBe('$100');
+      });
+
+      it('should preserve decimals when stripTrailingZeros: false', () => {
+        expect(
+          formatPerpsFiat(1250.5, {
+            minimumDecimals: 2,
+            stripTrailingZeros: false,
+          }),
+        ).toBe('$1,250.50');
+      });
+    });
+
+    describe('PRICE_RANGES_UNIVERSAL (comprehensive formatting)', () => {
+      describe('formatPerpsPrice', () => {
+        it('uses market-aware Hyperliquid price precision when szDecimals is known', () => {
+          expect(formatPerpsPrice('2.1946', { szDecimals: 2 })).toBe('$2.1946');
+        });
+
+        it('returns market-aware price without currency symbol when requested', () => {
+          expect(
+            formatPerpsPrice('2.1946', {
+              szDecimals: 2,
+              includeCurrencySymbol: false,
+            }),
+          ).toBe('2.1946');
+        });
+
+        it('falls back to universal price ranges when szDecimals is null', () => {
+          expect(formatPerpsPrice(95123.45, { szDecimals: null })).toBe(
+            '$95,123',
+          );
+        });
+
+        it('falls back to universal price ranges when Hyperliquid formatting rejects the price', () => {
+          expect(formatPerpsPrice('not-a-price', { szDecimals: 2 })).toBe(
+            '$---',
+          );
+        });
+
+        it('falls back to universal price ranges when szDecimals is unknown', () => {
+          expect(formatPerpsPrice(95123.45)).toBe('$95,123');
+        });
+      });
+
+      it('should format high-value BTC prices without decimals (> $10k)', () => {
+        // BTC at $126k - no decimals for cleaner display
+        expect(
+          formatPerpsFiat(126123.2345, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$126,123');
+        expect(
+          formatPerpsFiat(95123.45, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$95,123');
+        expect(
+          formatPerpsFiat(100000, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$100,000');
+
+        // Edge case: just at $10k threshold
+        expect(formatPerpsFiat(10000, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+          '$10,000',
+        );
+        expect(
+          formatPerpsFiat(10000.99, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$10,001');
+      });
+
+      it('should format mid-range prices with appropriate decimals', () => {
+        // $1k-$10k: 1 decimal max, 5 sig figs
+        expect(
+          formatPerpsFiat(3456.789, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$3,456.8');
+        expect(
+          formatPerpsFiat(2801.5, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$2,801.5');
+
+        // $100-$1000: 2 decimals max
+        expect(
+          formatPerpsFiat(234.567, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$234.57');
+        expect(
+          formatPerpsFiat(999.99, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$999.99');
+
+        // $10-$100: max 4 decimals, 5 sig figs
+        expect(
+          formatPerpsFiat(56.123, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$56.123');
+        expect(
+          formatPerpsFiat(45.6789, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$45.679');
+
+        // <= $10: 5 sig figs
+        expect(formatPerpsFiat(2.876, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+          '$2.876',
+        );
+      });
+
+      it('should format small prices with high precision (< $1)', () => {
+        // Small values: <= $10: 5 sig figs
+        expect(
+          formatPerpsFiat(0.12345, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$0.12345');
+        expect(
+          formatPerpsFiat(0.5678, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$0.5678');
+
+        // Very small: <$0.01: 4 sig figs, max 6 decimals
+        expect(
+          formatPerpsFiat(0.000012345, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$0.000012');
+        expect(
+          formatPerpsFiat(0.00000123, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('$0.000001');
+      });
+
+      it('should handle negative values (short positions)', () => {
+        expect(
+          formatPerpsFiat(-126123.2345, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('-$126,123');
+        expect(
+          formatPerpsFiat(-234.567, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('-$234.57');
+        expect(
+          formatPerpsFiat(-0.12345, { ranges: PRICE_RANGES_UNIVERSAL }),
+        ).toBe('-$0.12345');
+      });
+
+      it('should handle edge cases', () => {
+        expect(formatPerpsFiat(0, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+          '$0',
+        );
+        expect(formatPerpsFiat(1, { ranges: PRICE_RANGES_UNIVERSAL })).toBe(
+          '$1',
+        );
+      });
+    });
+  });
+
+  describe('formatDateSection', () => {
+    let originalDate: typeof Date;
+    let mockDateNow: jest.SpyInstance;
+    let mockDateConstructor: jest.SpyInstance;
+
+    beforeEach(() => {
+      // Store the original Date constructor
+      originalDate = global.Date;
+    });
+
+    afterEach(() => {
+      // Restore the original Date constructor
+      global.Date = originalDate;
+      if (mockDateNow) {
+        mockDateNow.mockRestore();
+      }
+      if (mockDateConstructor) {
+        mockDateConstructor.mockRestore();
+      }
+    });
+
+    it('should return "Today" for current date', () => {
+      // Mock Date.now to return a specific timestamp
+      const mockNow = new Date('2022-01-18T12:00:00Z').getTime();
+      mockDateNow = jest.spyOn(Date, 'now').mockReturnValue(mockNow);
+
+      // Mock the Date constructor to return consistent dates
+      mockDateConstructor = jest
+        .spyOn(global, 'Date')
+        .mockImplementation((input?: string | number | Date) => {
+          if (input === undefined) {
+            return new originalDate(mockNow);
+          }
+          return new originalDate(input);
+        });
+
+      const todayTimestamp = mockNow;
+      expect(formatDateSection(todayTimestamp)).toBe('Today');
+    });
+
+    it('should return "Yesterday" for previous day', () => {
+      // Mock Date.now to return a specific timestamp
+      const mockNow = new Date('2022-01-18T12:00:00Z').getTime();
+      mockDateNow = jest.spyOn(Date, 'now').mockReturnValue(mockNow);
+
+      // Mock the Date constructor to return consistent dates
+      mockDateConstructor = jest
+        .spyOn(global, 'Date')
+        .mockImplementation((input?: string | number | Date) => {
+          if (input === undefined) {
+            return new originalDate(mockNow);
+          }
+          return new originalDate(input);
+        });
+
+      const yesterday = new Date('2022-01-17T12:00:00Z').getTime();
+      expect(formatDateSection(yesterday)).toBe('Yesterday');
+    });
+
+    it('should return formatted date for older dates', () => {
+      // Mock Date.now to return a specific timestamp
+      const mockNow = new Date('2022-01-18T12:00:00Z').getTime();
+      mockDateNow = jest.spyOn(Date, 'now').mockReturnValue(mockNow);
+
+      // Mock the Date constructor to return consistent dates
+      mockDateConstructor = jest
+        .spyOn(global, 'Date')
+        .mockImplementation((input?: string | number | Date) => {
+          if (input === undefined) {
+            return new originalDate(mockNow);
+          }
+          return new originalDate(input);
+        });
+
+      const olderDate = new Date('2022-01-15T12:00:00Z').getTime();
+      expect(formatDateSection(olderDate)).toBe('Jan 15');
+    });
+
+    it('should handle different months', () => {
+      // Mock Date.now to return a specific timestamp
+      const mockNow = new Date('2022-01-18T12:00:00Z').getTime();
+      mockDateNow = jest.spyOn(Date, 'now').mockReturnValue(mockNow);
+
+      // Mock the Date constructor to return consistent dates
+      mockDateConstructor = jest
+        .spyOn(global, 'Date')
+        .mockImplementation((input?: string | number | Date) => {
+          if (input === undefined) {
+            return new originalDate(mockNow);
+          }
+          return new originalDate(input);
+        });
+
+      const julyDate = new Date('2021-07-15T12:00:00Z').getTime();
+      expect(formatDateSection(julyDate)).toBe('Jul 15');
+    });
+  });
+
+  describe('countSignificantFigures', () => {
+    describe('basic counting', () => {
+      it('returns 5 for price with 3 integer and 2 decimal digits', () => {
+        const result = countSignificantFigures('123.45');
+
+        expect(result).toBe(5);
+      });
+
+      it('returns 5 for price with 2 integer and 3 decimal digits', () => {
+        const result = countSignificantFigures('12.345');
+
+        expect(result).toBe(5);
+      });
+
+      it('returns 3 for integer without trailing zeros', () => {
+        const result = countSignificantFigures('123');
+
+        expect(result).toBe(3);
+      });
+
+      it('returns 2 for integer with trailing zeros (12000)', () => {
+        const result = countSignificantFigures('12000');
+
+        expect(result).toBe(2);
+      });
+    });
+
+    describe('leading zeros after decimal', () => {
+      it('counts all 6 decimal digits for 0.000123', () => {
+        const result = countSignificantFigures('0.000123');
+
+        expect(result).toBe(6);
+      });
+
+      it('counts all 8 decimal digits for 0.00001234', () => {
+        const result = countSignificantFigures('0.00001234');
+
+        expect(result).toBe(8);
+      });
+
+      it('counts 4 decimal digits for 0.0001', () => {
+        const result = countSignificantFigures('0.0001');
+
+        expect(result).toBe(4);
+      });
+    });
+
+    describe('trailing zeros trimming', () => {
+      it('returns 5 for price with trailing zeros after decimal', () => {
+        const result = countSignificantFigures('123.4500');
+
+        expect(result).toBe(5);
+      });
+
+      it('returns 3 for price with all trailing zeros in decimal', () => {
+        const result = countSignificantFigures('123.00');
+
+        expect(result).toBe(3);
+      });
+
+      it('returns 3 for 0.001000 after trimming trailing zeros', () => {
+        const result = countSignificantFigures('0.001000');
+
+        expect(result).toBe(3);
+      });
+    });
+
+    describe('formatted inputs', () => {
+      it('handles dollar sign prefix', () => {
+        const result = countSignificantFigures('$123.45');
+
+        expect(result).toBe(5);
+      });
+
+      it('handles comma thousand separators', () => {
+        const result = countSignificantFigures('1,234.56');
+
+        expect(result).toBe(6);
+      });
+
+      it('handles dollar sign with comma separators', () => {
+        const result = countSignificantFigures('$1,234.56');
+
+        expect(result).toBe(6);
+      });
+    });
+
+    describe('edge cases', () => {
+      it('returns 0 for empty string', () => {
+        const result = countSignificantFigures('');
+
+        expect(result).toBe(0);
+      });
+
+      it('returns 0 for zero', () => {
+        const result = countSignificantFigures('0');
+
+        expect(result).toBe(0);
+      });
+
+      it('returns 0 for invalid input', () => {
+        const result = countSignificantFigures('invalid');
+
+        expect(result).toBe(0);
+      });
+
+      it('returns 5 for negative number with 2 integer and 3 decimal digits', () => {
+        const result = countSignificantFigures('-12.345');
+
+        expect(result).toBe(5);
+      });
+    });
+  });
+
+  describe('hasExceededSignificantFigures', () => {
+    describe('decimal prices exceeding limit', () => {
+      it('returns true for 6 significant figures when max is 5', () => {
+        const result = hasExceededSignificantFigures('123.456');
+
+        expect(result).toBe(true);
+      });
+
+      it('returns true for decimal with 6 digits including leading zeros', () => {
+        const result = hasExceededSignificantFigures('0.000123');
+
+        expect(result).toBe(true);
+      });
+
+      it('returns true for 8 significant figures', () => {
+        const result = hasExceededSignificantFigures('0.00001234');
+
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('prices within limit', () => {
+      it('returns false for 5 significant figures', () => {
+        const result = hasExceededSignificantFigures('123.45');
+
+        expect(result).toBe(false);
+      });
+
+      it('returns false for 4 significant figures', () => {
+        const result = hasExceededSignificantFigures('12.34');
+
+        expect(result).toBe(false);
+      });
+
+      it('returns false for 3 decimal digits with leading zeros', () => {
+        const result = hasExceededSignificantFigures('0.001');
+
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('integer prices', () => {
+      it('returns false for large integer', () => {
+        const result = hasExceededSignificantFigures('123456');
+
+        expect(result).toBe(false);
+      });
+
+      it('returns false for integer with many digits', () => {
+        const result = hasExceededSignificantFigures('1234567890');
+
+        expect(result).toBe(false);
+      });
+
+      it('returns false for integer with trailing zeros', () => {
+        const result = hasExceededSignificantFigures('12000');
+
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('trailing zeros normalization', () => {
+      it('returns false when trailing zeros normalize to 5 sig figs', () => {
+        const result = hasExceededSignificantFigures('123.4500');
+
+        expect(result).toBe(false);
+      });
+
+      it('returns false when decimal normalizes to integer', () => {
+        const result = hasExceededSignificantFigures('123.00');
+
+        expect(result).toBe(false);
+      });
+    });
+
+    describe('edge cases', () => {
+      it('returns false for empty string', () => {
+        const result = hasExceededSignificantFigures('');
+
+        expect(result).toBe(false);
+      });
+
+      it('returns false for whitespace only', () => {
+        const result = hasExceededSignificantFigures('   ');
+
+        expect(result).toBe(false);
+      });
+
+      it('returns false for invalid input', () => {
+        const result = hasExceededSignificantFigures('invalid');
+
+        expect(result).toBe(false);
+      });
+
+      it('handles formatted prices with dollar sign', () => {
+        const result = hasExceededSignificantFigures('$123.456');
+
+        expect(result).toBe(true);
+      });
+
+      it('handles formatted prices with commas', () => {
+        const result = hasExceededSignificantFigures('1,234.56');
+
+        expect(result).toBe(true);
+      });
+    });
+
+    describe('custom max significant figures', () => {
+      it('returns true when exceeding custom max of 3', () => {
+        const result = hasExceededSignificantFigures('12.34', 3);
+
+        expect(result).toBe(true);
+      });
+
+      it('returns false when within custom max of 8', () => {
+        const result = hasExceededSignificantFigures('0.00001234', 8);
+
+        expect(result).toBe(false);
+      });
+    });
+  });
+
+  describe('roundToSignificantFigures', () => {
+    describe('empty and invalid inputs', () => {
+      it('returns empty string for empty input', () => {
+        const result = roundToSignificantFigures('');
+
+        expect(result).toBe('');
+      });
+
+      it('returns whitespace string for whitespace input', () => {
+        const result = roundToSignificantFigures('   ');
+
+        expect(result).toBe('   ');
+      });
+
+      it('returns original string for invalid input', () => {
+        const result = roundToSignificantFigures('invalid');
+
+        expect(result).toBe('invalid');
+      });
+
+      it('returns original string for zero', () => {
+        const result = roundToSignificantFigures('0');
+
+        expect(result).toBe('0');
+      });
+
+      it('returns original string for 0.00', () => {
+        const result = roundToSignificantFigures('0.00');
+
+        expect(result).toBe('0.00');
+      });
+    });
+
+    describe('integers without decimal', () => {
+      it('returns normalized integer for simple integer', () => {
+        const result = roundToSignificantFigures('123');
+
+        expect(result).toBe('123');
+      });
+
+      it('returns normalized integer for large integer', () => {
+        const result = roundToSignificantFigures('123456789');
+
+        expect(result).toBe('123456789');
+      });
+
+      it('returns normalized integer for integer with trailing zeros', () => {
+        const result = roundToSignificantFigures('12000');
+
+        expect(result).toBe('12000');
+      });
+    });
+
+    describe('prices within limit', () => {
+      it('returns normalized price for 5 significant figures', () => {
+        const result = roundToSignificantFigures('123.45');
+
+        expect(result).toBe('123.45');
+      });
+
+      it('returns normalized price for 4 significant figures', () => {
+        const result = roundToSignificantFigures('12.34');
+
+        expect(result).toBe('12.34');
+      });
+
+      it('returns normalized price for 3 significant figures', () => {
+        const result = roundToSignificantFigures('1.23');
+
+        expect(result).toBe('1.23');
+      });
+
+      it('returns normalized price for decimal with leading zeros within limit', () => {
+        const result = roundToSignificantFigures('0.001');
+
+        expect(result).toBe('0.001');
+      });
+
+      it('returns normalized price trimming trailing zeros', () => {
+        const result = roundToSignificantFigures('123.4500');
+
+        expect(result).toBe('123.45');
+      });
+    });
+
+    describe('prices exceeding limit needing rounding', () => {
+      it('rounds to 5 significant figures for 3 integer + 3 decimal digits', () => {
+        const result = roundToSignificantFigures('123.456');
+
+        expect(result).toBe('123.46');
+      });
+
+      it('rounds to 5 significant figures for 2 integer + 4 decimal digits', () => {
+        const result = roundToSignificantFigures('12.3456');
+
+        expect(result).toBe('12.346');
+      });
+
+      it('rounds to 5 significant figures for 1 integer + 5 decimal digits', () => {
+        const result = roundToSignificantFigures('1.23456');
+
+        expect(result).toBe('1.2346');
+      });
+
+      it('rounds decimal with leading zeros to 5 significant figures', () => {
+        const result = roundToSignificantFigures('0.065242');
+
+        expect(result).toBe('0.06524');
+      });
+
+      it('rounds correctly with many leading zeros', () => {
+        const result = roundToSignificantFigures('0.00123456');
+
+        expect(result).toBe('0.00123');
+      });
+    });
+
+    describe('rounding to integer when integer part exceeds limit', () => {
+      it('rounds to integer when 5 integer digits + decimal', () => {
+        const result = roundToSignificantFigures('12345.67');
+
+        expect(result).toBe('12346');
+      });
+
+      it('rounds to integer when 6 integer digits + decimal', () => {
+        const result = roundToSignificantFigures('123456.78');
+
+        expect(result).toBe('123457');
+      });
+
+      it('rounds to integer when 7 integer digits + decimal', () => {
+        const result = roundToSignificantFigures('1234567.89');
+
+        expect(result).toBe('1234568');
+      });
+    });
+
+    describe('formatted inputs', () => {
+      it('handles dollar sign prefix', () => {
+        const result = roundToSignificantFigures('$123.456');
+
+        expect(result).toBe('123.46');
+      });
+
+      it('handles comma thousand separators', () => {
+        const result = roundToSignificantFigures('1,234.567');
+
+        expect(result).toBe('1234.6');
+      });
+
+      it('handles dollar sign with comma separators', () => {
+        const result = roundToSignificantFigures('$1,234.567');
+
+        expect(result).toBe('1234.6');
+      });
+    });
+
+    describe('negative numbers', () => {
+      it('rounds negative decimal to 5 significant figures', () => {
+        const result = roundToSignificantFigures('-123.456');
+
+        // 3 integer digits + 2 decimal = 5 sig figs (minus sign is stripped for counting)
+        expect(result).toBe('-123.46');
+      });
+
+      it('returns normalized negative integer', () => {
+        const result = roundToSignificantFigures('-12345');
+
+        expect(result).toBe('-12345');
+      });
+    });
+
+    describe('custom max significant figures', () => {
+      it('rounds to custom max of 3 significant figures', () => {
+        const result = roundToSignificantFigures('12.345', 3);
+
+        expect(result).toBe('12.3');
+      });
+
+      it('rounds to custom max of 8 significant figures', () => {
+        const result = roundToSignificantFigures('12.345678901', 8);
+
+        expect(result).toBe('12.345679');
+      });
+
+      it('returns as-is when within custom max', () => {
+        const result = roundToSignificantFigures('12.34', 8);
+
+        expect(result).toBe('12.34');
+      });
+    });
+  });
+
+  describe('formatPositionTriggerSummary', () => {
+    it('names the order count when a side carries several trigger orders', () => {
+      const summary = formatPositionTriggerSummary({
+        count: 3,
+        price: '2654.1',
+      });
+
+      expect(summary).toBe('3 orders');
+    });
+
+    it('keeps the trigger price when a side carries exactly one order', () => {
+      const summary = formatPositionTriggerSummary({
+        count: 1,
+        price: '2312.8',
+      });
+
+      expect(summary).toBe('$2,312.8');
+    });
+
+    it('keeps the trigger price when the controller reports no count', () => {
+      const summary = formatPositionTriggerSummary({ price: '2312.8' });
+
+      expect(summary).toBe('$2,312.8');
+    });
+
+    it('applies market size decimals to the single order price', () => {
+      const summary = formatPositionTriggerSummary({
+        count: 1,
+        price: '2.1946',
+        szDecimals: 2,
+      });
+
+      expect(summary).toBe('$2.1946');
+    });
+
+    it('returns null when a side has neither a count nor a usable price', () => {
+      expect(formatPositionTriggerSummary({ count: 0 })).toBeNull();
+      expect(formatPositionTriggerSummary({ price: '0' })).toBeNull();
+    });
+  });
+
+  describe('formatLimitPriceInput', () => {
+    it('returns empty for absent or zero input', () => {
+      expect(formatLimitPriceInput('')).toBe('');
+      expect(formatLimitPriceInput('0')).toBe('');
+    });
+
+    it('preserves a trailing decimal point while typing', () => {
+      expect(formatLimitPriceInput('12.')).toBe('$12.');
+    });
+
+    it('preserves trailing zeros after the decimal while typing', () => {
+      expect(formatLimitPriceInput('12.50')).toBe('$12.50');
+    });
+
+    it('formats a complete number', () => {
+      expect(formatLimitPriceInput('3000')).toBe('$3,000');
+    });
+  });
+});

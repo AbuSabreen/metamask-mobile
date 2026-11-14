@@ -1,0 +1,220 @@
+import React, { useCallback } from 'react';
+import { Image, StyleSheet, TouchableOpacity } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { useSelector } from 'react-redux';
+import type { AppNavigationProp } from '../../../../../../../core/NavigationService/types';
+import {
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+  BoxJustifyContent,
+  FontWeight,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { Hex } from '@metamask/utils';
+import {
+  TransactionType,
+  hasTransactionType,
+} from '@metamask/transaction-controller';
+import { PaymentOverride } from '@metamask/transaction-pay-controller';
+import { strings } from '../../../../../../../../locales/i18n';
+import Icon, {
+  IconColor,
+  IconName,
+  IconSize,
+} from '../../../../../../../component-library/components/Icons/Icon';
+import Routes from '../../../../../../../constants/navigation/Routes';
+import MoneyIcon from '../../../../../../../images/money.png';
+import { RootState } from '../../../../../../../reducers';
+import { selectPaymentOverrideByTransactionId } from '../../../../../../../selectors/transactionPayController';
+import { useTransactionPayToken } from '../../../../../../Views/confirmations/hooks/pay/useTransactionPayToken';
+import { useTransactionMetadataRequest } from '../../../../../../Views/confirmations/hooks/transactions/useTransactionMetadataRequest';
+import {
+  TokenIcon,
+  TokenIconVariant,
+} from '../../../../../../Views/confirmations/components/token-icon';
+import { isHardwareAccount } from '../../../../../../../util/address';
+import { POLYGON_PUSD } from '../../../../../../Views/confirmations/constants/predict';
+import { usePredictPaymentToken } from '../../../../hooks/usePredictPaymentToken';
+import { PREDICT_BALANCE_CHAIN_ID } from '../../../../constants/transactions';
+import { usePredictDefaultPaymentToken } from '../../hooks/usePredictDefaultPaymentToken';
+
+type PredictPayWithRowVariant = 'pill' | 'row';
+
+const styles = StyleSheet.create({
+  moneyIcon: { width: 24, height: 24 },
+});
+
+interface PredictPayWithRowProps {
+  disabled?: boolean;
+  chevronRight?: boolean;
+  variant?: PredictPayWithRowVariant;
+  availableBalance?: string;
+  onPaymentSelectorOpen?: () => void;
+}
+
+export function PredictPayWithRow({
+  disabled = false,
+  chevronRight = false,
+  variant = 'pill',
+  availableBalance,
+  onPaymentSelectorOpen,
+}: PredictPayWithRowProps) {
+  usePredictDefaultPaymentToken();
+  const navigation = useNavigation<AppNavigationProp>();
+  const { payToken } = useTransactionPayToken();
+  const transactionMeta = useTransactionMetadataRequest();
+  const from = transactionMeta?.txParams?.from;
+  const isPredictDepositAndOrder = hasTransactionType(transactionMeta, [
+    TransactionType.predictDepositAndOrder,
+  ]);
+  const canEdit =
+    !isHardwareAccount((from as string) ?? '') &&
+    !disabled &&
+    isPredictDepositAndOrder;
+  const { isPredictBalanceSelected, selectedPaymentToken } =
+    usePredictPaymentToken();
+
+  // Paying from the Money Account repoints the pay token to mUSD on Monad, so
+  // the override is the only signal that distinguishes it from the user having
+  // picked mUSD directly.
+  const paymentOverride = useSelector((state: RootState) =>
+    selectPaymentOverrideByTransactionId(state, transactionMeta?.id ?? ''),
+  );
+  const isMoneyAccountSelected =
+    paymentOverride === PaymentOverride.MoneyAccount;
+
+  const showPredictBalance =
+    !isMoneyAccountSelected && (isPredictBalanceSelected || !payToken);
+
+  const handlePress = useCallback(() => {
+    if (!canEdit) return;
+    onPaymentSelectorOpen?.();
+    navigation.navigate(Routes.CONFIRMATION_PAY_WITH_BOTTOM_SHEET);
+  }, [canEdit, navigation, onPaymentSelectorOpen]);
+
+  const label = strings('confirm.label.pay_with');
+  const getDisplaySymbol = () => {
+    if (isMoneyAccountSelected) {
+      return strings('confirm.pay_with_bottom_sheet.money_account');
+    }
+
+    if (showPredictBalance) {
+      return 'Predict balance';
+    }
+
+    return selectedPaymentToken?.symbol ?? payToken?.symbol ?? '';
+  };
+
+  const displaySymbol = getDisplaySymbol();
+  const tokenIconAddress = showPredictBalance
+    ? POLYGON_PUSD.address
+    : (payToken?.address as Hex | undefined);
+  const tokenIconChainId = showPredictBalance
+    ? PREDICT_BALANCE_CHAIN_ID
+    : (payToken?.chainId as Hex | undefined);
+
+  if (variant === 'row') {
+    return (
+      <TouchableOpacity onPress={handlePress} disabled={!canEdit}>
+        <Box
+          flexDirection={BoxFlexDirection.Row}
+          alignItems={BoxAlignItems.Center}
+          justifyContent={BoxJustifyContent.Between}
+          twClassName="pt-4"
+        >
+          <Text
+            variant={TextVariant.BodyMd}
+            color={TextColor.TextAlternative}
+            fontWeight={FontWeight.Medium}
+          >
+            {label}
+          </Text>
+          <Box
+            flexDirection={BoxFlexDirection.Row}
+            alignItems={BoxAlignItems.Center}
+            gap={2}
+          >
+            {isMoneyAccountSelected ? (
+              <Image source={MoneyIcon} style={styles.moneyIcon} />
+            ) : (
+              tokenIconAddress &&
+              tokenIconChainId && (
+                <TokenIcon
+                  address={tokenIconAddress}
+                  chainId={tokenIconChainId}
+                  variant={TokenIconVariant.Row}
+                />
+              )
+            )}
+            <Text
+              variant={TextVariant.BodyMd}
+              color={TextColor.TextDefault}
+              fontWeight={FontWeight.Medium}
+            >
+              {displaySymbol}
+            </Text>
+            {availableBalance && (
+              <Text
+                variant={TextVariant.BodyMd}
+                color={TextColor.TextAlternative}
+                fontWeight={FontWeight.Medium}
+              >
+                ({availableBalance})
+              </Text>
+            )}
+            {canEdit && (
+              <Icon
+                name={IconName.ArrowRight}
+                size={IconSize.Sm}
+                color={IconColor.Alternative}
+              />
+            )}
+          </Box>
+        </Box>
+      </TouchableOpacity>
+    );
+  }
+
+  return (
+    <Box
+      flexDirection={BoxFlexDirection.Column}
+      alignItems={BoxAlignItems.Center}
+      gap={3}
+    >
+      <TouchableOpacity onPress={handlePress} disabled={!canEdit}>
+        <Box
+          flexDirection={BoxFlexDirection.Row}
+          alignItems={BoxAlignItems.Center}
+          justifyContent={BoxJustifyContent.Center}
+          twClassName={`rounded-full py-2 pl-[9px] pr-[16px] mt-2 ${!canEdit ? '' : 'bg-muted'} mx-auto`}
+          gap={3}
+        >
+          {isMoneyAccountSelected ? (
+            <Image source={MoneyIcon} style={styles.moneyIcon} />
+          ) : (
+            tokenIconAddress &&
+            tokenIconChainId && (
+              <TokenIcon
+                address={tokenIconAddress}
+                chainId={tokenIconChainId}
+              />
+            )
+          )}
+          <Text variant={TextVariant.BodyMd} color={TextColor.TextDefault}>
+            {`${label} ${displaySymbol}`}
+          </Text>
+          {canEdit && (
+            <Icon
+              name={chevronRight ? IconName.ArrowRight : IconName.ArrowDown}
+              size={IconSize.Sm}
+              color={IconColor.Alternative}
+            />
+          )}
+        </Box>
+      </TouchableOpacity>
+    </Box>
+  );
+}

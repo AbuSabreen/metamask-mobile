@@ -1,46 +1,160 @@
 import React from 'react';
-import useFiatFormatter from './useFiatFormatter';
-
+import BigNumber from 'bignumber.js';
+import { merge } from 'lodash';
+import { CHAIN_IDS } from '@metamask/transaction-controller';
 import renderWithProvider from '../../../../util/test/renderWithProvider';
-import initialBackgroundState from '../../../../util/test/initial-background-state.json';
-
+import { backgroundState } from '../../../../util/test/initial-root-state';
 import { IndividualFiatDisplay, TotalFiatDisplay } from './FiatDisplay';
-import { FIAT_UNAVAILABLE } from '../types';
+import { mockNetworkState } from '../../../../util/test/network';
+import { FIAT_UNAVAILABLE, FiatAmount } from '../types';
 
-jest.mock('./useFiatFormatter');
-(useFiatFormatter as jest.Mock).mockReturnValue((value: number) => `$${value}`);
-
-const mockInitialState = {
-  engine: {
-    backgroundState: initialBackgroundState,
+const mockStateWithTestnet = merge(
+  {
+    engine: {
+      backgroundState,
+    },
   },
-};
+  {
+    engine: {
+      backgroundState: {
+        CurrencyRateController: {
+          currentCurrency: 'USD',
+        },
+        NetworkController: {
+          ...mockNetworkState({
+            chainId: CHAIN_IDS.SEPOLIA,
+            id: 'sepolia',
+            nickname: 'Sepolia',
+            ticker: 'ETH',
+          }),
+        },
+      },
+    },
+    settings: {
+      showFiatOnTestnets: true,
+    },
+  },
+);
 
-describe('IndividualFiatDisplay', () => {
-  it.each([
-    [FIAT_UNAVAILABLE, 'Not Available'],
-    [100, '$100'],
-    [-100, '$100'],
-  ])('when fiatAmount is %s it renders %s', (fiatAmount, expected) => {
-    const { getByText } = renderWithProvider(
-      <IndividualFiatDisplay fiatAmount={fiatAmount} />,
-      { state: mockInitialState },
-    );
-    expect(getByText(expected)).toBeDefined();
-  });
+const mockStateWithHideFiatOnTestnets = merge({}, mockStateWithTestnet, {
+  settings: {
+    showFiatOnTestnets: false,
+  },
 });
 
-describe('TotalFiatDisplay', () => {
-  it.each([
-    [[FIAT_UNAVAILABLE, FIAT_UNAVAILABLE], 'Not Available'],
-    [[], 'Not Available'],
-    [[100, 200, FIAT_UNAVAILABLE, 300], 'Total = $600'],
-    [[-100, -200, FIAT_UNAVAILABLE, -300], 'Total = $600'],
-  ])('when fiatAmounts is %s it renders %s', (fiatAmounts, expected) => {
-    const { getByText } = renderWithProvider(
-      <TotalFiatDisplay fiatAmounts={fiatAmounts} />,
-      { state: mockInitialState },
+describe('FiatDisplay', () => {
+  describe('IndividualFiatDisplay', () => {
+    it.each([
+      [new BigNumber(100), '$100'],
+      [new BigNumber(-100), '$100'],
+      [new BigNumber(-100.5), '$100.50'],
+      [new BigNumber('987543219876543219876.54321'), '$987,543,219,87...'],
+    ])('when fiatAmount is %s it renders %s', async (fiatAmount, expected) => {
+      const { findByText } = renderWithProvider(
+        <IndividualFiatDisplay fiatAmount={fiatAmount as BigNumber} />,
+        { state: mockStateWithTestnet },
+      );
+      expect(await findByText(expected)).toBeTruthy();
+    });
+
+    it('returns null when fiatAmount is FIAT_UNAVAILABLE', () => {
+      const { toJSON } = renderWithProvider(
+        <IndividualFiatDisplay fiatAmount={FIAT_UNAVAILABLE} />,
+        { state: mockStateWithTestnet },
+      );
+      expect(toJSON()).toBeNull();
+    });
+
+    it('does not render anything if hideFiatForTestnet is true', () => {
+      const { queryByText } = renderWithProvider(
+        <IndividualFiatDisplay fiatAmount={100} />,
+        { state: mockStateWithHideFiatOnTestnets },
+      );
+      expect(queryByText('100')).toBe(null);
+    });
+  });
+
+  describe('TotalFiatDisplay', () => {
+    it.each([
+      [
+        [
+          new BigNumber(100),
+          new BigNumber(200),
+          FIAT_UNAVAILABLE,
+          new BigNumber(300),
+        ],
+        'Total = $600',
+      ],
+      [
+        [
+          new BigNumber(-100),
+          new BigNumber(-200),
+          FIAT_UNAVAILABLE,
+          new BigNumber(-300.2),
+        ],
+        'Total = $600.20',
+      ],
+      [
+        [
+          new BigNumber(new BigNumber('987543219876543219876.54321')),
+          new BigNumber(-200),
+          FIAT_UNAVAILABLE,
+          new BigNumber(-300.2),
+        ],
+        'Total = $987,543,219,876,543,219,376.34',
+      ],
+    ])(
+      'when fiatAmounts is %s it renders %s',
+      async (fiatAmounts, expected) => {
+        const { findByText } = renderWithProvider(
+          <TotalFiatDisplay fiatAmounts={fiatAmounts as FiatAmount[]} />,
+          { state: mockStateWithTestnet },
+        );
+
+        expect(await findByText(expected)).toBeTruthy();
+      },
     );
-    expect(getByText(expected)).toBeDefined();
+
+    it('returns null when all fiatAmounts are FIAT_UNAVAILABLE', () => {
+      const { toJSON } = renderWithProvider(
+        <TotalFiatDisplay fiatAmounts={[FIAT_UNAVAILABLE, FIAT_UNAVAILABLE]} />,
+        { state: mockStateWithTestnet },
+      );
+      expect(toJSON()).toBeNull();
+    });
+
+    it('returns null when fiatAmounts is empty', () => {
+      const { toJSON } = renderWithProvider(
+        <TotalFiatDisplay fiatAmounts={[]} />,
+        { state: mockStateWithTestnet },
+      );
+      expect(toJSON()).toBeNull();
+    });
+
+    it('returns null when total fiat equals zero', () => {
+      const { toJSON } = renderWithProvider(
+        <TotalFiatDisplay
+          fiatAmounts={
+            [new BigNumber(100), new BigNumber(-100)] as unknown as FiatAmount[]
+          }
+        />,
+        { state: mockStateWithTestnet },
+      );
+      expect(toJSON()).toBeNull();
+    });
+
+    it('does not render anything if hideFiatForTestnet is true', () => {
+      const mockFiatAmounts = [
+        new BigNumber(100),
+        new BigNumber(200),
+        new BigNumber(300),
+      ] as unknown as FiatAmount[];
+
+      const { queryByText } = renderWithProvider(
+        <TotalFiatDisplay fiatAmounts={mockFiatAmounts} />,
+        { state: mockStateWithHideFiatOnTestnets },
+      );
+      expect(queryByText('600')).toBe(null);
+    });
   });
 });

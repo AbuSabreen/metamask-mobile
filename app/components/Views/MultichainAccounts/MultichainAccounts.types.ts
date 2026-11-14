@@ -1,0 +1,80 @@
+/**
+ * Multichain accounts navigation parameters
+ */
+
+import { InternalAccount } from '@metamask/keyring-internal-api';
+import type { Transaction } from '@metamask/keyring-api';
+import type { AccountGroupObject } from '@metamask/account-tree-controller';
+import type { AccountWalletId } from '@metamask/account-api';
+import type { MultichainTransactionDisplayData } from '../../hooks/useMultichainTransactionDisplay';
+
+export interface AccountParams {
+  account?: InternalAccount;
+}
+
+/** Multichain account detail actions parameters */
+export interface MultichainAccountDetailActionsParams {
+  screen: string;
+  params?: Record<string, unknown>;
+}
+
+/** Multichain transaction details parameters */
+export interface MultichainTransactionDetailsParams {
+  displayData: MultichainTransactionDisplayData;
+  transaction: Transaction;
+}
+
+/** Multichain account actions parameters */
+export interface MultichainAccountActionsParams extends AccountParams {}
+
+/** Edit account name parameters */
+export interface EditAccountNameParams extends AccountParams {
+  accountGroup?: AccountGroupObject;
+}
+
+/** Edit wallet name parameters */
+export interface EditWalletNameParams extends AccountParams {}
+
+/** Share address parameters */
+export interface ShareAddressParams extends AccountParams {}
+
+/** Share address QR parameters */
+export type { ShareAddressQRParams } from './sheets/ShareAddressQR/ShareAddressQR';
+
+/** Delete account parameters */
+export interface DeleteAccountParams extends AccountParams {}
+
+/** Remove account parameters */
+export interface RemoveAccountParams extends AccountParams {
+  accountGroup?: AccountGroupObject;
+}
+
+/** Smart account parameters */
+export interface SmartAccountParams extends AccountParams {}
+
+/** Multichain account details parameters */
+export interface MultichainAccountDetailsParams extends AccountParams {}
+
+/** Multichain account group details parameters */
+export interface MultichainAccountGroupDetailsParams {
+  groupId?: string;
+  accountGroup?: AccountGroupObject;
+  // Some entry points navigate here and forward a nested screen/params (e.g. to
+  // open the edit-name sheet immediately).
+  screen?: string;
+  params?: object;
+}
+
+/** Multichain wallet details parameters */
+export interface MultichainWalletDetailsParams {
+  walletId?: AccountWalletId;
+  keyringId?: string;
+}
+
+/** Multichain address list parameters */
+export interface MultichainAddressListParams {
+  accountId?: string;
+}
+
+/** Multichain private key list parameters */
+export type { Params as PrivateKeyListParams } from './PrivateKeyList/types';

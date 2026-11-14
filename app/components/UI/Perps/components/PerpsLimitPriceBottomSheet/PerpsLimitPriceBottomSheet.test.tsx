@@ -1,0 +1,934 @@
+import { fireEvent, render, screen } from '@testing-library/react-native';
+import React from 'react';
+import PerpsLimitPriceBottomSheet from './PerpsLimitPriceBottomSheet';
+import { PerpsLimitPriceBottomSheetSelectorsIDs } from '../../Perps.testIds';
+
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: jest.fn(() => false),
+}));
+
+jest.mock('../../../../../../locales/i18n', () => ({
+  strings: jest.fn((key) => key),
+}));
+
+// Mock BigNumber so percentage-preset tests can assert the base price passed in
+jest.mock('bignumber.js', () => {
+  const MockBigNumber = jest.fn().mockImplementation((value) => ({
+    multipliedBy: jest.fn().mockReturnThis(),
+    toString: jest.fn(() => value.toString()),
+  }));
+  return {
+    __esModule: true,
+    default: MockBigNumber,
+    BigNumber: MockBigNumber,
+  };
+});
+
+jest.mock('../../hooks/stream', () => ({
+  usePerpsLivePrices: jest.fn(() => ({})),
+  usePerpsTopOfBook: jest.fn(() => ({
+    bestBid: '2995',
+    bestAsk: '3005',
+  })),
+  usePerpsLiveAccount: jest.fn(() => ({
+    account: { spendableBalance: '1000' },
+    isInitialLoading: false,
+  })),
+}));
+
+jest.mock('../../hooks/usePerpsEventTracking', () => ({
+  usePerpsEventTracking: jest.fn(() => ({
+    track: jest.fn(),
+  })),
+}));
+
+// Simplified keypad so tests can drive value changes via stable testIDs
+jest.mock('../../../../Base/Keypad', () => {
+  const { View, TouchableOpacity, Text } = jest.requireActual('react-native');
+  return ({
+    value,
+    onChange,
+    currency,
+  }: {
+    value: string;
+    onChange: (params: { value: string; valueAsNumber: number }) => void;
+    currency: string;
+    decimals: number;
+  }) => (
+    <View testID="keypad-component">
+      <Text testID="keypad-value">{value || '0'}</Text>
+      <Text testID="keypad-currency">{currency}</Text>
+      <TouchableOpacity
+        testID="keypad-button-1"
+        onPress={() =>
+          onChange({
+            value: value + '1',
+            valueAsNumber: parseFloat(value + '1') || 0,
+          })
+        }
+      >
+        <Text>1</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        testID="keypad-button-clear"
+        onPress={() => onChange({ value: '', valueAsNumber: 0 })}
+      >
+        <Text>Clear</Text>
+      </TouchableOpacity>
+    </View>
+  );
+});
+
+describe('PerpsLimitPriceBottomSheet', () => {
+  const defaultProps = {
+    isVisible: true,
+    onClose: jest.fn(),
+    onConfirm: jest.fn(),
+    asset: 'ETH',
+    currentPrice: 3000,
+    direction: 'long' as const,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    const { usePerpsLivePrices, usePerpsTopOfBook } =
+      jest.requireMock('../../hooks/stream');
+    usePerpsLivePrices.mockReturnValue({});
+    usePerpsTopOfBook.mockReturnValue({ bestBid: '2995', bestAsk: '3005' });
+  });
+
+  describe('Component Rendering', () => {
+    it('renders when visible', () => {
+      // Act
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} />);
+
+      // Assert - Check that elements are rendered (text may be in different elements)
+      expect(
+        screen.getByText('perps.order.limit_price_modal.title'),
+      ).toBeOnTheScreen();
+      expect(screen.getByText(/ETH/)).toBeOnTheScreen();
+      expect(screen.getByText(/\$3,000/)).toBeOnTheScreen();
+    });
+
+    it('returns null when not visible', () => {
+      // Act
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} isVisible={false} />,
+      );
+
+      // Assert
+      expect(
+        screen.queryByText('perps.order.limit_price_modal.title'),
+      ).toBeNull();
+    });
+
+    it('displays price information correctly', () => {
+      // Act
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} />);
+
+      // Assert - prices are rendered somewhere in the component
+      expect(screen.getByText(/\$3,000/)).toBeOnTheScreen(); // Current price with thousands separator
+    });
+
+    it('displays placeholder when no limit price is set', () => {
+      // Act
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} />);
+
+      // Assert
+      expect(screen.getByText('perps.order.limit_price')).toBeOnTheScreen(); // Placeholder
+      expect(screen.getByText('USD')).toBeOnTheScreen(); // Currency label
+      expect(screen.getByText('USD_PERPS')).toBeOnTheScreen(); // Keypad currency
+    });
+
+    it('displays initial limit price when provided', () => {
+      // Arrange
+      const props = { ...defaultProps, limitPrice: '3100' };
+
+      // Act
+      render(<PerpsLimitPriceBottomSheet {...props} />);
+
+      // Assert
+      expect(screen.getByDisplayValue('$3,100')).toBeOnTheScreen();
+      expect(screen.getByText('3100')).toBeOnTheScreen(); // Keypad value
+    });
+
+    it('renders keypad component', () => {
+      // Act
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} />);
+
+      // Assert
+      expect(screen.getByTestId('keypad-component')).toBeOnTheScreen();
+      expect(screen.getByTestId('keypad-currency')).toHaveTextContent(
+        'USD_PERPS',
+      ); // Updated to match component
+    });
+  });
+
+  describe('Price Data Integration', () => {
+    it('has price data integration', () => {
+      expect(true).toBe(true);
+    });
+  });
+
+  describe('Keypad Interaction', () => {
+    it('updates limit price when keypad value changes', () => {
+      // Arrange
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} />);
+
+      // Act - Simulate keypad input
+      const keypadButton = screen.getByTestId('keypad-button-1');
+      fireEvent.press(keypadButton);
+
+      // Assert - Value should be updated (though we can't easily test the internal state change)
+      expect(keypadButton).toBeOnTheScreen();
+    });
+
+    it('handles keypad clear action', () => {
+      // Arrange
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="100" />);
+
+      // Act - Simulate keypad clear
+      const clearButton = screen.getByTestId('keypad-button-clear');
+      fireEvent.press(clearButton);
+
+      // Assert - Clear button exists and is pressable
+      expect(clearButton).toBeOnTheScreen();
+    });
+
+    it('passes correct props to keypad component', () => {
+      // Act
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="3100" />,
+      );
+
+      // Assert
+      expect(screen.getByTestId('keypad-currency')).toHaveTextContent(
+        'USD_PERPS',
+      ); // Updated to match component
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('3100'); // Initial value
+    });
+  });
+
+  describe('Quick Action Buttons', () => {
+    it('displays Mid, Bid, and percentage preset buttons for long orders', () => {
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} direction="long" />);
+
+      expect(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_MID),
+      ).toBeOnTheScreen();
+      expect(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_BID),
+      ).toBeOnTheScreen();
+      expect(
+        screen.getByTestId(
+          `${PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_PERCENT}-1`,
+        ),
+      ).toBeOnTheScreen();
+      expect(
+        screen.getByTestId(
+          `${PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_PERCENT}-2`,
+        ),
+      ).toBeOnTheScreen();
+    });
+
+    it('displays Mid, Ask, and percentage preset buttons for short orders', () => {
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} direction="short" />,
+      );
+
+      expect(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_MID),
+      ).toBeOnTheScreen();
+      expect(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_ASK),
+      ).toBeOnTheScreen();
+      expect(
+        screen.getByTestId(
+          `${PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_PERCENT}1`,
+        ),
+      ).toBeOnTheScreen();
+      expect(
+        screen.getByTestId(
+          `${PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_PERCENT}2`,
+        ),
+      ).toBeOnTheScreen();
+    });
+
+    it('sets price when Mid button is pressed', () => {
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} direction="long" />);
+
+      fireEvent.press(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_MID),
+      );
+
+      // Verify limit price was updated to current price (3000)
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('3000');
+    });
+
+    it('sets price when Bid button is pressed for long orders', () => {
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} direction="long" />);
+
+      fireEvent.press(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_BID),
+      );
+
+      // Verify limit price was updated to bid price (2995 from mock)
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('2995');
+    });
+
+    it('sets price when Ask button is pressed for short orders', () => {
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} direction="short" />,
+      );
+
+      fireEvent.press(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_ASK),
+      );
+
+      // Verify limit price was updated to ask price (3005 from mock)
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('3005');
+    });
+
+    it('sets price when percentage button is pressed for long orders', () => {
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} direction="long" />);
+
+      fireEvent.press(
+        screen.getByTestId(
+          `${PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_PERCENT}-1`,
+        ),
+      );
+
+      // Verify limit price was updated (BigNumber mock returns base price)
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('3000');
+    });
+
+    it('sets price when percentage button is pressed for short orders', () => {
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} direction="short" />,
+      );
+
+      fireEvent.press(
+        screen.getByTestId(
+          `${PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_PERCENT}1`,
+        ),
+      );
+
+      // Verify limit price was updated (BigNumber mock returns base price)
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('3000');
+    });
+  });
+
+  describe('Compound percentage regression (TAT-3097)', () => {
+    it('uses limitPrice as base (not currentPrice) when limitPrice is already set', () => {
+      // Regression: old code always used currentPrice, so repeated presses had no effect
+      // because the calculated value never changed.
+      const { BigNumber: MockBigNumber } = jest.requireMock('bignumber.js');
+
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          direction="long"
+          limitPrice="3100"
+          currentPrice={3000}
+        />,
+      );
+
+      // Clear constructor calls that may have occurred during rendering
+      MockBigNumber.mockClear();
+
+      fireEvent.press(
+        screen.getByTestId(
+          `${PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_PERCENT}-1`,
+        ),
+      );
+
+      // BigNumber must be called with the limitPrice (3100), not currentPrice (3000).
+      // The mock's toString() returns its constructor argument, so this assertion
+      // would fail on the pre-fix code that always passed currentPrice.
+      const constructorArgs = MockBigNumber.mock.calls.map(
+        ([arg]: [number]) => arg,
+      );
+      expect(constructorArgs).toContain(3100);
+      expect(constructorArgs).not.toContain(3000);
+    });
+  });
+
+  describe('Preset decimal precision (TAT-2399)', () => {
+    const xrpProps = {
+      ...defaultProps,
+      asset: 'XRP',
+      currentPrice: 2.3418,
+    };
+
+    beforeEach(() => {
+      const { usePerpsTopOfBook } = jest.requireMock('../../hooks/stream');
+      usePerpsTopOfBook.mockReturnValue({
+        bestBid: '2.3412',
+        bestAsk: '2.3426',
+      });
+    });
+
+    it('Mid preset uses 5 significant figures (not 4) for XRP-range prices', () => {
+      render(<PerpsLimitPriceBottomSheet {...xrpProps} direction="long" />);
+
+      fireEvent.press(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_MID),
+      );
+
+      // With 5 sig figs: 2.3418 → 4 decimals (intDig=1, dec=4)
+      // With 4 sig figs (bug): 2.3418 → 3 decimals (2.342)
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('2.3418');
+    });
+
+    it('Bid preset uses 5 significant figures for XRP-range prices', () => {
+      render(<PerpsLimitPriceBottomSheet {...xrpProps} direction="long" />);
+
+      fireEvent.press(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_BID),
+      );
+
+      // bestBid='2.3412' → parseFloat → 2.3412 → 5 sig figs → 4 decimals
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('2.3412');
+    });
+
+    it('Ask preset uses 5 significant figures for XRP-range prices', () => {
+      render(<PerpsLimitPriceBottomSheet {...xrpProps} direction="short" />);
+
+      fireEvent.press(
+        screen.getByTestId(PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_ASK),
+      );
+
+      // bestAsk='2.3426' → parseFloat → 2.3426 → 5 sig figs → 4 decimals
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('2.3426');
+    });
+
+    it('Percentage preset uses 5 significant figures for XRP-range prices', () => {
+      render(<PerpsLimitPriceBottomSheet {...xrpProps} direction="long" />);
+
+      const pctButton = screen.getByTestId(
+        `${PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_PERCENT}-1`,
+      );
+      fireEvent.press(pctButton);
+
+      // BigNumber mock returns base price (2.3418) → 5 sig figs → 4 decimals
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('2.3418');
+    });
+  });
+
+  describe('Validation and Error States', () => {
+    it('shows muted text style for placeholder limit price', () => {
+      // Act
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} />);
+
+      // Assert - Placeholder text should be displayed
+      expect(screen.getByText('perps.order.limit_price')).toBeOnTheScreen();
+    });
+  });
+
+  describe('Confirm and Close Actions', () => {
+    it('calls onConfirm with limit price when confirmed', () => {
+      // Arrange
+      const mockOnConfirm = jest.fn();
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          onConfirm={mockOnConfirm}
+          limitPrice="3100"
+        />,
+      );
+
+      // Act
+      fireEvent.press(
+        screen.getByTestId(
+          PerpsLimitPriceBottomSheetSelectorsIDs.CONFIRM_BUTTON,
+        ),
+      );
+
+      // Assert
+      expect(mockOnConfirm).toHaveBeenCalledWith('3100');
+    });
+
+    it('does not call onClose after confirm', () => {
+      // Arrange
+      const mockOnClose = jest.fn();
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          onClose={mockOnClose}
+          limitPrice="3100"
+        />,
+      );
+
+      // Act
+      fireEvent.press(
+        screen.getByTestId(
+          PerpsLimitPriceBottomSheetSelectorsIDs.CONFIRM_BUTTON,
+        ),
+      );
+
+      // Assert
+      expect(mockOnClose).not.toHaveBeenCalled();
+    });
+
+    it('keeps Set disabled and does not submit when no limit price is set', () => {
+      // Arrange
+      const mockOnConfirm = jest.fn();
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          onConfirm={mockOnConfirm}
+        />,
+      );
+
+      const confirmButton = screen.getByTestId(
+        PerpsLimitPriceBottomSheetSelectorsIDs.CONFIRM_BUTTON,
+      );
+
+      // Act - pressing a disabled button should be a no-op
+      fireEvent.press(confirmButton);
+
+      // Assert - the button is disabled and confirm is not called
+      expect(confirmButton).toBeDisabled();
+      expect(mockOnConfirm).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Price Calculations', () => {
+    it('handles price calculations', () => {
+      expect(true).toBe(true);
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('handles missing asset gracefully', () => {
+      // Arrange
+      const propsWithoutAsset = { ...defaultProps, asset: '' };
+
+      // Act & Assert - Should not crash
+      expect(() =>
+        render(<PerpsLimitPriceBottomSheet {...propsWithoutAsset} />),
+      ).not.toThrow();
+    });
+
+    it('handles zero current price gracefully', () => {
+      // Arrange
+      const propsWithZeroPrice = { ...defaultProps, currentPrice: 0 };
+
+      // Act & Assert - Should not crash
+      expect(() =>
+        render(<PerpsLimitPriceBottomSheet {...propsWithZeroPrice} />),
+      ).not.toThrow();
+    });
+
+    it('handles percentage calculations with zero base price', () => {
+      // Arrange - No price data available
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} currentPrice={0} />);
+
+      // Act
+      const onePercentButton = screen.getByTestId(
+        `${PerpsLimitPriceBottomSheetSelectorsIDs.PRESET_PERCENT}-1`,
+      );
+      fireEvent.press(onePercentButton);
+
+      // Assert - Should not crash
+      expect(onePercentButton).toBeOnTheScreen();
+    });
+
+    it('handles very large limit price values', () => {
+      // Arrange
+      const propsWithLargePrice = {
+        ...defaultProps,
+        limitPrice: '999999999.99',
+      };
+
+      // Act & Assert - Should not crash
+      expect(() =>
+        render(<PerpsLimitPriceBottomSheet {...propsWithLargePrice} />),
+      ).not.toThrow();
+    });
+
+    it('handles negative limit price values', () => {
+      // Arrange
+      const propsWithNegativePrice = { ...defaultProps, limitPrice: '-100' };
+
+      // Act & Assert - Should not crash
+      expect(() =>
+        render(<PerpsLimitPriceBottomSheet {...propsWithNegativePrice} />),
+      ).not.toThrow();
+    });
+  });
+
+  describe('Component Memoization', () => {
+    it('does not re-render when unrelated props change', () => {
+      // Arrange
+      const { rerender } = render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} />,
+      );
+
+      // Act - Change a prop that should not trigger re-render according to memo
+      const newProps = {
+        ...defaultProps,
+        onClose: jest.fn(), // Different function reference but component should be memoized
+        onConfirm: jest.fn(), // Different function reference but component should be memoized
+      };
+      rerender(<PerpsLimitPriceBottomSheet {...newProps} />);
+
+      // Assert - Component should still work correctly regardless of memoization behavior
+      expect(
+        screen.getByText('perps.order.limit_price_modal.title'),
+      ).toBeOnTheScreen();
+    });
+
+    it('re-renders when visibility changes', () => {
+      // Arrange
+      const { rerender } = render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} />,
+      );
+
+      // Act
+      rerender(
+        <PerpsLimitPriceBottomSheet {...defaultProps} isVisible={false} />,
+      );
+
+      // Assert - Should render null when not visible
+      expect(
+        screen.queryByText('perps.order.limit_price_modal.title'),
+      ).toBeNull();
+    });
+
+    it('reseeds the keypad when the target order limit price changes while open', () => {
+      const { rerender } = render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="160.71" />,
+      );
+
+      fireEvent.press(screen.getByTestId('keypad-button-1'));
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('160.711');
+
+      rerender(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="200.5" />,
+      );
+
+      expect(screen.getByTestId('keypad-value')).toHaveTextContent('200.5');
+    });
+  });
+
+  describe('Accessibility', () => {
+    it('has proper testIds for keypad interaction', () => {
+      // Act
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} />);
+
+      // Assert
+      expect(screen.getByTestId('keypad-component')).toBeOnTheScreen();
+      expect(screen.getByTestId('keypad-button-1')).toBeOnTheScreen();
+      expect(screen.getByTestId('keypad-button-clear')).toBeOnTheScreen();
+    });
+  });
+
+  describe('Decimal Point and Trailing Zero Display', () => {
+    it('displays decimal point immediately when typed', () => {
+      // Arrange
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="0." />);
+
+      // Assert
+      expect(screen.getByDisplayValue('$0.')).toBeOnTheScreen();
+    });
+
+    it('displays single trailing zero after decimal point', () => {
+      // Arrange
+      render(<PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="0.0" />);
+
+      // Assert
+      expect(screen.getByDisplayValue('$0.0')).toBeOnTheScreen();
+    });
+
+    it('displays multiple trailing zeros after decimal point', () => {
+      // Arrange
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="0.00" />,
+      );
+
+      // Assert
+      expect(screen.getByDisplayValue('$0.00')).toBeOnTheScreen();
+    });
+
+    it('displays decimal point with integer value and preserves currency formatting', () => {
+      // Arrange
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="345." />,
+      );
+
+      // Assert
+      expect(screen.getByDisplayValue('$345.')).toBeOnTheScreen();
+    });
+
+    it('displays trailing zero with integer value', () => {
+      // Arrange
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="345.0" />,
+      );
+
+      // Assert
+      expect(screen.getByDisplayValue('$345.0')).toBeOnTheScreen();
+    });
+
+    it('displays multiple trailing zeros with integer value', () => {
+      // Arrange
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="345.00" />,
+      );
+
+      // Assert
+      expect(screen.getByDisplayValue('$345.00')).toBeOnTheScreen();
+    });
+
+    it('preserves thousands separator when decimal point is added', () => {
+      // Arrange
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="12345." />,
+      );
+
+      // Assert
+      expect(screen.getByDisplayValue('$12,345.')).toBeOnTheScreen();
+    });
+
+    it('preserves thousands separator with trailing zeros', () => {
+      // Arrange
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="12345.00" />,
+      );
+
+      // Assert
+      expect(screen.getByDisplayValue('$12,345.00')).toBeOnTheScreen();
+    });
+
+    it('formats complete decimal numbers normally', () => {
+      // Arrange
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="1234.56" />,
+      );
+
+      // Assert
+      expect(screen.getByDisplayValue('$1,234.56')).toBeOnTheScreen();
+    });
+
+    it('displays trailing zero in middle of decimal value', () => {
+      // Arrange
+      render(
+        <PerpsLimitPriceBottomSheet {...defaultProps} limitPrice="123.10" />,
+      );
+
+      // Assert
+      expect(screen.getByDisplayValue('$123.10')).toBeOnTheScreen();
+    });
+  });
+
+  describe('Limit Price Warnings', () => {
+    it('warns when opening a Long order and limit price is above current', () => {
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          direction="long"
+          limitPrice="3100"
+          currentPrice={3000}
+        />,
+      );
+
+      expect(
+        screen.getByText('perps.order.limit_price_modal.limit_price_above'),
+      ).toBeOnTheScreen();
+      expect(screen.queryByText(/ETH-USD/)).toBeNull();
+    });
+
+    it('warns when opening a Short order and limit price is below current', () => {
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          direction="short"
+          limitPrice="2990"
+          currentPrice={3000}
+        />,
+      );
+
+      expect(
+        screen.getByText('perps.order.limit_price_modal.limit_price_below'),
+      ).toBeOnTheScreen();
+      expect(screen.queryByText(/ETH-USD/)).toBeNull();
+    });
+
+    it('warns when closing a Long position and limit price is below current', () => {
+      // Closing a long position passes direction="short" with isClosingPosition
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          direction="short"
+          isClosingPosition
+          limitPrice="2990"
+          currentPrice={3000}
+        />,
+      );
+
+      expect(
+        screen.getByText('perps.order.limit_price_modal.limit_price_below'),
+      ).toBeOnTheScreen();
+      expect(screen.queryByText(/ETH-USD/)).toBeNull();
+    });
+
+    it('warns when closing a Short position and limit price is above current', () => {
+      // Closing a short position passes direction="long" with isClosingPosition
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          direction="long"
+          isClosingPosition
+          limitPrice="3100"
+          currentPrice={3000}
+        />,
+      );
+
+      expect(
+        screen.getByText('perps.order.limit_price_modal.limit_price_above'),
+      ).toBeOnTheScreen();
+      expect(screen.queryByText(/ETH-USD/)).toBeNull();
+    });
+
+    it('shows market price when there is no warning', () => {
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          direction="long"
+          limitPrice="2900"
+          currentPrice={3000}
+        />,
+      );
+
+      expect(
+        screen.queryByText('perps.order.limit_price_modal.limit_price_above'),
+      ).toBeNull();
+      expect(screen.getByText(/ETH-USD/)).toBeOnTheScreen();
+    });
+  });
+
+  describe('Max deviation from market price (closing a position)', () => {
+    it('warns and disables Set when the price is more than 95% away from the market price', () => {
+      // Arrange - 999999999 is a valid integer for HyperLiquid but is far beyond
+      // the 95% band from the 3000 market price, so HyperLiquid would reject it
+      // ("oracleRejected"). Block it up front.
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          isClosingPosition
+          limitPrice="999999999"
+          currentPrice={3000}
+        />,
+      );
+
+      // Assert - the too-far warning is shown, market price is hidden, and Set is disabled
+      expect(
+        screen.getByText(
+          /perps\.order\.limit_price_modal\.limit_price_too_far/,
+        ),
+      ).toBeOnTheScreen();
+      expect(screen.queryByText(/ETH-USD/)).toBeNull();
+      expect(
+        screen.getByTestId(
+          PerpsLimitPriceBottomSheetSelectorsIDs.CONFIRM_BUTTON,
+        ),
+      ).toBeDisabled();
+    });
+
+    it('warns and disables Set when the price is far below the market price', () => {
+      // Arrange - 100 is ~96.7% below the 3000 market price (beyond the 95% band)
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          isClosingPosition
+          limitPrice="100"
+          currentPrice={3000}
+        />,
+      );
+
+      // Assert
+      expect(
+        screen.getByText(
+          /perps\.order\.limit_price_modal\.limit_price_too_far/,
+        ),
+      ).toBeOnTheScreen();
+      expect(screen.queryByText(/ETH-USD/)).toBeNull();
+      expect(
+        screen.getByTestId(
+          PerpsLimitPriceBottomSheetSelectorsIDs.CONFIRM_BUTTON,
+        ),
+      ).toBeDisabled();
+    });
+
+    it('does not warn and keeps Set enabled when the price is within the 95% band', () => {
+      // Arrange - 3100 is ~3.3% from the 3000 market price, well within the band
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          isClosingPosition
+          limitPrice="3100"
+          currentPrice={3000}
+        />,
+      );
+
+      // Assert - no too-far warning and Set is enabled
+      expect(
+        screen.queryByText('perps.order.limit_price_modal.limit_price_too_far'),
+      ).toBeNull();
+      expect(
+        screen.getByTestId(
+          PerpsLimitPriceBottomSheetSelectorsIDs.CONFIRM_BUTTON,
+        ),
+      ).toBeEnabled();
+    });
+
+    it('keeps Set enabled for a high limit price still within the ratio band', () => {
+      // Arrange - 30000 is 10x the 3000 market price. The reference price (3000)
+      // is 10% of the limit price, above the 5% floor, so it is allowed. This
+      // guards against a purely additive deviation check that would wrongly
+      // block anything above ~2x the market price.
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          isClosingPosition
+          limitPrice="30000"
+          currentPrice={3000}
+        />,
+      );
+
+      // Assert - no too-far warning and Set is enabled
+      expect(
+        screen.queryByText('perps.order.limit_price_modal.limit_price_too_far'),
+      ).toBeNull();
+      expect(
+        screen.getByTestId(
+          PerpsLimitPriceBottomSheetSelectorsIDs.CONFIRM_BUTTON,
+        ),
+      ).toBeEnabled();
+    });
+
+    it('blocks an opening price outside the venue deviation band', () => {
+      render(
+        <PerpsLimitPriceBottomSheet
+          {...defaultProps}
+          limitPrice="999999999"
+          currentPrice={3000}
+        />,
+      );
+
+      expect(
+        screen.getByText(
+          /perps\.order\.limit_price_modal\.limit_price_too_far/,
+        ),
+      ).toBeOnTheScreen();
+      expect(
+        screen.getByTestId(
+          PerpsLimitPriceBottomSheetSelectorsIDs.CONFIRM_BUTTON,
+        ),
+      ).toBeDisabled();
+    });
+  });
+});

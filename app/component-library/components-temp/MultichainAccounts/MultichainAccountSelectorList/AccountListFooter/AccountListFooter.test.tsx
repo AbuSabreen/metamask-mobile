@@ -1,0 +1,620 @@
+import React from 'react';
+import { render, fireEvent, waitFor } from '@testing-library/react-native';
+
+import AccountListFooter, {
+  abandonCreateMultichainAccountTrace,
+} from './AccountListFooter';
+import Engine from '../../../../../core/Engine';
+import { useSelector } from 'react-redux';
+import { useWalletInfo } from '../../../../../components/Views/MultichainAccounts/WalletDetails/hooks/useWalletInfo';
+import Logger from '../../../../../util/Logger';
+import { AccountWalletType } from '@metamask/account-api';
+import { selectWalletsMap } from '../../../../../selectors/multichainAccounts/accountTreeController';
+import { useAccountWalletOperationsLoadingStates } from '../../../../../util/accounts/useAccountWalletOperationsLoadingStates';
+import {
+  endTrace,
+  trace,
+  TraceName,
+  TraceOperation,
+} from '../../../../../util/trace';
+
+// Mock dependencies
+jest.mock('../../../../../core/Engine');
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: jest.fn(),
+}));
+jest.mock(
+  '../../../../../components/Views/MultichainAccounts/WalletDetails/hooks/useWalletInfo',
+  () => ({
+    useWalletInfo: jest.fn(),
+  }),
+);
+jest.mock('../../../../../util/Logger', () => ({
+  error: jest.fn(),
+}));
+
+// Mock AnimatedSpinner
+jest.mock('../../../../../components/UI/AnimatedSpinner', () => ({
+  __esModule: true,
+  default: () => null,
+  SpinnerSize: {
+    SM: 'SM',
+    MD: 'MD',
+  },
+}));
+
+jest.mock(
+  '../../../../../util/accounts/useAccountWalletOperationsLoadingStates',
+  () => ({
+    useAccountWalletOperationsLoadingStates: jest.fn(),
+  }),
+);
+jest.mock('../../../../../util/trace', () => ({
+  TraceName: {
+    CreateMultichainAccount: 'Create Multichain Account',
+  },
+  TraceOperation: {
+    AccountCreate: 'account.create',
+  },
+  endTrace: jest.fn(),
+  trace: jest.fn(),
+}));
+
+// Mock InteractionManager
+const { InteractionManager } = jest.requireActual('react-native');
+InteractionManager.runAfterInteractions = jest.fn();
+
+const mockEngine = Engine as jest.Mocked<typeof Engine>;
+const mockUseAccountWalletOperationsLoadingStates =
+  useAccountWalletOperationsLoadingStates as jest.MockedFunction<
+    typeof useAccountWalletOperationsLoadingStates
+  >;
+
+describe('AccountListFooter', () => {
+  const mockWalletId = 'keyring:test-wallet-id' as const;
+  const mockKeyringId = 'test-keyring-id';
+
+  const mockWallet = {
+    id: mockWalletId,
+    metadata: { name: 'Test Wallet' },
+    groups: {},
+    type: AccountWalletType.Entropy,
+  };
+
+  const mockWalletInfo = {
+    keyringId: mockKeyringId,
+  };
+
+  const mockMultichainAccountService = {
+    init: jest.fn(),
+    createNextMultichainAccountGroup: jest.fn(),
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Reset module-level create-trace ownership between tests.
+    abandonCreateMultichainAccountTrace();
+    (endTrace as jest.Mock).mockClear();
+
+    (mockEngine as unknown as { context: unknown }).context = {
+      MultichainAccountService: mockMultichainAccountService,
+    };
+
+    // Always return the mock wallet by default
+    (useSelector as jest.Mock).mockImplementation((selector: unknown) => {
+      // Check if this is the selectWalletsMap selector by comparing the function reference
+      if (selector === selectWalletsMap) {
+        return { [mockWalletId]: mockWallet };
+      }
+      return {};
+    });
+
+    (useWalletInfo as jest.Mock).mockReturnValue(mockWalletInfo);
+
+    mockUseAccountWalletOperationsLoadingStates.mockReturnValue({
+      areAnyOperationsLoading: false,
+      loadingMessage: undefined,
+    });
+
+    (InteractionManager.runAfterInteractions as jest.Mock).mockImplementation(
+      (callback: unknown) => {
+        if (typeof callback === 'function') callback();
+        return { done: Promise.resolve() };
+      },
+    );
+  });
+
+  describe('Tracing', () => {
+    it('ends the create account trace when account creation completes', async () => {
+      mockMultichainAccountService.createNextMultichainAccountGroup.mockResolvedValue(
+        { id: 'new-account-group-id' },
+      );
+
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      expect(trace).toHaveBeenCalledWith({
+        name: TraceName.CreateMultichainAccount,
+        op: TraceOperation.AccountCreate,
+        id: expect.any(String),
+      });
+
+      const createTraceId = (trace as jest.Mock).mock.calls[0][0].id;
+
+      await waitFor(() => {
+        expect(endTrace).toHaveBeenCalledWith({
+          name: TraceName.CreateMultichainAccount,
+          id: createTraceId,
+        });
+      });
+    });
+
+    it('does not end the create account trace when the FlashList cell unmounts during creation', async () => {
+      let resolveCreateAccount: (() => void) | undefined;
+      const createAccountPromise = new Promise<void>((resolve) => {
+        resolveCreateAccount = resolve;
+      });
+      mockMultichainAccountService.createNextMultichainAccountGroup.mockReturnValue(
+        createAccountPromise,
+      );
+
+      const { getByText, unmount } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+      expect(trace).toHaveBeenCalledWith({
+        name: TraceName.CreateMultichainAccount,
+        op: TraceOperation.AccountCreate,
+        id: expect.any(String),
+      });
+      const createTraceId = (trace as jest.Mock).mock.calls[0][0].id;
+
+      // Simulate FlashList clipping the footer cell while creation is in flight.
+      unmount();
+
+      expect(endTrace).not.toHaveBeenCalled();
+
+      resolveCreateAccount?.();
+
+      await waitFor(() => {
+        expect(endTrace).toHaveBeenCalledWith({
+          name: TraceName.CreateMultichainAccount,
+          id: createTraceId,
+        });
+      });
+    });
+
+    it('does not let a stale finally close a newer create trace after screen abandon', async () => {
+      let resolveFirstCreate: (() => void) | undefined;
+      let resolveSecondCreate: (() => void) | undefined;
+      const firstCreatePromise = new Promise<void>((resolve) => {
+        resolveFirstCreate = resolve;
+      });
+      const secondCreatePromise = new Promise<void>((resolve) => {
+        resolveSecondCreate = resolve;
+      });
+      mockMultichainAccountService.createNextMultichainAccountGroup
+        .mockReturnValueOnce(firstCreatePromise)
+        .mockReturnValueOnce(secondCreatePromise);
+
+      const firstRender = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(firstRender.getByText('Add account'));
+      const firstTraceId = (trace as jest.Mock).mock.calls[0][0].id;
+
+      // Screen loses focus: ends the first span and clears ownership.
+      abandonCreateMultichainAccountTrace();
+      expect(endTrace).toHaveBeenCalledWith({
+        name: TraceName.CreateMultichainAccount,
+        id: firstTraceId,
+      });
+
+      firstRender.unmount();
+
+      const secondRender = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(secondRender.getByText('Add account'));
+      const secondTraceId = (trace as jest.Mock).mock.calls[1][0].id;
+      expect(secondTraceId).not.toBe(firstTraceId);
+
+      (endTrace as jest.Mock).mockClear();
+
+      // Stale first create finishes after a newer create has started.
+      resolveFirstCreate?.();
+
+      await waitFor(() => {
+        expect(endTrace).toHaveBeenCalledWith({
+          name: TraceName.CreateMultichainAccount,
+          id: firstTraceId,
+        });
+      });
+
+      expect(endTrace).not.toHaveBeenCalledWith({
+        name: TraceName.CreateMultichainAccount,
+        id: secondTraceId,
+      });
+
+      resolveSecondCreate?.();
+
+      await waitFor(() => {
+        expect(endTrace).toHaveBeenCalledWith({
+          name: TraceName.CreateMultichainAccount,
+          id: secondTraceId,
+        });
+      });
+    });
+  });
+
+  describe('Rendering', () => {
+    it('renders correctly with wallet info', () => {
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+      expect(getByText('Add account')).toBeOnTheScreen();
+    });
+  });
+
+  describe('Button Interactions', () => {
+    it('calls handlePress when button is pressed', async () => {
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      await waitFor(() => {
+        expect(InteractionManager.runAfterInteractions).toHaveBeenCalled();
+      });
+    });
+
+    it('sets loading state immediately when pressed', async () => {
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      await waitFor(() => {
+        expect(getByText('Adding account...')).toBeOnTheScreen();
+      });
+    });
+  });
+
+  describe('Async Operations', () => {
+    it('calls MultichainAccountService.createNextMultichainAccountGroup successfully', async () => {
+      mockMultichainAccountService.createNextMultichainAccountGroup.mockResolvedValue(
+        undefined,
+      );
+
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      await waitFor(() => {
+        expect(
+          mockMultichainAccountService.createNextMultichainAccountGroup,
+        ).toHaveBeenCalledWith({
+          entropySource: mockKeyringId,
+        });
+      });
+    });
+
+    it('handles successful account creation and resets loading state', async () => {
+      mockMultichainAccountService.createNextMultichainAccountGroup.mockResolvedValue(
+        undefined,
+      );
+
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      await waitFor(() => {
+        expect(getByText('Adding account...')).toBeOnTheScreen();
+      });
+
+      await waitFor(() => {
+        expect(getByText('Add account')).toBeOnTheScreen();
+      });
+    });
+  });
+
+  describe('Loading State Management', () => {
+    it('shows spinner when loading', async () => {
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      await waitFor(() => {
+        expect(getByText('Adding account...')).toBeOnTheScreen();
+      });
+    });
+
+    it('resets loading state after successful operation', async () => {
+      mockMultichainAccountService.createNextMultichainAccountGroup.mockResolvedValue(
+        undefined,
+      );
+
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      await waitFor(() => {
+        expect(getByText('Adding account...')).toBeOnTheScreen();
+      });
+
+      await waitFor(() => {
+        expect(getByText('Add account')).toBeOnTheScreen();
+      });
+    });
+
+    it('resets loading state after error', async () => {
+      mockMultichainAccountService.createNextMultichainAccountGroup.mockRejectedValue(
+        new Error('Test error'),
+      );
+
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      await waitFor(() => {
+        expect(getByText('Adding account...')).toBeOnTheScreen();
+      });
+
+      await waitFor(() => {
+        expect(getByText('Add account')).toBeOnTheScreen();
+      });
+    });
+
+    it('handles loading state transitions correctly', () => {
+      // Start with no loading
+      mockUseAccountWalletOperationsLoadingStates.mockReturnValue({
+        areAnyOperationsLoading: false,
+        loadingMessage: undefined,
+      });
+
+      const { getByText, rerender } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      expect(getByText('Add account')).toBeOnTheScreen();
+
+      // Simulate account syncing starting
+      mockUseAccountWalletOperationsLoadingStates.mockReturnValue({
+        areAnyOperationsLoading: true,
+        loadingMessage: 'Syncing...',
+      });
+
+      rerender(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      expect(getByText('Syncing...')).toBeOnTheScreen();
+
+      // Simulate syncing completing
+      mockUseAccountWalletOperationsLoadingStates.mockReturnValue({
+        areAnyOperationsLoading: false,
+        loadingMessage: undefined,
+      });
+
+      rerender(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      expect(getByText('Add account')).toBeOnTheScreen();
+    });
+  });
+
+  describe('InteractionManager Integration', () => {
+    it('uses InteractionManager to defer async work', async () => {
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      await waitFor(() => {
+        expect(InteractionManager.runAfterInteractions).toHaveBeenCalledWith(
+          expect.any(Function),
+        );
+      });
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('logs error and prevents account creation when no keyring ID is found', async () => {
+      (useWalletInfo as jest.Mock).mockReturnValue({ keyringId: undefined });
+
+      const mockLogger = Logger as jest.Mocked<typeof Logger>;
+      const onAccountCreated = jest.fn();
+
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={onAccountCreated}
+        />,
+      );
+
+      const addButton = getByText('Add account');
+
+      // Button should be on screen but disabled when keyringId is missing
+      expect(addButton).toBeOnTheScreen();
+      expect(addButton).toBeDisabled();
+
+      fireEvent.press(addButton);
+
+      // Logger.error should not be called since button is disabled and press is a no-op
+      await waitFor(() => {
+        expect(mockLogger.error).not.toHaveBeenCalledWith(
+          expect.any(Error),
+          'Cannot create account without keyring ID',
+        );
+      });
+
+      // Account creation should not be attempted
+      expect(
+        mockMultichainAccountService.createNextMultichainAccountGroup,
+      ).not.toHaveBeenCalled();
+      expect(onAccountCreated).not.toHaveBeenCalled();
+    });
+
+    it('calls onAccountCreated when new account group has an ID', async () => {
+      const mockNewAccountGroup = { id: 'new-account-group-id' };
+      mockMultichainAccountService.createNextMultichainAccountGroup.mockResolvedValue(
+        mockNewAccountGroup,
+      );
+
+      const onAccountCreated = jest.fn();
+
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={onAccountCreated}
+        />,
+      );
+
+      fireEvent.press(getByText('Add account'));
+
+      await waitFor(() => {
+        expect(onAccountCreated).toHaveBeenCalledWith('new-account-group-id');
+      });
+    });
+  });
+
+  describe('Wallet Type Filtering', () => {
+    it('renders Add account button only for Entropy wallet type', () => {
+      const { getByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      expect(getByText('Add account')).toBeOnTheScreen();
+    });
+
+    it('does not render Add account button for non-Entropy wallet types', () => {
+      const testCases = [
+        {
+          name: 'Keyring wallet type',
+          walletType: AccountWalletType.Keyring,
+        },
+        {
+          name: 'Snap wallet type',
+          walletType: AccountWalletType.Snap,
+        },
+      ];
+
+      testCases.forEach(({ walletType }) => {
+        const mockNonEntropyWallet = {
+          ...mockWallet,
+          type: walletType,
+        };
+
+        // Override the selector mock for this test
+        (useSelector as jest.Mock).mockImplementationOnce(
+          (selector: unknown) => {
+            if (selector === selectWalletsMap) {
+              return { [mockWalletId]: mockNonEntropyWallet };
+            }
+            return {};
+          },
+        );
+
+        const { queryByText } = render(
+          <AccountListFooter
+            walletId={mockWalletId}
+            onAccountCreated={jest.fn()}
+          />,
+        );
+
+        expect(queryByText('Add account')).not.toBeOnTheScreen();
+      });
+    });
+
+    it('does not render Add account button when wallet is undefined', () => {
+      // Override the selector mock for this test
+      (useSelector as jest.Mock).mockImplementationOnce((selector: unknown) => {
+        if (selector === selectWalletsMap) {
+          return { [mockWalletId]: undefined };
+        }
+        return {};
+      });
+
+      const { queryByText } = render(
+        <AccountListFooter
+          walletId={mockWalletId}
+          onAccountCreated={jest.fn()}
+        />,
+      );
+
+      expect(queryByText('Add account')).not.toBeOnTheScreen();
+    });
+  });
+});

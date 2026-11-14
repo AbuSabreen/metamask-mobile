@@ -1,0 +1,343 @@
+// Third party dependencies.
+import React, {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+} from 'react';
+import { ScrollView, LayoutChangeEvent } from 'react-native';
+import Reanimated, {
+  useSharedValue,
+  withTiming,
+  useAnimatedStyle,
+} from 'react-native-reanimated';
+
+// External dependencies.
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  Box,
+  BoxFlexDirection,
+  BoxAlignItems,
+} from '@metamask/design-system-react-native';
+
+// Internal dependencies.
+import Tab from '../Tab';
+import { TabsBarProps } from './TabsBar.types';
+
+interface TabLayout {
+  x: number;
+  width: number;
+}
+
+/** Dense-array check: sparse arrays make Array.every skip holes and report ready too early. */
+const areAllTabLayoutsMeasured = (
+  layouts: (TabLayout | undefined)[],
+  tabCount: number,
+): boolean =>
+  layouts.length === tabCount &&
+  layouts.every((layout) => layout != null && layout.width > 0);
+
+const createEmptyTabLayouts = (tabCount: number): (TabLayout | undefined)[] =>
+  Array.from({ length: tabCount }, () => undefined);
+
+const TabsBar: React.FC<TabsBarProps> = ({
+  tabs,
+  activeIndex,
+  onTabPress,
+  testID,
+  twClassName,
+  ...boxProps
+}) => {
+  const tw = useTailwind();
+
+  // TabsBar with animated underline and automatic scroll detection
+
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  const underlineX = useSharedValue(0);
+  const underlineW = useSharedValue(0);
+  const tabLayouts = useRef<(TabLayout | undefined)[]>([]);
+  const rafCallbackId = useRef<number | null>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [layoutsReady, setLayoutsReady] = useState(false);
+  const [layoutGeneration, setLayoutGeneration] = useState(0);
+  const activeIndexRef = useRef(activeIndex);
+
+  // State for automatic overflow detection
+  const [scrollEnabled, setScrollEnabled] = useState(false);
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  // Keep activeIndexRef in sync with activeIndex
+  useEffect(() => {
+    activeIndexRef.current = activeIndex;
+  }, [activeIndex]);
+
+  // Reset layout data when tabs change structurally (count or content)
+  const tabKeys = useMemo(() => tabs.map((tab) => tab.key).join(','), [tabs]);
+  const prevTabKeys = useRef<string>('');
+  const isInitialMount = useRef(true);
+
+  useEffect(() => {
+    // Skip reset logic on initial mount to avoid interfering with initialization
+    if (isInitialMount.current) {
+      prevTabKeys.current = tabKeys;
+      isInitialMount.current = false;
+      return;
+    }
+
+    // Reset when tabs change (either count or content/keys)
+    const shouldReset =
+      tabLayouts.current.length !== tabs.length ||
+      prevTabKeys.current !== tabKeys;
+
+    if (shouldReset) {
+      // Store current tab keys for next comparison
+      prevTabKeys.current = tabKeys;
+      // Reset all layout state
+      tabLayouts.current = createEmptyTabLayouts(tabs.length);
+      setIsInitialized(false);
+      setLayoutsReady(false);
+      setScrollEnabled(false);
+
+      // Force Tab remount so onLayout fires for every tab after structural changes
+      setLayoutGeneration((generation) => generation + 1);
+    }
+  }, [tabKeys, tabs.length]);
+
+  // Animation function for smooth underline transitions
+  const animateToTab = useCallback(
+    (targetIndex: number) => {
+      // Validate target index
+      if (targetIndex < 0 || targetIndex >= tabs.length) {
+        return;
+      }
+
+      const activeTabLayout = tabLayouts.current[targetIndex];
+
+      // If layout isn't ready yet, we'll animate when it becomes available
+      if (!activeTabLayout || activeTabLayout.width <= 0) {
+        return;
+      }
+
+      const isFirstTime = !isInitialized;
+
+      if (isFirstTime) {
+        // First time - set position immediately without animation
+        underlineX.value = activeTabLayout.x;
+        underlineW.value = activeTabLayout.width;
+        setIsInitialized(true);
+      } else {
+        // Animate to new position on the UI thread
+        underlineX.value = withTiming(activeTabLayout.x, { duration: 200 });
+        underlineW.value = withTiming(activeTabLayout.width, { duration: 200 });
+      }
+
+      // Handle scrolling
+      if (scrollEnabled && scrollViewRef.current) {
+        scrollViewRef.current.scrollTo({
+          x: Math.max(0, activeTabLayout.x - 50),
+          animated: !isFirstTime,
+        });
+      }
+    },
+    [scrollEnabled, underlineX, underlineW, tabs.length, isInitialized],
+  );
+
+  // Animate when activeIndex changes and layouts are ready
+  useEffect(() => {
+    if (
+      activeIndex >= 0 &&
+      layoutsReady &&
+      areAllTabLayoutsMeasured(tabLayouts.current, tabs.length)
+    ) {
+      animateToTab(activeIndex);
+    }
+  }, [activeIndex, layoutsReady, animateToTab, tabKeys, tabs.length]);
+
+  // Check if content overflows and update scroll state
+  useEffect(() => {
+    if (
+      containerWidth > 0 &&
+      areAllTabLayoutsMeasured(tabLayouts.current, tabs.length)
+    ) {
+      // Calculate total content width by summing tab widths + gaps
+      const totalTabsWidth = tabLayouts.current.reduce(
+        (sum, layout) => sum + (layout?.width ?? 0),
+        0,
+      );
+      const gapsWidth = (tabs.length - 1) * 24; // Account for gaps between tabs
+      const calculatedContentWidth = totalTabsWidth + gapsWidth;
+
+      // Account for container's px-4 padding (16px * 2 = 32px)
+      const shouldScroll = calculatedContentWidth > containerWidth - 32;
+      setScrollEnabled(shouldScroll);
+    }
+  }, [containerWidth, tabs.length]);
+
+  // Handle container layout to measure available width
+  const handleContainerLayout = (layoutEvent: LayoutChangeEvent) => {
+    const { width } = layoutEvent.nativeEvent.layout;
+    setContainerWidth(width);
+  };
+
+  const handleTabLayout = useCallback(
+    (index: number, layoutEvent: LayoutChangeEvent) => {
+      const { x, width } = layoutEvent.nativeEvent.layout;
+
+      // Validate input
+      if (index < 0 || index >= tabs.length || !width || width <= 0) {
+        return;
+      }
+
+      // Check if this is a significant change (more than 1px difference)
+      const previousLayout = tabLayouts.current[index];
+      const hasSignificantChange =
+        !previousLayout ||
+        Math.abs(previousLayout.width - width) > 1 ||
+        Math.abs(previousLayout.x - x) > 1;
+
+      // Store layout data
+      tabLayouts.current[index] = { x, width };
+
+      const activeIdx = activeIndexRef.current;
+      const activeTabLayout = tabLayouts.current[activeIdx];
+      const activeTabHasLayout =
+        activeIdx >= 0 &&
+        activeIdx < tabs.length &&
+        activeTabLayout != null &&
+        activeTabLayout.width > 0;
+
+      // Position underline as soon as the active tab is measured (e.g. after tab add/remove)
+      if (activeTabHasLayout && (!isInitialized || index === activeIdx)) {
+        if (rafCallbackId.current !== null) {
+          cancelAnimationFrame(rafCallbackId.current);
+        }
+        rafCallbackId.current = requestAnimationFrame(() => {
+          rafCallbackId.current = null;
+          animateToTab(activeIdx);
+        });
+      }
+
+      const allLayoutsReady = areAllTabLayoutsMeasured(
+        tabLayouts.current,
+        tabs.length,
+      );
+
+      if (allLayoutsReady) {
+        // Recalculate scroll detection on initial load OR when any layout changes significantly
+        if (!layoutsReady || hasSignificantChange) {
+          if (!layoutsReady) {
+            setLayoutsReady(true);
+          }
+
+          // If layouts were already ready and any tab changed, re-animate the active tab
+          // This ensures re-animation triggers regardless of which tab's callback fires last
+          if (layoutsReady && hasSignificantChange) {
+            // Cancel any pending RAF to avoid multiple callbacks
+            if (rafCallbackId.current !== null) {
+              cancelAnimationFrame(rafCallbackId.current);
+            }
+            rafCallbackId.current = requestAnimationFrame(() => {
+              rafCallbackId.current = null;
+              animateToTab(activeIndexRef.current);
+            });
+          }
+
+          // Update scroll detection
+          if (containerWidth > 0) {
+            const totalWidth = tabLayouts.current.reduce(
+              (sum, layout) => sum + (layout?.width || 0),
+              0,
+            );
+            const gapsWidth = (tabs.length - 1) * 24;
+            // Account for container's px-4 padding (16px * 2 = 32px)
+            const shouldScroll = totalWidth + gapsWidth > containerWidth - 32;
+            setScrollEnabled(shouldScroll);
+          }
+        }
+      }
+    },
+    [tabs.length, layoutsReady, containerWidth, animateToTab, isInitialized],
+  );
+
+  const underlineStyle = useAnimatedStyle(() => ({
+    width: underlineW.value,
+    transform: [{ translateX: underlineX.value }],
+  }));
+
+  // Cleanup effect
+  useEffect(
+    () => () => {
+      if (rafCallbackId.current !== null) {
+        cancelAnimationFrame(rafCallbackId.current);
+        rafCallbackId.current = null;
+      }
+    },
+    [],
+  );
+
+  const handleTabPress = (index: number) => {
+    const tab = tabs[index];
+    if (!tab?.isDisabled) {
+      onTabPress(index);
+    }
+  };
+
+  const tabRow = (
+    <Box
+      flexDirection={BoxFlexDirection.Row}
+      alignItems={BoxAlignItems.Center}
+      twClassName="relative gap-6"
+    >
+      {tabs.map((tab, index) => (
+        <Tab
+          key={`${tab.key}-${layoutGeneration}`}
+          label={tab.label}
+          isActive={index === activeIndex}
+          isDisabled={tab.isDisabled}
+          endAccessory={tab.endAccessory}
+          onPress={() => handleTabPress(index)}
+          onLayout={(layoutEvent) => handleTabLayout(index, layoutEvent)}
+          testID={tab.testID ?? `${testID}-tab-${index}`}
+        />
+      ))}
+
+      {/* Animated underline */}
+      {activeIndex >= 0 && isInitialized && (
+        <Reanimated.View
+          style={[
+            tw.style('absolute bottom-0 h-0.5 bg-icon-default'),
+            underlineStyle,
+          ]}
+        />
+      )}
+    </Box>
+  );
+
+  return (
+    <Box
+      twClassName={`relative overflow-hidden ${twClassName || ''}`}
+      testID={testID}
+      onLayout={handleContainerLayout as (layoutEvent: unknown) => void}
+      {...boxProps}
+    >
+      {scrollEnabled ? (
+        <ScrollView
+          ref={scrollViewRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={tw.style('flex-grow-0')}
+          contentContainerStyle={tw.style('flex-row px-4')}
+          scrollsToTop={false}
+        >
+          {tabRow}
+        </ScrollView>
+      ) : (
+        <Box twClassName="px-4">{tabRow}</Box>
+      )}
+    </Box>
+  );
+};
+
+export default TabsBar;

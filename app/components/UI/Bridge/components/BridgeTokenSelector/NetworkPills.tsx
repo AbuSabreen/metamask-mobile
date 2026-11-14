@@ -1,0 +1,328 @@
+import React, { useEffect, useMemo, useRef } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  AvatarBaseShape,
+  AvatarNetwork,
+  AvatarNetworkSize,
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+  FontWeight,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import Icon, {
+  IconName,
+  IconSize,
+} from '../../../../../component-library/components/Icons/Icon';
+import { useTheme } from '../../../../../util/theme';
+import { strings } from '../../../../../../locales/i18n';
+import type { RootState } from '../../../../../reducers';
+import {
+  selectAllowedChainRanking,
+  selectVisiblePillChainIds,
+  setVisiblePillChainIds,
+} from '../../../../../core/redux/slices/bridge';
+import { CaipChainId } from '@metamask/utils';
+import { ScrollView } from 'react-native-gesture-handler';
+import ButtonToggle from '../../../../../component-library/components-temp/Buttons/ButtonToggle';
+import { ButtonSize } from '../../../../../component-library/components/Buttons/Button';
+import { getNetworkImageSource } from '../../../../../util/networks';
+import { useABTest } from '../../../../../hooks';
+import { useChainValueOrder } from '../../hooks/useChainValueOrder';
+import {
+  CHAIN_VALUE_ORDER_AB_KEY,
+  CHAIN_VALUE_ORDER_EXPOSURE_METADATA,
+  CHAIN_VALUE_ORDER_VARIANTS,
+} from './abTestConfig';
+
+/** Maximum number of network pills visible in the horizontal list */
+export const MAX_VISIBLE_PILLS = 4;
+
+/** Estimated average pill width (px) for scroll offset calculations */
+const PILL_WIDTH = 100;
+
+interface NetworkPillsProps {
+  selectedChainId?: CaipChainId;
+  onChainSelect: (chainId?: CaipChainId) => void;
+  onMorePress: () => void;
+  /** When true, renders the watchlist star filter before network pills. */
+  showWatchlistFilter?: boolean;
+  /** Whether the watchlist filter is currently active. */
+  isWatchlistFilterActive?: boolean;
+  /** Called when the watchlist star filter is toggled. */
+  onWatchlistFilterPress?: () => void;
+  /**
+   * When provided, restricts the network list to these chains instead
+   * of the default allowed chainRanking.
+   */
+  enabledChainIds?: CaipChainId[];
+}
+
+interface ChainRankingEntry {
+  chainId: CaipChainId;
+  name: string;
+}
+
+interface NetworkPillsContentProps extends NetworkPillsProps {
+  chainRanking: ChainRankingEntry[];
+}
+
+/**
+ * Returns the first MAX_VISIBLE_PILLS chain IDs from chainRanking.
+ * The ranking order is determined by the feature flag, so the first entries
+ * are already the highest-priority networks.
+ */
+const getVisibleChainIds = (chainRanking: ChainRankingEntry[]): CaipChainId[] =>
+  chainRanking.slice(0, MAX_VISIBLE_PILLS).map((c) => c.chainId);
+
+const NetworkPillsContent: React.FC<NetworkPillsContentProps> = ({
+  chainRanking,
+  selectedChainId,
+  onChainSelect,
+  onMorePress,
+  showWatchlistFilter = false,
+  isWatchlistFilterActive = false,
+  onWatchlistFilterPress,
+}) => {
+  const tw = useTailwind();
+  const theme = useTheme();
+  const dispatch = useDispatch();
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  // Visible pill chain IDs from Redux (shared across source/dest pickers).
+  // Once set (out-of-list promotion), Redux is the session SSOT — holdings /
+  // treatment ranking updates must not change membership. While unset, fall
+  // back to the first N from the current chainRanking.
+  //
+  // The pin is a *global* session value, but a picker may be scoped to a
+  // narrower `enabledChainIds` (e.g. Limit Order chains) than whichever
+  // picker originally set the pin. Drop any pinned ids that aren't part of
+  // the current chainRanking, then backfill remaining slots from
+  // chainRanking so a narrower picker never ends up with zero network pills.
+  const reduxVisibleChainIds = useSelector(selectVisiblePillChainIds);
+  const visibleChainIds = useMemo(() => {
+    if (!reduxVisibleChainIds) {
+      return getVisibleChainIds(chainRanking);
+    }
+
+    const rankingChainIds = chainRanking.map((c) => c.chainId);
+    const rankingChainIdSet = new Set(rankingChainIds);
+    const validPinnedChainIds = reduxVisibleChainIds.filter((id) =>
+      rankingChainIdSet.has(id),
+    );
+
+    if (validPinnedChainIds.length >= MAX_VISIBLE_PILLS) {
+      return validPinnedChainIds;
+    }
+
+    const backfillChainIds = rankingChainIds.filter(
+      (id) => !validPinnedChainIds.includes(id),
+    );
+
+    return [...validPinnedChainIds, ...backfillChainIds].slice(
+      0,
+      MAX_VISIBLE_PILLS,
+    );
+  }, [reduxVisibleChainIds, chainRanking]);
+
+  // Resolve visible chains to full entries from chainRanking
+  const visibleChains = useMemo(
+    () =>
+      visibleChainIds
+        .map((id) => chainRanking.find((c) => c.chainId === id))
+        .filter((c): c is ChainRankingEntry => c !== undefined),
+    [visibleChainIds, chainRanking],
+  );
+
+  const remainingCount = chainRanking.length - visibleChains.length;
+
+  // When only one blockchain is available, "All networks" and that single
+  // network are functionally identical, so the "All" pill is redundant and
+  // should be hidden.
+  const hasSingleChain = chainRanking.length === 1;
+
+  // On selection change only:
+  // - Out-of-list chain → pin [selected, ...current visible].slice(0, N) in
+  //   Redux for the Swaps session, then scroll to start.
+  // - Already visible → scroll only (do not rewrite Redux).
+  // - All (undefined) → scroll to start; keep any existing session pin.
+  //
+  // Do not depend on chainRanking / visibleChainIds: that would re-scroll on
+  // routine holdings updates while Redux is still unset.
+  useEffect(() => {
+    if (!selectedChainId) {
+      scrollViewRef.current?.scrollTo({ x: 0, animated: true });
+      return;
+    }
+
+    // A selectedChainId that isn't part of this picker's chainRanking (e.g.
+    // a stale Redux filter, or one derived from a token whose chain isn't
+    // part of a narrower `enabledChainIds` scope) must not be promoted into
+    // the shared session pin. Treat it like "no chain selected" for pill
+    // purposes instead of leaking an out-of-scope chain into Redux.
+    const isSelectedChainInRanking = chainRanking.some(
+      (chain) => chain.chainId === selectedChainId,
+    );
+
+    if (!isSelectedChainInRanking) {
+      scrollViewRef.current?.scrollTo({ x: 0, animated: true });
+      return;
+    }
+
+    const existingIndex = visibleChainIds.indexOf(selectedChainId);
+
+    if (existingIndex === -1) {
+      // Session pin: promote selected to first for the rest of this Swaps session
+      dispatch(
+        setVisiblePillChainIds([
+          selectedChainId,
+          ...visibleChainIds.slice(0, MAX_VISIBLE_PILLS - 1),
+        ]),
+      );
+      scrollViewRef.current?.scrollTo({ x: 0, animated: true });
+      return;
+    }
+
+    const scrollX = Math.max(0, existingIndex * PILL_WIDTH);
+    scrollViewRef.current?.scrollTo({ x: scrollX, animated: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selection-only; Redux pins after promote
+  }, [selectedChainId]);
+
+  const renderChainPill = (chain: ChainRankingEntry) => {
+    // Only one pill may appear selected at a time (star, All, or one network).
+    // When the "All" pill is hidden (single-chain case), an unset filter is
+    // equivalent to that one chain being selected, so treat it as such.
+    const isSelected =
+      !isWatchlistFilterActive &&
+      (selectedChainId === chain.chainId ||
+        (hasSingleChain && !selectedChainId));
+    const imageSource = getNetworkImageSource({ chainId: chain.chainId });
+
+    return (
+      <ButtonToggle
+        key={chain.chainId}
+        label={
+          <Box
+            flexDirection={BoxFlexDirection.Row}
+            alignItems={BoxAlignItems.Center}
+            gap={2}
+          >
+            {/* translateY corrects optical misalignment between icon and text
+               caused by font line-height metrics */}
+            <AvatarNetwork
+              src={imageSource}
+              size={AvatarNetworkSize.Xs}
+              name={chain.name}
+              shape={AvatarBaseShape.Square}
+              twClassName="rounded translate-y-px"
+            />
+            <Text
+              variant={TextVariant.BodyMd}
+              fontWeight={FontWeight.Medium}
+              color={
+                isSelected ? TextColor.PrimaryInverse : TextColor.TextDefault
+              }
+            >
+              {chain.name}
+            </Text>
+          </Box>
+        }
+        isActive={isSelected}
+        onPress={() => onChainSelect(chain.chainId)}
+        size={ButtonSize.Md}
+        style={tw.style('rounded-full py-2 px-4 h-auto min-h-10')}
+      />
+    );
+  };
+
+  return (
+    <ScrollView
+      ref={scrollViewRef}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={tw.style('flex-grow-0')}
+      contentContainerStyle={tw.style('flex-row items-center gap-2')}
+    >
+      {/* Watchlist filter pill — shown before network pills when feature is enabled */}
+      {showWatchlistFilter && onWatchlistFilterPress ? (
+        <ButtonToggle
+          label={
+            <Icon
+              name={IconName.StarFilled}
+              size={IconSize.Md}
+              color={
+                isWatchlistFilterActive
+                  ? theme.colors.primary.inverse
+                  : theme.colors.icon.default
+              }
+            />
+          }
+          isActive={isWatchlistFilterActive}
+          onPress={onWatchlistFilterPress}
+          size={ButtonSize.Md}
+          style={tw.style(
+            'rounded-full py-2 px-4 h-auto min-h-10 self-stretch',
+          )}
+          testID="bridge-watchlist-filter-watchlist"
+          accessibilityLabel={strings('perps.watchlist.filter_badge_label')}
+        />
+      ) : null}
+      {/* All networks pill — hidden when only one blockchain is available,
+          since "All" and that single network would be redundant. */}
+      {!hasSingleChain && (
+        <ButtonToggle
+          label={strings('bridge.all')}
+          isActive={!selectedChainId && !isWatchlistFilterActive}
+          onPress={() => onChainSelect(undefined)}
+          style={tw.style('rounded-full py-2 px-4 h-auto min-h-10')}
+          size={ButtonSize.Md}
+        />
+      )}
+      {visibleChains.map(renderChainPill)}
+      {remainingCount > 0 && (
+        <ButtonToggle
+          label={strings('bridge.more_networks', {
+            count: remainingCount,
+          })}
+          isActive={false}
+          onPress={onMorePress}
+          style={tw.style('rounded-full py-2 px-4 h-auto min-h-10')}
+          size={ButtonSize.Md}
+          testID="network-pills-more-button"
+        />
+      )}
+    </ScrollView>
+  );
+};
+
+const NetworkValueOrderedPills: React.FC<NetworkPillsContentProps> = ({
+  chainRanking,
+  ...props
+}) => {
+  const orderedChainRanking = useChainValueOrder(chainRanking);
+
+  return <NetworkPillsContent {...props} chainRanking={orderedChainRanking} />;
+};
+
+export const NetworkPills: React.FC<NetworkPillsProps> = ({
+  enabledChainIds,
+  ...props
+}) => {
+  const chainRanking: ChainRankingEntry[] = useSelector((state: RootState) =>
+    selectAllowedChainRanking(state, enabledChainIds),
+  );
+  const { variant } = useABTest(
+    CHAIN_VALUE_ORDER_AB_KEY,
+    CHAIN_VALUE_ORDER_VARIANTS,
+    CHAIN_VALUE_ORDER_EXPOSURE_METADATA,
+  );
+
+  if (variant.orderByValue) {
+    return <NetworkValueOrderedPills {...props} chainRanking={chainRanking} />;
+  }
+
+  return <NetworkPillsContent {...props} chainRanking={chainRanking} />;
+};

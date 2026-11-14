@@ -1,0 +1,105 @@
+import { useMemo } from 'react';
+import {
+  TransactionStatus,
+  TransactionType,
+  hasTransactionType,
+} from '@metamask/transaction-controller';
+import { AlertKeys } from '../../constants/alerts';
+import { NO_ALERTS, Severity } from '../../types/alerts';
+import { strings } from '../../../../../../locales/i18n';
+
+import { useSelector } from 'react-redux';
+import { selectTransactions } from '../../../../../selectors/transactionController';
+import { useTransactionMetadataRequest } from '../transactions/useTransactionMetadataRequest';
+import { useTransactionPayToken } from '../pay/useTransactionPayToken';
+import { useIsMMPayHardwareEnabled } from '../pay/useIsMMPayHardwareEnabled';
+import { isHardwareAccount } from '../../../../../util/address';
+
+export const PAY_TYPES = [
+  TransactionType.moneyAccountDeposit,
+  TransactionType.perpsDeposit,
+  TransactionType.predictDeposit,
+];
+
+const INCOMPLETE_STATUSES = [
+  TransactionStatus.signed,
+  TransactionStatus.approved,
+];
+const PENDING_STATUSES = [...INCOMPLETE_STATUSES, TransactionStatus.submitted];
+
+export const useSignedOrSubmittedAlert = () => {
+  const transactions = useSelector(selectTransactions);
+  const isHardwarePayEnabled = useIsMMPayHardwareEnabled();
+  const transactionMetadata = useTransactionMetadataRequest();
+  const { payToken } = useTransactionPayToken();
+
+  const { chainId, id: transactionId, txParams } = transactionMetadata || {};
+  const { from } = txParams ?? {};
+
+  const existingTransaction = transactions.find((transaction) => {
+    const blockStatuses = hasTransactionType(transactionMetadata, PAY_TYPES)
+      ? PENDING_STATUSES
+      : INCOMPLETE_STATUSES;
+
+    return (
+      blockStatuses.includes(transaction.status) &&
+      transaction.id !== transactionId &&
+      transaction.chainId === chainId &&
+      transaction.txParams.from.toLowerCase() === from?.toLowerCase()
+    );
+  });
+
+  const isTransactionPay = PAY_TYPES.some(
+    (payType) =>
+      transactionMetadata &&
+      existingTransaction &&
+      hasTransactionType(transactionMetadata, [payType]) &&
+      hasTransactionType(existingTransaction, [payType]),
+  );
+
+  const hasExistingTransactionOnPayChain =
+    payToken &&
+    payToken.chainId !== chainId &&
+    transactions.some(
+      (t) =>
+        t.chainId === payToken.chainId &&
+        t.txParams.from.toLowerCase() === from?.toLowerCase() &&
+        PENDING_STATUSES.includes(t.status),
+    );
+
+  const showAlert = Boolean(
+    existingTransaction || hasExistingTransactionOnPayChain,
+  );
+
+  const isHardwareWallet = isHardwareAccount(from ?? '');
+
+  return useMemo(() => {
+    if (!showAlert || (isHardwarePayEnabled && isHardwareWallet)) {
+      return NO_ALERTS;
+    }
+
+    return [
+      {
+        isBlocking: true,
+        key: AlertKeys.SignedOrSubmitted,
+        message: isTransactionPay
+          ? strings('alert_system.signed_or_submitted_perps_deposit.message')
+          : hasExistingTransactionOnPayChain
+            ? strings('alert_system.signed_or_submitted_pay_token.message')
+            : strings('alert_system.signed_or_submitted.message'),
+        title: isTransactionPay
+          ? strings('alert_system.signed_or_submitted_perps_deposit.title')
+          : hasExistingTransactionOnPayChain
+            ? strings('alert_system.signed_or_submitted_pay_token.title')
+            : strings('alert_system.signed_or_submitted.title'),
+        severity: Severity.Danger,
+      },
+    ];
+  }, [
+    hasExistingTransactionOnPayChain,
+    isHardwarePayEnabled,
+    isHardwareWallet,
+    isTransactionPay,
+    showAlert,
+  ]);
+};

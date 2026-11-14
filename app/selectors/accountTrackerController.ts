@@ -1,38 +1,37 @@
 import { createSelector } from 'reselect';
-import {
-  AccountTrackerState,
-  AccountInformation,
-} from '@metamask/assets-controllers';
 import { RootState } from '../reducers';
 import { createDeepEqualSelector } from './util';
-import { selectChainId } from './networkController';
-import { selectSelectedInternalAccountChecksummedAddress } from './accountsController';
+import { selectEvmChainId } from './networkController';
+import { selectSelectedInternalAccountFormattedAddress } from './accountsController';
+import { Hex } from '@metamask/utils';
+import { getAccountTrackerControllerAccountsByChainId } from './assets/assets-migration';
 
-const selectAccountTrackerControllerState = (state: RootState) =>
-  state.engine.backgroundState.AccountTrackerController;
+export { getAccountTrackerControllerAccountsByChainId as selectAccountsByChainId };
 
 export const selectAccounts = createDeepEqualSelector(
-  selectAccountTrackerControllerState,
-  (accountTrackerControllerState: AccountTrackerState) =>
-    accountTrackerControllerState.accounts,
+  getAccountTrackerControllerAccountsByChainId,
+  selectEvmChainId,
+  (accountsByChainId, chainId) => accountsByChainId?.[chainId] || {},
 );
-export const selectAccountsByChainId = createSelector(
-  selectAccountTrackerControllerState,
-  (accountTrackerControllerState: AccountTrackerState) =>
-    accountTrackerControllerState.accountsByChainId,
-);
+
 export const selectAccountsLength = createSelector(
   selectAccounts,
-  (accounts: { [address: string]: AccountInformation }) =>
-    Object.keys(accounts || {}).length,
+  (accounts) => Object.keys(accounts).length,
 );
+
 export const selectAccountBalanceByChainId = createDeepEqualSelector(
-  selectAccountsByChainId,
-  selectChainId,
-  selectSelectedInternalAccountChecksummedAddress,
-  (accountsByChainId, chainId, selectedInternalAccountChecksummedAddress) => {
+  getAccountTrackerControllerAccountsByChainId,
+  selectEvmChainId,
+  selectSelectedInternalAccountFormattedAddress,
+  (_state: RootState, chainId?: Hex) => chainId,
+  (
+    accountsByChainId,
+    globalChainId,
+    selectedInternalAccountChecksummedAddress,
+    chainId,
+  ) => {
     const accountsBalance = selectedInternalAccountChecksummedAddress
-      ? accountsByChainId?.[chainId]?.[
+      ? accountsByChainId?.[chainId ?? globalChainId]?.[
           selectedInternalAccountChecksummedAddress
         ]
       : undefined;

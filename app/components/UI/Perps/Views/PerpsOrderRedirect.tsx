@@ -1,0 +1,250 @@
+import React, { useEffect, useRef } from 'react';
+import { useSelector } from 'react-redux';
+import {
+  useNavigation,
+  useRoute,
+  RouteProp,
+  StackActions,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+
+import {
+  Box,
+  BoxAlignItems,
+  BoxJustifyContent,
+} from '@metamask/design-system-react-native';
+import Routes from '../../../../constants/navigation/Routes';
+import { usePerpsConnection } from '../hooks/usePerpsConnection';
+import { usePerpsTrading } from '../hooks/usePerpsTrading';
+import { selectPerpsProvider } from '../selectors/perpsController';
+import usePerpsToasts from '../hooks/usePerpsToasts';
+import PerpsLoader from '../components/PerpsLoader';
+import Logger from '../../../../util/Logger';
+import { ensureError } from '../../../../util/errorUtils';
+import { PERPS_CONSTANTS, PERPS_EVENT_VALUE } from '@metamask/perps-controller';
+import { CONFIRMATION_HEADER_CONFIG } from '../constants/perpsConfig';
+import type { PerpsNavigationParamList } from '../types/navigation';
+import { withPendingTransactionActiveAbTests } from '../../../../util/transactions/transaction-active-ab-test-attribution-registry';
+import { usePerpsScreenVsBottomSheetAbTest } from '../hooks/usePerpsScreenVsBottomSheetAbTest';
+import {
+  failPerpsTradeSheetInteractiveTrace,
+  startPerpsTradeSheetInteractiveTrace,
+} from '../utils/perpsTradeSheetInteractiveTrace';
+
+type RouteParams = RouteProp<PerpsNavigationParamList, 'PerpsOrderRedirect'>;
+
+/** How long a sheet entry waits for the Perps websocket before giving up. */
+const SHEET_CONNECTION_TIMEOUT_MS = 15_000;
+
+/**
+ * PerpsOrderRedirect
+ *
+ * A redirect screen that handles navigation from Token Details to the Perps order confirmation.
+ * This screen:
+ * 1. Waits for the WebSocket connection to be established (via PerpsConnectionProvider)
+ * 2. Calls depositWithOrder() to create the pending transaction (Arbitrum network check is handled internally by the hook)
+ * 3. Navigates to the confirmation screen with the transaction ready
+ *
+ * This is necessary because Token Details is outside the Perps stack, so the WebSocket
+ * is not initialized there. By navigating to this screen first, we ensure the WebSocket
+ * is ready before calling depositWithOrder().
+ */
+const PerpsOrderRedirect: React.FC = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const route = useRoute<RouteParams>();
+  const {
+    direction,
+    asset,
+    leverage,
+    fromTokenDetails,
+    transactionActiveAbTests,
+    useBottomSheet: useBottomSheetParam,
+    stayOnCurrentScreen,
+    source,
+    copyTradeOrigin,
+  } = route.params;
+  const orderSource = source ?? PERPS_EVENT_VALUE.SOURCE.ASSET_DETAIL_SCREEN;
+
+  const { isConnected, isInitialized } = usePerpsConnection();
+  const { depositWithOrder } = usePerpsTrading();
+  const activeProvider = useSelector(selectPerpsProvider);
+  const { showToast, PerpsToastOptions } = usePerpsToasts();
+  const { useBottomSheet: isBottomSheetExperiment } =
+    usePerpsScreenVsBottomSheetAbTest();
+  const useBottomSheet = useBottomSheetParam ?? isBottomSheetExperiment;
+
+  const hasStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (!useBottomSheetParam || isConnected) {
+      return;
+    }
+    const timeoutId = setTimeout(() => {
+      if (hasStartedRef.current) {
+        return;
+      }
+      showToast(
+        PerpsToastOptions.accountManagement.oneClickTrade.txCreationFailed,
+      );
+      navigation.goBack();
+    }, SHEET_CONNECTION_TIMEOUT_MS);
+    return () => clearTimeout(timeoutId);
+  }, [
+    isConnected,
+    navigation,
+    showToast,
+    PerpsToastOptions,
+    useBottomSheetParam,
+  ]);
+
+  useEffect(() => {
+    // Wait for WebSocket to be ready
+    if (!isConnected || !isInitialized) return;
+    // Prevent double execution
+    if (hasStartedRef.current) return;
+    hasStartedRef.current = true;
+
+    if (activeProvider === 'lighter') {
+      const balanceOrderParams = {
+        direction,
+        asset,
+        leverage,
+        fromTokenDetails,
+        source: orderSource,
+        transactionActiveAbTests,
+        ...(stayOnCurrentScreen ? { stayOnCurrentScreen: true } : {}),
+      };
+      // Lighter has no sheet. From the transparent modal stack, the full
+      // order screen lives in the Perps stack, so leave the modal first.
+      if (useBottomSheetParam) {
+        if (navigation.canGoBack()) {
+          navigation.goBack();
+        }
+        navigation.navigate(Routes.PERPS.ROOT, {
+          screen: Routes.PERPS.BALANCE_ORDER,
+          params: balanceOrderParams,
+        });
+        return;
+      }
+      navigation.dispatch(
+        StackActions.replace(Routes.PERPS.BALANCE_ORDER, balanceOrderParams),
+      );
+      return;
+    }
+
+    Logger.log('[PerpsOrderRedirect] Starting depositWithOrder', {
+      direction,
+      asset,
+    });
+
+    const runDepositFlow = async (): Promise<void> => {
+      if (useBottomSheet) {
+        startPerpsTradeSheetInteractiveTrace(orderSource);
+      }
+      try {
+        await withPendingTransactionActiveAbTests(
+          transactionActiveAbTests,
+          async () => depositWithOrder(),
+        );
+        Logger.log(
+          '[PerpsOrderRedirect] depositWithOrder resolved, navigating to confirmation',
+        );
+        // Replace current screen with confirmation (no back to loader)
+        navigation.dispatch(
+          StackActions.replace(
+            Routes.FULL_SCREEN_CONFIRMATIONS.REDESIGNED_CONFIRMATIONS,
+            {
+              direction,
+              asset,
+              leverage,
+              fromTokenDetails,
+              source: orderSource,
+              ...(useBottomSheet
+                ? { useBottomSheet: true, forceBottomSheet: true }
+                : {}),
+              ...(stayOnCurrentScreen ? { stayOnCurrentScreen: true } : {}),
+              ...(copyTradeOrigin ? { copyTradeOrigin } : {}),
+              showPerpsHeader:
+                CONFIRMATION_HEADER_CONFIG.ShowPerpsHeaderForDepositAndTrade,
+            },
+          ),
+        );
+      } catch (error: unknown) {
+        if (useBottomSheet) {
+          failPerpsTradeSheetInteractiveTrace('transaction_creation_failed');
+        }
+        const err = ensureError(error, 'PerpsOrderRedirect.depositWithOrder');
+        Logger.error(err, {
+          tags: {
+            feature: PERPS_CONSTANTS.FeatureName,
+            component: 'PerpsOrderRedirect',
+            action: 'financial_deposit',
+            operation: 'financial_operations',
+          },
+          context: { name: 'PerpsOrderRedirect.depositWithOrder', data: {} },
+        });
+        showToast(
+          PerpsToastOptions.accountManagement.oneClickTrade.txCreationFailed,
+        );
+        // Go back to token details on failure
+        navigation.goBack();
+      }
+    };
+
+    runDepositFlow().catch((error: unknown) => {
+      Logger.error(ensureError(error, 'PerpsOrderRedirect.runDepositFlow'), {
+        tags: {
+          feature: PERPS_CONSTANTS.FeatureName,
+          component: 'PerpsOrderRedirect',
+          action: 'financial_deposit',
+          operation: 'financial_operations',
+        },
+        context: { name: 'PerpsOrderRedirect.runDepositFlow', data: {} },
+      });
+    });
+  }, [
+    isConnected,
+    isInitialized,
+    direction,
+    asset,
+    leverage,
+    fromTokenDetails,
+    stayOnCurrentScreen,
+    copyTradeOrigin,
+    orderSource,
+    transactionActiveAbTests,
+    useBottomSheet,
+    useBottomSheetParam,
+    depositWithOrder,
+    activeProvider,
+    navigation,
+    showToast,
+    PerpsToastOptions,
+  ]);
+
+  // An explicit sheet request arrives through the transparent Perps modal
+  // stack. The pending indicator does not fill the page, and it does not take
+  // touches, so the feed stays usable until the sheet replaces this screen.
+  if (useBottomSheetParam) {
+    return (
+      <Box twClassName="flex-1 items-center pt-20" pointerEvents="box-none">
+        <Box pointerEvents="none">
+          <PerpsLoader message="Preparing order..." fullScreen={false} />
+        </Box>
+      </Box>
+    );
+  }
+
+  // Match PerpsLoader connecting layout so both loaders look the same: top-aligned, centered, pt-20
+  return (
+    <Box
+      twClassName="flex-1 bg-default pt-20"
+      alignItems={BoxAlignItems.Center}
+      justifyContent={BoxJustifyContent.Start}
+    >
+      <PerpsLoader message="Preparing order..." fullScreen={false} />
+    </Box>
+  );
+};
+
+export default PerpsOrderRedirect;

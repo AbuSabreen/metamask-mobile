@@ -1,0 +1,212 @@
+import React from 'react';
+import { fireEvent, screen } from '@testing-library/react-native';
+import { useSelector } from 'react-redux';
+import renderWithProvider from '../../../../util/test/renderWithProvider';
+import NetworkConnectMultiSelector from './NetworkConnectMultiSelector';
+import { NetworkConnectMultiSelectorSelectorsIDs } from '../NetworkConnectMultiSelector.testIds';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import { ConnectedAccountsSelectorsIDs } from '../../MultichainAccounts/shared/ConnectedAccountModal.testIds';
+import {
+  selectNetworkConfigurationsByCaipChainId,
+  selectEvmChainId,
+} from '../../../../selectors/networkController';
+import { CaipChainId } from '@metamask/utils';
+import { getNetworkImageSource } from '../../../../util/networks';
+import styleSheet from './NetworkConnectMultiSelector.styles';
+
+const mockNavigate = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    navigate: mockNavigate,
+  }),
+}));
+
+// Add mock for react-redux
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: jest.fn(),
+}));
+
+jest.mock('../../../../util/networks', () => ({
+  getNetworkImageSource: jest.fn(() => ({ uri: 'network-image' })),
+}));
+
+const mockNetworkConfigurations = {
+  'eip155:1': {
+    chainId: '0x1',
+    name: 'Ethereum Mainnet',
+    rpcEndpoints: [
+      {
+        url: 'https://mainnet.infura.io/v3',
+        networkClientId: 'mainnet',
+      },
+    ],
+    defaultRpcEndpointIndex: 0,
+    caipChainId: 'eip155:1',
+  },
+  'eip155:137': {
+    chainId: '0x89',
+    name: 'Polygon',
+    rpcEndpoints: [
+      {
+        url: 'https://polygon-rpc.com',
+        networkClientId: 'polygon',
+      },
+    ],
+    defaultRpcEndpointIndex: 0,
+    caipChainId: 'eip155:137',
+  },
+};
+
+describe('NetworkConnectMultiSelector', () => {
+  it('uses a 16 horizontal gutter on the sheet body', () => {
+    const styles = styleSheet({
+      vars: { isRenderedAsBottomSheet: true },
+    });
+
+    expect(styles.bodyContainer.paddingHorizontal).toBe(16);
+  });
+
+  const defaultProps = {
+    isLoading: false,
+    hostname: 'example.com',
+    onSubmit: jest.fn(),
+    onBack: jest.fn(),
+    isRenderedAsBottomSheet: true,
+    defaultSelectedChainIds: ['eip155:1' as CaipChainId],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (useSelector as jest.Mock).mockImplementation((selector) => {
+      // Use switch statement for better selector matching
+      switch (selector) {
+        case selectNetworkConfigurationsByCaipChainId:
+          return mockNetworkConfigurations;
+        case selectEvmChainId:
+          return '0x1';
+        default:
+          return undefined;
+      }
+    });
+  });
+
+  it('renders correctly', () => {
+    renderWithProvider(<NetworkConnectMultiSelector {...defaultProps} />);
+    expect(
+      screen.getAllByTestId(
+        ConnectedAccountsSelectorsIDs.SELECT_ALL_NETWORKS_BUTTON,
+      )[0],
+    ).toBeOnTheScreen();
+  });
+
+  it('reuses derived networks when network configurations are unchanged', () => {
+    const { rerender } = renderWithProvider(
+      <NetworkConnectMultiSelector {...defaultProps} />,
+    );
+    const initialCallCount = (getNetworkImageSource as jest.Mock).mock.calls
+      .length;
+
+    rerender(<NetworkConnectMultiSelector {...defaultProps} />);
+
+    expect(getNetworkImageSource).toHaveBeenCalledTimes(initialCallCount);
+  });
+
+  it('disables the select all button when loading', () => {
+    const { getByTestId, getAllByTestId, rerender } = renderWithProvider(
+      <NetworkConnectMultiSelector {...defaultProps} isLoading />,
+    );
+
+    const selectAllbutton = getAllByTestId(
+      ConnectedAccountsSelectorsIDs.SELECT_ALL_NETWORKS_BUTTON,
+    );
+    fireEvent.press(selectAllbutton[0]);
+
+    // Update button should be disabled while loading
+    const updateButton = getByTestId(
+      NetworkConnectMultiSelectorSelectorsIDs.UPDATE_CHAIN_PERMISSIONS,
+    );
+    // Update button is disabled when isLoading is true, so onSubmit should not be called
+    fireEvent.press(updateButton);
+    expect(defaultProps.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('handles the select all button when not loading', () => {
+    const { getByTestId, getAllByTestId } = renderWithProvider(
+      <NetworkConnectMultiSelector
+        {...defaultProps}
+        defaultSelectedChainIds={['eip155:1', 'eip155:137']}
+      />,
+    );
+
+    const selectAllbutton = getAllByTestId(
+      ConnectedAccountsSelectorsIDs.SELECT_ALL_NETWORKS_BUTTON,
+    );
+    fireEvent.press(selectAllbutton[0]);
+    fireEvent.press(selectAllbutton[0]);
+
+    const updateButton = getByTestId(
+      NetworkConnectMultiSelectorSelectorsIDs.UPDATE_CHAIN_PERMISSIONS,
+    );
+    fireEvent.press(updateButton);
+
+    expect(defaultProps.onSubmit).toHaveBeenCalledWith([
+      'eip155:1',
+      'eip155:137',
+    ]);
+  });
+
+  it('handles network selection correctly', () => {
+    const { getByText, getByTestId } = renderWithProvider(
+      <NetworkConnectMultiSelector {...defaultProps} />,
+    );
+
+    const newNetwork = getByText('Polygon');
+    fireEvent.press(newNetwork);
+
+    // tests removal of an already selected network
+    const exstingNetwork = getByText('Ethereum Mainnet');
+    fireEvent.press(exstingNetwork);
+
+    const updateButton = getByTestId(
+      NetworkConnectMultiSelectorSelectorsIDs.UPDATE_CHAIN_PERMISSIONS,
+    );
+    fireEvent.press(updateButton);
+
+    expect(defaultProps.onSubmit).toHaveBeenCalledWith(['eip155:137']);
+  });
+
+  it('shows update button when some networks are selected', () => {
+    const { getByTestId } = renderWithProvider(
+      <NetworkConnectMultiSelector
+        {...defaultProps}
+        defaultSelectedChainIds={['eip155:1']}
+      />,
+    );
+    const updateButton = getByTestId(
+      NetworkConnectMultiSelectorSelectorsIDs.UPDATE_CHAIN_PERMISSIONS,
+    );
+    expect(updateButton).toBeTruthy();
+    fireEvent.press(updateButton);
+
+    expect(defaultProps.onSubmit).toHaveBeenCalledWith(['eip155:1']);
+  });
+
+  it('shows disconnect button when no networks are selected', () => {
+    const { getByTestId } = renderWithProvider(
+      <NetworkConnectMultiSelector
+        {...defaultProps}
+        defaultSelectedChainIds={[]}
+      />,
+    );
+
+    const disconnectButton = getByTestId(
+      ConnectedAccountsSelectorsIDs.DISCONNECT_NETWORKS_BUTTON,
+    );
+    expect(disconnectButton).toBeTruthy();
+
+    fireEvent.press(disconnectButton);
+    expect(defaultProps.onSubmit).toHaveBeenCalledWith([]);
+  });
+});

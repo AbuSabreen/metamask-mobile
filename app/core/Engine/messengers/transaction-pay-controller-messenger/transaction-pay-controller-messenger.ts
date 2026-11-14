@@ -1,0 +1,107 @@
+import { TransactionPayControllerMessenger } from '@metamask/transaction-pay-controller';
+import { RootMessenger } from '../../types';
+import {
+  Messenger,
+  MessengerActions,
+  MessengerEvents,
+} from '@metamask/messenger';
+import { DelegationControllerSignDelegationAction } from '@metamask/delegation-controller';
+import {
+  KeyringControllerGetStateAction,
+  KeyringControllerSignEip7702AuthorizationAction,
+  KeyringControllerSignPersonalMessageAction,
+  KeyringControllerSignTypedMessageAction,
+  KeyringControllerUnlockEvent,
+} from '@metamask/keyring-controller';
+import { TransactionControllerIsAtomicBatchSupportedAction } from '@metamask/transaction-controller';
+import { NetworkControllerGetNetworkConfigurationByChainIdAction } from '@metamask/network-controller';
+import { RemoteFeatureFlagControllerGetStateAction } from '@metamask/remote-feature-flag-controller';
+
+export function getTransactionPayControllerMessenger(
+  rootMessenger: RootMessenger<
+    MessengerActions<TransactionPayControllerMessenger>,
+    MessengerEvents<TransactionPayControllerMessenger>
+  >,
+): TransactionPayControllerMessenger {
+  const messenger: TransactionPayControllerMessenger = new Messenger({
+    namespace: 'TransactionPayController',
+    parent: rootMessenger,
+  });
+
+  rootMessenger.delegate({
+    actions: [
+      'AccountsController:getState',
+      'AssetsController:getState',
+      'GasFeeController:getState',
+      'NetworkController:findNetworkClientIdByChainId',
+      'NetworkController:getNetworkClientById',
+      'NetworkController:getNetworkConfigurationByChainId',
+      'RampsController:getOrder',
+      'RampsController:getQuoteWithFees',
+      'RemoteFeatureFlagController:getState',
+      'SentinelApiService:simulateTransactions',
+      'TransactionController:estimateGas',
+      'TransactionController:estimateGasBatch',
+      'TransactionController:getGasFeeTokens',
+      'TransactionController:getState',
+      'TransactionController:updateTransaction',
+      'KeyringController:getState',
+      'KeyringController:signTypedMessage',
+    ],
+    events: [
+      'AssetsController:stateChange',
+      'TransactionController:stateChange',
+      'TransactionController:unapprovedTransactionAdded',
+    ],
+    messenger,
+  });
+
+  return messenger;
+}
+
+type InitMessengerActions =
+  | DelegationControllerSignDelegationAction
+  | KeyringControllerGetStateAction
+  | KeyringControllerSignEip7702AuthorizationAction
+  | KeyringControllerSignPersonalMessageAction
+  | KeyringControllerSignTypedMessageAction
+  | NetworkControllerGetNetworkConfigurationByChainIdAction
+  | RemoteFeatureFlagControllerGetStateAction
+  | TransactionControllerIsAtomicBatchSupportedAction;
+
+type InitMessengerEvents = KeyringControllerUnlockEvent;
+
+export type TransactionPayControllerInitMessenger = Messenger<
+  'TransactionPayControllerInit',
+  InitMessengerActions,
+  InitMessengerEvents
+>;
+
+export function getTransactionPayControllerInitMessenger(
+  rootMessenger: RootMessenger<
+    MessengerActions<TransactionPayControllerInitMessenger>,
+    MessengerEvents<TransactionPayControllerInitMessenger>
+  >,
+): TransactionPayControllerInitMessenger {
+  const messenger: TransactionPayControllerInitMessenger = new Messenger({
+    namespace: 'TransactionPayControllerInit',
+    parent: rootMessenger,
+  });
+
+  rootMessenger.delegate({
+    actions: [
+      'DelegationController:signDelegation',
+      'KeyringController:getState',
+      'KeyringController:signEip7702Authorization',
+      'KeyringController:signPersonalMessage',
+      'KeyringController:signTypedMessage',
+      'NetworkController:getNetworkConfigurationByChainId',
+      'RemoteFeatureFlagController:getState',
+      'TransactionController:isAtomicBatchSupported',
+    ],
+    events: ['KeyringController:unlock'],
+    messenger,
+  });
+
+  return messenger;
+}

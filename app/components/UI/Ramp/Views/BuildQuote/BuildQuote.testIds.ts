@@ -1,0 +1,7 @@
+export const BUILD_QUOTE_TEST_IDS = {
+  BACK_BUTTON: 'build-quote-back-button',
+  SETTINGS_BUTTON: 'build-quote-settings-button',
+  ACTION_MESSAGE_PLACEHOLDER: 'build-quote-action-message-placeholder',
+  PAYMENT_PILL: 'build-quote-payment-pill',
+  AMOUNT_CURSOR: 'build-quote-amount-cursor',
+} as const;

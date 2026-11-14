@@ -7,13 +7,15 @@ import { BigNumber } from 'bignumber.js';
 import { renderHook } from '@testing-library/react-hooks';
 import { useDispatch } from 'react-redux';
 
-import { updateTransactionMetrics } from '../../../core/redux/slices/transactionMetrics';
-import { useMetrics } from '../../../components/hooks/useMetrics';
+import { updateConfirmationMetric } from '../../../core/redux/slices/confirmationMetrics';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
+import { createMockUseAnalyticsHook } from '../../../util/test/analyticsMock';
 
 import { MetaMetricsEvents } from '../../../core/Analytics';
 import {
   useDisplayNames,
   DisplayNameVariant,
+  TrustSignalDisplayState,
 } from '../../hooks/DisplayName/useDisplayName';
 import { BalanceChange, AssetType } from './types';
 import {
@@ -22,10 +24,13 @@ import {
   useSimulationMetrics,
 } from './useSimulationMetrics';
 import useLoadingTime from './useLoadingTime';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
 
 jest.mock('react-redux', () => ({
   ...jest.requireActual('react-redux'),
   useDispatch: jest.fn(),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  useSelector: (fn: any) => fn(),
 }));
 
 jest.mock('react', () => ({
@@ -36,8 +41,17 @@ jest.mock('react', () => ({
 
 jest.mock('./useLoadingTime');
 jest.mock('../../hooks/DisplayName/useDisplayName');
-jest.mock('../../../core/redux/slices/transactionMetrics');
-jest.mock('../../../components/hooks/useMetrics');
+jest.mock('../../../core/redux/slices/confirmationMetrics');
+jest.mock('../../../components/hooks/useAnalytics/useAnalytics');
+const mockTrackEvent = jest.fn();
+jest.mocked(useAnalytics).mockReturnValue(
+  createMockUseAnalyticsHook({
+    trackEvent: mockTrackEvent,
+    createEventBuilder: AnalyticsEventBuilder.createEventBuilder,
+  }),
+);
+
+jest.mock('../../../selectors/networkController');
 
 const TRANSACTION_ID_MOCK = 'testTransactionId';
 const LOADING_TIME_MOCK = 0.123;
@@ -51,32 +65,31 @@ const BALANCE_CHANGE_MOCK = {
 } as unknown as BalanceChange;
 
 const DISPLAY_NAME_UNKNOWN_MOCK = {
-  name: null,
   variant: DisplayNameVariant.Unknown,
+  displayState: TrustSignalDisplayState.Unknown,
+  icon: null,
+  isAccount: false,
 };
 
 const DISPLAY_NAME_SAVED_MOCK = {
   name: 'testName',
   contractDisplayName: SYMBOL_MOCK,
   variant: DisplayNameVariant.Recognized,
+  displayState: TrustSignalDisplayState.Recognized,
+  icon: null,
+  isAccount: false,
 };
 
 describe('useSimulationMetrics', () => {
-  const updateTransactionMetricsMock = jest.mocked(updateTransactionMetrics);
-
+  const updateConfirmationMetricMock = jest.mocked(updateConfirmationMetric);
   const useDispatchMock = jest.mocked(useDispatch);
   const useStateMock = jest.mocked(useState);
   const useEffectMock = jest.mocked(useEffect);
   const useDisplayNamesMock = jest.mocked(useDisplayNames);
   const useLoadingTimeMock = jest.mocked(useLoadingTime);
-  const useMetricsMock = jest.mocked(useMetrics);
   const setLoadingCompleteMock = jest.fn();
 
-  // TODO: Replace `any` with type
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let trackEventMock: jest.MockedFunction<any>;
-
-  function expectUpdateTransactionMetricsCalled(
+  function expectUpdateConfirmationMetricCalled(
     {
       balanceChanges,
       simulationData,
@@ -98,19 +111,17 @@ describe('useSimulationMetrics', () => {
       transactionId: TRANSACTION_ID_MOCK,
     });
 
-    expect(updateTransactionMetricsMock).toHaveBeenCalledTimes(1);
-    expect(updateTransactionMetricsMock).toHaveBeenCalledWith(
+    expect(updateConfirmationMetricMock).toHaveBeenCalledTimes(1);
+    expect(updateConfirmationMetricMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        transactionId: TRANSACTION_ID_MOCK,
+        id: TRANSACTION_ID_MOCK,
         params: expectedParams,
       }),
     );
   }
 
   beforeEach(() => {
-    jest.resetAllMocks();
-
-    trackEventMock = jest.fn();
+    jest.clearAllMocks();
 
     // TODO: Replace `any` with type
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -128,9 +139,6 @@ describe('useSimulationMetrics', () => {
       loadingTime: LOADING_TIME_MOCK,
       setLoadingComplete: setLoadingCompleteMock,
     });
-    // TODO: Replace `any` with type
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    useMetricsMock.mockReturnValue({ trackEvent: trackEventMock } as any);
   });
 
   describe('updates transaction simulation metrics', () => {
@@ -148,9 +156,9 @@ describe('useSimulationMetrics', () => {
       });
 
       expect(setLoadingCompleteMock).toHaveBeenCalledTimes(1);
-      expect(updateTransactionMetrics).toHaveBeenCalledWith(
+      expect(updateConfirmationMetricMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          transactionId: TRANSACTION_ID_MOCK,
+          id: TRANSACTION_ID_MOCK,
           params: expect.objectContaining({
             properties: expect.objectContaining({
               simulation_latency: LOADING_TIME_MOCK,
@@ -177,7 +185,7 @@ describe('useSimulationMetrics', () => {
         useDisplayNamesMock.mockReset();
         useDisplayNamesMock.mockReturnValue([]);
 
-        expectUpdateTransactionMetricsCalled(
+        expectUpdateConfirmationMetricCalled(
           {
             simulationData: simulationData as SimulationData,
           },
@@ -198,9 +206,10 @@ describe('useSimulationMetrics', () => {
     const balanceChange = {
       ...BALANCE_CHANGE_MOCK,
       amount: new BigNumber(isNegative ? -1 : 1),
+      usdAmount: 1.23,
     };
 
-    expectUpdateTransactionMetricsCalled(
+    expectUpdateConfirmationMetricCalled(
       {
         balanceChanges: [balanceChange, balanceChange, balanceChange],
       },
@@ -270,7 +279,7 @@ describe('useSimulationMetrics', () => {
       [AssetType.Native],
     ],
   ])('with asset type if %s', (_, type, isNegative, property, value) => {
-    expectUpdateTransactionMetricsCalled(
+    expectUpdateConfirmationMetricCalled(
       {
         balanceChanges: [
           {
@@ -323,10 +332,10 @@ describe('useSimulationMetrics', () => {
       const balanceChange = {
         ...BALANCE_CHANGE_MOCK,
         amount: new BigNumber(isNegative ? -1 : 1),
-        fiatAmount,
+        fiatAmount: fiatAmount as number,
       };
 
-      expectUpdateTransactionMetricsCalled(
+      expectUpdateConfirmationMetricCalled(
         {
           balanceChanges: [balanceChange],
         },
@@ -346,20 +355,20 @@ describe('useSimulationMetrics', () => {
     const balanceChange1 = {
       ...BALANCE_CHANGE_MOCK,
       amount: new BigNumber(isNegative ? -1 : 1),
-      fiatAmount: 1.23,
+      usdAmount: 1.23,
     };
 
     const balanceChange2 = {
       ...balanceChange1,
-      fiatAmount: 1.23,
+      usdAmount: 1.23,
     };
 
-    expectUpdateTransactionMetricsCalled(
+    expectUpdateConfirmationMetricCalled(
       {
         balanceChanges: [balanceChange1, balanceChange2],
       },
       expect.objectContaining({
-        sensitiveProperties: expect.objectContaining({
+        properties: expect.objectContaining({
           [property]: 2.46,
         }),
       }),
@@ -379,17 +388,20 @@ describe('useSimulationMetrics', () => {
         transactionId: TRANSACTION_ID_MOCK,
       });
 
-      expect(trackEventMock).toHaveBeenCalledTimes(1);
-      expect(trackEventMock).toHaveBeenCalledWith(
-        MetaMetricsEvents.INCOMPLETE_ASSET_DISPLAYED,
-        {
-          asset_address: ADDRESS_MOCK,
-          asset_symbol: SYMBOL_MOCK,
-          asset_petname: 'unknown',
-          asset_type: AssetType.ERC20,
-          fiat_conversion_available: FiatType.NotAvailable,
-          location: 'confirmation',
-        },
+      expect(mockTrackEvent).toHaveBeenCalledTimes(1);
+      expect(mockTrackEvent).toHaveBeenCalledWith(
+        AnalyticsEventBuilder.createEventBuilder(
+          MetaMetricsEvents.INCOMPLETE_ASSET_DISPLAYED,
+        )
+          .addProperties({
+            asset_address: ADDRESS_MOCK,
+            asset_symbol: SYMBOL_MOCK,
+            asset_petname: 'unknown',
+            asset_type: AssetType.ERC20,
+            fiat_conversion_available: FiatType.NotAvailable,
+            location: 'confirmation',
+          })
+          .build(),
       );
     });
   });
@@ -415,6 +427,6 @@ describe('useSimulationMetrics', () => {
       transactionId: TRANSACTION_ID_MOCK,
     });
 
-    expect(updateTransactionMetricsMock).not.toHaveBeenCalled();
+    expect(updateConfirmationMetricMock).not.toHaveBeenCalled();
   });
 });

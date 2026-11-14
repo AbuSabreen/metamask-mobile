@@ -1,0 +1,1372 @@
+import { act, renderHook } from '@testing-library/react-native';
+import { useSelector } from 'react-redux';
+import type { TransactionMeta } from '@metamask/transaction-controller';
+import type { Hex } from '@metamask/utils';
+import {
+  CardTransactionStatus,
+  CardTransactionType,
+  type CardTransaction,
+} from '../../../../core/Engine/controllers/card-controller/provider-types';
+import {
+  mergeMoneyActivity,
+  buildMoneyActivityBuckets,
+  useMoneyActivityItems,
+  AUTO_FILL_MAX_PAGES,
+} from './useMoneyActivityItems';
+import { MoneyActivityFilter } from '../constants/moneyActivity';
+import type {
+  AccountsApiActivity,
+  NeobankBankTransferActivity,
+} from '../types/moneyActivity';
+import { useMoneyAccountTransactions } from './useMoneyAccountTransactions';
+import { useMoneyAccountApiActivity } from './useMoneyAccountApiActivity';
+import { useMoneyVbaTransfers } from './useMoneyVbaTransfers';
+import { useMoneyMicrodeposits } from './useMoneyMicrodeposits';
+import { useCardTransactionIndex } from '../../Card/hooks/useCardTransactionIndex';
+import { useCardCapabilities } from '../../Card/hooks/useCardCapabilities';
+import { selectCardTransactionHistoryEnabled } from '../../../../selectors/featureFlagController/card';
+import {
+  selectMoneyEnableCardActivityEnrichmentFlag,
+  selectMoneyEnableMoneyAccountFlag,
+  selectMoneyVbaCompletedActivityEnabled,
+  selectMoneyVbaPendingActivityEnabled,
+} from '../selectors/featureFlags';
+import { selectIsMoneyAccountGeoEligible } from '../selectors/eligibility';
+
+jest.mock('./useMoneyAccountTransactions');
+jest.mock('./useMoneyAccountApiActivity');
+jest.mock('./useMoneyVbaTransfers');
+jest.mock('./useMoneyMicrodeposits');
+jest.mock('../../Card/hooks/useCardTransactionIndex', () => ({
+  useCardTransactionIndex: jest.fn(),
+}));
+jest.mock('../../Card/hooks/useCardCapabilities', () => ({
+  useCardCapabilities: jest.fn(),
+}));
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: jest.fn(),
+}));
+
+const mockUseMoneyAccountTransactions = jest.mocked(
+  useMoneyAccountTransactions,
+);
+const mockUseMoneyAccountApiActivity = jest.mocked(useMoneyAccountApiActivity);
+const mockUseMoneyVbaTransfers = jest.mocked(useMoneyVbaTransfers);
+const mockUseMoneyMicrodeposits = jest.mocked(useMoneyMicrodeposits);
+const mockUseCardTransactionIndex = jest.mocked(useCardTransactionIndex);
+const mockUseCardCapabilities = jest.mocked(useCardCapabilities);
+const mockUseSelector = jest.mocked(useSelector);
+
+const defaultIndexResult = {
+  bySettlementHash: new Map<string, CardTransaction>(),
+  declined: [] as CardTransaction[],
+  oldestFetchedTime: Number.NEGATIVE_INFINITY,
+  isFetching: false,
+  isSettling: false,
+  isError: false,
+};
+
+function mockEnrichmentFlags({
+  master = false,
+  enrichment = false,
+  moneyAccount = false,
+  geoEligible = false,
+  pendingActivity = true,
+}: {
+  master?: boolean;
+  enrichment?: boolean;
+  moneyAccount?: boolean;
+  geoEligible?: boolean;
+  pendingActivity?: boolean;
+} = {}) {
+  mockUseSelector.mockImplementation((selector: unknown) => {
+    if (selector === selectCardTransactionHistoryEnabled) {
+      return master;
+    }
+    if (selector === selectMoneyEnableCardActivityEnrichmentFlag) {
+      return enrichment;
+    }
+    if (selector === selectMoneyEnableMoneyAccountFlag) {
+      return moneyAccount;
+    }
+    if (selector === selectIsMoneyAccountGeoEligible) {
+      return geoEligible;
+    }
+    if (selector === selectMoneyVbaPendingActivityEnabled) {
+      return pendingActivity;
+    }
+    if (selector === selectMoneyVbaCompletedActivityEnabled) {
+      return false;
+    }
+    return false;
+  });
+}
+
+function enableEnrichment() {
+  mockEnrichmentFlags({
+    master: true,
+    enrichment: true,
+    moneyAccount: true,
+    geoEligible: true,
+  });
+  mockUseCardCapabilities.mockReturnValue({
+    supportsTransactionHistory: true,
+    supportsMoneyAccountLinking: true,
+    reportsVerificationStatus: true,
+  } as never);
+}
+
+const onchainTx = (id: string, time: number, hash?: Hex): TransactionMeta =>
+  ({ id, time, hash }) as TransactionMeta;
+
+const cardTx = (hash: Hex, time: number): AccountsApiActivity => ({
+  kind: 'card',
+  hash,
+  time,
+  chainId: '0x8f',
+  token: { address: '0xusdc' as Hex, symbol: 'USDC', decimals: 6 },
+  amount: '1000000',
+  paidTo: '0xsettlement' as Hex,
+});
+
+const cashbackTx = (hash: Hex, time: number): AccountsApiActivity => ({
+  kind: 'cashback',
+  hash,
+  time,
+  chainId: '0x8f',
+  token: { address: '0xmusd' as Hex, symbol: 'mUSD', decimals: 6 },
+  amount: '300000',
+  receivedFrom: '0xrewarder' as Hex,
+});
+
+const refundTx = (hash: Hex, time: number): AccountsApiActivity => ({
+  kind: 'refund',
+  hash,
+  time,
+  chainId: '0x8f',
+  token: { address: '0xmusd' as Hex, symbol: 'mUSD', decimals: 6 },
+  amount: '10000000',
+  receivedFrom: '0xsettlement' as Hex,
+});
+
+describe('mergeMoneyActivity', () => {
+  it('merges both sources, tags by source, and sorts time-descending', () => {
+    const onchain = [onchainTx('a', 100), onchainTx('b', 300)];
+    const api = [cardTx('0xcard' as Hex, 200)];
+
+    const items = mergeMoneyActivity(onchain, api);
+
+    expect(items.map((i) => [i.kind, i.id, i.time])).toEqual([
+      ['onchain', 'b', 300],
+      ['accountsApi', '0xcard', 200],
+      ['onchain', 'a', 100],
+    ]);
+  });
+
+  it('drops an on-chain row that collides with an API hash (double-count guard)', () => {
+    const shared = '0xAbC123' as Hex;
+    const onchain = [onchainTx('dup', 100, shared)];
+    const api = [cardTx('0xabc123' as Hex, 100)];
+
+    const items = mergeMoneyActivity(onchain, api);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: 'accountsApi', id: '0xabc123' });
+  });
+
+  it('replaces a local incoming row with the completed VBA bank-transfer row', () => {
+    const hash = `0x${'a'.repeat(64)}` as Hex;
+    const local = onchainTx('local-id', 100, hash);
+    const completed: AccountsApiActivity = {
+      kind: 'bank_transfer',
+      hash,
+      time: 100,
+      chainId: '0x8f',
+      token: { address: '0xmusd' as Hex, symbol: 'mUSD', decimals: 6 },
+      amount: '1000000',
+      receivedFrom: '0xsender' as Hex,
+      status: 'confirmed',
+    };
+
+    expect(mergeMoneyActivity([local], [completed])).toEqual([
+      expect.objectContaining({ kind: 'accountsApi', id: hash }),
+    ]);
+  });
+
+  it('returns an empty list when both sources are empty', () => {
+    expect(mergeMoneyActivity([], [])).toEqual([]);
+  });
+
+  it('drops an in-flight provider row already rendered from the Accounts API', () => {
+    const hash = `0x${'b'.repeat(64)}` as Hex;
+    const completed: AccountsApiActivity = {
+      kind: 'bank_transfer',
+      hash,
+      time: 100,
+      chainId: '0x8f',
+      token: { address: '0xmusd' as Hex, symbol: 'mUSD', decimals: 6 },
+      amount: '1000000',
+      receivedFrom: '0xsender' as Hex,
+      status: 'confirmed',
+    };
+    const neobank: NeobankBankTransferActivity[] = [
+      {
+        id: 'neo-1',
+        autorampId: 'ar-1',
+        status: 'Pending',
+        time: 100,
+        destinationAmount: '15',
+        transactionHash: hash,
+      },
+    ];
+
+    expect(mergeMoneyActivity([], [completed], [], neobank)).toEqual([
+      expect.objectContaining({ kind: 'accountsApi', id: hash }),
+    ]);
+  });
+
+  it('merges pending NeoBank bank transfers into the feed', () => {
+    const neobank: NeobankBankTransferActivity[] = [
+      {
+        id: 'neo-1',
+        autorampId: 'ar-1',
+        status: 'Pending',
+        time: 250,
+        destinationAmount: '15',
+      },
+    ];
+
+    const items = mergeMoneyActivity([], [], [], neobank);
+
+    expect(items).toEqual([
+      expect.objectContaining({ kind: 'neobank', id: 'neo-1', time: 250 }),
+    ]);
+  });
+
+  it('excludes completed provider rows and deduplicates stable ids', () => {
+    const items = mergeMoneyActivity(
+      [],
+      [],
+      [],
+      [
+        { id: 'same', autorampId: 'ar-1', status: 'Pending', time: 200 },
+        { id: 'same', autorampId: 'ar-1', status: 'Pending', time: 100 },
+        { id: 'done', autorampId: 'ar-1', status: 'Completed', time: 300 },
+      ],
+    );
+
+    expect(items.map((item) => item.id)).toEqual(['same']);
+  });
+
+  it('orders rows sharing a timestamp deterministically by id', () => {
+    // A spend and its cashback can settle in the same second; the tie must
+    // resolve the same way regardless of input order.
+    const onchain = [onchainTx('zzz', 100)];
+    const api = [cardTx('0xccc' as Hex, 100), cashbackTx('0xaaa' as Hex, 100)];
+
+    const forward = mergeMoneyActivity(onchain, api).map((i) => i.id);
+    const reversed = mergeMoneyActivity([...onchain], [...api].reverse()).map(
+      (i) => i.id,
+    );
+
+    expect(forward).toEqual(['0xaaa', '0xccc', 'zzz']);
+    expect(reversed).toEqual(forward);
+  });
+
+  it('merges bank microdeposits into the feed by time', () => {
+    const items = mergeMoneyActivity(
+      [onchainTx('a', 100)],
+      [],
+      [],
+      [],
+      [
+        {
+          id: 'micro|0.34|USD|CHASE',
+          amount: '0.34',
+          currencyCode: 'USD',
+          counterpartyName: 'CHASE',
+          time: 200,
+        },
+      ],
+    );
+
+    expect(items.map((i) => [i.kind, i.id, i.time])).toEqual([
+      ['microdeposit', 'micro|0.34|USD|CHASE', 200],
+      ['onchain', 'a', 100],
+    ]);
+  });
+});
+
+describe('buildMoneyActivityBuckets', () => {
+  const onchain = {
+    all: [onchainTx('all', 50)],
+    deposits: [onchainTx('dep', 40)],
+    transfers: [onchainTx('xfer', 30)],
+  };
+  const card = cardTx('0xcard' as Hex, 200);
+  const cashback = cashbackTx('0xback' as Hex, 300);
+  const refund = refundTx('0xrefund' as Hex, 250);
+
+  it('shows only active NeoBank deposits in All and Deposits', () => {
+    const neobank: NeobankBankTransferActivity[] = [
+      { id: 'pending', autorampId: 'ar-1', status: 'Pending', time: 400 },
+      { id: 'failed', autorampId: 'ar-1', status: 'Failed', time: 300 },
+      { id: 'completed', autorampId: 'ar-1', status: 'Completed', time: 500 },
+    ];
+    const buckets = buildMoneyActivityBuckets(
+      { all: [], deposits: [], transfers: [] },
+      [],
+      Number.NEGATIVE_INFINITY,
+      [],
+      neobank,
+    );
+
+    expect(buckets[MoneyActivityFilter.All].map((item) => item.id)).toEqual([
+      'pending',
+      'failed',
+    ]);
+    expect(
+      buckets[MoneyActivityFilter.Deposits].map((item) => item.id),
+    ).toEqual(['pending', 'failed']);
+    expect(buckets[MoneyActivityFilter.Transfers]).toEqual([]);
+    expect(buckets[MoneyActivityFilter.Purchases]).toEqual([]);
+  });
+
+  it('shows microdeposits in All and Deposits only, even below the watermark', () => {
+    // Microdeposits are fetched whole, so there is no un-fetched page they
+    // could pop in above, and the watermark must not hide them.
+    const buckets = buildMoneyActivityBuckets(
+      { all: [], deposits: [], transfers: [] },
+      [],
+      500,
+      [],
+      [],
+      [
+        {
+          id: 'micro-1',
+          amount: '0.34',
+          currencyCode: 'USD',
+          counterpartyName: 'CHASE',
+          time: 100,
+        },
+      ],
+    );
+
+    expect(buckets[MoneyActivityFilter.All].map((i) => i.id)).toEqual([
+      'micro-1',
+    ]);
+    expect(buckets[MoneyActivityFilter.Deposits].map((i) => i.id)).toEqual([
+      'micro-1',
+    ]);
+    expect(buckets[MoneyActivityFilter.Transfers]).toEqual([]);
+    expect(buckets[MoneyActivityFilter.Purchases]).toEqual([]);
+  });
+
+  it('keeps card spends and cashback out of Deposits and Sends; both into All', () => {
+    const buckets = buildMoneyActivityBuckets(onchain, [card, cashback]);
+
+    const ids = (filter: MoneyActivityFilter) =>
+      buckets[filter].map((i) => i.id);
+
+    // All contains both API rows.
+    expect(ids(MoneyActivityFilter.All)).toEqual(
+      expect.arrayContaining(['0xback', '0xcard', 'all']),
+    );
+    // Deposits and Sends are on-chain only — every API row is a Purchase,
+    // cashback included.
+    expect(ids(MoneyActivityFilter.Deposits)).toEqual(['dep']);
+    expect(ids(MoneyActivityFilter.Transfers)).toEqual(['xfer']);
+  });
+
+  it.each([
+    ['Sends', MoneyActivityFilter.Transfers, 'transfers'],
+    ['Deposits', MoneyActivityFilter.Deposits, 'deposits'],
+  ] as const)(
+    'still dedupes an on-chain API-sourced row out of %s',
+    (_label, filter, key) => {
+      // A card spend or cashback credit that also landed in the local
+      // TransactionController would otherwise render as a plain send/deposit;
+      // the API hash must suppress it.
+      const shared = '0xCaRd' as Hex;
+      const buckets = buildMoneyActivityBuckets(
+        { ...onchain, [key]: [onchainTx('dup', 200, shared)] },
+        [cardTx('0xcard' as Hex, 200)],
+      );
+
+      expect(buckets[filter]).toEqual([]);
+    },
+  );
+
+  it('groups all card activity (spend, cashback, refund) into Purchases without on-chain rows', () => {
+    const buckets = buildMoneyActivityBuckets(onchain, [
+      card,
+      cashback,
+      refund,
+    ]);
+
+    const ids = (filter: MoneyActivityFilter) =>
+      buckets[filter].map((i) => i.id);
+
+    // Purchases: every card-related row, time-descending, and no on-chain rows.
+    expect(ids(MoneyActivityFilter.Purchases)).toEqual([
+      '0xback',
+      '0xrefund',
+      '0xcard',
+    ]);
+    // Refund flows into All but leaves Deposits/Sends untouched (additive).
+    expect(ids(MoneyActivityFilter.All)).toContain('0xrefund');
+    expect(ids(MoneyActivityFilter.Deposits)).not.toContain('0xrefund');
+    expect(ids(MoneyActivityFilter.Transfers)).not.toContain('0xrefund');
+  });
+
+  it('keeps each bucket time-descending', () => {
+    const buckets = buildMoneyActivityBuckets(onchain, [card, cashback]);
+    const times = buckets[MoneyActivityFilter.All].map((i) => i.time);
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+  });
+
+  it('withholds rows older than the watermark from every bucket', () => {
+    // Watermark at 100: the on-chain rows (50/40/30) are below it and may have
+    // un-fetched API rows above them, so they must not render yet.
+    const buckets = buildMoneyActivityBuckets(onchain, [card, cashback], 100);
+
+    expect(buckets[MoneyActivityFilter.All].map((i) => i.id)).toEqual([
+      '0xback',
+      '0xcard',
+    ]);
+    // Deposits and Sends hold only on-chain rows, and theirs (40/30) are both
+    // below the watermark.
+    expect(buckets[MoneyActivityFilter.Deposits]).toEqual([]);
+    expect(buckets[MoneyActivityFilter.Transfers]).toEqual([]);
+  });
+
+  it('withholds rows at exactly the watermark (second-resolution ties)', () => {
+    // The card row sits exactly on the watermark (200). The next un-fetched
+    // page can open with rows at the same timestamp whose id tiebreak would
+    // sort them above this one, so it must not render yet — from any bucket,
+    // including the API-only Purchases tab.
+    const buckets = buildMoneyActivityBuckets(onchain, [card, cashback], 200);
+
+    expect(buckets[MoneyActivityFilter.All].map((i) => i.id)).toEqual([
+      '0xback',
+    ]);
+    expect(buckets[MoneyActivityFilter.Purchases].map((i) => i.id)).toEqual([
+      '0xback',
+    ]);
+  });
+
+  it('keeps in-flight VBA rows below the watermark', () => {
+    // Pending provider rows are pinned to the top of the list, so the
+    // watermark cannot reorder them; withholding one would hide a deposit
+    // already known to be in progress.
+    const neobank: NeobankBankTransferActivity[] = [
+      { id: 'pending-old', autorampId: 'ar-1', status: 'Pending', time: 50 },
+      { id: 'failed-old', autorampId: 'ar-1', status: 'Failed', time: 40 },
+    ];
+
+    const buckets = buildMoneyActivityBuckets(
+      onchain,
+      [card, cashback],
+      100,
+      [],
+      neobank,
+    );
+
+    expect(buckets[MoneyActivityFilter.All].map((i) => i.id)).toEqual([
+      '0xback',
+      '0xcard',
+      'pending-old',
+    ]);
+    expect(buckets[MoneyActivityFilter.Deposits].map((i) => i.id)).toEqual([
+      'pending-old',
+    ]);
+  });
+
+  it('shows everything when the watermark is -Infinity (fully loaded)', () => {
+    const buckets = buildMoneyActivityBuckets(
+      onchain,
+      [card, cashback],
+      Number.NEGATIVE_INFINITY,
+    );
+    expect(buckets[MoneyActivityFilter.All]).toHaveLength(3);
+  });
+
+  it('injects declined card txs into All and Purchases only', () => {
+    const declined = {
+      id: 'declined-1',
+      providerId: 'baanx' as const,
+      timestamp: 280,
+      status: CardTransactionStatus.Failed,
+      type: CardTransactionType.Purchase,
+      isDebit: true,
+      billingAmount: { value: '5.00', currency: 'USD' },
+      fundingSources: [],
+    };
+
+    const buckets = buildMoneyActivityBuckets(
+      onchain,
+      [card, cashback],
+      Number.NEGATIVE_INFINITY,
+      [declined],
+    );
+
+    const ids = (filter: MoneyActivityFilter) =>
+      buckets[filter].map((i) => i.id);
+
+    expect(ids(MoneyActivityFilter.All)).toContain('declined-1');
+    expect(ids(MoneyActivityFilter.Purchases)).toContain('declined-1');
+    expect(ids(MoneyActivityFilter.Deposits)).not.toContain('declined-1');
+    expect(ids(MoneyActivityFilter.Transfers)).not.toContain('declined-1');
+  });
+
+  it('withholds declined card txs at or below the watermark', () => {
+    const declined = {
+      id: 'declined-old',
+      providerId: 'baanx' as const,
+      timestamp: 150,
+      status: CardTransactionStatus.Failed,
+      type: CardTransactionType.Purchase,
+      isDebit: true,
+      billingAmount: { value: '5.00', currency: 'USD' },
+      fundingSources: [],
+    };
+
+    const buckets = buildMoneyActivityBuckets(onchain, [card], 200, [declined]);
+
+    expect(buckets[MoneyActivityFilter.All].map((i) => i.id)).not.toContain(
+      'declined-old',
+    );
+    expect(
+      buckets[MoneyActivityFilter.Purchases].map((i) => i.id),
+    ).not.toContain('declined-old');
+  });
+});
+
+describe('useMoneyActivityItems', () => {
+  const txResult = (
+    overrides: Partial<ReturnType<typeof useMoneyAccountTransactions>> = {},
+  ) =>
+    ({
+      allTransactions: [],
+      deposits: [],
+      transfers: [],
+      submittedTransactions: [],
+      moneyAddress: '0xmoney',
+      ...overrides,
+    }) as ReturnType<typeof useMoneyAccountTransactions>;
+
+  const apiResult = (
+    overrides: Partial<ReturnType<typeof useMoneyAccountApiActivity>> = {},
+  ) =>
+    ({
+      activity: [],
+      watermark: Number.NEGATIVE_INFINITY,
+      isComplete: true,
+      pageCount: 1,
+      hasMore: false,
+      loadMore: jest.fn(),
+      isLoadingMore: false,
+      isLoading: false,
+      isValuationSettling: false,
+      error: false,
+      refetch: jest.fn(),
+      ...overrides,
+    }) as ReturnType<typeof useMoneyAccountApiActivity>;
+
+  const fillAll = (count: number) => ({
+    fill: { bucket: MoneyActivityFilter.All, count },
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseMoneyAccountTransactions.mockReturnValue(txResult());
+    mockUseMoneyAccountApiActivity.mockReturnValue(apiResult());
+    mockUseMoneyVbaTransfers.mockReturnValue({
+      data: undefined,
+      refetch: jest.fn().mockResolvedValue(undefined),
+    } as never);
+    mockUseMoneyMicrodeposits.mockReturnValue({
+      microdeposits: [],
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    mockUseCardTransactionIndex.mockReturnValue(defaultIndexResult);
+    mockUseCardCapabilities.mockReturnValue(null);
+    mockEnrichmentFlags();
+  });
+
+  it('gates buckets by the watermark from the API hook', () => {
+    mockUseMoneyAccountTransactions.mockReturnValue(
+      txResult({ allTransactions: [onchainTx('old', 50)] }),
+    );
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [cardTx('0xnew' as Hex, 200)],
+        watermark: 100,
+        isComplete: false,
+        hasMore: true,
+      }),
+    );
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    // The old on-chain row (50) is below the watermark and withheld.
+    expect(
+      result.current.buckets[MoneyActivityFilter.All].map((i) => i.id),
+    ).toEqual(['0xnew']);
+    expect(result.current.hasMore).toBe(true);
+  });
+
+  it('includes completed API deposits in All and Deposits and deduplicates local settlement', () => {
+    const completed = {
+      kind: 'bank_transfer' as const,
+      hash: `0x${'a'.repeat(64)}` as Hex,
+      time: 300,
+      chainId: '0x8f' as Hex,
+      token: { address: '0xmusd' as Hex, symbol: 'mUSD', decimals: 6 },
+      amount: '15000000',
+      receivedFrom: '0xsender' as Hex,
+      status: 'confirmed' as const,
+    };
+    mockUseSelector.mockImplementation((selector: unknown) => {
+      if (selector === selectMoneyVbaCompletedActivityEnabled) return true;
+      if (selector === selectMoneyVbaPendingActivityEnabled) return true;
+      return false;
+    });
+    mockUseMoneyAccountTransactions.mockReturnValue(
+      txResult({
+        allTransactions: [onchainTx('local-duplicate', 300, completed.hash)],
+        deposits: [onchainTx('local-duplicate', 300, completed.hash)],
+      }),
+    );
+    mockUseMoneyVbaTransfers.mockReturnValue({
+      data: {
+        transfers: [
+          {
+            event_id: 'event-1',
+            transfer_id: 'transfer-1',
+            status: 'confirmed',
+            event_timestamp: '2026-10-21T14:59:26.769Z',
+            updated_at: '2026-10-22T12:00:00.000Z',
+            transfer: {
+              sender_address: '0xsender',
+              recipient_address: '0xmoney',
+              network: 'Monad',
+              amount: '15.000000',
+              asset: 'mUSD',
+              transaction_hash: completed.hash,
+            },
+          },
+        ],
+      },
+      refetch: jest.fn(),
+    } as never);
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(result.current.buckets[MoneyActivityFilter.All]).toHaveLength(1);
+    expect(result.current.buckets[MoneyActivityFilter.All][0]).toMatchObject({
+      kind: 'accountsApi',
+      id: completed.hash,
+      tx: { kind: 'bank_transfer', amount: '15000000' },
+    });
+    expect(result.current.buckets[MoneyActivityFilter.Deposits]).toHaveLength(
+      1,
+    );
+    expect(result.current.buckets[MoneyActivityFilter.Deposits][0].id).toBe(
+      completed.hash,
+    );
+    expect(result.current.buckets[MoneyActivityFilter.Transfers]).toEqual([]);
+  });
+
+  it('keeps the local settlement when the completed VBA row is below the watermark', () => {
+    // The transfer was initiated before the paging boundary and confirmed
+    // after it. Its row is stamped with the older event time and withheld by
+    // the watermark, so it must not suppress the newer local settlement row.
+    const hash = `0x${'a'.repeat(64)}` as Hex;
+    const settlementTime = Date.parse('2026-10-22T12:00:00.000Z');
+    mockUseSelector.mockImplementation((selector: unknown) => {
+      if (selector === selectMoneyVbaCompletedActivityEnabled) return true;
+      if (selector === selectMoneyVbaPendingActivityEnabled) return true;
+      return false;
+    });
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [cardTx('0xnew' as Hex, settlementTime + 1000)],
+        watermark: Date.parse('2026-10-22T00:00:00.000Z'),
+        isComplete: false,
+        hasMore: true,
+      }),
+    );
+    mockUseMoneyAccountTransactions.mockReturnValue(
+      txResult({
+        allTransactions: [onchainTx('local-settlement', settlementTime, hash)],
+        deposits: [onchainTx('local-settlement', settlementTime, hash)],
+      }),
+    );
+    mockUseMoneyVbaTransfers.mockReturnValue({
+      data: {
+        transfers: [
+          {
+            event_id: 'event-1',
+            transfer_id: 'transfer-1',
+            status: 'confirmed',
+            event_timestamp: '2026-10-21T14:59:26.769Z',
+            updated_at: '2026-10-22T12:00:00.000Z',
+            transfer: {
+              sender_address: '0xsender',
+              recipient_address: '0xmoney',
+              network: 'Monad',
+              amount: '15.000000',
+              asset: 'mUSD',
+              transaction_hash: hash,
+            },
+          },
+        ],
+      },
+      refetch: jest.fn(),
+    } as never);
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(
+      result.current.buckets[MoneyActivityFilter.All].map((item) => item.id),
+    ).toEqual(['0xnew', 'local-settlement']);
+    expect(
+      result.current.buckets[MoneyActivityFilter.Deposits].map((i) => i.id),
+    ).toEqual(['local-settlement']);
+  });
+
+  it('keeps the empty feed settling while completed activity is still loading', () => {
+    mockUseSelector.mockImplementation((selector: unknown) => {
+      if (selector === selectMoneyVbaCompletedActivityEnabled) return true;
+      if (selector === selectMoneyVbaPendingActivityEnabled) return false;
+      return false;
+    });
+    mockUseMoneyVbaTransfers.mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      refetch: jest.fn(),
+    } as never);
+
+    const { result } = renderHook(() => useMoneyActivityItems(fillAll(5)));
+
+    expect(result.current.isSettling).toBe(true);
+  });
+
+  it('merges microdeposits into All and Deposits', () => {
+    mockUseMoneyMicrodeposits.mockReturnValue({
+      microdeposits: [
+        {
+          id: 'micro-1',
+          amount: '0.34',
+          currencyCode: 'USD',
+          counterpartyName: 'CHASE',
+          time: 900,
+        },
+      ],
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(
+      result.current.buckets[MoneyActivityFilter.All].map((item) => item.id),
+    ).toContain('micro-1');
+    expect(
+      result.current.buckets[MoneyActivityFilter.Deposits].map(
+        (item) => item.id,
+      ),
+    ).toContain('micro-1');
+  });
+
+  it('refetches microdeposits with the feed', () => {
+    const refetchMicrodeposits = jest.fn();
+    mockUseMoneyMicrodeposits.mockReturnValue({
+      microdeposits: [],
+      isLoading: false,
+      refetch: refetchMicrodeposits,
+    });
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    act(() => {
+      result.current.refetch();
+    });
+
+    expect(refetchMicrodeposits).toHaveBeenCalled();
+  });
+
+  it('keeps the empty feed settling while microdeposits load', () => {
+    mockUseMoneyMicrodeposits.mockReturnValue({
+      microdeposits: [],
+      isLoading: true,
+      refetch: jest.fn(),
+    });
+
+    const { result } = renderHook(() => useMoneyActivityItems(fillAll(5)));
+
+    expect(result.current.isSettling).toBe(true);
+  });
+
+  it('shows API pending/error rows without completed rows when only pending is enabled', () => {
+    mockEnrichmentFlags({ pendingActivity: true });
+    mockUseMoneyVbaTransfers.mockReturnValue({
+      data: {
+        transfers: [
+          {
+            event_id: 'processing-event',
+            transfer_id: 'processing-id',
+            status: 'processing',
+            event_timestamp: '2026-10-22T12:00:00.000Z',
+            updated_at: '2026-10-22T12:00:00.000Z',
+            transfer: {
+              sender_address: '0xsender',
+              recipient_address: '0xmoney',
+              network: 'Monad',
+              amount: '15.000000',
+              asset: 'mUSD',
+              transaction_hash: null,
+            },
+          },
+          {
+            event_id: 'error-event',
+            transfer_id: 'error-id',
+            status: 'error',
+            event_timestamp: '2026-10-22T11:00:00.000Z',
+            updated_at: '2026-10-22T12:00:00.000Z',
+            transfer: {
+              sender_address: '0xsender',
+              recipient_address: '0xmoney',
+              network: 'Monad',
+              amount: '15.000000',
+              asset: 'mUSD',
+              transaction_hash: null,
+            },
+          },
+          {
+            event_id: 'confirmed-event',
+            transfer_id: 'confirmed-id',
+            status: 'confirmed',
+            event_timestamp: '2026-10-22T10:00:00.000Z',
+            updated_at: '2026-10-22T12:00:00.000Z',
+            transfer: {
+              sender_address: '0xsender',
+              recipient_address: '0xmoney',
+              network: 'Monad',
+              amount: '15.000000',
+              asset: 'mUSD',
+              transaction_hash: `0x${'c'.repeat(64)}`,
+            },
+          },
+        ],
+      },
+      refetch: jest.fn(),
+    } as never);
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+    const all = result.current.buckets[MoneyActivityFilter.All];
+    const deposits = result.current.buckets[MoneyActivityFilter.Deposits];
+
+    expect(all.map((item) => [item.kind, item.id])).toEqual([
+      ['neobank', 'processing-id'],
+      ['neobank', 'error-id'],
+    ]);
+    expect(deposits.map((item) => item.id)).toEqual([
+      'processing-id',
+      'error-id',
+    ]);
+  });
+
+  it('shows completed rows without pending/error rows when only completed is enabled', () => {
+    mockEnrichmentFlags({ pendingActivity: false });
+    mockUseSelector.mockImplementation((selector: unknown) => {
+      if (selector === selectMoneyVbaCompletedActivityEnabled) return true;
+      if (selector === selectMoneyVbaPendingActivityEnabled) return false;
+      return false;
+    });
+    mockUseMoneyVbaTransfers.mockReturnValue({
+      data: {
+        transfers: [
+          {
+            event_id: 'processing-event',
+            transfer_id: 'processing-id',
+            status: 'processing',
+            event_timestamp: '2026-10-22T12:00:00.000Z',
+            updated_at: '2026-10-22T12:00:00.000Z',
+            transfer: {
+              sender_address: '0xsender',
+              recipient_address: '0xmoney',
+              network: 'Monad',
+              amount: '15.000000',
+              asset: 'mUSD',
+              transaction_hash: null,
+            },
+          },
+          {
+            event_id: 'confirmed-event',
+            transfer_id: 'confirmed-id',
+            status: 'confirmed',
+            event_timestamp: '2026-10-22T10:00:00.000Z',
+            updated_at: '2026-10-22T12:00:00.000Z',
+            transfer: {
+              sender_address: '0xsender',
+              recipient_address: '0xmoney',
+              network: 'Monad',
+              amount: '15.000000',
+              asset: 'mUSD',
+              transaction_hash: `0x${'c'.repeat(64)}`,
+            },
+          },
+        ],
+      },
+      refetch: jest.fn(),
+    } as never);
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+    const all = result.current.buckets[MoneyActivityFilter.All];
+
+    expect(all.map((item) => item.kind)).toEqual(['accountsApi']);
+    expect(all[0].id).toBe(`0x${'c'.repeat(64)}`);
+  });
+
+  it('fetches more pages until the fill bucket reaches its count', () => {
+    const loadMore = jest.fn();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [cardTx('0xa' as Hex, 200)],
+        watermark: Number.NEGATIVE_INFINITY,
+        isComplete: false,
+        hasMore: true,
+        loadMore,
+      }),
+    );
+
+    renderHook(() => useMoneyActivityItems(fillAll(5)));
+
+    // Only one safe row but five wanted and more pages remain → fetch more.
+    expect(loadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it('fills the target bucket, not All: an empty Deposits tab keeps fetching', () => {
+    // Card rows land in All/Purchases but not Deposits, so a fill targeting
+    // Deposits must keep paging even though All has rows.
+    const loadMore = jest.fn();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [cardTx('0xa' as Hex, 200)],
+        isComplete: false,
+        hasMore: true,
+        loadMore,
+      }),
+    );
+
+    const { result } = renderHook(() =>
+      useMoneyActivityItems({
+        fill: { bucket: MoneyActivityFilter.Deposits, count: 5 },
+      }),
+    );
+
+    expect(loadMore).toHaveBeenCalledTimes(1);
+    // And the empty target bucket reports as settling while it fetches.
+    expect(result.current.isSettling).toBe(true);
+  });
+
+  it('does not over-fetch once the fill bucket already meets its count', () => {
+    const loadMore = jest.fn();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [
+          cardTx('0xa' as Hex, 205),
+          cardTx('0xb' as Hex, 204),
+          cardTx('0xc' as Hex, 203),
+        ],
+        isComplete: false,
+        hasMore: true,
+        loadMore,
+      }),
+    );
+
+    renderHook(() => useMoneyActivityItems(fillAll(2)));
+
+    expect(loadMore).not.toHaveBeenCalled();
+  });
+
+  it('stops auto-filling at a caller-provided page cap', () => {
+    const loadMore = jest.fn();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [cardTx('0xa' as Hex, 200)],
+        hasMore: true,
+        pageCount: 1,
+        loadMore,
+      }),
+    );
+
+    renderHook(() =>
+      useMoneyActivityItems({
+        fill: {
+          bucket: MoneyActivityFilter.All,
+          count: 5,
+          maxPages: 1,
+        },
+      }),
+    );
+
+    expect(loadMore).not.toHaveBeenCalled();
+  });
+
+  it('exposes valuation settling without hiding populated activity', () => {
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [cardTx('0xa' as Hex, 200)],
+        isValuationSettling: true,
+      }),
+    );
+
+    const { result } = renderHook(() => useMoneyActivityItems(fillAll(5)));
+
+    expect(result.current.isSettling).toBe(false);
+    expect(result.current.isValuationSettling).toBe(true);
+  });
+
+  it('keeps fetching while the list is empty and the page budget remains', () => {
+    const loadMore = jest.fn();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [],
+        isComplete: false,
+        hasMore: true,
+        pageCount: AUTO_FILL_MAX_PAGES - 1,
+        loadMore,
+      }),
+    );
+
+    renderHook(() => useMoneyActivityItems(fillAll(5)));
+
+    expect(loadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops auto-filling once the page budget is spent, and settles', () => {
+    // A card-less account with a long raw history parses every page to zero
+    // rows; the budget keeps that from sweeping the entire history.
+    const loadMore = jest.fn();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [],
+        isComplete: false,
+        hasMore: true,
+        pageCount: AUTO_FILL_MAX_PAGES,
+        loadMore,
+      }),
+    );
+
+    const { result } = renderHook(() => useMoneyActivityItems(fillAll(5)));
+
+    expect(loadMore).not.toHaveBeenCalled();
+    // With the fill stopped, an empty list must settle (no eternal skeleton).
+    expect(result.current.isSettling).toBe(false);
+  });
+
+  it('never auto-fetches while a page is already in flight', () => {
+    const loadMore = jest.fn();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        hasMore: true,
+        isLoadingMore: true,
+        isComplete: false,
+        loadMore,
+      }),
+    );
+
+    renderHook(() => useMoneyActivityItems(fillAll(5)));
+
+    expect(loadMore).not.toHaveBeenCalled();
+  });
+
+  it('reports isSettling while an empty list may still gain rows, and settles once it cannot', () => {
+    // Empty + auto-fill still fetching → settling.
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [],
+        isComplete: false,
+        hasMore: true,
+        pageCount: 1,
+      }),
+    );
+    const { result: filling } = renderHook(() =>
+      useMoneyActivityItems(fillAll(5)),
+    );
+    expect(filling.current.isSettling).toBe(true);
+
+    // A row on screen → settled even though more pages remain.
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [cardTx('0xa' as Hex, 200)],
+        isComplete: false,
+        hasMore: true,
+        pageCount: 1,
+      }),
+    );
+    const { result: withRow } = renderHook(() =>
+      useMoneyActivityItems(fillAll(5)),
+    );
+    expect(withRow.current.isSettling).toBe(false);
+
+    // Exhausted and empty → settled (genuinely no activity).
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({ activity: [], isComplete: true, hasMore: false }),
+    );
+    const { result: exhausted } = renderHook(() =>
+      useMoneyActivityItems(fillAll(5)),
+    );
+    expect(exhausted.current.isSettling).toBe(false);
+  });
+
+  it('reports isSettling during the initial load', () => {
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({ isLoading: true, isComplete: false, pageCount: 0 }),
+    );
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(result.current.isSettling).toBe(true);
+  });
+
+  it('passes through error and refetch from the API hook', () => {
+    const refetch = jest.fn();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({ error: true, refetch }),
+    );
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(result.current.error).toBe(true);
+    result.current.refetch();
+    expect(refetch).toHaveBeenCalled();
+  });
+
+  it('does not surface declined rows or enrichment when flags/capabilities are off', () => {
+    const declined: CardTransaction = {
+      id: 'declined-1',
+      providerId: 'baanx',
+      timestamp: 280,
+      status: CardTransactionStatus.Failed,
+      type: CardTransactionType.Purchase,
+      isDebit: true,
+      billingAmount: { value: '1.00', currency: 'USD' },
+      fundingSources: [],
+    };
+    const bySettlementHash = new Map([['0xabc', declined]]);
+    mockUseCardTransactionIndex.mockReturnValue({
+      ...defaultIndexResult,
+      declined: [declined],
+      bySettlementHash,
+    });
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(
+      result.current.buckets[MoneyActivityFilter.All].map((i) => i.id),
+    ).not.toContain('declined-1');
+    expect(result.current.cardEnrichmentByHash.size).toBe(0);
+  });
+
+  it('keeps enrichment off for Immersve even when transaction history is supported', () => {
+    mockEnrichmentFlags({
+      master: true,
+      enrichment: true,
+      moneyAccount: true,
+      geoEligible: true,
+    });
+    mockUseCardCapabilities.mockReturnValue({
+      supportsTransactionHistory: true,
+      supportsMoneyAccountLinking: false,
+      reportsVerificationStatus: false,
+    } as never);
+
+    const declined: CardTransaction = {
+      id: 'declined-immersve',
+      providerId: 'immersve',
+      timestamp: 280,
+      status: CardTransactionStatus.Failed,
+      type: CardTransactionType.Purchase,
+      isDebit: true,
+      billingAmount: { value: '1.00', currency: 'USD' },
+      fundingSources: [],
+    };
+    mockUseCardTransactionIndex.mockReturnValue({
+      ...defaultIndexResult,
+      declined: [declined],
+    });
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(
+      result.current.buckets[MoneyActivityFilter.All].map((i) => i.id),
+    ).not.toContain('declined-immersve');
+    expect(mockUseCardTransactionIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
+  });
+
+  it('drops declined rows and enrichment when the Card index errors', () => {
+    enableEnrichment();
+    const declined: CardTransaction = {
+      id: 'declined-1',
+      providerId: 'baanx',
+      timestamp: 280,
+      status: CardTransactionStatus.Failed,
+      type: CardTransactionType.Purchase,
+      isDebit: true,
+      billingAmount: { value: '1.00', currency: 'USD' },
+      fundingSources: [],
+    };
+    mockUseCardTransactionIndex.mockReturnValue({
+      ...defaultIndexResult,
+      declined: [declined],
+      bySettlementHash: new Map([['0xabc', declined]]),
+      isError: true,
+    });
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(
+      result.current.buckets[MoneyActivityFilter.All].map((i) => i.id),
+    ).not.toContain('declined-1');
+    expect(result.current.cardEnrichmentByHash.size).toBe(0);
+    expect(result.current.isSettling).toBe(false);
+  });
+
+  it('reports isSettling while enrichment is paging an empty bucket', () => {
+    enableEnrichment();
+    mockUseCardTransactionIndex.mockReturnValue({
+      ...defaultIndexResult,
+      isSettling: true,
+    });
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(result.current.isSettling).toBe(true);
+  });
+
+  it('does not hide a populated feed while enrichment is still paging', () => {
+    enableEnrichment();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({ activity: [cardTx('0xa' as Hex, 200)] }),
+    );
+    mockUseCardTransactionIndex.mockReturnValue({
+      ...defaultIndexResult,
+      isSettling: true,
+    });
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(result.current.buckets[MoneyActivityFilter.All]).toHaveLength(1);
+    expect(result.current.isSettling).toBe(false);
+  });
+
+  it('injects declined rows and enrichment once enrichment is ready', () => {
+    enableEnrichment();
+    const declined: CardTransaction = {
+      id: 'declined-1',
+      providerId: 'baanx',
+      timestamp: 280,
+      status: CardTransactionStatus.Failed,
+      type: CardTransactionType.Purchase,
+      isDebit: true,
+      billingAmount: { value: '1.00', currency: 'USD' },
+      fundingSources: [],
+    };
+    const bySettlementHash = new Map([['0xabc', declined]]);
+    mockUseCardTransactionIndex.mockReturnValue({
+      ...defaultIndexResult,
+      declined: [declined],
+      bySettlementHash,
+    });
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(
+      result.current.buckets[MoneyActivityFilter.All].map((i) => i.id),
+    ).toContain('declined-1');
+    expect(result.current.cardEnrichmentByHash).toBe(bySettlementHash);
+  });
+
+  it('floors the Card index at the oldest API row while more pages remain', () => {
+    enableEnrichment();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [cardTx('0xnew' as Hex, 300), cardTx('0xold' as Hex, 100)],
+        watermark: 100,
+        isComplete: false,
+        hasMore: true,
+      }),
+    );
+
+    renderHook(() => useMoneyActivityItems());
+
+    expect(mockUseCardTransactionIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ oldestVisibleTime: 100 }),
+    );
+  });
+
+  it('clears the Card index floor once Accounts API paging is exhausted', () => {
+    enableEnrichment();
+    mockUseMoneyAccountApiActivity.mockReturnValue(
+      apiResult({
+        activity: [cardTx('0xnew' as Hex, 300), cardTx('0xold' as Hex, 100)],
+        watermark: Number.NEGATIVE_INFINITY,
+        isComplete: true,
+        hasMore: false,
+      }),
+    );
+
+    renderHook(() => useMoneyActivityItems());
+
+    expect(mockUseCardTransactionIndex).toHaveBeenCalledWith(
+      expect.objectContaining({ oldestVisibleTime: undefined }),
+    );
+  });
+
+  it('deduplicates API processing rows against local settlement hashes', () => {
+    const hash = `0x${'d'.repeat(64)}` as Hex;
+    mockUseMoneyAccountTransactions.mockReturnValue(
+      txResult({
+        allTransactions: [onchainTx('local-settlement', 300, hash)],
+        deposits: [onchainTx('local-settlement', 300, hash)],
+      }),
+    );
+    mockEnrichmentFlags({ pendingActivity: true });
+    mockUseMoneyVbaTransfers.mockReturnValue({
+      data: {
+        transfers: [
+          {
+            event_id: 'processing-event',
+            transfer_id: 'processing-id',
+            status: 'processing',
+            event_timestamp: '2026-10-22T12:00:00.000Z',
+            updated_at: '2026-10-22T12:00:00.000Z',
+            transfer: {
+              sender_address: '0xsender',
+              recipient_address: '0xmoney',
+              network: 'Monad',
+              amount: '15.000000',
+              asset: 'mUSD',
+              transaction_hash: hash,
+            },
+          },
+        ],
+      },
+      refetch: jest.fn(),
+    } as never);
+
+    const { result } = renderHook(() => useMoneyActivityItems());
+
+    expect(result.current.buckets[MoneyActivityFilter.All]).toEqual([
+      expect.objectContaining({ kind: 'onchain', id: 'local-settlement' }),
+    ]);
+  });
+});

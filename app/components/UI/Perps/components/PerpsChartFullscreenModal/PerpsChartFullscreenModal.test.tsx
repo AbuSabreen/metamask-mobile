@@ -1,0 +1,992 @@
+import React from 'react';
+import { render, fireEvent, waitFor, act } from '@testing-library/react-native';
+import PerpsChartFullscreenModal from './PerpsChartFullscreenModal';
+import {
+  lockAsync,
+  unlockAsync,
+  OrientationLock,
+} from 'expo-screen-orientation';
+import {
+  CandlePeriod,
+  PERPS_EVENT_PROPERTY,
+  PERPS_EVENT_VALUE,
+  type CandleData,
+} from '@metamask/perps-controller';
+import type { OhlcData, TPSLLines } from '../TradingViewChart/TradingViewChart';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import {
+  PerpsChartFullscreenModalSelectorsIDs,
+  PerpsOHLCVBarSelectorsIDs,
+} from '../../Perps.testIds';
+import {
+  PERPS_EVENT_PROPERTY as PERPS_CHART_EVENT_PROPERTY,
+  PERPS_EVENT_VALUE as PERPS_CHART_EVENT_VALUE,
+} from '@metamask/perps-controller/constants';
+
+jest.mock('expo-screen-orientation');
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(),
+}));
+jest.mock('../../../../../util/Logger');
+
+const mockTrack = jest.fn();
+
+jest.mock('../../hooks/usePerpsEventTracking', () => ({
+  usePerpsEventTracking: () => ({
+    track: mockTrack,
+  }),
+}));
+
+const mockLockAsync = lockAsync as jest.MockedFunction<typeof lockAsync>;
+const mockUnlockAsync = unlockAsync as jest.MockedFunction<typeof unlockAsync>;
+const mockTradingViewChart = jest.fn();
+const mockPerpsAdvancedChart = jest.fn();
+
+jest.mock('react-native-modal', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  const { View } = require('react-native');
+  return ({
+    isVisible,
+    children,
+    ...props
+  }: {
+    isVisible: boolean;
+    children: React.ReactNode;
+    [key: string]: unknown;
+  }) =>
+    isVisible ? (
+      <View testID="modal-container" {...props}>
+        {children}
+      </View>
+    ) : null;
+});
+
+jest.mock('../../../../../component-library/hooks', () => ({
+  useStyles: () => ({
+    styles: {
+      modal: {},
+      container: {},
+      header: {},
+      headerTopRow: {},
+      chartContainer: {},
+      intervalSelectorWrapper: {},
+      ohlcvWrapper: {},
+    },
+  }),
+}));
+
+jest.mock('../TradingViewChart', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  const ReactMock = require('react');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  const { View } = require('react-native');
+  return ReactMock.forwardRef(
+    (
+      {
+        testID,
+        onOhlcDataChange: _onOhlcDataChange,
+      }: { testID: string; onOhlcDataChange?: (data: unknown) => void },
+      ref: unknown,
+    ) => {
+      mockTradingViewChart({ testID, onOhlcDataChange: _onOhlcDataChange });
+      ReactMock.useImperativeHandle(ref, () => ({
+        zoomToLatestCandle: jest.fn(),
+        resetToDefault: jest.fn(),
+      }));
+      return <View testID={testID} />;
+    },
+  );
+});
+
+jest.mock('../PerpsAdvancedChart/PerpsAdvancedChart', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  const { TouchableOpacity } = require('react-native');
+  return jest.fn(
+    ({
+      onCrosshairDataChange,
+      ...props
+    }: {
+      onCrosshairDataChange?: (data: OhlcData | null) => void;
+      [key: string]: unknown;
+    }) => {
+      mockPerpsAdvancedChart({ onCrosshairDataChange, ...props });
+      return (
+        <TouchableOpacity
+          testID="perps-advanced-chart"
+          onPress={() =>
+            onCrosshairDataChange?.({
+              time: 1234567890,
+              open: '100',
+              high: '110',
+              low: '90',
+              close: '105',
+              volume: '1000',
+            })
+          }
+        />
+      );
+    },
+  );
+});
+
+jest.mock(
+  '../PerpsCandlestickChartIntervalSelector/PerpsCandlestickChartIntervalSelector',
+  () => ({
+    __esModule: true,
+    default: jest.fn(
+      ({
+        onIntervalChange,
+        testID,
+      }: {
+        onIntervalChange?: (interval: string) => void;
+        testID: string;
+      }) => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+        const { TouchableOpacity, Text } = require('react-native');
+        return (
+          <TouchableOpacity
+            onPress={() => onIntervalChange?.('1h')}
+            testID={testID}
+          >
+            <Text>Interval Selector</Text>
+          </TouchableOpacity>
+        );
+      },
+    ),
+  }),
+);
+
+jest.mock('../PerpsOHLCVBar', () =>
+  jest.fn(() => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+    const { View } = require('react-native');
+    return <View testID="ohlcv-bar" />;
+  }),
+);
+
+jest.mock('../../../ComponentErrorBoundary', () =>
+  jest.fn(({ children }: { children: React.ReactNode }) => children),
+);
+
+describe('PerpsChartFullscreenModal', () => {
+  const mockOnClose = jest.fn();
+  const mockOnIntervalChange = jest.fn();
+
+  const defaultProps = {
+    isVisible: false,
+    candleData: null,
+    selectedInterval: CandlePeriod.OneHour,
+    onClose: mockOnClose,
+    onIntervalChange: mockOnIntervalChange,
+  };
+
+  const mockCandleData: CandleData = {
+    symbol: 'BTC',
+    interval: CandlePeriod.OneHour,
+    candles: [
+      {
+        time: 1234567890,
+        open: '100',
+        high: '110',
+        low: '90',
+        close: '105',
+        volume: '1000',
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLockAsync.mockResolvedValue();
+    mockUnlockAsync.mockResolvedValue();
+    mockTrack.mockClear();
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('Modal Visibility', () => {
+    it('renders modal when isVisible is true', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.MODAL),
+      ).toBeDefined();
+    });
+
+    it('does not render modal when isVisible is false', () => {
+      const { queryByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible={false} />,
+      );
+
+      expect(
+        queryByTestId(PerpsChartFullscreenModalSelectorsIDs.MODAL),
+      ).toBeNull();
+    });
+
+    it('renders chart when modal is visible', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={mockCandleData}
+        />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART),
+      ).toBeDefined();
+    });
+  });
+
+  describe('Orientation Management', () => {
+    it('unlocks orientation when modal opens', async () => {
+      render(<PerpsChartFullscreenModal {...defaultProps} isVisible />);
+
+      await waitFor(() => {
+        expect(mockUnlockAsync).toHaveBeenCalled();
+      });
+    });
+
+    it('locks orientation to portrait when modal closes', async () => {
+      const { rerender } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      await waitFor(() => {
+        expect(mockUnlockAsync).toHaveBeenCalled();
+      });
+
+      rerender(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible={false} />,
+      );
+
+      await waitFor(() => {
+        expect(mockLockAsync).toHaveBeenCalledWith(OrientationLock.PORTRAIT_UP);
+      });
+    });
+
+    it('calls onClose when close button is pressed (orientation locked via visibility change)', async () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsChartFullscreenModalSelectorsIDs.CLOSE_BUTTON),
+        );
+      });
+
+      // onClose is called, which triggers isVisible to become false,
+      // which causes the hook to lock orientation
+      await waitFor(() => {
+        expect(mockOnClose).toHaveBeenCalled();
+      });
+    });
+
+    it('locks orientation on cleanup when component unmounts', async () => {
+      const { unmount } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      // Wait for the initial effect to complete before unmounting
+      await waitFor(() => {
+        expect(mockUnlockAsync).toHaveBeenCalled();
+      });
+
+      unmount();
+
+      await waitFor(() => {
+        expect(mockLockAsync).toHaveBeenCalledWith(OrientationLock.PORTRAIT_UP);
+      });
+    });
+
+    it('handles orientation lock errors gracefully', async () => {
+      mockUnlockAsync.mockRejectedValueOnce(new Error('Lock failed'));
+
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      // Verify modal still renders and is functional despite orientation lock error
+      await waitFor(() => {
+        expect(getByTestId('perps-chart-fullscreen-close-button')).toBeTruthy();
+      });
+
+      // Verify modal can still be closed
+      const closeButton = getByTestId('perps-chart-fullscreen-close-button');
+      fireEvent.press(closeButton);
+
+      await waitFor(() => {
+        expect(defaultProps.onClose).toHaveBeenCalled();
+      });
+    });
+
+    it('calls onClose even when orientation lock fails on close', async () => {
+      mockLockAsync.mockRejectedValueOnce(new Error('Lock failed'));
+
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsChartFullscreenModalSelectorsIDs.CLOSE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockOnClose).toHaveBeenCalled();
+      });
+    });
+
+    it('tracks warning chart errors with chart context', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+      const ComponentErrorBoundary = require('../../../ComponentErrorBoundary');
+      const mockOnError = jest.fn();
+
+      ComponentErrorBoundary.mockImplementationOnce(
+        ({
+          onError,
+          children,
+        }: {
+          onError: () => void;
+          children: React.ReactNode;
+        }) => {
+          mockOnError.mockImplementation(onError);
+          return children;
+        },
+      );
+
+      render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          isAdvancedChartEnabled
+          symbol="BTC"
+        />,
+      );
+
+      await act(async () => {
+        mockOnError();
+      });
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_ERROR,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.ERROR_TYPE]:
+            PERPS_EVENT_VALUE.ERROR_TYPE.WARNING,
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.ADVANCED,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+    });
+  });
+
+  describe('Interval Selection', () => {
+    it('renders interval selector', () => {
+      const { getByText } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      expect(getByText('Interval Selector')).toBeDefined();
+    });
+
+    it('calls onIntervalChange when interval is selected', () => {
+      const { getByText } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      fireEvent.press(getByText('Interval Selector'));
+
+      expect(mockOnIntervalChange).toHaveBeenCalledWith('1h');
+    });
+  });
+
+  describe('Close Button', () => {
+    it('renders close button', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.CLOSE_BUTTON),
+      ).toBeDefined();
+    });
+
+    it('calls onClose when close button is pressed', async () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsChartFullscreenModalSelectorsIDs.CLOSE_BUTTON),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockOnClose).toHaveBeenCalled();
+      });
+    });
+
+    it('calls onClose immediately when pressed (orientation managed by hook)', async () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(PerpsChartFullscreenModalSelectorsIDs.CLOSE_BUTTON),
+        );
+      });
+
+      // onClose is called immediately; orientation locking happens
+      // via the useScreenOrientation hook when isVisible changes
+      await waitFor(() => {
+        expect(mockOnClose).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Chart Rendering', () => {
+    it('renders TradingViewChart with correct props', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={mockCandleData}
+        />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART),
+      ).toBeDefined();
+      expect(mockTradingViewChart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          testID: PerpsChartFullscreenModalSelectorsIDs.CHART,
+        }),
+      );
+    });
+
+    it('passes tpslLines to chart when provided', () => {
+      const mockTpslLines: TPSLLines = {
+        takeProfitPrice: '110',
+        stopLossPrice: '90',
+      };
+
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={mockCandleData}
+          tpslLines={mockTpslLines}
+        />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART),
+      ).toBeDefined();
+    });
+
+    it('renders PerpsAdvancedChart when advanced charts are enabled with a symbol', () => {
+      const mockTpslLines: TPSLLines = {
+        takeProfitPrice: '110',
+        stopLossPrice: '90',
+      };
+
+      const mockFallbackFetchMoreHistory = jest.fn();
+
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={mockCandleData}
+          isAdvancedChartEnabled
+          symbol="BTC"
+          tpslLines={mockTpslLines}
+          positionSize="0.5"
+          szDecimals={2}
+          fallbackFetchMoreHistory={mockFallbackFetchMoreHistory}
+        />,
+      );
+
+      expect(getByTestId('perps-advanced-chart')).toBeDefined();
+      expect(mockPerpsAdvancedChart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          symbol: 'BTC',
+          interval: CandlePeriod.OneHour,
+          visibleCandleCount: expect.any(Number),
+          tpslLines: mockTpslLines,
+          positionSize: '0.5',
+          szDecimals: 2,
+          surface: 'full_screen_chart',
+          fallbackCandleData: mockCandleData,
+          fallbackFetchMoreHistory: mockFallbackFetchMoreHistory,
+        }),
+      );
+      expect(mockTradingViewChart).not.toHaveBeenCalled();
+    });
+
+    it('keeps TradingViewChart when advanced charts are enabled without a symbol', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={mockCandleData}
+          isAdvancedChartEnabled
+        />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART),
+      ).toBeDefined();
+      expect(mockPerpsAdvancedChart).not.toHaveBeenCalled();
+      expect(mockTradingViewChart).toHaveBeenCalled();
+    });
+
+    it('wires AdvancedChart crosshair data into the fullscreen OHLCV bar', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={mockCandleData}
+          isAdvancedChartEnabled
+          symbol="BTC"
+        />,
+      );
+
+      fireEvent.press(getByTestId('perps-advanced-chart'));
+
+      expect(getByTestId('ohlcv-bar')).toBeDefined();
+    });
+
+    it('tracks screen view when advanced chart skeleton hides', () => {
+      render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          isAdvancedChartEnabled
+          symbol="BTC"
+        />,
+      );
+
+      const latestAdvancedChartProps =
+        mockPerpsAdvancedChart.mock.calls[
+          mockPerpsAdvancedChart.mock.calls.length - 1
+        ][0];
+      latestAdvancedChartProps.onSkeletonHidden();
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.ADVANCED,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+    });
+
+    it('tracks advanced when a fullscreen advanced render succeeds after parent fallback', () => {
+      render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          isAdvancedChartEnabled
+          symbol="BTC"
+        />,
+      );
+
+      const latestAdvancedChartProps =
+        mockPerpsAdvancedChart.mock.calls[
+          mockPerpsAdvancedChart.mock.calls.length - 1
+        ][0];
+      latestAdvancedChartProps.onSkeletonHidden();
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.ADVANCED,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+    });
+
+    it('resets fullscreen screen-view tracking when the fullscreen render library changes', () => {
+      const { rerender } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={mockCandleData}
+          isAdvancedChartEnabled={false}
+          symbol="BTC"
+        />,
+      );
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.LIGHTWEIGHT,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+      mockTrack.mockClear();
+
+      rerender(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={mockCandleData}
+          isAdvancedChartEnabled
+          symbol="BTC"
+        />,
+      );
+
+      const updatedAdvancedChartProps =
+        mockPerpsAdvancedChart.mock.calls[
+          mockPerpsAdvancedChart.mock.calls.length - 1
+        ][0];
+      updatedAdvancedChartProps.onSkeletonHidden();
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.ADVANCED,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+    });
+
+    it('tracks error and keeps modal open when advanced chart reports an error', async () => {
+      render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          isAdvancedChartEnabled
+          symbol="BTC"
+        />,
+      );
+
+      const latestAdvancedChartProps =
+        mockPerpsAdvancedChart.mock.calls[
+          mockPerpsAdvancedChart.mock.calls.length - 1
+        ][0];
+      await act(async () => {
+        latestAdvancedChartProps.onError();
+      });
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_ERROR,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.ERROR_TYPE]:
+            PERPS_EVENT_VALUE.ERROR_TYPE.WARNING,
+          [PERPS_EVENT_PROPERTY.ERROR_MESSAGE]:
+            'Chart rendering error in fullscreen chart modal',
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.ADVANCED,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.LIGHTWEIGHT,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+      expect(mockOnClose).not.toHaveBeenCalled();
+
+      mockTrack.mockClear();
+      const latestFallbackChartProps =
+        mockPerpsAdvancedChart.mock.calls[
+          mockPerpsAdvancedChart.mock.calls.length - 1
+        ][0];
+      await act(async () => {
+        latestFallbackChartProps.onError();
+      });
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_ERROR,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.ERROR_TYPE]:
+            PERPS_EVENT_VALUE.ERROR_TYPE.WARNING,
+          [PERPS_EVENT_PROPERTY.ERROR_MESSAGE]:
+            'Chart rendering error in fullscreen chart modal',
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.LIGHTWEIGHT,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+    });
+
+    it('tracks lightweight fallback view after advanced screen view was already tracked', async () => {
+      render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          isAdvancedChartEnabled
+          symbol="BTC"
+        />,
+      );
+
+      const latestAdvancedChartProps =
+        mockPerpsAdvancedChart.mock.calls[
+          mockPerpsAdvancedChart.mock.calls.length - 1
+        ][0];
+      latestAdvancedChartProps.onSkeletonHidden();
+
+      await act(async () => {
+        latestAdvancedChartProps.onError();
+      });
+
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.ADVANCED,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+      expect(mockTrack).toHaveBeenCalledWith(
+        MetaMetricsEvents.PERPS_SCREEN_VIEWED,
+        expect.objectContaining({
+          [PERPS_EVENT_PROPERTY.SCREEN_TYPE]:
+            PERPS_EVENT_VALUE.SCREEN_TYPE.FULL_SCREEN_CHART,
+          [PERPS_EVENT_PROPERTY.ASSET]: 'BTC',
+          [PERPS_CHART_EVENT_PROPERTY.CHART_LIBRARY]:
+            PERPS_CHART_EVENT_VALUE.CHART_LIBRARY.LIGHTWEIGHT,
+          [PERPS_CHART_EVENT_PROPERTY.ASSET_TYPE]:
+            PERPS_CHART_EVENT_VALUE.ASSET_TYPE.PERP,
+        }),
+      );
+    });
+
+    it('does not reset fallback chart attribution after an interval change', async () => {
+      const { rerender } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          isAdvancedChartEnabled
+          symbol="BTC"
+        />,
+      );
+
+      const latestAdvancedChartProps =
+        mockPerpsAdvancedChart.mock.calls[
+          mockPerpsAdvancedChart.mock.calls.length - 1
+        ][0];
+
+      await act(async () => {
+        latestAdvancedChartProps.onError();
+      });
+      mockTrack.mockClear();
+
+      rerender(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          isAdvancedChartEnabled
+          selectedInterval={CandlePeriod.FifteenMinutes}
+          symbol="BTC"
+        />,
+      );
+
+      const latestAfterIntervalChangeProps =
+        mockPerpsAdvancedChart.mock.calls[
+          mockPerpsAdvancedChart.mock.calls.length - 1
+        ][0];
+      latestAfterIntervalChangeProps.onSkeletonHidden();
+
+      expect(mockTrack).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('OHLCV Bar', () => {
+    it('does not render OHLCV bar initially', () => {
+      const { queryByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      expect(queryByTestId(PerpsOHLCVBarSelectorsIDs.CONTAINER)).toBeNull();
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('calls onClose when chart error occurs', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+      const ComponentErrorBoundary = require('../../../ComponentErrorBoundary');
+      const mockOnError = jest.fn();
+
+      ComponentErrorBoundary.mockImplementationOnce(
+        ({
+          onError,
+          children,
+        }: {
+          onError: () => void;
+          children: React.ReactNode;
+        }) => {
+          mockOnError.mockImplementation(onError);
+          return children;
+        },
+      );
+
+      render(<PerpsChartFullscreenModal {...defaultProps} isVisible />);
+
+      await act(async () => {
+        mockOnError();
+      });
+
+      // onClose is called on error; orientation is restored via hook when isVisible changes
+      await waitFor(() => {
+        expect(mockOnClose).toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('renders without candleData', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={null}
+        />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART),
+      ).toBeDefined();
+    });
+
+    it('renders without tpslLines', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={mockCandleData}
+          tpslLines={undefined}
+        />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART),
+      ).toBeDefined();
+    });
+
+    it('handles rapid open and close transitions', async () => {
+      const { rerender } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible={false} />,
+      );
+
+      rerender(<PerpsChartFullscreenModal {...defaultProps} isVisible />);
+
+      await waitFor(() => {
+        expect(mockUnlockAsync).toHaveBeenCalled();
+      });
+
+      rerender(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible={false} />,
+      );
+
+      await waitFor(() => {
+        expect(mockLockAsync).toHaveBeenCalledWith(OrientationLock.PORTRAIT_UP);
+      });
+    });
+
+    it('renders with custom visibleCandleCount', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          visibleCandleCount={60}
+        />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART),
+      ).toBeDefined();
+    });
+
+    it('renders with all optional props undefined', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal
+          {...defaultProps}
+          isVisible
+          candleData={undefined}
+          tpslLines={undefined}
+          visibleCandleCount={undefined}
+        />,
+      );
+
+      expect(
+        getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART),
+      ).toBeDefined();
+    });
+  });
+
+  describe('Chart Height Management', () => {
+    it('calculates chart height without OHLCV bar', () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      const chart = getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART);
+      expect(chart).toBeDefined();
+      // Chart should use full available height when no OHLCV bar
+    });
+
+    it('adjusts chart height when OHLCV bar is present', async () => {
+      const { getByTestId } = render(
+        <PerpsChartFullscreenModal {...defaultProps} isVisible />,
+      );
+
+      const chart = getByTestId(PerpsChartFullscreenModalSelectorsIDs.CHART);
+      expect(chart).toBeDefined();
+      // When OHLCV data is set, chart height should subtract OHLCV bar height
+    });
+  });
+});

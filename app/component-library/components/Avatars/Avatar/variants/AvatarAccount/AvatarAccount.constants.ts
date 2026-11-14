@@ -1,12 +1,25 @@
-/* eslint-disable import/prefer-default-export */
+/* eslint-disable import-x/prefer-default-export */
 // External dependencies.
 import { AvatarSize } from '../../Avatar.types';
 
 // Internal dependencies.
-import { AvatarAccountType, AvatarAccountProps } from './AvatarAccount.types';
+import {
+  AvatarAccountType,
+  AvatarAccountProps,
+  BorderRadiusByAvatarSize,
+} from './AvatarAccount.types';
+
+// Mappings
+export const BORDERRADIUS_BY_AVATARSIZE: BorderRadiusByAvatarSize = {
+  [AvatarSize.Xs]: 4,
+  [AvatarSize.Sm]: 6,
+  [AvatarSize.Md]: 8,
+  [AvatarSize.Lg]: 10,
+  [AvatarSize.Xl]: 12,
+};
 
 // Defaults
-export const DEFAULT_AVATARACCOUNT_TYPE = AvatarAccountType.JazzIcon;
+export const DEFAULT_AVATARACCOUNT_TYPE = AvatarAccountType.Maskicon;
 export const DEFAULT_AVATARACCOUNT_SIZE = AvatarSize.Md;
 
 // Sample consts

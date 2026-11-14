@@ -1,0 +1,351 @@
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { Platform, TextInput } from 'react-native';
+import {
+  Box,
+  HelpText,
+  HelpTextSeverity,
+  Text,
+  TextButton,
+  TextColor,
+  TextVariant,
+  TextField,
+} from '@metamask/design-system-react-native';
+import Routes from '../../../../../constants/navigation/Routes';
+import { strings } from '../../../../../../locales/i18n';
+import OnboardingStep from './OnboardingStep';
+import { useParams } from '../../../../../util/navigation/navUtils';
+import usePhoneVerificationVerify from '../../hooks/usePhoneVerificationVerify';
+import {
+  resetOnboardingState,
+  selectContactVerificationId,
+  selectOnboardingId,
+} from '../../../../../core/redux/slices/card';
+import { useDispatch, useSelector } from 'react-redux';
+import { CardError } from '../../types';
+import usePhoneVerificationSend from '../../hooks/usePhoneVerificationSend';
+import { useCardSDK } from '../../sdk';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../core/Analytics';
+import { CardActions, CardScreens, withCardProvider } from '../../util/metrics';
+import { CardProviderIds } from '../../../../../core/Engine/controllers/card-controller/provider-types';
+import useScreenTransitionComplete from '../../../../hooks/useScreenTransitionComplete';
+
+const CODE_LENGTH = 6;
+// Annotated with the two values used rather than TextInputProps['autoComplete'],
+// which is wider than the autoComplete union TextField accepts.
+const autoComplete = Platform.select<'sms-otp' | 'one-time-code'>({
+  android: 'sms-otp',
+  default: 'one-time-code',
+});
+
+const ConfirmPhoneNumber = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const codeInputRef = useRef<TextInput>(null);
+  const isScreenTransitionComplete = useScreenTransitionComplete();
+  const dispatch = useDispatch();
+  const { setUser } = useCardSDK();
+  const [resendCooldown, setResendCooldown] = useState(60);
+  const [confirmCode, setConfirmCode] = useState('');
+  const resendInProgressRef = useRef(false);
+  const [latestValueSubmitted, setLatestValueSubmitted] = useState<
+    string | null
+  >(null);
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const { phoneNumber, phoneCountryCode } = useParams<{
+    phoneNumber: string;
+    phoneCountryCode: string;
+  }>();
+
+  const onboardingId = useSelector(selectOnboardingId);
+  const contactVerificationId = useSelector(selectContactVerificationId);
+
+  const {
+    sendPhoneVerification,
+    isLoading: phoneVerificationIsLoading,
+    isError: phoneVerificationIsError,
+    error: phoneVerificationError,
+  } = usePhoneVerificationSend();
+
+  const {
+    verifyPhoneVerification,
+    isLoading: verifyLoading,
+    isError: verifyIsError,
+    error: verifyError,
+    reset: resetVerifyPhoneVerification,
+  } = usePhoneVerificationVerify();
+
+  const handleContinue = useCallback(async () => {
+    if (
+      !confirmCode ||
+      confirmCode.length !== CODE_LENGTH ||
+      !onboardingId ||
+      !phoneNumber ||
+      !phoneCountryCode ||
+      !contactVerificationId
+    ) {
+      return;
+    }
+    try {
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.CARD_BUTTON_CLICKED)
+          .addProperties(
+            withCardProvider(CardProviderIds.Baanx, {
+              action: CardActions.CONFIRM_PHONE_NUMBER_BUTTON,
+            }),
+          )
+          .build(),
+      );
+      const { user } = await verifyPhoneVerification({
+        onboardingId,
+        phoneNumber,
+        phoneCountryCode,
+        verificationCode: confirmCode,
+        contactVerificationId,
+      });
+      if (user) {
+        setUser(user);
+        navigation.reset({
+          index: 0,
+          routes: [{ name: Routes.CARD.ONBOARDING.VERIFY_IDENTITY }],
+        });
+      }
+    } catch (error) {
+      if (
+        error instanceof CardError &&
+        error.message.includes('Phone number does not match')
+      ) {
+        // navigate back and reset phone
+        navigation.navigate(Routes.CARD.ONBOARDING.SET_PHONE_NUMBER);
+      } else if (
+        error instanceof CardError &&
+        (error.message.includes('Invalid or expired contact verification ID') ||
+          error.message.includes('Onboarding ID not found'))
+      ) {
+        // navigate back and restart the flow
+        dispatch(resetOnboardingState());
+        navigation.navigate(Routes.CARD.ONBOARDING.SIGN_UP);
+      }
+    }
+  }, [
+    confirmCode,
+    onboardingId,
+    phoneNumber,
+    phoneCountryCode,
+    contactVerificationId,
+    trackEvent,
+    createEventBuilder,
+    verifyPhoneVerification,
+    setUser,
+    navigation,
+    dispatch,
+  ]);
+
+  const handleValueChange = useCallback(
+    (text: string) => {
+      resetVerifyPhoneVerification();
+      // Filter to only allow numeric input and limit to CODE_LENGTH digits
+      const cleanedText = text.replace(/\D/g, '').slice(0, CODE_LENGTH);
+      setConfirmCode(cleanedText);
+      setLatestValueSubmitted(null);
+    },
+    [resetVerifyPhoneVerification],
+  );
+
+  const handleResendVerification = useCallback(async () => {
+    if (
+      resendCooldown > 0 ||
+      !phoneNumber ||
+      !phoneCountryCode ||
+      !contactVerificationId ||
+      phoneVerificationIsLoading
+    ) {
+      return;
+    }
+    if (resendInProgressRef.current) {
+      return;
+    }
+    try {
+      resendInProgressRef.current = true;
+
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.CARD_BUTTON_CLICKED)
+          .addProperties(
+            withCardProvider(CardProviderIds.Baanx, {
+              action: CardActions.CONFIRM_PHONE_NUMBER_RESEND_BUTTON,
+            }),
+          )
+          .build(),
+      );
+      await sendPhoneVerification({
+        phoneCountryCode,
+        phoneNumber,
+        contactVerificationId,
+      });
+      // Set cooldown after successful resend
+      setResendCooldown(60);
+    } catch {
+      // Allow error message to display
+    } finally {
+      resendInProgressRef.current = false;
+    }
+  }, [
+    resendCooldown,
+    phoneNumber,
+    phoneCountryCode,
+    contactVerificationId,
+    phoneVerificationIsLoading,
+    sendPhoneVerification,
+    trackEvent,
+    createEventBuilder,
+  ]);
+
+  useEffect(() => {
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.CARD_VIEWED)
+        .addProperties(
+          withCardProvider(CardProviderIds.Baanx, {
+            screen: CardScreens.CONFIRM_PHONE_NUMBER,
+          }),
+        )
+        .build(),
+    );
+  }, [trackEvent, createEventBuilder]);
+
+  // Cooldown timer effect
+  useEffect(() => {
+    if (resendCooldown > 0) {
+      const timer = setTimeout(() => {
+        setResendCooldown((prev) => prev - 1);
+      }, 1000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [resendCooldown]);
+
+  // Auto-submit when all digits are entered
+  useEffect(() => {
+    if (
+      confirmCode.length === CODE_LENGTH &&
+      latestValueSubmitted !== confirmCode
+    ) {
+      setLatestValueSubmitted(confirmCode);
+      handleContinue();
+    }
+  }, [confirmCode, handleContinue, latestValueSubmitted]);
+
+  useEffect(() => {
+    if (!isScreenTransitionComplete) {
+      return;
+    }
+    codeInputRef.current?.focus();
+  }, [isScreenTransitionComplete]);
+
+  const isDisabled =
+    verifyLoading ||
+    verifyIsError ||
+    !confirmCode ||
+    confirmCode.length !== CODE_LENGTH ||
+    !onboardingId ||
+    !phoneNumber ||
+    !phoneCountryCode;
+
+  const renderFormFields = () => (
+    <Box gap={2}>
+      <TextField
+        inputRef={codeInputRef}
+        onChangeText={handleValueChange}
+        value={confirmCode}
+        isError={verifyIsError}
+        inputProps={{
+          autoCapitalize: 'none',
+          numberOfLines: 1,
+          keyboardType: 'number-pad',
+          textContentType: 'oneTimeCode',
+          autoComplete,
+          maxLength: CODE_LENGTH,
+          accessibilityLabel: strings(
+            'card.card_onboarding.confirm_phone_number.confirm_code_label',
+          ),
+          testID: 'confirm-phone-number-code-field',
+        }}
+      />
+      {verifyIsError && (
+        <HelpText
+          severity={HelpTextSeverity.Danger}
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          testID="confirm-phone-number-code-field-error"
+        >
+          {verifyError}
+        </HelpText>
+      )}
+
+      {/* Resend verification */}
+      <Text
+        variant={TextVariant.BodySm}
+        color={TextColor.TextAlternative}
+        testID="confirm-phone-number-resend-verification"
+      >
+        {resendCooldown > 0 ? (
+          strings('card.card_onboarding.confirm_email.resend_cooldown', {
+            seconds: resendCooldown,
+          })
+        ) : (
+          <>
+            {strings('card.card_onboarding.confirm_email.didnt_receive_code')}
+            <TextButton
+              variant={TextVariant.BodySm}
+              onPress={
+                resendCooldown > 0 ? undefined : handleResendVerification
+              }
+              disabled={
+                resendCooldown > 0 ||
+                !phoneNumber ||
+                !phoneCountryCode ||
+                !contactVerificationId ||
+                phoneVerificationIsLoading
+              }
+            >
+              {strings(
+                'card.card_onboarding.confirm_email.resend_verification',
+              )}
+            </TextButton>
+          </>
+        )}
+      </Text>
+      {phoneVerificationIsError && (
+        <HelpText
+          severity={HelpTextSeverity.Danger}
+          accessibilityRole="alert"
+          accessibilityLiveRegion="polite"
+          testID="confirm-phone-number-phone-number-error"
+        >
+          {phoneVerificationError}
+        </HelpText>
+      )}
+    </Box>
+  );
+
+  return (
+    <OnboardingStep
+      title={strings('card.card_onboarding.confirm_phone_number.title')}
+      description={strings(
+        'card.card_onboarding.confirm_phone_number.description',
+        { phoneNumber: `+${phoneCountryCode} ${phoneNumber}` },
+      )}
+      formFields={renderFormFields()}
+      primaryButtonProps={{
+        children: strings('card.card_onboarding.continue_button'),
+        onPress: handleContinue,
+        isDisabled,
+        isLoading: verifyLoading,
+        testID: 'confirm-phone-number-continue-button',
+      }}
+      headerMode="close-with-confirmation"
+    />
+  );
+};
+
+export default ConfirmPhoneNumber;

@@ -3,28 +3,34 @@ name: Close release bug report issue when release branch gets merged
 on:
   pull_request:
     branches:
-      - main
+      - stable
     types:
       - closed
-
+    
 jobs:
   close-bug-report:
     runs-on: ubuntu-latest
     if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
             fetch-depth: 1 # This retrieves only the latest commit.
 
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v6
         with:
           node-version-file: '.nvmrc'
-          cache: yarn
 
-      - name: Install dependencies
-        run: yarn --immutable
+      - name: Install dependencies with retry
+        uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 #v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: cd .github/scripts && yarn --immutable
 
       - name: Close release bug report issue
         id: close-release-bug-report-issue
@@ -32,3 +38,4 @@ jobs:
           BUG_REPORT_REPO: mobile-planning
           BUG_REPORT_TOKEN: ${{ secrets.BUG_REPORT_TOKEN }}
         run: yarn run close-release-bug-report-issue
+        working-directory: '.github/scripts'

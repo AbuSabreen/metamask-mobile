@@ -1,18 +1,31 @@
 import trackDappViewedEvent from './index';
-import { MetaMetrics, MetaMetricsEvents } from '../../../core/Analytics';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { AnalyticsEventBuilder } from '../../../util/analytics/AnalyticsEventBuilder';
+import { analytics } from '../../../util/analytics/analytics';
+import { createMockAccountsControllerState } from '../../test/accountsControllerTestUtils';
+import { MOCK_KEYRING_CONTROLLER } from '../../../selectors/keyringController/testUtils';
 
-jest.mock('../../../core/Analytics/MetaMetrics');
+const MOCK_ADDRESS_1 = '0xe64dD0AB5ad7e8C5F2bf6Ce75C34e187af8b920A';
+const MOCK_ADDRESS_2 = '0x519d2CE57898513F676a5C3b66496c3C394c9CC7';
+
+const MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE =
+  createMockAccountsControllerState([MOCK_ADDRESS_1, MOCK_ADDRESS_2]);
+
+const MOCK_ACCOUNTS_CONTROLLER_STATE_WITH_ONE_ACCOUNT =
+  createMockAccountsControllerState([MOCK_ADDRESS_1]);
+
+// Mock the analytics utility
+jest.mock('../../../util/analytics/analytics', () => ({
+  analytics: {
+    trackEvent: jest.fn(),
+  },
+}));
+
 // Need to mock this module since it uses store.getState, which interferes with the mocks from this test file.
 jest.mock(
   '../../../util/metrics/UserSettingsAnalyticsMetaData/generateUserProfileAnalyticsMetaData',
   () => jest.fn(),
 );
-
-const mockMetrics = {
-  trackEvent: jest.fn(),
-};
-
-(MetaMetrics.getInstance as jest.Mock).mockReturnValue(mockMetrics);
 
 // Mock store.getState
 let mockGetState: jest.Mock;
@@ -24,9 +37,8 @@ jest.mock('../../../store', () => {
     },
     engine: {
       backgroundState: {
-        PreferencesController: {
-          identities: { '0x1': true, '0x2': true },
-        },
+        AccountsController: MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE,
+        KeyringController: MOCK_KEYRING_CONTROLLER,
       },
     },
   }));
@@ -51,9 +63,8 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true, '0x2': true },
-          },
+          AccountsController: MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE,
+          KeyringController: MOCK_KEYRING_CONTROLLER,
         },
       },
     }));
@@ -71,10 +82,13 @@ describe('trackDappViewedEvent', () => {
       numberOfConnectedAccounts: 1,
     });
 
-    expect(mockMetrics.trackEvent).toBeCalledWith(
+    const expectedEvent = AnalyticsEventBuilder.createEventBuilder(
       MetaMetricsEvents.DAPP_VIEWED,
-      expectedMetrics,
-    );
+    )
+      .addProperties(expectedMetrics)
+      .build();
+
+    expect(analytics.trackEvent).toHaveBeenCalledWith(expectedEvent);
   });
 
   it('does not tracks as first visit when dapp hostname is in history', () => {
@@ -84,9 +98,8 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true, '0x2': true },
-          },
+          AccountsController: MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE,
+          KeyringController: MOCK_KEYRING_CONTROLLER,
         },
       },
     }));
@@ -103,11 +116,13 @@ describe('trackDappViewedEvent', () => {
       hostname: 'uniswap.org',
       numberOfConnectedAccounts: 1,
     });
-
-    expect(mockMetrics.trackEvent).toBeCalledWith(
+    const expectedEvent = AnalyticsEventBuilder.createEventBuilder(
       MetaMetricsEvents.DAPP_VIEWED,
-      expectedMetrics,
-    );
+    )
+      .addProperties(expectedMetrics)
+      .build();
+
+    expect(analytics.trackEvent).toHaveBeenCalledWith(expectedEvent);
   });
 
   it('tracks connected accounts number', () => {
@@ -117,9 +132,8 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true, '0x2': true },
-          },
+          AccountsController: MOCK_DEFAULT_ACCOUNTS_CONTROLLER_STATE,
+          KeyringController: MOCK_KEYRING_CONTROLLER,
         },
       },
     }));
@@ -137,10 +151,13 @@ describe('trackDappViewedEvent', () => {
       numberOfConnectedAccounts: 1,
     });
 
-    expect(mockMetrics.trackEvent).toBeCalledWith(
+    const expectedEvent = AnalyticsEventBuilder.createEventBuilder(
       MetaMetricsEvents.DAPP_VIEWED,
-      expectedMetrics,
-    );
+    )
+      .addProperties(expectedMetrics)
+      .build();
+
+    expect(analytics.trackEvent).toHaveBeenCalledWith(expectedEvent);
   });
 
   it('tracks account number', () => {
@@ -150,9 +167,8 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true },
-          },
+          AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE_WITH_ONE_ACCOUNT,
+          KeyringController: MOCK_KEYRING_CONTROLLER,
         },
       },
     }));
@@ -170,10 +186,13 @@ describe('trackDappViewedEvent', () => {
       numberOfConnectedAccounts: 1,
     });
 
-    expect(mockMetrics.trackEvent).toBeCalledWith(
+    const expectedEvent = AnalyticsEventBuilder.createEventBuilder(
       MetaMetricsEvents.DAPP_VIEWED,
-      expectedMetrics,
-    );
+    )
+      .addProperties(expectedMetrics)
+      .build();
+
+    expect(analytics.trackEvent).toHaveBeenCalledWith(expectedEvent);
   });
 
   it('tracks dapp url', () => {
@@ -183,9 +202,8 @@ describe('trackDappViewedEvent', () => {
       },
       engine: {
         backgroundState: {
-          PreferencesController: {
-            identities: { '0x1': true },
-          },
+          AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE_WITH_ONE_ACCOUNT,
+          KeyringController: MOCK_KEYRING_CONTROLLER,
         },
       },
     }));
@@ -203,9 +221,12 @@ describe('trackDappViewedEvent', () => {
       numberOfConnectedAccounts: 1,
     });
 
-    expect(mockMetrics.trackEvent).toBeCalledWith(
+    const expectedEvent = AnalyticsEventBuilder.createEventBuilder(
       MetaMetricsEvents.DAPP_VIEWED,
-      expectedMetrics,
-    );
+    )
+      .addProperties(expectedMetrics)
+      .build();
+
+    expect(analytics.trackEvent).toHaveBeenCalledWith(expectedEvent);
   });
 });

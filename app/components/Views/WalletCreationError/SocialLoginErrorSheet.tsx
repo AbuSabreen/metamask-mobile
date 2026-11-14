@@ -1,0 +1,145 @@
+import React, { useCallback, useEffect } from 'react';
+import { Image, Linking } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  Box,
+  Text,
+  TextVariant,
+  TextColor,
+  ButtonSize,
+  Icon,
+  IconName,
+  IconSize,
+  IconColor,
+} from '@metamask/design-system-react-native';
+
+import FooterGlass from '../../../component-library/components-temp/FooterGlass';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { useSupportConsent } from '../../hooks/useSupportConsent';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import {
+  AccountType,
+  WalletCreationErrorCtaType,
+} from '../../../constants/onboarding';
+
+import { strings } from '../../../../locales/i18n';
+import Routes from '../../../constants/navigation/Routes';
+import AppConstants from '../../../core/AppConstants';
+import { Authentication } from '../../../core';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires, import-x/no-commonjs
+const FOX_LOGO = require('../../../images/branding/fox.png');
+
+interface SocialLoginErrorSheetProps {
+  error?: Error;
+  accountType: AccountType;
+}
+
+const SocialLoginErrorSheet = ({
+  error,
+  accountType,
+}: SocialLoginErrorSheetProps) => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const tw = useTailwind();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const { openSupportWithConsent } = useSupportConsent();
+
+  useEffect(() => {
+    trackEvent(
+      createEventBuilder(MetaMetricsEvents.WALLET_CREATION_ERROR_SCREEN_VIEWED)
+        .addProperties({
+          account_type: accountType,
+          error_type: error?.name || 'Unknown',
+          error_message: error?.message || 'No message',
+        })
+        .build(),
+    );
+  }, [error, trackEvent, createEventBuilder, accountType]);
+
+  const handleTryAgain = useCallback(async () => {
+    trackEvent(
+      createEventBuilder(
+        MetaMetricsEvents.WALLET_CREATION_ERROR_SCREEN_CTA_CLICKED,
+      )
+        .addProperties({
+          cta_type: WalletCreationErrorCtaType.Retry,
+          account_type: accountType,
+        })
+        .build(),
+    );
+
+    await Authentication.deleteWallet();
+    navigation.reset({
+      routes: [{ name: Routes.ONBOARDING.ROOT_NAV }],
+    });
+  }, [navigation, trackEvent, createEventBuilder, accountType]);
+
+  const handleContactSupport = useCallback(() => {
+    trackEvent(
+      createEventBuilder(
+        MetaMetricsEvents.WALLET_CREATION_ERROR_SCREEN_CTA_CLICKED,
+      )
+        .addProperties({
+          cta_type: WalletCreationErrorCtaType.ContactSupport,
+          account_type: accountType,
+        })
+        .build(),
+    );
+    openSupportWithConsent(
+      (url) => Linking.openURL(url),
+      AppConstants.REVIEW_PROMPT.SUPPORT,
+    );
+  }, [trackEvent, createEventBuilder, accountType, openSupportWithConsent]);
+
+  return (
+    <SafeAreaView style={tw.style('flex-1 bg-alternative')}>
+      <Image
+        source={FOX_LOGO}
+        style={tw.style('flex-1 w-[120px] h-[120px] self-center')}
+        resizeMode="contain"
+      />
+
+      <Box twClassName="bg-default rounded-t-2xl p-4 pb-10 items-center">
+        <Box twClassName="w-10 h-1 bg-border-muted rounded-full self-center mb-4" />
+
+        <Icon
+          name={IconName.Danger}
+          size={IconSize.Xl}
+          color={IconColor.ErrorDefault}
+          twClassName="mb-4"
+        />
+
+        <Text variant={TextVariant.HeadingMd} twClassName="text-center mb-2">
+          {strings('wallet_creation_error.title')}
+        </Text>
+
+        <Text variant={TextVariant.BodyMd} twClassName="text-left mb-6 w-full">
+          {strings('wallet_creation_error.social_login_description_part1')}{' '}
+          <Text
+            variant={TextVariant.BodyMd}
+            color={TextColor.PrimaryDefault}
+            onPress={handleContactSupport}
+          >
+            {strings('wallet_creation_error.metamask_support')}
+          </Text>
+          {'.'}
+        </Text>
+
+        <FooterGlass
+          twClassName="w-full px-0"
+          primaryButtonProps={{
+            children: strings('wallet_creation_error.try_again'),
+            size: ButtonSize.Lg,
+            onPress: handleTryAgain,
+          }}
+        />
+      </Box>
+    </SafeAreaView>
+  );
+};
+
+export default SocialLoginErrorSheet;

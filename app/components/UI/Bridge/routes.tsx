@@ -1,0 +1,270 @@
+import React from 'react';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import Routes from '../../../constants/navigation/Routes';
+import { BridgeTokenSelector } from './components/BridgeTokenSelector';
+import BridgeView from './Views/BridgeView';
+import { BatchSellTokenSelect } from './Views/BatchSellTokenSelect';
+import { BatchSellReview } from './Views/BatchSellReview';
+import RecurringOrderDetailsView from './Views/RecurringOrderDetailsView';
+import RecurringSwapDetailsView from './Views/RecurringSwapDetailsView';
+import SwapsLimitOrderActivityPage from './Views/SwapsLimitOrderActivityPage';
+import BlockExplorersModal from './components/TransactionDetails/BlockExplorersModal';
+import BlockaidModal from './components/BlockaidModal';
+import RecipientSelectorModal from './components/RecipientSelectorModal';
+import MarketClosedBottomSheet from './components/MarketClosedBottomSheets/MarketClosedBottomSheet';
+import { BatchSellDefaultSlippageModal } from './components/SlippageModal/BatchSellDefaultSlippageModal';
+import { BatchSellCustomSlippageModal } from './components/SlippageModal/BatchSellCustomSlippageModal';
+import { SwapDefaultSlippageModal } from './components/SlippageModal/SwapDefaultSlippageModal';
+import { SwapCustomSlippageModal } from './components/SlippageModal/SwapCustomSlippageModal';
+import NetworkListModal from './components/BridgeTokenSelector/NetworkListModal';
+import { QuoteSelectorView } from './components/QuoteSelectorView';
+import { PriceImpactModal } from './components/PriceImpactModal';
+import {
+  clearNativeStackNavigatorOptions,
+  transparentModalScreenOptions,
+} from '../../../constants/navigation/clearStackNavigatorOptions';
+import { TokenWarningModal } from './components/TokenWarningModal';
+import { MissingPriceModal } from './components/MissingPriceModal';
+import { HardwareWalletsSwaps } from '../HardwareWallet/Swaps/HardwareWalletsSwaps';
+import { HwQrScanner } from '../HardwareWallet/Swaps/HwQrScanner';
+import { HighRateAlertModal } from './components/HighRateAlertModal';
+import { PostTradeBottomSheet } from './components/PostTradeBottomSheet';
+import { BatchSellDestinationTokenSelectorModal } from './components/BatchSellDestinationTokenSelectorModal';
+import { BatchSellQuoteDetailsModal } from './components/BatchSellQuoteDetailsModal';
+import { BatchSellFinalReviewModal } from './components/BatchSellFinalReviewModal';
+import { BatchSellNetworkFeeInfoModal } from './components/BatchSellNetworkFeeInfoModal';
+import { BatchSellMinimumReceivedInfoModal } from './components/BatchSellMinimumReceivedInfoModal';
+import { BatchSellPriceImpactInfoModal } from './components/BatchSellPriceImpactInfoModal';
+import { SwapsLimitOrderExpirationModalScreen } from './components/SwapsLimitOrderExpirationModal/SwapsLimitOrderExpirationModalScreen';
+import { SwapsLimitOrderDefaultCostToleranceModal } from './components/SwapsLimitOrderCostToleranceModal/SwapsLimitOrderDefaultCostToleranceModal';
+import { SwapsLimitOrderCustomCostToleranceModal } from './components/SwapsLimitOrderCostToleranceModal/SwapsLimitOrderCustomCostToleranceModal';
+import { LimitOrderConfirmationModalScreen } from './components/LimitOrderConfirmationModal/LimitOrderConfirmationModalScreen';
+import { LimitOrderCostToleranceInfoSheetScreen } from './components/LimitOrderCostToleranceInfoSheet/LimitOrderCostToleranceInfoSheetScreen';
+import { LimitOrderAccountUpgradeFeeInfoSheetScreen } from './components/LimitOrderAccountUpgradeFeeInfoSheet/LimitOrderAccountUpgradeFeeInfoSheetScreen';
+import { LimitOrderMetaMaskFeeInfoSheetScreen } from './components/LimitOrderMetaMaskFeeInfoSheet/LimitOrderMetaMaskFeeInfoSheetScreen';
+import { OpenLimitOrderDetailsModalScreen } from './components/OpenLimitOrderDetailsModal/OpenLimitOrderDetailsModalScreen';
+import { CancelLimitOrderModalScreen } from './components/CancelLimitOrderModal/CancelLimitOrderModalScreen';
+import { RecurringIntervalSheetScreen } from './components/RecurringIntervalSheet/RecurringIntervalSheetScreen';
+import { RecurringRepeatInfoSheetScreen } from './components/RecurringRepeatInfoSheet/RecurringRepeatInfoSheetScreen';
+import { PriceRangeSheetScreen } from './components/PriceRangeSheet/PriceRangeSheetScreen';
+import { RecurringConfirmOrderSheetScreen } from './components/RecurringConfirmOrderSheet/RecurringConfirmOrderSheetScreen';
+import { RecurringDelegationFeeInfoSheetScreen } from './components/RecurringDelegationFeeInfoSheet/RecurringDelegationFeeInfoSheetScreen';
+import type {
+  BridgeModalsNavigationParamList,
+  BridgeScreensStackParamList,
+} from './types/navigation';
+import { BridgeSessionProvider } from './providers/BridgeSessionProvider';
+import { BridgeQuoteDataProvider } from './hooks/useBridgeQuoteData/BridgeQuoteDataContext';
+
+const ModalStack =
+  createNativeStackNavigator<BridgeModalsNavigationParamList>();
+export const BridgeModalStack = () => (
+  <ModalStack.Navigator
+    screenOptions={{
+      ...clearNativeStackNavigatorOptions,
+      ...transparentModalScreenOptions,
+    }}
+  >
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.SWAP_DEFAULT_SLIPPAGE_MODAL}
+      component={SwapDefaultSlippageModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.SWAP_CUSTOM_SLIPPAGE_MODAL}
+      component={SwapCustomSlippageModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.BATCH_SELL_DEFAULT_SLIPPAGE_MODAL}
+      component={BatchSellDefaultSlippageModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.BATCH_SELL_CUSTOM_SLIPPAGE_MODAL}
+      component={BatchSellCustomSlippageModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.TRANSACTION_DETAILS_BLOCK_EXPLORER}
+      component={BlockExplorersModal as ScreenComponent}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.BLOCKAID_MODAL}
+      component={BlockaidModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.RECIPIENT_SELECTOR_MODAL}
+      component={RecipientSelectorModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.MARKET_CLOSED_MODAL}
+      component={MarketClosedBottomSheet}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.NETWORK_LIST_MODAL}
+      component={NetworkListModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.PRICE_IMPACT_MODAL}
+      component={PriceImpactModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.MISSING_PRICE_MODAL}
+      component={MissingPriceModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.TOKEN_WARNING_MODAL}
+      component={TokenWarningModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.HIGH_RATE_ALERT_MODAL}
+      component={HighRateAlertModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.POST_TRADE_MODAL}
+      component={PostTradeBottomSheet}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.BATCH_SELL_DESTINATION_TOKEN_SELECTOR_MODAL}
+      component={BatchSellDestinationTokenSelectorModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.BATCH_SELL_QUOTE_DETAILS_MODAL}
+      component={BatchSellQuoteDetailsModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.BATCH_SELL_FINAL_REVIEW_MODAL}
+      component={BatchSellFinalReviewModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.BATCH_SELL_NETWORK_FEE_INFO_MODAL}
+      component={BatchSellNetworkFeeInfoModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.BATCH_SELL_MINIMUM_RECEIVED_INFO_MODAL}
+      component={BatchSellMinimumReceivedInfoModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.BATCH_SELL_PRICE_IMPACT_INFO_MODAL}
+      component={BatchSellPriceImpactInfoModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.SWAPS_LIMIT_ORDER_EXPIRATION_MODAL}
+      component={SwapsLimitOrderExpirationModalScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.SWAPS_LIMIT_ORDER_DEFAULT_COST_TOLERANCE_MODAL}
+      component={SwapsLimitOrderDefaultCostToleranceModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.SWAPS_LIMIT_ORDER_CUSTOM_COST_TOLERANCE_MODAL}
+      component={SwapsLimitOrderCustomCostToleranceModal}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.LIMIT_ORDER_CONFIRMATION_MODAL}
+      component={LimitOrderConfirmationModalScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.LIMIT_ORDER_COST_TOLERANCE_INFO_MODAL}
+      component={LimitOrderCostToleranceInfoSheetScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.LIMIT_ORDER_ACCOUNT_UPGRADE_FEE_INFO_MODAL}
+      component={LimitOrderAccountUpgradeFeeInfoSheetScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.LIMIT_ORDER_METAMASK_FEE_INFO_MODAL}
+      component={LimitOrderMetaMaskFeeInfoSheetScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.OPEN_LIMIT_ORDER_DETAILS_MODAL}
+      component={OpenLimitOrderDetailsModalScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.CANCEL_LIMIT_ORDER_MODAL}
+      component={CancelLimitOrderModalScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.RECURRING_INTERVAL_MODAL}
+      component={RecurringIntervalSheetScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.RECURRING_REPEAT_INFO_MODAL}
+      component={RecurringRepeatInfoSheetScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.RECURRING_PRICE_RANGE_MODAL}
+      component={PriceRangeSheetScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.RECURRING_CONFIRM_ORDER_MODAL}
+      component={RecurringConfirmOrderSheetScreen}
+    />
+    <ModalStack.Screen
+      name={Routes.BRIDGE.MODALS.RECURRING_DELEGATION_FEE_INFO_MODAL}
+      component={RecurringDelegationFeeInfoSheetScreen}
+    />
+  </ModalStack.Navigator>
+);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ScreenComponent = React.ComponentType<any>;
+
+const Stack = createNativeStackNavigator<BridgeScreensStackParamList>();
+export const BridgeScreenStack = () => (
+  <BridgeSessionProvider>
+    <BridgeQuoteDataProvider>
+      <Stack.Navigator screenOptions={{ headerShown: false }}>
+        <Stack.Screen name={Routes.BRIDGE.BRIDGE_VIEW} component={BridgeView} />
+        <Stack.Screen
+          name={Routes.BRIDGE.TOKEN_SELECTOR}
+          component={BridgeTokenSelector}
+        />
+        <Stack.Screen
+          name={Routes.BRIDGE.BATCH_SELL_TOKEN_SELECT}
+          component={BatchSellTokenSelect}
+          options={{ title: '' }}
+        />
+        <Stack.Screen
+          name={Routes.BRIDGE.BATCH_SELL_REVIEW}
+          component={BatchSellReview}
+          options={{ title: '' }}
+        />
+        <Stack.Screen
+          name={Routes.BRIDGE.QUOTE_SELECTOR_VIEW}
+          component={QuoteSelectorView}
+        />
+        <Stack.Screen
+          name={Routes.BRIDGE.RECURRING_ORDER_DETAILS}
+          component={RecurringOrderDetailsView}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name={Routes.BRIDGE.RECURRING_SWAP_DETAILS}
+          component={RecurringSwapDetailsView}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name={Routes.BRIDGE.SWAPS_LIMIT_ORDER_ACTIVITY}
+          component={SwapsLimitOrderActivityPage}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name={Routes.BRIDGE.HARDWARE_WALLETS_SWAPS}
+          component={HardwareWalletsSwaps}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name={Routes.BRIDGE.HW_QR_SCANNER}
+          component={HwQrScanner}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name={Routes.BRIDGE.MODALS.ROOT}
+          component={BridgeModalStack}
+          options={{
+            ...clearNativeStackNavigatorOptions,
+            ...transparentModalScreenOptions,
+          }}
+        />
+      </Stack.Navigator>
+    </BridgeQuoteDataProvider>
+  </BridgeSessionProvider>
+);

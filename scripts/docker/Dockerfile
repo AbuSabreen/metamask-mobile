@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.4
-FROM node:20-bookworm
+FROM node:24-bookworm
 
 RUN apt-get update \
   && apt-get install -y \
@@ -9,17 +9,9 @@ RUN apt-get update \
   && sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen \
   && locale-gen
 
-ENV YARN_VERSION 1.22.22
-# replace base image yarn 1.19
-# checksums and sigs for 1.22 not available as of now...
-# https://github.com/nodejs/docker-node/blob/07bd7414c9eeb7a134951122e1105e8c849f770e/Dockerfile-debian.template
-COPY scripts/docker/yarn-v$YARN_VERSION.tar.gz.sha256 .
-RUN curl -fsSLO --compressed "https://yarnpkg.com/downloads/$YARN_VERSION/yarn-v$YARN_VERSION.tar.gz" \
-  && sha256sum yarn-v$YARN_VERSION.tar.gz.sha256 \
-  && tar -xzf yarn-v$YARN_VERSION.tar.gz -C /opt/ \
-  && ln -sf /opt/yarn-v$YARN_VERSION/bin/yarn /usr/local/bin/yarn \
-  && ln -sf /opt/yarn-v$YARN_VERSION/bin/yarnpkg /usr/local/bin/yarnpkg \
-  && rm yarn-v$YARN_VERSION.tar.gz.sha256 yarn-v$YARN_VERSION.tar.gz \
+# Enable corepack to use Yarn v4 as specified in package.json
+RUN corepack enable \
+  && corepack prepare yarn@4.14.1 --activate \
   && yarn --version
 
 ARG UID=1000
@@ -31,7 +23,7 @@ RUN  bash -c "[ ${GID} != \"1000\" ] && groupadd -g ${GID} -U node userz || true
   && echo '%sudo ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 
 # install ruby deps
-COPY --chown=${UID}:${GID} Gemfile* .ruby-version /tmp/app/
+COPY --chown=${UID}:${GID} ios/Gemfile* .ruby-version /tmp/app/
 WORKDIR /tmp/app
 
 ####
@@ -40,8 +32,8 @@ ENV BUNDLE_PATH=/home/node/.bundle
 ENV HOME=/home/node
 # distro rbenv and ruby are out of date - install rbenv from git and manage ruby
 # RUBY_BUILD_VERSION=v20240501
-ARG RBENV_COMMIT=c3ba994ec2daccf4d160aea7f55dd5cc6fc873ef
-ARG RUBY_BUILD_COMMIT=263640c9fe1d44e6fc8f86fc56a67ee58e7b22f7
+ARG RBENV_COMMIT=3bac268cdb81dd745ce13a1cf6ff4a286336ab3b
+ARG RUBY_BUILD_COMMIT=d395d1ae53c9834f239ca42913d42dd2e0beaeb3
 RUN (mkdir /home/node/.rbenv \
     && curl -sL https://github.com/rbenv/rbenv/archive/${RBENV_COMMIT}.tar.gz \
     | tar --strip-components=1 -C /home/node/.rbenv/ -xzf - \
@@ -56,9 +48,11 @@ RUN bash -c 'eval "$(/home/node/.rbenv/bin/rbenv init -)" \
     && gem install bundler -v 2.5.8 \
     && gem install bigdecimal cocoapods \
     && bundle install'
-
-# fix broken ipv6 on nodejs v20
-env NODE_OPTIONS="--no-network-family-autoselection --trace-warnings"
-env PATH=/home/node/.rbenv/shims/:$PATH
+# workaround: disable Happy Eyeballs (250ms default timeout causes ETIMEDOUT in Docker)
+ENV NODE_OPTIONS="--no-network-family-autoselection --trace-warnings"
+# minimize ruby memory usage
+ENV MALLOC_ARENA_MAX=1
+ENV PATH=/home/node/.rbenv/shims/:$PATH
+ENV LANG=en_US.UTF-8
 
 WORKDIR /app

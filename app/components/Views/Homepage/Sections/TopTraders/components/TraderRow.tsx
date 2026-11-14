@@ -1,0 +1,158 @@
+import {
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+  BoxJustifyContent,
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  FontWeight,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import React from 'react';
+import { TouchableOpacity, View } from 'react-native';
+import { strings } from '../../../../../../../locales/i18n';
+import { RankMedal, isTopRank } from '../topRank';
+import type { TraderRowProps } from '../types';
+
+import { formatSignedUsd } from '../../../../../UI/SocialFeed/utils/formatters';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import TraderMuteChip from '../../../../SocialLeaderboard/components/TraderMuteChip';
+import TraderAvatar from '../../../../../UI/SocialFeed/components/TraderAvatar';
+import {
+  getTraderRowMuteChipTestId,
+  getTraderRowTestId,
+} from './TraderRow.testIds';
+
+const MUTE_CHIP_DIAMETER = 40;
+
+const AVATAR_SIZE = 40;
+// Fixed row height so the skeleton placeholder can match it exactly without
+// drifting due to font-scale or button-size differences.
+export const TRADER_ROW_HEIGHT = 71;
+
+/**
+ * TraderRow -- a single row in the Top Traders leaderboard.
+ *
+ * Displays the trader's avatar (with a podium medal badge for ranks 1–3),
+ * username, the ranked metric, and a Follow / Following toggle button.
+ */
+const TraderRow: React.FC<TraderRowProps> = ({
+  trader,
+  metric,
+  onFollowPress,
+  onTraderPress,
+  isMuted = false,
+  showMute = false,
+  onMuteToggle,
+  testID,
+}) => {
+  const tw = useTailwind();
+
+  const metricText = metric?.label ?? formatSignedUsd(trader.pnlValue);
+  const isMetricPositive = metric?.isPositive ?? trader.pnlValue >= 0;
+  const showMedal = isTopRank(trader.rank);
+  const canShowMuteChip = showMute && Boolean(onMuteToggle);
+
+  const handleMutePress = React.useCallback(() => {
+    onMuteToggle?.(trader.id);
+  }, [onMuteToggle, trader.id]);
+
+  return (
+    <Box
+      flexDirection={BoxFlexDirection.Row}
+      alignItems={BoxAlignItems.Center}
+      justifyContent={BoxJustifyContent.Between}
+      twClassName="px-4"
+      style={{ height: TRADER_ROW_HEIGHT }}
+      testID={testID ?? getTraderRowTestId(trader.id)}
+    >
+      <TouchableOpacity
+        activeOpacity={onTraderPress ? 0.7 : 1}
+        onPress={
+          onTraderPress
+            ? () =>
+                onTraderPress(trader.id, trader.username, trader.overallRank)
+            : undefined
+        }
+        style={tw.style('flex-1 min-w-0 mr-3')}
+        disabled={!onTraderPress}
+      >
+        <Box
+          flexDirection={BoxFlexDirection.Row}
+          alignItems={BoxAlignItems.Center}
+          gap={4}
+        >
+          <View>
+            <TraderAvatar
+              imageUrl={trader.avatarUri}
+              address={trader.address}
+              profileId={trader.id}
+              size={AVATAR_SIZE}
+              recyclingKey={trader.id}
+            />
+            {showMedal ? (
+              <View style={tw.style('absolute -bottom-[10px] -right-2')}>
+                <RankMedal rank={trader.rank} />
+              </View>
+            ) : null}
+          </View>
+
+          <Box twClassName="flex-1 min-w-0">
+            <Text
+              variant={TextVariant.BodyMd}
+              fontWeight={FontWeight.Medium}
+              color={TextColor.TextDefault}
+              numberOfLines={1}
+            >
+              {trader.username}
+            </Text>
+            <Text
+              variant={TextVariant.BodySm}
+              fontWeight={FontWeight.Medium}
+              numberOfLines={1}
+              twClassName={
+                isMetricPositive ? 'text-success-default' : 'text-error-default'
+              }
+            >
+              {metricText}
+            </Text>
+          </Box>
+        </Box>
+      </TouchableOpacity>
+
+      <Box
+        flexDirection={BoxFlexDirection.Row}
+        alignItems={BoxAlignItems.Center}
+      >
+        <Button
+          variant={
+            trader.isFollowing ? ButtonVariant.Secondary : ButtonVariant.Primary
+          }
+          size={ButtonSize.Md}
+          onPress={() => onFollowPress(trader.id)}
+          twClassName="self-center"
+        >
+          {trader.isFollowing
+            ? strings('social_leaderboard.following')
+            : strings('social_leaderboard.follow')}
+        </Button>
+        {canShowMuteChip && (
+          <TraderMuteChip
+            isMuted={isMuted}
+            visible={trader.isFollowing}
+            onPress={handleMutePress}
+            diameter={MUTE_CHIP_DIAMETER}
+            traderName={trader.username}
+            testID={getTraderRowMuteChipTestId(trader.id)}
+          />
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+export default React.memo(TraderRow);

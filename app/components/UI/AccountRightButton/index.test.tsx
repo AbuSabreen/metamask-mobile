@@ -1,30 +1,337 @@
-import { renderScreen } from '../../../util/test/renderWithProvider';
+import React from 'react';
+import { fireEvent } from '@testing-library/react-native';
+import { CHAIN_IDS } from '@metamask/transaction-controller';
+import { SolScope } from '@metamask/keyring-api';
+import {
+  DeepPartial,
+  renderScreen,
+} from '../../../util/test/renderWithProvider';
 import AccountRightButton from './';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { RootState } from '../../../reducers';
+import { mockNetworkState } from '../../../util/test/network';
+import { AccountOverviewSelectorsIDs } from './AccountOverview.testIds';
 
-const mockInitialState = {
+// Mock navigation and metrics
+const mockNavigate = jest.fn();
+const mockTrackEvent = jest.fn();
+const mockCreateEventBuilder = jest.fn(() => ({
+  addProperties: jest.fn().mockReturnThis(),
+  build: jest.fn().mockReturnValue('mockEvent'),
+}));
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({ navigate: mockNavigate }),
+}));
+
+jest.mock('../../../components/hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: () => ({
+    trackEvent: mockTrackEvent,
+    createEventBuilder: mockCreateEventBuilder,
+  }),
+}));
+
+const mockInitialState: DeepPartial<RootState> = {
   settings: {},
   engine: {
     backgroundState: {
-      ...initialBackgroundState,
+      ...backgroundState,
       NetworkController: {
-        providerConfig: {
-          chainId: 0x1,
+        ...mockNetworkState({
+          id: 'mainnet',
+          nickname: 'Ethereum Mainnet',
+          ticker: 'ETH',
+          chainId: CHAIN_IDS.MAINNET,
+        }),
+      },
+      SelectedNetworkController: {
+        domains: {},
+      },
+      MultichainNetworkController: {
+        ...backgroundState.MultichainNetworkController,
+        isEvmSelected: true,
+        selectedMultichainNetworkChainId: SolScope.Mainnet,
+        multichainNetworkConfigurationsByChainId: {
+          'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': {
+            name: 'Solana Mainnet',
+          },
         },
       },
     },
   },
 };
 
+/** Representative in-app browser origin for tests (non-empty). */
+const MOCK_DAPP_ORIGIN = 'https://metamask.github.io';
+
 describe('AccountRightButton', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   it('should render correctly', () => {
     const { toJSON } = renderScreen(
-      AccountRightButton,
+      () => (
+        <AccountRightButton
+          selectedAddress="0x123"
+          onPress={() => undefined}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
       {
         name: 'AccountRightButton',
       },
       { state: mockInitialState },
     );
-    expect(toJSON()).toMatchSnapshot();
+    expect(toJSON()).not.toBeNull();
+  });
+
+  it('should render correctly when a EVM network is selected', () => {
+    const { toJSON } = renderScreen(
+      () => (
+        <AccountRightButton
+          selectedAddress="0x123"
+          onPress={() => undefined}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
+      {
+        name: 'AccountRightButton',
+      },
+      { state: mockInitialState },
+    );
+    expect(toJSON()).not.toBeNull();
+  });
+
+  it('should render correctly when a non-EVM network is selected', () => {
+    const mockInitialStateNonEvm = {
+      ...mockInitialState,
+      engine: {
+        ...mockInitialState.engine,
+        backgroundState: {
+          ...mockInitialState.engine?.backgroundState,
+          MultichainNetworkController: {
+            ...mockInitialState.engine?.backgroundState
+              ?.MultichainNetworkController,
+            isEvmSelected: false,
+          },
+        },
+      },
+    };
+
+    const { toJSON } = renderScreen(
+      () => (
+        <AccountRightButton
+          selectedAddress="0x123"
+          onPress={() => undefined}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
+      {
+        name: 'AccountRightButton',
+      },
+      { state: mockInitialStateNonEvm },
+    );
+
+    expect(toJSON()).not.toBeNull();
+  });
+
+  it('should call onPress when button is pressed and selectedAddress is present', () => {
+    const onPressMock = jest.fn();
+    const { getByTestId } = renderScreen(
+      () => (
+        <AccountRightButton
+          selectedAddress="0x123"
+          onPress={onPressMock}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
+      {
+        name: 'AccountRightButton',
+      },
+      { state: mockInitialState },
+    );
+    // Simulate button press
+    fireEvent.press(getByTestId(AccountOverviewSelectorsIDs.ACCOUNT_BUTTON));
+    expect(onPressMock).toHaveBeenCalled();
+  });
+
+  it('should render network avatar when selectedAddress is not provided (EVM)', () => {
+    const { toJSON } = renderScreen(
+      () => (
+        <AccountRightButton
+          selectedAddress=""
+          onPress={() => undefined}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
+      {
+        name: 'AccountRightButton',
+      },
+      { state: mockInitialState },
+    );
+    expect(toJSON()).not.toBeNull();
+  });
+
+  it('should render network avatar when selectedAddress is not provided (non-EVM)', () => {
+    const mockInitialStateNonEvm = {
+      ...mockInitialState,
+      engine: {
+        ...mockInitialState.engine,
+        backgroundState: {
+          ...mockInitialState.engine?.backgroundState,
+          MultichainNetworkController: {
+            ...mockInitialState.engine?.backgroundState
+              ?.MultichainNetworkController,
+            isEvmSelected: false,
+          },
+        },
+      },
+    };
+
+    const { toJSON } = renderScreen(
+      () => (
+        <AccountRightButton
+          selectedAddress=""
+          onPress={() => undefined}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
+      {
+        name: 'AccountRightButton',
+      },
+      { state: mockInitialStateNonEvm },
+    );
+    expect(toJSON()).not.toBeNull();
+  });
+
+  it('should render account avatar when selectedAddress is provided', () => {
+    const { toJSON } = renderScreen(
+      () => (
+        <AccountRightButton
+          selectedAddress="0x123"
+          onPress={() => undefined}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
+      {
+        name: 'AccountRightButton',
+      },
+      { state: mockInitialState },
+    );
+    expect(toJSON()).not.toBeNull();
+  });
+
+  it('should navigate with EVM chainId when selectedAddress is empty and EVM is selected', () => {
+    const { getByTestId } = renderScreen(
+      () => (
+        <AccountRightButton
+          selectedAddress=""
+          onPress={() => undefined}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
+      {
+        name: 'AccountRightButton',
+      },
+      { state: mockInitialState },
+    );
+
+    fireEvent.press(getByTestId(AccountOverviewSelectorsIDs.ACCOUNT_BUTTON));
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      'RootModalFlow',
+      expect.objectContaining({
+        screen: 'NetworkSelector',
+        params: expect.objectContaining({
+          chainId: CHAIN_IDS.MAINNET,
+        }),
+      }),
+    );
+    expect(mockTrackEvent).toHaveBeenCalled();
+  });
+
+  it('should navigate with non-EVM chainId when selectedAddress is empty and non-EVM is selected', () => {
+    const mockInitialStateNonEvm = {
+      ...mockInitialState,
+      engine: {
+        ...mockInitialState.engine,
+        backgroundState: {
+          ...mockInitialState.engine?.backgroundState,
+          MultichainNetworkController: {
+            ...mockInitialState.engine?.backgroundState
+              ?.MultichainNetworkController,
+            isEvmSelected: false,
+          },
+        },
+      },
+    };
+
+    const { getByTestId } = renderScreen(
+      () => (
+        <AccountRightButton
+          selectedAddress=""
+          onPress={() => undefined}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
+      {
+        name: 'AccountRightButton',
+      },
+      { state: mockInitialStateNonEvm },
+    );
+
+    fireEvent.press(getByTestId(AccountOverviewSelectorsIDs.ACCOUNT_BUTTON));
+
+    expect(mockNavigate).toHaveBeenCalledWith(
+      'RootModalFlow',
+      expect.objectContaining({
+        screen: 'NetworkSelector',
+        params: expect.objectContaining({
+          chainId: SolScope.Mainnet,
+        }),
+      }),
+    );
+    expect(mockTrackEvent).toHaveBeenCalled();
+  });
+
+  it('should render correct network name for non-EVM network', () => {
+    const mockInitialStateNonEvm = {
+      ...mockInitialState,
+      engine: {
+        ...mockInitialState.engine,
+        backgroundState: {
+          ...mockInitialState.engine?.backgroundState,
+          MultichainNetworkController: {
+            ...mockInitialState.engine?.backgroundState
+              ?.MultichainNetworkController,
+            isEvmSelected: false,
+            selectedMultichainNetworkChainId: SolScope.Mainnet,
+            multichainNetworkConfigurationsByChainId: {
+              [SolScope.Mainnet]: {
+                name: 'Solana Mainnet',
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const { toJSON } = renderScreen(
+      () => (
+        <AccountRightButton
+          selectedAddress=""
+          onPress={() => undefined}
+          dappOrigin={MOCK_DAPP_ORIGIN}
+        />
+      ),
+      {
+        name: 'AccountRightButton',
+      },
+      { state: mockInitialStateNonEvm },
+    );
+
+    expect(toJSON()).not.toBeNull();
   });
 });

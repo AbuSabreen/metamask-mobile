@@ -1,0 +1,307 @@
+import { useNavigation, useRoute } from '@react-navigation/native';
+import React, { useRef, useEffect, useCallback } from 'react';
+import { View } from 'react-native';
+import { useSelector } from 'react-redux';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import QRScanner from '../QRScanner';
+// eslint-disable-next-line import-x/no-restricted-paths -- TODO(ADR-0020): route-isolation backlog
+import DeviceAdded from '../AddDeviceToWallet/DeviceAdded';
+import { showExtensionCancelledErrorSheet } from '../../../core/QrSync/showExtensionCancelledErrorSheet';
+import { useAddDeviceResetToInstructionsListener } from '../../../core/QrSync/useAddDeviceResetToInstructionsListener';
+import { useTheme } from '../../../util/theme';
+import { createNavigationDetails } from '../../../util/navigation/navUtils';
+import Routes from '../../../constants/navigation/Routes';
+import createStyles from './styles';
+import { ButtonIconSize, IconName } from '@metamask/design-system-react-native';
+import { endTrace, trace, TraceName } from '../../../util/trace';
+import { QrSyncPhases } from '../../../core/QrSync/constants';
+import type { QrSyncPhase } from '../../../core/QrSync/types';
+import {
+  QrSyncOperations,
+  QrSyncSurfaces,
+  QrSyncTelemetrySources,
+  reportQrSyncFailure,
+} from '../../../core/QrSync/qrSyncTelemetry';
+import { useMessenger } from '../../../hooks/useMessenger';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import { RouteMessengerInstance } from './messenger';
+import {
+  selectQrSyncError,
+  selectQrSyncIsSessionActive,
+  selectQrSyncPhase,
+  selectQrSyncPresentation,
+  selectQrSyncShouldShowOtpSheet,
+} from '../../../selectors/qrSyncController';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
+import { useQrSyncImportNavigation } from '../../../core/QrSync/useQrSyncImportNavigation';
+import { showAddDeviceVerificationSheet } from '../../../core/QrSync/showAddDeviceVerificationSheet';
+import HeaderBaseGlass from '../../../component-library/components-temp/HeaderBaseGlass';
+
+const DEVICE_LINKED_WAIT_PHASES: ReadonlySet<QrSyncPhase> = new Set([
+  QrSyncPhases.AWAITING_SYNC_READY,
+  QrSyncPhases.REVIEWING_IMPORT,
+]);
+
+export enum QRTabSwitcherScreens {
+  Scanner,
+}
+
+export interface ScanSuccess {
+  content?: string;
+  chain_id?: string;
+  seed?: string;
+  private_key?: string;
+  target_address?: string;
+  action?: 'send-eth';
+  walletConnectURI?: string;
+}
+
+export interface StartScan {
+  content?: string;
+  seed?: string;
+  private_key?: string;
+  target_address?: string;
+  action?: 'send-eth';
+  walletConnectURI?: string;
+}
+
+const USER_CANCELLED = 'USER_CANCELLED';
+
+export interface QRTabSwitcherParams {
+  /**
+   * Required for non-add-device origins. For add-device (`origin` =
+   * `ADD_DEVICE_TO_WALLET`), omit this — QRTabSwitcher submits via its own
+   * route messenger so it does not depend on a stale parent-screen callback.
+   */
+  onScanSuccess?: (data: ScanSuccess, content?: string) => void;
+  onStartScan?: (data: StartScan) => Promise<void>;
+  onScanError?: (error: string) => void;
+  initialScreen?: QRTabSwitcherScreens;
+  disableTabber?: boolean;
+  origin?: string;
+  networkName?: string;
+}
+
+export const createQRScannerNavDetails =
+  createNavigationDetails<QRTabSwitcherParams>(Routes.QR_TAB_SWITCHER);
+
+const QRTabSwitcher = () => {
+  const route = useRoute();
+  const navigation = useNavigation<AppNavigationProp>();
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const messenger = useMessenger<RouteMessengerInstance>();
+  const { onScanError, onScanSuccess, onStartScan, origin } =
+    route.params as QRTabSwitcherParams;
+
+  const isAddDeviceOrigin = origin === Routes.ONBOARDING.ADD_DEVICE_TO_WALLET;
+  const phase = useSelector(selectQrSyncPhase);
+  const isSessionActive = useSelector(selectQrSyncIsSessionActive);
+  const presentation = useSelector(selectQrSyncPresentation);
+  const shouldShowOtpSheet = useSelector(selectQrSyncShouldShowOtpSheet);
+  const qrSyncError = useSelector(selectQrSyncError);
+  const hasOpenedVerificationSheetRef = useRef(false);
+  const hasShownExtensionCancelSheetRef = useRef(false);
+  const prevPhaseRef = useRef(phase);
+  const keepWaitingScreenAfterCancelRef = useRef(false);
+
+  if (isAddDeviceOrigin) {
+    if (
+      phase === QrSyncPhases.INITIALIZING ||
+      phase === QrSyncPhases.DISPLAYING_OTP
+    ) {
+      keepWaitingScreenAfterCancelRef.current = false;
+    } else if (
+      DEVICE_LINKED_WAIT_PHASES.has(prevPhaseRef.current) &&
+      (phase === QrSyncPhases.IDLE || phase === QrSyncPhases.FAILED)
+    ) {
+      keepWaitingScreenAfterCancelRef.current = true;
+    }
+  }
+
+  const showExtensionCancelSheetOnce = useCallback(() => {
+    if (hasShownExtensionCancelSheetRef.current) {
+      return;
+    }
+
+    hasShownExtensionCancelSheetRef.current = true;
+    showExtensionCancelledErrorSheet(navigation, {
+      errorMessage: qrSyncError?.message,
+    });
+  }, [navigation, qrSyncError?.message]);
+
+  const showVerificationSheet = useCallback(() => {
+    showAddDeviceVerificationSheet(navigation);
+  }, [navigation]);
+
+  const resetExtensionCancelSheetState = useCallback(() => {
+    hasShownExtensionCancelSheetRef.current = false;
+    keepWaitingScreenAfterCancelRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (!isAddDeviceOrigin) {
+      return;
+    }
+
+    if (!shouldShowOtpSheet) {
+      hasOpenedVerificationSheetRef.current = false;
+      return;
+    }
+
+    if (hasOpenedVerificationSheetRef.current) {
+      return;
+    }
+
+    hasOpenedVerificationSheetRef.current = true;
+    showVerificationSheet();
+  }, [isAddDeviceOrigin, shouldShowOtpSheet, showVerificationSheet]);
+
+  useQrSyncImportNavigation({ enabled: isAddDeviceOrigin });
+
+  const showDeviceAddedLoader =
+    isAddDeviceOrigin &&
+    (presentation === 'device-linked' ||
+      keepWaitingScreenAfterCancelRef.current);
+
+  useEffect(() => {
+    if (!isAddDeviceOrigin) {
+      return;
+    }
+
+    if (
+      phase === QrSyncPhases.INITIALIZING ||
+      phase === QrSyncPhases.DISPLAYING_OTP
+    ) {
+      hasShownExtensionCancelSheetRef.current = false;
+    }
+  }, [isAddDeviceOrigin, phase]);
+
+  useEffect(() => {
+    if (!isAddDeviceOrigin) {
+      prevPhaseRef.current = phase;
+      return;
+    }
+
+    const previousPhase = prevPhaseRef.current;
+    const wasWaitingOnExtension = DEVICE_LINKED_WAIT_PHASES.has(previousPhase);
+
+    if (
+      wasWaitingOnExtension &&
+      (phase === QrSyncPhases.IDLE || phase === QrSyncPhases.FAILED)
+    ) {
+      showExtensionCancelSheetOnce();
+    }
+
+    prevPhaseRef.current = phase;
+  }, [isAddDeviceOrigin, phase, showExtensionCancelSheetOnce]);
+
+  useAddDeviceResetToInstructionsListener({
+    enabled: isAddDeviceOrigin,
+    navigation,
+    shouldGoBack: true,
+    onReset: resetExtensionCancelSheetState,
+    onNavigateBack: () => {
+      navigation.navigate(Routes.ONBOARDING.ADD_DEVICE_TO_WALLET);
+    },
+  });
+
+  // QR scanner displays camera view for scanning codes
+  const selectedIndex = QRTabSwitcherScreens.Scanner;
+  const theme = useTheme();
+  const styles = createStyles(theme);
+
+  useEffect(() => {
+    trace({ name: TraceName.QRTabSwitcher });
+    endTrace({ name: TraceName.QRTabSwitcher });
+  }, []);
+
+  /**
+   * Submit on this screen's live route messenger. Do not call through a
+   * nav-param callback from AddDeviceToWallet — that screen can unmount in
+   * post-onboarding AppFlow and revoke its messenger handlers.
+   */
+  const handleAddDeviceScanSuccess = useCallback(
+    (data: ScanSuccess, content?: string) => {
+      const scannedQrPayload = content ?? data.content ?? '';
+
+      Promise.resolve(
+        messenger.call(
+          'QrSyncController:handleScannedQrPayload',
+          scannedQrPayload,
+        ),
+      ).catch((err: unknown) => {
+        reportQrSyncFailure(err, {
+          surface: QrSyncSurfaces.SCANNER,
+          operation: QrSyncOperations.SUBMIT_SCANNED_PAYLOAD,
+          source: QrSyncTelemetrySources.QR_TAB_SWITCHER_ADD_DEVICE_SCAN,
+        });
+      });
+    },
+    [messenger],
+  );
+
+  const resolvedOnScanSuccess = isAddDeviceOrigin
+    ? handleAddDeviceScanSuccess
+    : onScanSuccess;
+
+  const goBack = () => {
+    if (isAddDeviceOrigin && isSessionActive) {
+      Promise.resolve(messenger.call('QrSyncController:resetState')).catch(
+        () => undefined,
+      );
+    }
+
+    navigation.goBack();
+    const scanErrorCallback = onScanError;
+    try {
+      if (scanErrorCallback) {
+        scanErrorCallback(USER_CANCELLED);
+      }
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        console.warn(`Error setting onScanError: ${error.message}`);
+      } else {
+        console.warn('An unknown error occurred');
+      }
+    }
+  };
+
+  if (showDeviceAddedLoader) {
+    return <DeviceAdded />;
+  }
+
+  return (
+    <View style={styles.container}>
+      {selectedIndex === QRTabSwitcherScreens.Scanner ? (
+        <QRScanner
+          onScanError={onScanError}
+          onScanSuccess={resolvedOnScanSuccess ?? (() => undefined)}
+          onStartScan={onStartScan}
+          origin={origin}
+          shouldDismissOnScan={
+            origin !== Routes.ONBOARDING.ADD_DEVICE_TO_WALLET
+          }
+        />
+      ) : null}
+
+      <HeaderBaseGlass
+        isGlass={isGlassHeader}
+        isFloating
+        backdrop="none"
+        containerStyle={isGlassHeader ? styles.overlay : undefined}
+        style={isGlassHeader ? styles.header : [styles.overlay, styles.header]}
+        twClassName="px-2"
+        startButtonIconProps={{
+          iconName: IconName.ArrowLeft,
+          size: ButtonIconSize.Md,
+          onPress: goBack,
+          testID: 'qr-scanner-back-button',
+        }}
+      />
+
+      {/* QR scanner interface - camera view only */}
+    </View>
+  );
+};
+
+export default QRTabSwitcher;

@@ -27,7 +27,7 @@ export interface EncryptionLibrary {
    * @param size - The IV size.
    * @return The randomly generated IV.
    */
-  generateIV(size: number): Promise<string>;
+  generateIv(size: number): Promise<string>;
   /**
    * Encrypts data.
    *
@@ -118,26 +118,3 @@ export interface GenericEncryptor<Data = Json> {
     targetDerivationParams?: KeyDerivationOptions,
   ) => boolean;
 }
-
-/**
- * An encryptor interface that supports encrypting and decrypting
- * serializable data with a password, and exporting and importing keys.
- */
-export type WithKeyEncryptor<Key, Data> = GenericEncryptor<Data> & {
-  /**
-   * Encrypts the given object with the given encryption key.
-   *
-   * @param key - The encryption key to encrypt with.
-   * @param object - The object to encrypt.
-   * @returns The encryption result.
-   */
-  encryptWithKey: (key: Key, data: Data) => Promise<EncryptionResult>;
-  /**
-   * Decrypts the given encrypted string with the given encryption key.
-   *
-   * @param key - The encryption key to decrypt with.
-   * @param encryptedString - The encrypted string to decrypt.
-   * @returns The decrypted object.
-   */
-  decryptWithKey: (key: Key, payload: EncryptionResult) => Promise<unknown>;
-};

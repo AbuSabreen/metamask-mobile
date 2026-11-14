@@ -1,0 +1,100 @@
+// Third party dependencies
+import React, { useCallback } from 'react';
+import { View, Switch } from 'react-native';
+import { useSelector } from 'react-redux';
+
+// External dependencies
+import Engine from '../../../../core/Engine';
+import { selectUseNftDetection } from '../../../../selectors/preferencesController';
+import { useTheme } from '../../../../util/theme';
+import { strings } from '../../../../../locales/i18n';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import {
+  FontWeight,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { UserProfileProperty } from '../../../../util/metrics/UserSettingsAnalyticsMetaData/UserProfileAnalyticsMetaData.types';
+
+// Internal dependencies
+import createStyles from './index.styles';
+import { NFT_AUTO_DETECT_MODE_SECTION } from './index.constants';
+
+const AutoDetectNFTSettings = () => {
+  const { trackEvent, identify, createEventBuilder } = useAnalytics();
+  const theme = useTheme();
+  const { colors } = theme;
+  const styles = createStyles();
+
+  const useNftDetection = useSelector(selectUseNftDetection);
+
+  const toggleNftAutodetect = useCallback(
+    (value: boolean) => {
+      const { PreferencesController } = Engine.context;
+      if (value) {
+        PreferencesController.setDisplayNftMedia(value);
+      }
+      PreferencesController.setUseNftDetection(value);
+
+      identify({
+        ...(value && {
+          [UserProfileProperty.ENABLE_OPENSEA_API]: value
+            ? UserProfileProperty.ON
+            : UserProfileProperty.OFF,
+        }),
+        [UserProfileProperty.NFT_AUTODETECTION]: value
+          ? UserProfileProperty.ON
+          : UserProfileProperty.OFF,
+      });
+
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.SETTINGS_UPDATED)
+          .addProperties({
+            nft_autodetection_enabled: value,
+          })
+          .build(),
+      );
+    },
+    [identify, trackEvent, createEventBuilder],
+  );
+
+  return (
+    <View style={styles.setting}>
+      <View style={styles.titleContainer}>
+        <Text
+          variant={TextVariant.BodyMd}
+          fontWeight={FontWeight.Medium}
+          style={styles.title}
+        >
+          {strings('app_settings.nft_autodetect_mode')}
+        </Text>
+        <View style={styles.switchElement}>
+          <Switch
+            value={useNftDetection}
+            onValueChange={toggleNftAutodetect}
+            trackColor={{
+              true: colors.primary.default,
+              false: colors.border.muted,
+            }}
+            thumbColor={theme.brandColors.white}
+            style={styles.switch}
+            ios_backgroundColor={colors.border.muted}
+            testID={NFT_AUTO_DETECT_MODE_SECTION}
+          />
+        </View>
+      </View>
+      <Text
+        variant={TextVariant.BodySm}
+        fontWeight={FontWeight.Medium}
+        color={TextColor.TextAlternative}
+        style={styles.desc}
+      >
+        {strings('app_settings.autodetect_nft_desc')}
+      </Text>
+    </View>
+  );
+};
+
+export default AutoDetectNFTSettings;

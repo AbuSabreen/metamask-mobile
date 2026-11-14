@@ -1,36 +1,120 @@
 import React from 'react';
 import configureMockStore from 'redux-mock-store';
 import { Provider } from 'react-redux';
-import { renderHook } from '@testing-library/react-native';
+import { renderHook, act, waitFor } from '@testing-library/react-native';
 
 import Engine from '../../../core/Engine';
 import { Asset } from './useAddressBalance.types';
 import useAddressBalance from './useAddressBalance';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import {
+  createMockAccountsControllerState,
+  createMockUuidFromAddress,
+} from '../../../util/test/accountsControllerTestUtils';
+import { SolScope } from '@metamask/keyring-api';
+import type BN5 from 'bnjs5';
+import { mockNetworkState } from '../../../util/test/network';
+
+const MOCK_ADDRESS_1 = '0x1111111111111111111111111111111111111111';
+const MOCK_ADDRESS_2 = '0x2222222222222222222222222222222222222222';
+const TST_ADDRESS = '0x326836cc6cd09B5aa59B81A7F72F25FcC0136b95';
+const TST_ASSET_ID = `eip155:1/erc20:${TST_ADDRESS.toLowerCase()}`;
+const ETH_NATIVE_ASSET_ID = 'eip155:1/slip44:60';
+
+const MOCK_ACCOUNTS_CONTROLLER_STATE = createMockAccountsControllerState([
+  MOCK_ADDRESS_1,
+  MOCK_ADDRESS_2,
+]);
+const MOCK_ACCOUNT_ID_1 = createMockUuidFromAddress(
+  MOCK_ADDRESS_1.toLowerCase(),
+);
+const MOCK_ACCOUNT_ID_2 = createMockUuidFromAddress(
+  MOCK_ADDRESS_2.toLowerCase(),
+);
+
+jest.mock('../../../core/Engine', () => ({
+  context: {
+    AssetsController: {
+      addCustomAsset: jest.fn(),
+    },
+  },
+}));
+
+const mockedEngine = jest.mocked(Engine);
 
 const mockStore = configureMockStore();
 const mockInitialState = {
   settings: {},
   engine: {
     backgroundState: {
-      ...initialBackgroundState,
+      ...backgroundState,
       AccountTrackerController: {
-        accounts: {
-          '0x0': {
-            balance: '0x4a7036655fab2ca3',
-          },
+        accountsByChainId: {
           '0x1': {
-            balance: '0x5',
+            [MOCK_ADDRESS_1]: {
+              balance: '0x4a7036655fab2ca3',
+            },
+            [MOCK_ADDRESS_2]: {
+              balance: '0x5',
+            },
           },
         },
       },
       TokenBalancesController: {
-        contractBalances: {
-          '0x326836cc6cd09B5aa59B81A7F72F25FcC0136b95': '0x5',
+        tokenBalances: {
+          [MOCK_ADDRESS_1]: {
+            '0x1': {
+              [TST_ADDRESS]: '0x5',
+            },
+          },
+        },
+      },
+      AssetsController: {
+        ...backgroundState.AssetsController,
+        selectedCurrency: 'usd',
+        assetsInfo: {
+          ...backgroundState.AssetsController?.assetsInfo,
+          [ETH_NATIVE_ASSET_ID]: {
+            type: 'native' as const,
+            symbol: 'ETH',
+            name: 'Ether',
+            decimals: 18,
+          },
+          [TST_ASSET_ID]: {
+            type: 'erc20' as const,
+            symbol: 'TST',
+            name: 'TST',
+            decimals: 4,
+          },
+        },
+        assetsBalance: {
+          [MOCK_ACCOUNT_ID_1]: {
+            [ETH_NATIVE_ASSET_ID]: { amount: '5.36385' },
+            [TST_ASSET_ID]: { amount: '0.0005' },
+          },
+          [MOCK_ACCOUNT_ID_2]: {
+            [ETH_NATIVE_ASSET_ID]: { amount: '0.000000000000000005' },
+          },
         },
       },
       PreferencesController: {
-        selectedAddress: '0x0',
+        selectedAddress: MOCK_ADDRESS_1,
+      },
+      AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE,
+      MultichainNetworkController: {
+        isEvmSelected: true,
+        selectedMultichainNetworkChainId: SolScope.Mainnet,
+
+        multichainNetworkConfigurationsByChainId: {},
+      },
+      NetworkController: {
+        ...mockNetworkState({
+          chainId: '0x1',
+          id: 'mainnet',
+          nickname: 'Ethereum Mainnet',
+          ticker: 'ETH',
+          blockExplorerUrl: 'https://goerli.lineascan.build',
+        }),
       },
     },
   },
@@ -44,60 +128,85 @@ jest.mock('react-redux', () => ({
     .mockImplementation((callback) => callback(mockInitialState)),
 }));
 
+// TODO: Replace "any" with type
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Wrapper = ({ children }: any) => (
   <Provider store={store}>{children}</Provider>
 );
 
 describe('useAddressBalance', () => {
-  let mockGetERC20BalanceOf: any;
+  let mockGetERC20BalanceOf: (
+    address: string,
+    selectedAddress: string,
+    networkClientId?: string | undefined,
+  ) => Promise<BN5>;
   beforeEach(() => {
+    jest.clearAllMocks();
     mockGetERC20BalanceOf = jest
       .fn()
       .mockReturnValue(Promise.resolve(0x0186a0));
-    Engine.context.AssetsContractController = {
+    mockedEngine.context.AssetsContractController = {
+      ...(mockedEngine.context.AssetsContractController ?? {}),
       getERC20BalanceOf: mockGetERC20BalanceOf,
-    };
+    } as typeof mockedEngine.context.AssetsContractController;
   });
 
-  it('should render balance from AccountTrackerController.accounts for ETH', () => {
+  it('render balance from AccountTrackerController.accounts for ETH', () => {
     let res = renderHook(
-      () => useAddressBalance({ isETH: true } as Asset, '0x0'),
+      () => useAddressBalance({ isETH: true } as Asset, MOCK_ADDRESS_1),
       {
         wrapper: Wrapper,
       },
     );
     expect(res.result.current.addressBalance).toStrictEqual('5.36385 ETH');
-    res = renderHook(() => useAddressBalance({ isETH: true } as Asset, '0x1'), {
-      wrapper: Wrapper,
-    });
+    res = renderHook(
+      () => useAddressBalance({ isETH: true } as Asset, MOCK_ADDRESS_2),
+      {
+        wrapper: Wrapper,
+      },
+    );
     expect(res.result.current.addressBalance).toStrictEqual('< 0.00001 ETH');
   });
 
-  it('should render balance from AssetsContractController.getERC20BalanceOf if selectedAddress is different from fromAddress', () => {
+  it('render balance from AssetsContractController.getERC20BalanceOf if balance from TokenBalancesController.contractBalances is not available', async () => {
     const asset = {
-      address: '0x326836cc6cd09B5aa59B81A7F72F25FcC0136b95',
-      symbol: 'TST',
+      // Different asset
+      address: '0x326836cc6cd09B5aa59B81A7F72F25FcC0136123',
+      symbol: 'TST2',
       decimals: 4,
     };
-    renderHook(() => useAddressBalance(asset, '0x1'), {
+
+    (mockGetERC20BalanceOf as jest.Mock).mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(0x0186a0), 50)),
+    );
+
+    renderHook(() => useAddressBalance(asset, MOCK_ADDRESS_2), {
       wrapper: Wrapper,
     });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
     expect(mockGetERC20BalanceOf).toBeCalledTimes(1);
   });
 
-  it('should render balance if asset is undefined', () => {
-    let asset: Asset;
-    let res = renderHook(() => useAddressBalance(asset, '0x0'), {
+  it('render balance if asset is undefined', () => {
+    let asset: Asset | undefined;
+    let res = renderHook(() => useAddressBalance(asset, MOCK_ADDRESS_1), {
       wrapper: Wrapper,
     });
     expect(res.result.current.addressBalance).toStrictEqual('5.36385 ETH');
-    res = renderHook(() => useAddressBalance({ isETH: true } as Asset, '0x1'), {
-      wrapper: Wrapper,
-    });
+    res = renderHook(
+      () => useAddressBalance({ isETH: true } as Asset, MOCK_ADDRESS_2),
+      {
+        wrapper: Wrapper,
+      },
+    );
     expect(res.result.current.addressBalance).toStrictEqual('< 0.00001 ETH');
   });
 
-  it('should render balance from TokenBalancesController.contractBalances if selectedAddress is same as fromAddress', () => {
+  it('render balance from TokenBalancesController.contractBalances if selectedAddress is same as fromAddress', () => {
     const res = renderHook(
       () =>
         useAddressBalance(
@@ -106,7 +215,7 @@ describe('useAddressBalance', () => {
             symbol: 'TST',
             decimals: 4,
           },
-          '0x0',
+          MOCK_ADDRESS_1,
         ),
       {
         wrapper: Wrapper,
@@ -114,5 +223,68 @@ describe('useAddressBalance', () => {
     );
     expect(mockGetERC20BalanceOf).toBeCalledTimes(0);
     expect(res.result.current.addressBalance).toStrictEqual('0.0005 TST');
+  });
+
+  it('adds a watched ERC20 asset when the asset is not already tracked and watchAsset is allowed', async () => {
+    const addCustomAsset = jest.mocked(
+      mockedEngine.context.AssetsController.addCustomAsset,
+    );
+
+    renderHook(
+      () =>
+        useAddressBalance(
+          {
+            address: TST_ADDRESS,
+            symbol: 'TST',
+            decimals: 4,
+          },
+          MOCK_ADDRESS_2,
+          false,
+          '0x1',
+        ),
+      {
+        wrapper: Wrapper,
+      },
+    );
+
+    await waitFor(() => {
+      expect(addCustomAsset).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({
+          address: TST_ADDRESS,
+          symbol: 'TST',
+          decimals: 4,
+          chainId: '0x1',
+        }),
+      );
+    });
+  });
+
+  it('does not auto-add a watched ERC20 asset when dontWatchAsset is true', async () => {
+    const addCustomAsset = jest.mocked(
+      mockedEngine.context.AssetsController.addCustomAsset,
+    );
+
+    renderHook(
+      () =>
+        useAddressBalance(
+          {
+            address: TST_ADDRESS,
+            symbol: 'TST',
+            decimals: 4,
+          },
+          MOCK_ADDRESS_2,
+          true,
+          '0x1',
+        ),
+      {
+        wrapper: Wrapper,
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(addCustomAsset).not.toHaveBeenCalled();
   });
 });

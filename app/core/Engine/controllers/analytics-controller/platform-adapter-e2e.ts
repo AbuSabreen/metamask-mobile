@@ -1,0 +1,96 @@
+import type {
+  AnalyticsPlatformAdapter,
+  AnalyticsEventProperties,
+  AnalyticsUserTraits,
+  AnalyticsContext,
+} from '@metamask/analytics-controller';
+import { E2E_METAMETRICS_TRACK_URL } from '../../../../util/test/utils';
+
+/**
+ * Sends an event to the E2E test mock server.
+ * This is used to capture analytics events during E2E tests.
+ *
+ * @param eventName - The name of the event
+ * @param properties - Optional event properties (already merged by AnalyticsController)
+ */
+const sendEventToTestServer = (
+  eventName: string,
+  properties?: AnalyticsEventProperties,
+  context?: AnalyticsContext,
+): void => {
+  // Use fire-and-forget pattern — the platform adapter interface is void, so we can't await
+  // The fetch interceptor in shim.js will automatically proxy this through /proxy?url=...
+  fetch(E2E_METAMETRICS_TRACK_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      event: eventName,
+      properties: properties || {},
+      ...(context ? { context } : {}),
+    }),
+  }).catch((error) => {
+    // Only log non-network errors to avoid cluttering test output
+    if (
+      !(
+        error instanceof TypeError &&
+        error.message.includes('Network request failed')
+      )
+    ) {
+      console.error('Error sending event to test server:', error);
+    }
+  });
+};
+
+/**
+ * E2E platform adapter for the AnalyticsController.
+ * Sends events to the E2E test mock server for test verification.
+ */
+export const createPlatformAdapter = (): AnalyticsPlatformAdapter => ({
+  track(
+    eventName: string,
+    properties?: AnalyticsEventProperties,
+    context?: AnalyticsContext,
+  ): void {
+    sendEventToTestServer(eventName, properties, context);
+  },
+
+  identify(
+    userId: string,
+    traits?: AnalyticsUserTraits,
+    context?: AnalyticsContext,
+  ): void {
+    // Send identify events to the test server
+    // Format as an identify event with userId and traits as properties
+    sendEventToTestServer(
+      'User Identified',
+      {
+        userId,
+        ...(traits || {}),
+      },
+      context,
+    );
+  },
+
+  view(
+    name: string,
+    properties?: AnalyticsEventProperties,
+    context?: AnalyticsContext,
+  ): void {
+    // Send view/screen events to the test server
+    // Format as a view event with screen name and properties
+    sendEventToTestServer(
+      'Screen Viewed',
+      {
+        screen_name: name,
+        ...(properties || {}),
+      },
+      context,
+    );
+  },
+
+  onSetupCompleted() {
+    // This is a callback, not an event - no need to send to test server
+  },
+});

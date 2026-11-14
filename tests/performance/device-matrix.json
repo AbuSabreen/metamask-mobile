@@ -1,0 +1,37 @@
+{
+  "android_devices": [
+    {
+      "name": "Google Pixel 8 Pro",
+      "os_version": "14.0",
+      "category": "low",
+      "description": "Google Pixel 8 Pro with Android 14 — sole Android device for performance E2E (Galaxy removed to reduce cost/flakes)"
+    }
+  ],
+  "ios_devices": [
+    {
+      "name": "iPhone 16 Pro Max",
+      "os_version": "18",
+      "category": "high",
+      "description": "High-end iPhone 16 Pro Max with iOS 18"
+    },
+    {
+      "name": "iPhone 12",
+      "os_version": "17",
+      "category": "low",
+      "description": "Medium iPhone 12."
+    }
+  ],
+  "device_categories": {
+    "high": "High-end devices for primary testing",
+    "medium": "Mid-range devices for broader compatibility testing",
+    "low": "Low-end devices for backward compatibility and emerging market testing"
+  },
+  "os_coverage": {
+    "android": ["14.0"],
+    "ios": ["16", "17"]
+  },
+  "notes": {
+    "ios_limitations": "iPhone 11 (iOS 13) and iPhone 8 (iOS 11) have OS versions not supported by MetaMask app",
+    "android_performance": "Android performance E2E runs on Google Pixel 8 Pro only (Samsung Galaxy removed from the matrix)."
+  }
+}

@@ -1,0 +1,575 @@
+import React, { useCallback, useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  ActivityIndicator,
+  FlatList,
+  StyleSheet,
+  Switch,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import {
+  useNavigation,
+  useRoute,
+  type RouteProp,
+} from '@react-navigation/native';
+import type { AppStackNavigationProp } from '../../../../../../core/NavigationService/types';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  Box,
+  BoxAlignItems,
+  BoxFlexDirection,
+  BoxJustifyContent,
+  Button,
+  ButtonVariant,
+  ButtonIcon,
+  ButtonIconSize,
+  Icon,
+  IconName,
+  IconSize,
+  Text,
+  TextColor,
+  TextVariant,
+  toast,
+  ToastSeverity,
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import { strings } from '../../../../../../../locales/i18n';
+import { useTheme } from '../../../../../../util/theme';
+import Routes from '../../../../../../constants/navigation/Routes';
+import { formatPriceWithSubscriptNotation } from '../../../../../../util/number/subscriptNotation';
+import { formatPerpsPrice } from '../../../../Perps/utils/formatUtils';
+import {
+  type AbsolutePriceAlert,
+  type Alert,
+  ManagePriceAlertsTestIds,
+  type PercentChangeAlert,
+  PriceAlertRouteParams,
+  PriceAlertAnalytics,
+} from '../../constants';
+import {
+  deleteAlertByType,
+  fetchAlerts,
+  priceAlertsQueryKey,
+  updateAlertByType,
+} from '../../api';
+import {
+  deletePerpAlertByType,
+  fetchPerpAlerts,
+  normalizePerpAlerts,
+  type PerpAlertApiResponse,
+  perpAlertsQueryKey,
+  updatePerpAlertByType,
+} from '../../perpApi';
+import {
+  formatPercentAlertSubtitle,
+  formatPercentAlertTitle,
+} from '../../utils';
+import useInFlightIds from '../../hooks/useInFlightIds';
+import { useAnalytics } from '../../../../../hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../../../../../../core/Analytics';
+import { FeatureNotificationsGate } from '../../../../../../components/Views/Settings/NotificationsSettings/FeatureNotificationsGate';
+import { getHardwareTier } from '../../../../../../util/deviceCapability';
+import { useNetworkTier } from '../../../../../../hooks/useNetworkTier';
+import { useSelector } from 'react-redux';
+import HeaderStandardGlass from '../../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../../selectors/featureFlagController/glassHeaders';
+
+const styles = StyleSheet.create({
+  switchDisabled: { opacity: 0.5 },
+});
+
+/** Analytics `alert_type` + `alert_period`/`alert_direction` for a given alert. */
+const analyticsPropsForAlert = (priceAlert: Alert) =>
+  priceAlert.type === 'percent_change'
+    ? {
+        alert_type: PriceAlertAnalytics.TYPE.PERCENT,
+        alert_period: priceAlert.period,
+        alert_direction: priceAlert.direction,
+      }
+    : { alert_type: PriceAlertAnalytics.TYPE.THRESHOLD };
+
+function failRequest(message: string): never {
+  throw new Error(message);
+}
+
+const requestAlertDeletion = (
+  priceAlert: Alert,
+  isPerpsMode: boolean,
+): Promise<Response> =>
+  isPerpsMode
+    ? deletePerpAlertByType(priceAlert)
+    : deleteAlertByType(priceAlert);
+
+const requestAlertUpdate = (
+  priceAlert: Alert,
+  isPerpsMode: boolean,
+  active: boolean,
+): Promise<Response> =>
+  isPerpsMode
+    ? updatePerpAlertByType(priceAlert, { active })
+    : updateAlertByType(priceAlert, { active });
+
+const trackedAssetId = (
+  isPerpsMode: boolean,
+  marketId: string | undefined,
+  assetId: string,
+): string => (isPerpsMode ? (marketId ?? '') : assetId);
+
+const trackedMarketType = (isPerpsMode: boolean): 'spot' | 'perps' =>
+  isPerpsMode
+    ? PriceAlertAnalytics.MARKET_TYPE.PERPS
+    : PriceAlertAnalytics.MARKET_TYPE.SPOT;
+
+const ManagePriceAlertsView: React.FC = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const tw = useTailwind();
+  const { colors, brandColors } = useTheme();
+  const hardwareTier = getHardwareTier();
+  const networkTier = useNetworkTier();
+  const queryClient = useQueryClient();
+  const navigation = useNavigation<AppStackNavigationProp>();
+  const route =
+    useRoute<
+      RouteProp<
+        { ManagePriceAlerts: PriceAlertRouteParams },
+        'ManagePriceAlerts'
+      >
+    >();
+  const {
+    symbol,
+    ticker,
+    currentPrice,
+    currentCurrency,
+    assetId,
+    mode,
+    marketId,
+    szDecimals,
+  } = route.params;
+  const isPerpsMode = mode === 'perps';
+  const displayTicker = ticker || symbol;
+  const { trackEvent, createEventBuilder } = useAnalytics();
+
+  const hasResolvedInitialFetch = useRef(false);
+  const {
+    has: isDeleteInFlight,
+    add: startDelete,
+    remove: finishDelete,
+    ids: deletingIds,
+  } = useInFlightIds();
+  const {
+    has: isToggleInFlight,
+    add: startToggle,
+    remove: finishToggle,
+    ids: togglingIds,
+  } = useInFlightIds();
+
+  const effectiveQueryKey = isPerpsMode
+    ? perpAlertsQueryKey(marketId ?? '')
+    : priceAlertsQueryKey(assetId);
+
+  const {
+    data: alerts = [],
+    isLoading,
+    isError,
+    isFetched,
+  } = useQuery({
+    queryKey: effectiveQueryKey,
+    enabled: networkTier !== 'NONE',
+    queryFn: async (): Promise<Alert[]> => {
+      const response = isPerpsMode
+        ? await fetchPerpAlerts(marketId ?? '')
+        : await fetchAlerts(assetId);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (isPerpsMode) {
+        const data = (await response.json()) as PerpAlertApiResponse[];
+        return normalizePerpAlerts(data);
+      }
+      return (await response.json()) as Alert[];
+    },
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+  });
+  const isInitialFetchPending = isLoading || !isFetched;
+
+  useEffect(() => {
+    if (!isFetched || isLoading || hasResolvedInitialFetch.current) {
+      return;
+    }
+    hasResolvedInitialFetch.current = true;
+    if (isError) {
+      toast({
+        title: strings('price_alerts.fetch_error'),
+        severity: ToastSeverity.Danger,
+        hasNoTimeout: false,
+        showCloseButton: false,
+      });
+      navigation.goBack();
+    } else if (alerts.length === 0) {
+      const createRoute = isPerpsMode
+        ? Routes.PERPS.CREATE_PRICE_ALERT
+        : Routes.CREATE_PRICE_ALERT;
+      navigation.replace(createRoute, {
+        symbol,
+        ticker,
+        currentPrice,
+        currentCurrency,
+        assetId,
+        mode,
+        marketId,
+        szDecimals,
+      });
+    }
+  }, [
+    isFetched,
+    isLoading,
+    isError,
+    alerts.length,
+    navigation,
+    symbol,
+    ticker,
+    currentPrice,
+    currentCurrency,
+    assetId,
+    isPerpsMode,
+    mode,
+    marketId,
+    szDecimals,
+  ]);
+
+  const handleBack = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const handleNavigateToCreate = useCallback(
+    (editingAlert?: Alert) => {
+      const navParams = {
+        symbol,
+        ticker,
+        currentPrice,
+        currentCurrency,
+        assetId,
+        mode,
+        marketId,
+        szDecimals,
+        fromManage: true,
+        existingAbsoluteAlerts: alerts.filter(
+          (a): a is AbsolutePriceAlert => a.type === 'absolute_price',
+        ),
+        existingPercentAlerts: alerts.filter(
+          (a): a is PercentChangeAlert => a.type === 'percent_change',
+        ),
+        editingAlert,
+      };
+      if (isPerpsMode) {
+        navigation.navigate(Routes.PERPS.CREATE_PRICE_ALERT, navParams);
+      } else {
+        navigation.navigate(Routes.CREATE_PRICE_ALERT, navParams);
+      }
+    },
+    [
+      navigation,
+      symbol,
+      ticker,
+      currentPrice,
+      currentCurrency,
+      assetId,
+      mode,
+      marketId,
+      isPerpsMode,
+      szDecimals,
+      alerts,
+    ],
+  );
+
+  const handleDeleteAlert = useCallback(
+    async (id: string) => {
+      if (isDeleteInFlight(id)) return;
+      startDelete(id);
+
+      const queryKey = effectiveQueryKey;
+      const previous = queryClient.getQueryData<Alert[]>(queryKey) ?? [];
+      const target = previous.find((a) => a.id === id);
+
+      try {
+        if (!target) failRequest('Alert not found');
+        const response = await requestAlertDeletion(target, isPerpsMode);
+        if (!response.ok) failRequest(`HTTP ${response.status}`);
+
+        trackEvent(
+          createEventBuilder(MetaMetricsEvents.PRICE_ALERT_CREATION_INTERACTION)
+            .addProperties({
+              interaction_type: PriceAlertAnalytics.INTERACTION_TYPE.DELETED,
+              asset_id: trackedAssetId(isPerpsMode, marketId, assetId),
+              token_symbol: displayTicker,
+              alert_market_type: trackedMarketType(isPerpsMode),
+              ...analyticsPropsForAlert(target),
+              alert_value: target.threshold,
+              alert_recurring: target.recurring,
+              alert_active: target.active,
+            })
+            .build(),
+        );
+
+        const next = previous.filter((a) => a.id !== id);
+        queryClient.setQueryData(queryKey, next);
+        toast({
+          title: strings('price_alerts.delete_success'),
+          startAccessory: <Icon name={IconName.Trash} size={IconSize.Lg} />,
+          hasNoTimeout: false,
+          showCloseButton: false,
+        });
+        if (next.length === 0) {
+          navigation.goBack();
+        }
+      } catch {
+        toast({
+          title: strings('price_alerts.delete_error'),
+          severity: ToastSeverity.Danger,
+          hasNoTimeout: false,
+          showCloseButton: false,
+        });
+        const refetchFn = isPerpsMode
+          ? () => fetchPerpAlerts(marketId ?? '')
+          : () => fetchAlerts(assetId);
+        const response = await refetchFn().catch(() => null);
+        if (response?.ok) {
+          const body = await response.json().catch(() => []);
+          queryClient.setQueryData(
+            queryKey,
+            isPerpsMode
+              ? normalizePerpAlerts(body as PerpAlertApiResponse[])
+              : (body as Alert[]),
+          );
+        } else {
+          queryClient.setQueryData(queryKey, previous);
+        }
+      }
+      finishDelete(id);
+    },
+    [
+      navigation,
+      assetId,
+      marketId,
+      isPerpsMode,
+      effectiveQueryKey,
+      queryClient,
+      displayTicker,
+      trackEvent,
+      createEventBuilder,
+      isDeleteInFlight,
+      startDelete,
+      finishDelete,
+    ],
+  );
+
+  const handleToggleAlert = useCallback(
+    async (id: string, newValue: boolean) => {
+      if (isToggleInFlight(id)) return;
+      startToggle(id);
+
+      const queryKey = effectiveQueryKey;
+      const previous = queryClient.getQueryData<Alert[]>(queryKey) ?? [];
+      const toggled = previous.find((a) => a.id === id);
+      queryClient.setQueryData(
+        queryKey,
+        previous.map((a) => (a.id === id ? { ...a, active: newValue } : a)),
+      );
+
+      try {
+        if (!toggled) failRequest('Alert not found');
+        const response = await requestAlertUpdate(
+          toggled,
+          isPerpsMode,
+          newValue,
+        );
+        if (!response.ok) failRequest(`HTTP ${response.status}`);
+
+        trackEvent(
+          createEventBuilder(MetaMetricsEvents.PRICE_ALERT_CREATION_INTERACTION)
+            .addProperties({
+              interaction_type: PriceAlertAnalytics.INTERACTION_TYPE.UPDATED,
+              asset_id: trackedAssetId(isPerpsMode, marketId, assetId),
+              token_symbol: displayTicker,
+              alert_market_type: trackedMarketType(isPerpsMode),
+              ...analyticsPropsForAlert(toggled),
+              alert_value: toggled.threshold,
+              alert_recurring: toggled.recurring,
+              alert_active: newValue,
+              prev_alert_value: toggled.threshold,
+              prev_alert_recurring: toggled.recurring,
+              prev_alert_active: toggled.active,
+            })
+            .build(),
+        );
+      } catch {
+        toast({
+          title: strings('price_alerts.toggle_error'),
+          severity: ToastSeverity.Danger,
+          hasNoTimeout: false,
+          showCloseButton: false,
+        });
+        queryClient.setQueryData(
+          queryKey,
+          previous.map((a) => (a.id === id ? { ...a, active: !newValue } : a)),
+        );
+      }
+      finishToggle(id);
+    },
+    [
+      assetId,
+      marketId,
+      isPerpsMode,
+      effectiveQueryKey,
+      queryClient,
+      displayTicker,
+      trackEvent,
+      createEventBuilder,
+      isToggleInFlight,
+      startToggle,
+      finishToggle,
+    ],
+  );
+
+  const renderItem = ({ item }: { item: Alert }) => {
+    const isDeleting = deletingIds.has(item.id);
+    const isToggling = togglingIds.has(item.id);
+
+    const title =
+      item.type === 'percent_change'
+        ? formatPercentAlertTitle(item)
+        : strings('price_alerts.reaches_threshold', {
+            threshold: isPerpsMode
+              ? formatPerpsPrice(item.threshold)
+              : formatPriceWithSubscriptNotation(
+                  item.threshold,
+                  currentCurrency,
+                  { maximumFractionDigits: 15 },
+                ),
+          });
+
+    const subtitle =
+      item.type === 'percent_change'
+        ? formatPercentAlertSubtitle(item)
+        : item.recurring
+          ? strings('price_alerts.recurring')
+          : strings('price_alerts.once_label');
+
+    return (
+      <Box
+        flexDirection={BoxFlexDirection.Row}
+        alignItems={BoxAlignItems.Center}
+        justifyContent={BoxJustifyContent.Between}
+        twClassName="px-4 py-3 border-b border-muted"
+        testID={`${ManagePriceAlertsTestIds.ALERT_ITEM_PREFIX}-${item.id}`}
+      >
+        <TouchableOpacity
+          onPress={() => handleNavigateToCreate(item)}
+          disabled={isDeleting || isToggling}
+          style={tw.style('flex-1 mr-3')}
+          testID={`${ManagePriceAlertsTestIds.ALERT_EDIT_PREFIX}-${item.id}`}
+        >
+          <Text variant={TextVariant.BodyMd} color={TextColor.TextDefault}>
+            {title}
+          </Text>
+          <Text variant={TextVariant.BodySm} color={TextColor.TextAlternative}>
+            {subtitle}
+          </Text>
+        </TouchableOpacity>
+
+        {isDeleting ? (
+          <ActivityIndicator
+            size="small"
+            color={colors.primary.default}
+            testID={`${ManagePriceAlertsTestIds.ALERT_DELETE_SPINNER_PREFIX}-${item.id}`}
+            style={tw.style('self-center')}
+          />
+        ) : (
+          <ButtonIcon
+            onPress={() => handleDeleteAlert(item.id)}
+            size={ButtonIconSize.Md}
+            iconName={IconName.Trash}
+            testID={`${ManagePriceAlertsTestIds.ALERT_DELETE_PREFIX}-${item.id}`}
+            accessibilityLabel="Delete alert"
+            style={tw.style('self-center')}
+          />
+        )}
+
+        <Switch
+          value={item.active}
+          onValueChange={(v) => handleToggleAlert(item.id, v)}
+          disabled={isToggling}
+          trackColor={{
+            true: colors.primary.default,
+            false: colors.border.muted,
+          }}
+          thumbColor={brandColors.white}
+          ios_backgroundColor={colors.border.muted}
+          testID={`${ManagePriceAlertsTestIds.ALERT_TOGGLE_PREFIX}-${item.id}`}
+          style={[
+            tw.style('ml-3 self-center'),
+            isToggling && styles.switchDisabled,
+          ]}
+        />
+      </Box>
+    );
+  };
+
+  return (
+    <SafeAreaView
+      style={tw.style('flex-1 bg-default')}
+      testID={ManagePriceAlertsTestIds.CONTAINER}
+    >
+      <Box twClassName="flex-1 bg-default">
+        <HeaderStandardGlass
+          isGlass={isGlassHeader}
+          isFloating={false}
+          title={strings('price_alerts.manage_title')}
+          onBack={handleBack}
+        />
+
+        {isInitialFetchPending ? (
+          <Box
+            alignItems={BoxAlignItems.Center}
+            justifyContent={BoxJustifyContent.Center}
+            twClassName="flex-1"
+          >
+            <ActivityIndicator
+              testID={ManagePriceAlertsTestIds.LOADING}
+              color={colors.primary.default}
+            />
+          </Box>
+        ) : (
+          <Box twClassName="flex-1">
+            <FlatList
+              data={alerts}
+              keyExtractor={(item) => item.id}
+              renderItem={renderItem}
+              windowSize={hardwareTier === 'LOW' ? 5 : 21}
+              testID={ManagePriceAlertsTestIds.ALERT_LIST}
+            />
+          </Box>
+        )}
+
+        {!isInitialFetchPending && alerts.length > 0 && (
+          <>
+            <View style={tw.style('px-4 pb-4 pt-2')}>
+              <Button
+                variant={ButtonVariant.Primary}
+                onPress={() => handleNavigateToCreate()}
+                testID={ManagePriceAlertsTestIds.ADD_ALERT_BUTTON}
+                twClassName="w-full"
+              >
+                {strings('price_alerts.add_alert')}
+              </Button>
+            </View>
+            <FeatureNotificationsGate feature="priceAlerts" />
+          </>
+        )}
+      </Box>
+    </SafeAreaView>
+  );
+};
+
+export default ManagePriceAlertsView;

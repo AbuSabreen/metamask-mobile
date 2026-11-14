@@ -1,0 +1,361 @@
+import '../../../../../tests/component-view/mocks';
+import React from 'react';
+import { act, fireEvent, waitFor } from '@testing-library/react-native';
+
+import {
+  renderComponentViewScreen,
+  renderScreenWithRoutes,
+} from '../../../../../tests/component-view/render';
+import { describeForPlatforms } from '../../../../../tests/component-view/platform';
+import { buildNotificationsState } from '../../../../../tests/component-view/presets/notifications';
+import NotificationsSettings from './';
+import { NotificationSettingsViewSelectorsIDs } from './NotificationSettingsView.testIds';
+import Engine from '../../../../core/Engine';
+import Routes from '../../../../constants/navigation/Routes';
+import { updateBgState } from '../../../../core/redux/slices/engine';
+import { strings } from '../../../../../locales/i18n';
+import NotificationSettingsSection from './NotificationSettingsSection';
+import { createNotificationsSettingsDeeplinkIntent } from '../../../../core/DeeplinkManager/handlers/intent/handleNotificationsSettingsUrl';
+
+const MOCK_NOTIFICATION_PREFERENCES = {
+  walletActivity: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+    accounts: [],
+  },
+  perps: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+  },
+  agenticCli: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+  },
+  socialAI: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+    txAmountLimit: 100,
+    mutedTraderProfileIds: [],
+  },
+  marketing: {
+    inAppNotificationsEnabled: false,
+    pushNotificationsEnabled: false,
+  },
+  priceAlerts: {
+    inAppNotificationsEnabled: true,
+    pushNotificationsEnabled: true,
+  },
+};
+
+/**
+ * Component-view coverage for notification settings toggles and section visibility.
+ *
+ * AUS-backed notification preferences are provided through Engine, matching
+ * the component-view boundary for data-service calls.
+ */
+
+const GET_NOTIFICATION_PREFERENCES_ACTION =
+  'AuthenticatedUserStorageService:getNotificationPreferences';
+
+const SECTION_TITLES = {
+  walletActivity: 'Wallet activity',
+  perps: 'Trading activity',
+  agenticCli: 'Agent wallet',
+  socialAI: 'Trading signals',
+  marketing: 'Updates and rewards',
+  priceAlerts: 'Price alerts',
+};
+
+const hasFetchedNotificationPreferences = () =>
+  (Engine.controllerMessenger.call as jest.Mock).mock.calls.some(
+    ([action]) => action === GET_NOTIFICATION_PREFERENCES_ACTION,
+  );
+
+function renderSettings(
+  stateOverrides?: Parameters<typeof buildNotificationsState>[0],
+) {
+  return renderComponentViewScreen(
+    NotificationsSettings as unknown as React.ComponentType,
+    { name: 'NotificationsSettings' },
+    { state: buildNotificationsState(stateOverrides) },
+    {},
+  );
+}
+
+function renderSettingsWithSectionRoute(
+  stateOverrides?: Parameters<typeof buildNotificationsState>[0],
+  initialParams?: Record<string, unknown>,
+) {
+  return renderScreenWithRoutes(
+    NotificationsSettings as unknown as React.ComponentType,
+    { name: 'NotificationsSettings' },
+    [{ name: Routes.SETTINGS.NOTIFICATION_SETTINGS_SECTION }],
+    { state: buildNotificationsState(stateOverrides) },
+    initialParams,
+  );
+}
+
+describeForPlatforms('Notifications settings (toggles + visibility)', () => {
+  beforeEach(() => {
+    const controllerMessengerCall = Engine.controllerMessenger.call.bind(
+      Engine.controllerMessenger,
+    ) as (action: string, ...args: unknown[]) => unknown;
+
+    const mockControllerMessengerCall = ((
+      action: string,
+      ...args: unknown[]
+    ) => {
+      if (action === GET_NOTIFICATION_PREFERENCES_ACTION) {
+        return Promise.resolve(MOCK_NOTIFICATION_PREFERENCES);
+      }
+
+      return controllerMessengerCall(action, ...args);
+    }) as unknown as typeof Engine.controllerMessenger.call;
+
+    jest
+      .spyOn(Engine.controllerMessenger, 'call')
+      .mockImplementation(mockControllerMessengerCall);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('renders notification sections when notifications are enabled', async () => {
+    const { getByTestId, getByText, findAllByText, findByText } =
+      renderSettings({
+        socialLeaderboardEnabled: true,
+      });
+
+    expect(
+      getByTestId(NotificationSettingsViewSelectorsIDs.NOTIFICATIONS_TOGGLE),
+    ).toBeOnTheScreen();
+
+    expect(await findByText(SECTION_TITLES.walletActivity)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.perps)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.agenticCli)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.socialAI)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.marketing)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.priceAlerts)).toBeOnTheScreen();
+    // Wallet activity shows no channel summary; its settings are per-account.
+    expect(await findAllByText('Push, In app')).toHaveLength(4);
+    expect(getByText('Off')).toBeOnTheScreen();
+  });
+
+  it('hides social AI section when social leaderboard feature flag is disabled', async () => {
+    const { getByText, queryByText, findAllByText, findByText } =
+      renderSettings({ socialLeaderboardEnabled: false });
+
+    expect(await findByText(SECTION_TITLES.walletActivity)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.perps)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.agenticCli)).toBeOnTheScreen();
+    expect(queryByText(SECTION_TITLES.socialAI)).toBeNull();
+    expect(getByText(SECTION_TITLES.marketing)).toBeOnTheScreen();
+    // Wallet activity shows no channel summary; its settings are per-account.
+    expect(await findAllByText('Push, In app')).toHaveLength(3);
+  });
+
+  it('renders price alerts section when notifications are enabled', async () => {
+    const { getByText, findByText } = renderSettings();
+
+    expect(await findByText(SECTION_TITLES.walletActivity)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.perps)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.agenticCli)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.marketing)).toBeOnTheScreen();
+    expect(getByText(SECTION_TITLES.priceAlerts)).toBeOnTheScreen();
+  });
+
+  it('hides notification sections when main toggle is off', async () => {
+    const { getByTestId, queryByText } = renderSettings({
+      notificationsEnabled: false,
+    });
+
+    expect(
+      getByTestId(NotificationSettingsViewSelectorsIDs.NOTIFICATIONS_TOGGLE),
+    ).toBeOnTheScreen();
+
+    await waitFor(() => {
+      expect(hasFetchedNotificationPreferences()).toBe(true);
+      expect(queryByText(SECTION_TITLES.walletActivity)).toBeNull();
+    });
+    expect(queryByText(SECTION_TITLES.perps)).toBeNull();
+    expect(queryByText(SECTION_TITLES.agenticCli)).toBeNull();
+    expect(queryByText(SECTION_TITLES.socialAI)).toBeNull();
+    expect(queryByText(SECTION_TITLES.marketing)).toBeNull();
+    expect(queryByText(SECTION_TITLES.priceAlerts)).toBeNull();
+  });
+
+  it('invokes the disable controller path when the main toggle is pressed (on -> off)', async () => {
+    const disableSpy = jest
+      .spyOn(
+        Engine.context.NotificationServicesController as unknown as {
+          disableNotificationServices: () => Promise<void>;
+        },
+        'disableNotificationServices',
+      )
+      .mockResolvedValue(undefined);
+
+    try {
+      const { getByTestId } = renderSettings();
+
+      fireEvent(
+        getByTestId(NotificationSettingsViewSelectorsIDs.NOTIFICATIONS_TOGGLE),
+        'onChange',
+        { nativeEvent: { value: false } },
+      );
+
+      await waitFor(() => {
+        expect(disableSpy).toHaveBeenCalled();
+      });
+    } finally {
+      disableSpy.mockRestore();
+    }
+  });
+
+  it('navigates to the wallet activity notification section when its row is pressed', async () => {
+    const { getByText, findByTestId } = renderSettingsWithSectionRoute();
+
+    fireEvent.press(getByText(SECTION_TITLES.walletActivity));
+
+    expect(
+      await findByTestId(
+        `route-${Routes.SETTINGS.NOTIFICATION_SETTINGS_SECTION}`,
+      ),
+    ).toBeOnTheScreen();
+  });
+
+  it('navigates to the agentic CLI notification section when its row is pressed', async () => {
+    const { getByText, findByTestId } = renderSettingsWithSectionRoute();
+
+    fireEvent.press(getByText(SECTION_TITLES.agenticCli));
+
+    expect(
+      await findByTestId(
+        `route-${Routes.SETTINGS.NOTIFICATION_SETTINGS_SECTION}`,
+      ),
+    ).toBeOnTheScreen();
+  });
+
+  it('opens the wallet activity section when rendered with a wallet-activity deeplink section', async () => {
+    const { findByTestId } = renderSettingsWithSectionRoute(undefined, {
+      section: 'wallet-activity',
+    });
+
+    expect(
+      await findByTestId(
+        `route-${Routes.SETTINGS.NOTIFICATION_SETTINGS_SECTION}`,
+      ),
+    ).toBeOnTheScreen();
+  });
+
+  it('opens the price alerts section when rendered with a price-alerts deeplink section', async () => {
+    const { findByTestId } = renderSettingsWithSectionRoute(undefined, {
+      section: 'price-alerts',
+    });
+
+    expect(
+      await findByTestId(
+        `route-${Routes.SETTINGS.NOTIFICATION_SETTINGS_SECTION}`,
+      ),
+    ).toBeOnTheScreen();
+  });
+
+  it('stays on notification settings when the section deeplink value is unknown', async () => {
+    const { findByText, queryByTestId } = renderSettingsWithSectionRoute(
+      undefined,
+      { section: 'not-a-section' },
+    );
+
+    expect(await findByText(SECTION_TITLES.walletActivity)).toBeOnTheScreen();
+    expect(
+      queryByTestId(`route-${Routes.SETTINGS.NOTIFICATION_SETTINGS_SECTION}`),
+    ).toBeNull();
+  });
+
+  it('stays on notification settings when a section deeplink is opened while notifications are off', async () => {
+    const { getByTestId, queryByTestId } = renderSettingsWithSectionRoute(
+      { notificationsEnabled: false },
+      { section: 'wallet-activity' },
+    );
+
+    expect(
+      getByTestId(NotificationSettingsViewSelectorsIDs.NOTIFICATIONS_TOGGLE),
+    ).toBeOnTheScreen();
+
+    await waitFor(() => {
+      expect(
+        queryByTestId(`route-${Routes.SETTINGS.NOTIFICATION_SETTINGS_SECTION}`),
+      ).toBeNull();
+    });
+  });
+
+  it.each([
+    ['wallet-activity', 'wallet_activity_desc'],
+    ['price-alerts', 'price_alerts_desc'],
+  ])(
+    'opens the pending %s deeplink section after enabling notifications',
+    async (section, descriptionKey) => {
+      const intent = createNotificationsSettingsDeeplinkIntent({
+        notificationsSettingsPath: `?section=${section}`,
+      });
+      const targetParams = intent.target.params as {
+        screen: string;
+        params: Record<string, unknown>;
+      };
+      const enableSpy = jest
+        .spyOn(
+          Engine.context.NotificationServicesController,
+          'enableMetamaskNotifications',
+        )
+        .mockResolvedValue(undefined);
+      const engineWithState = Engine as unknown as {
+        state: Record<string, unknown>;
+      };
+      const originalEngineState = engineWithState.state;
+      const { findByTestId, findByText, store } = renderScreenWithRoutes(
+        NotificationSettingsSection as unknown as React.ComponentType,
+        { name: targetParams.screen },
+        [
+          {
+            name: Routes.SETTINGS.NOTIFICATIONS,
+            Component: NotificationsSettings as unknown as React.ComponentType,
+          },
+        ],
+        { state: buildNotificationsState({ notificationsEnabled: false }) },
+        targetParams.params,
+      );
+
+      try {
+        const toggle = await findByTestId(
+          NotificationSettingsViewSelectorsIDs.NOTIFICATIONS_TOGGLE,
+        );
+        expect(toggle).toBeOnTheScreen();
+
+        fireEvent(toggle, 'onValueChange', true);
+        await waitFor(() => expect(enableSpy).toHaveBeenCalledTimes(1));
+        // Mirror the controller update reaching Redux after enabling succeeds.
+        act(() => {
+          engineWithState.state = {
+            ...originalEngineState,
+            NotificationServicesController: {
+              ...store.getState().engine.backgroundState
+                .NotificationServicesController,
+              isNotificationServicesEnabled: true,
+            },
+          };
+          store.dispatch(
+            updateBgState({ key: 'NotificationServicesController' }),
+          );
+        });
+
+        expect(
+          await findByText(
+            strings(`app_settings.notifications_opts.${descriptionKey}`),
+          ),
+        ).toBeOnTheScreen();
+      } finally {
+        engineWithState.state = originalEngineState;
+      }
+    },
+  );
+});

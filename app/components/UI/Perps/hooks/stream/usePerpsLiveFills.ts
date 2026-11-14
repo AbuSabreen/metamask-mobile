@@ -1,0 +1,113 @@
+import { useCallback, useEffect, useState, useRef } from 'react';
+import { usePerpsStream } from '../../providers/PerpsStreamManager';
+import { DevLogger } from '../../../../../core/SDKConnect/utils/DevLogger';
+import { type OrderFill } from '@metamask/perps-controller';
+
+// Stable empty array reference to prevent re-renders
+const EMPTY_FILLS: OrderFill[] = [];
+
+export interface UsePerpsLiveFillsOptions {
+  /** Throttle delay in milliseconds (default: 0ms for immediate updates) */
+  throttleMs?: number;
+}
+
+export interface UsePerpsLiveFillsReturn {
+  /** Array of order fills */
+  fills: OrderFill[];
+  /** Whether we're waiting for the first real WebSocket data (not cached) */
+  isInitialLoading: boolean;
+  error?: Error | null;
+  retry: () => void;
+}
+
+/**
+ * Hook for real-time order fill updates via WebSocket subscription
+ * Provides immediate notification of trade executions
+ *
+ * @param options - Configuration options for the hook
+ * @returns Object containing fills array and loading state
+ */
+export function usePerpsLiveFills(
+  options: UsePerpsLiveFillsOptions = {},
+): UsePerpsLiveFillsReturn {
+  const { throttleMs = 0 } = options;
+  const stream = usePerpsStream();
+  const [error, setError] = useState<Error | null>(null);
+  const [fills, setFills] = useState<OrderFill[]>(EMPTY_FILLS);
+  const [isInitialLoading, setIsInitialLoading] = useState(
+    () => stream.fills.getSnapshot() === null,
+  );
+  const lastFillsRef = useRef<OrderFill[]>(EMPTY_FILLS);
+  const hasReceivedFirstUpdate = useRef(false);
+
+  useEffect(() => {
+    const logMessage = throttleMs
+      ? `usePerpsLiveFills: Subscribing with ${throttleMs}ms throttle`
+      : `usePerpsLiveFills: Subscribing with no throttle (instant updates)`;
+    DevLogger.log(logMessage);
+
+    const unsubscribe = stream.fills.subscribe({
+      onError: (failure) => {
+        setError(failure);
+        setIsInitialLoading(false);
+      },
+      callback: (newFills) => {
+        setError(stream.fills.getError());
+        if (
+          newFills === null ||
+          newFills === undefined ||
+          stream.fills.getSnapshot() === null
+        ) {
+          hasReceivedFirstUpdate.current = false;
+          setIsInitialLoading(true);
+          lastFillsRef.current = EMPTY_FILLS;
+          setFills(EMPTY_FILLS);
+          return;
+        }
+
+        // We have real data now (either empty array or fills)
+        if (!hasReceivedFirstUpdate.current) {
+          DevLogger.log('usePerpsLiveFills: Received first WebSocket update', {
+            count: newFills?.length ?? 0,
+          });
+          hasReceivedFirstUpdate.current = true;
+          setIsInitialLoading(false);
+        }
+
+        // Only update if fills actually changed
+        // For empty arrays, use stable reference
+        if (newFills.length === 0) {
+          if (lastFillsRef.current.length === 0) {
+            // Already empty, don't update
+            return;
+          }
+          lastFillsRef.current = EMPTY_FILLS;
+          setFills(EMPTY_FILLS);
+        } else {
+          DevLogger.log('usePerpsLiveFills: Received fill update', {
+            count: newFills.length,
+          });
+          lastFillsRef.current = newFills;
+          setFills(newFills);
+        }
+      },
+      throttleMs,
+    });
+
+    return () => {
+      DevLogger.log('usePerpsLiveFills: Unsubscribing');
+      unsubscribe();
+    };
+  }, [stream, throttleMs]);
+
+  const retry = useCallback(() => {
+    stream.retryOrderStreams();
+  }, [stream]);
+
+  return {
+    error,
+    retry,
+    fills,
+    isInitialLoading,
+  };
+}

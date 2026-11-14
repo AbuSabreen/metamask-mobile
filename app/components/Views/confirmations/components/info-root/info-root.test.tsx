@@ -1,0 +1,317 @@
+import React from 'react';
+import { Text } from 'react-native';
+
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+import {
+  downgradeAccountConfirmation,
+  getAppStateForConfirmation,
+  personalSignatureConfirmationState,
+  upgradeAccountConfirmation,
+  upgradeOnlyAccountConfirmation,
+} from '../../../../../util/test/confirm-data-helpers';
+import { approveERC20TransactionStateMock } from '../../__mocks__/approve-transaction-mock';
+// eslint-disable-next-line import-x/no-namespace
+import * as QRHardwareHook from '../../context/qr-hardware-context/qr-hardware-context';
+import { ConfirmationInfoComponentIDs } from '../../constants/info-ids';
+import Info from './info-root';
+import { contractDeploymentTransactionStateMock } from '../../__mocks__/contract-deployment-transaction-mock';
+import { useRefreshSmartTransactionsLiveness } from '../../../../hooks/useRefreshSmartTransactionsLiveness';
+import {
+  TransactionMeta,
+  TransactionType,
+} from '@metamask/transaction-controller';
+
+jest.mock('../../../../hooks/AssetPolling/AssetPollingProvider', () => ({
+  AssetPollingProvider: () => null,
+}));
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    goBack: jest.fn(),
+  }),
+  useRoute: jest.fn(() => ({
+    key: 'test-route',
+    name: 'TestRoute',
+    params: {},
+  })),
+}));
+
+jest.mock('../../hooks/ui/useNavbar', () => ({
+  __esModule: true,
+  default: jest.fn(),
+}));
+
+jest.mock('../../hooks/tokens/useAddToken', () => ({
+  useAddToken: jest.fn(),
+}));
+
+jest.mock('../info/custom-amount-info', () => ({
+  CustomAmountInfo: () => {
+    const { Text } = jest.requireActual('react-native');
+    return <Text testID="custom-amount-info">Custom Amount Info</Text>;
+  },
+}));
+
+jest.mock('../../hooks/gas/useGasFeeToken');
+jest.mock('../../hooks/tokens/useTokenWithBalance');
+jest.mock('../../hooks/pay/useTransactionPayAutoFiatSubmission');
+// The withdraw info components call `useDefaultPaySelectedSection`, which
+// otherwise reaches the Money Account balance query and its QueryClient.
+jest.mock('../../hooks/pay/usePayMoneyAccountAvailable', () => ({
+  usePayMoneyAccountAvailable: () => ({ isAvailable: true, isPending: false }),
+}));
+
+jest.mock('../../../../hooks/useRefreshSmartTransactionsLiveness', () => ({
+  useRefreshSmartTransactionsLiveness: jest.fn(),
+}));
+
+jest.mock('../../hooks/alerts/useInsufficientBalanceAlert', () => ({
+  useInsufficientBalanceAlert: jest.fn().mockReturnValue([]),
+}));
+
+jest.mock(
+  '../../../../../components/UI/Ramp/hooks/useEnsureCompatibleProvider',
+  () => ({
+    useEnsureCompatibleProvider: jest.fn(),
+  }),
+);
+
+jest.mock(
+  '../../../../hooks/useNetworkEnablement/useNetworkEnablement',
+  () => ({
+    useNetworkEnablement: jest.fn().mockReturnValue({
+      namespace: 'eip155',
+      enabledNetworksByNamespace: {
+        eip155: {
+          '0x1': true,
+          '0x89': false,
+          '0x13881': true,
+        },
+      },
+      tryEnableEvmNetwork: jest.fn(),
+    }),
+  }),
+);
+
+const MockText = Text;
+jest.mock('../qr-info', () => () => {
+  const View = jest.requireActual('react-native').View;
+  const componentIDs = jest.requireActual(
+    '../../constants/info-ids',
+  ).ConfirmationInfoComponentIDs;
+  return (
+    <View testID={componentIDs.QR_INFO}>
+      <MockText>QR Scanning Component</MockText>
+    </View>
+  );
+});
+
+jest.mock('../../../../../core/Engine', () => ({
+  getTotalEvmFiatAccountBalance: () => ({ tokenFiat: 10 }),
+  context: {
+    KeyringController: {
+      state: {
+        keyrings: [],
+      },
+    },
+    GasFeeController: {
+      startPolling: jest.fn(),
+      stopPollingByPollingToken: jest.fn(),
+    },
+    NetworkController: {
+      getNetworkConfigurationByNetworkClientId: jest.fn(),
+      findNetworkClientIdByChainId: jest.fn(),
+    },
+    AccountsController: {
+      state: {
+        internalAccounts: {
+          accounts: {
+            '1': {
+              id: '1',
+              address: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+              metadata: {
+                name: 'Account 1',
+                keyring: {
+                  type: 'HD Key Tree',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    TransactionController: {
+      getTransactions: jest.fn().mockReturnValue([]),
+      getNonceLock: jest.fn().mockReturnValue({ releaseLock: jest.fn() }),
+      updateTransaction: jest.fn(),
+    },
+  },
+  controllerMessenger: {
+    subscribe: jest.fn(),
+  },
+}));
+
+describe('Info', () => {
+  const MEMBERSHIP_SUBSCRIPTION_TRANSACTION_TYPE =
+    TransactionType.membershipSubscription;
+  const mockUseNetworkEnablement = jest.fn();
+  const perpsWithdrawConfirmation = {
+    chainId: '0xa4b1',
+    id: 'perps-withdraw-confirmation-id',
+    networkClientId: 'arbitrum',
+    origin: 'metamask',
+    txParams: {
+      from: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+      to: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+      value: '0x0',
+    },
+    type: TransactionType.perpsWithdraw,
+  } as unknown as TransactionMeta;
+
+  mockUseNetworkEnablement.mockReturnValue({
+    namespace: 'eip155',
+    enabledNetworksByNamespace: {
+      eip155: {
+        '0x1': true,
+        '0x89': false,
+        '0x13881': true,
+      },
+    },
+  });
+  it('renders correctly for personal sign', () => {
+    const { getByTestId } = renderWithProvider(<Info />, {
+      state: personalSignatureConfirmationState,
+    });
+    expect(
+      getByTestId(ConfirmationInfoComponentIDs.PERSONAL_SIGN),
+    ).toBeDefined();
+  });
+
+  it('renders QRInfo if user is signing using QR hardware and has confirmed', () => {
+    jest.spyOn(QRHardwareHook, 'useQRHardwareContext').mockReturnValue({
+      isSigningQRObject: true,
+      signingConfirmed: true,
+    } as unknown as QRHardwareHook.QRHardwareContextType);
+    const { getByTestId } = renderWithProvider(<Info />, {
+      state: personalSignatureConfirmationState,
+    });
+    expect(getByTestId(ConfirmationInfoComponentIDs.QR_INFO)).toBeDefined();
+  });
+
+  it('renders SwitchAccountType for smart account type - downgrade confirmations', () => {
+    const { getByTestId, getByText } = renderWithProvider(<Info />, {
+      state: getAppStateForConfirmation(downgradeAccountConfirmation),
+    });
+    expect(
+      getByTestId(ConfirmationInfoComponentIDs.SWITCH_ACCOUNT_TYPE),
+    ).toBeDefined();
+    expect(getByText('Standard account')).toBeTruthy();
+  });
+
+  it('renders SwitchAccountType for smart account type - upgrade confirmations', () => {
+    const { getByTestId, getByText } = renderWithProvider(<Info />, {
+      state: getAppStateForConfirmation(upgradeOnlyAccountConfirmation),
+    });
+    expect(
+      getByTestId(ConfirmationInfoComponentIDs.SWITCH_ACCOUNT_TYPE),
+    ).toBeDefined();
+    expect(getByText('Smart account')).toBeTruthy();
+  });
+
+  it('renders correctly for smart account type - upgrade + batched confirmations', () => {
+    const { getByTestId } = renderWithProvider(<Info />, {
+      state: getAppStateForConfirmation(upgradeAccountConfirmation),
+    });
+    expect(
+      getByTestId(ConfirmationInfoComponentIDs.CONTRACT_INTERACTION),
+    ).toBeDefined();
+  });
+
+  it('renders expected elements for approve', () => {
+    const { getByTestId } = renderWithProvider(<Info />, {
+      state: approveERC20TransactionStateMock,
+    });
+    expect(getByTestId(ConfirmationInfoComponentIDs.APPROVE)).toBeDefined();
+  });
+
+  it('renders expected elements for contract deployment', () => {
+    const { getByTestId } = renderWithProvider(<Info />, {
+      state: contractDeploymentTransactionStateMock,
+    });
+    expect(
+      getByTestId(ConfirmationInfoComponentIDs.CONTRACT_DEPLOYMENT),
+    ).toBeDefined();
+  });
+
+  it('renders CustomAmountInfo for perps withdraw confirmations', () => {
+    const { getByTestId } = renderWithProvider(<Info />, {
+      state: getAppStateForConfirmation(perpsWithdrawConfirmation),
+    });
+
+    expect(getByTestId('custom-amount-info')).toBeOnTheScreen();
+  });
+
+  it.each([
+    TransactionType.moneyAccountDeposit,
+    MEMBERSHIP_SUBSCRIPTION_TRANSACTION_TYPE,
+  ])('renders CustomAmountInfo for %s confirmations', (transactionType) => {
+    const moneyAccountDepositConfirmation = {
+      chainId: '0x89',
+      id: 'money-account-deposit-confirmation-id',
+      networkClientId: 'polygon',
+      origin: 'metamask',
+      txParams: {
+        from: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+        to: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+        value: '0x0',
+      },
+      type: transactionType,
+    } as unknown as TransactionMeta;
+
+    const { getByTestId } = renderWithProvider(<Info />, {
+      state: getAppStateForConfirmation(moneyAccountDepositConfirmation),
+    });
+
+    expect(getByTestId('custom-amount-info')).toBeOnTheScreen();
+  });
+
+  it('renders CustomAmountInfo for money account withdraw confirmations', () => {
+    const moneyAccountWithdrawConfirmation = {
+      chainId: '0x89',
+      id: 'money-account-withdraw-confirmation-id',
+      networkClientId: 'polygon',
+      origin: 'metamask',
+      txParams: {
+        from: '0x935e73edb9ff52e23bac7f7e043a1ecd06d05477',
+        to: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+        value: '0x0',
+      },
+      type: TransactionType.moneyAccountWithdraw,
+    } as unknown as TransactionMeta;
+
+    const { getByTestId } = renderWithProvider(<Info />, {
+      state: getAppStateForConfirmation(moneyAccountWithdrawConfirmation),
+    });
+
+    expect(getByTestId('custom-amount-info')).toBeOnTheScreen();
+  });
+
+  describe('useRefreshSmartTransactionsLiveness', () => {
+    beforeEach(() => {
+      jest.mocked(useRefreshSmartTransactionsLiveness).mockClear();
+    });
+
+    it('calls useRefreshSmartTransactionsLiveness with transaction chainId', () => {
+      const { chainId } =
+        approveERC20TransactionStateMock.engine.backgroundState
+          .TransactionController.transactions[0];
+
+      renderWithProvider(<Info />, {
+        state: approveERC20TransactionStateMock,
+      });
+
+      expect(useRefreshSmartTransactionsLiveness).toHaveBeenCalledWith(chainId);
+    });
+  });
+});

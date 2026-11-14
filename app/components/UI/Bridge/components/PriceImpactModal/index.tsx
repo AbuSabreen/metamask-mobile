@@ -1,0 +1,71 @@
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { useBridgeQuoteDataContext } from '../../hooks/useBridgeQuoteData/BridgeQuoteDataContext';
+import { PriceImpactModalRouterParams } from './types';
+import { useParams } from '../../../../../util/navigation/navUtils';
+import { PriceImpactHeader } from './PriceImpactHeader';
+import { PriceImpactDescription } from './PriceImpactDescription';
+import { PriceImpactFooter } from './PriceImpactFooter';
+import { useBridgeConfirm } from '../../hooks/useBridgeConfirm';
+import { usePriceImpactViewData } from '../../hooks/usePriceImpactViewData';
+import {
+  BottomSheet,
+  BottomSheetRef,
+} from '@metamask/design-system-react-native';
+
+export const PriceImpactModal = () => {
+  const { goBack } = useNavigation<AppNavigationProp>();
+  const [loading, setLoading] = useState(false);
+  const { type, location } = useParams<PriceImpactModalRouterParams>();
+  const sheetRef = useRef<BottomSheetRef>(null);
+
+  const {
+    formattedQuoteData,
+    activeQuote,
+    shouldShowPriceImpactError: isDangerousPriceImpact,
+  } = useBridgeQuoteDataContext();
+  const confirmBridge = useBridgeConfirm({
+    activeQuote,
+    location,
+  });
+  const priceImpactViewData = usePriceImpactViewData(
+    activeQuote?.quote.priceData?.priceImpact?.amount,
+  );
+
+  const handleClose = useCallback(() => {
+    sheetRef.current?.onCloseBottomSheet();
+  }, []);
+
+  const handleProceed = useCallback(async () => {
+    setLoading(true);
+    if (sheetRef.current?.onCloseBottomSheet) {
+      sheetRef.current.onCloseBottomSheet(confirmBridge);
+    } else {
+      await confirmBridge();
+    }
+  }, [confirmBridge]);
+
+  return (
+    <BottomSheet ref={sheetRef} goBack={goBack}>
+      <PriceImpactHeader
+        onClose={handleClose}
+        iconName={priceImpactViewData.icon?.name}
+        iconColor={priceImpactViewData.icon?.color}
+        content={priceImpactViewData.title}
+      />
+      <PriceImpactDescription
+        formattedPriceImpact={formattedQuoteData?.priceImpact}
+        content={priceImpactViewData.description}
+        isDanger={isDangerousPriceImpact}
+        formattedPriceImpactFiat={formattedQuoteData?.priceImpactFiat}
+      />
+      <PriceImpactFooter
+        type={type}
+        onConfirm={handleClose}
+        onCancel={handleProceed}
+        loading={loading}
+      />
+    </BottomSheet>
+  );
+};

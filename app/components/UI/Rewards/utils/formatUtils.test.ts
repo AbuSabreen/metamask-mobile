@@ -1,0 +1,1977 @@
+/**
+ * Unit tests for rewards formatting utilities
+ */
+
+import {
+  formatDateRemaining,
+  formatDuration,
+  formatRewardsDate,
+  formatRewardsDateLabel,
+  formatRewardsRelativeDay,
+  formatRewardsRelativeTime,
+  formatRewardsTimeOnly,
+  formatTimeRemaining,
+  formatNumber,
+  getIconName,
+  formatUrl,
+  formatUTCDate,
+  formatRewardsMusdDepositPayloadDate,
+  resolveTemplate,
+  validateEmail,
+  formatPercentChange,
+  formatMusdBaseUnits,
+  isPositiveBaseUnits,
+  isPercentChangeNonNegative,
+  getChainHex,
+  getAssetReference,
+  parseCaip19,
+  caipChainIdToHex,
+  shortenAddress,
+  formatUsd,
+  formatSignedUsd,
+  formatPredictPositionPercent,
+  formatPredictPositionUsd,
+  formatCompactValue,
+  formatCompactUsd,
+  formatOrdinalRank,
+  resolveBenefitEndDate,
+} from './formatUtils';
+import { IconName } from '@metamask/design-system-react-native';
+import { getTimeDifferenceFromNow } from '../../../../util/date';
+
+const mockGetTimeDifferenceFromNow =
+  getTimeDifferenceFromNow as jest.MockedFunction<
+    typeof getTimeDifferenceFromNow
+  >;
+
+// Mock date utility
+jest.mock('../../../../util/date', () => ({
+  getTimeDifferenceFromNow: jest.fn(),
+}));
+
+// Mock i18n strings
+jest.mock('../../../../../locales/i18n', () => ({
+  strings: jest.fn(
+    (key: string, params: Record<string, string> | undefined) => {
+      const t: Record<string, string> = {
+        'rewards.today': 'Today',
+        'rewards.events.to': 'to',
+        'rewards.events.type.swap': 'Swap',
+        'rewards.events.type.referral_action': 'Referral action',
+        'rewards.events.type.sign_up_bonus': 'Sign up bonus',
+        'rewards.events.type.loyalty_bonus': 'Loyalty bonus',
+        'rewards.events.type.one_time_bonus': 'One-time bonus',
+        'rewards.events.type.open_position': 'Opened position',
+        'rewards.events.type.close_position': 'Closed position',
+        'rewards.events.type.take_profit': 'Take profit',
+        'rewards.events.type.stop_loss': 'Stop loss',
+        'rewards.events.type.uncategorized_event': 'Uncategorized event',
+        'perps.market.long': 'Long',
+        'perps.market.short': 'Short',
+        'rewards.perps_trading_campaign.last_updated': 'Last updated: {{time}}',
+      };
+      let template = t[key] ?? key;
+      if (params) {
+        for (const [paramKey, value] of Object.entries(params)) {
+          template = template.split(`{{${paramKey}}}`).join(value);
+        }
+      }
+      return template;
+    },
+  ),
+  default: {
+    locale: 'en-US',
+  },
+}));
+
+// Mock intl utility
+const mockFormat = jest.fn((value: number) =>
+  new Intl.NumberFormat('en-US').format(value),
+);
+
+const mockGetIntlNumberFormatter = jest.fn((_locale: string) => ({
+  format: mockFormat,
+}));
+
+jest.mock('../../../../util/intl', () => ({
+  getIntlNumberFormatter: mockGetIntlNumberFormatter,
+}));
+
+jest.mock('../../../../util/formatFiat', () => ({
+  __esModule: true,
+  default: (amount: { toFixed: (dp: number) => string }) =>
+    `$${Number(amount.toFixed(2)).toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`,
+}));
+
+describe('formatUtils', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('formatRewardsDate', () => {
+    it('formats timestamp correctly with default locale', () => {
+      const timestamp = new Date('2024-01-15T14:30:00Z');
+
+      const result = formatRewardsDate(timestamp);
+
+      expect(result).toMatch(/Jan 15, \d{1,2}:\d{2} (AM|PM)/);
+    });
+
+    it('formats timestamp correctly with custom locale', () => {
+      // Given a timestamp and custom locale
+      const timestamp = new Date('2024-01-15T14:30:00Z');
+      const locale = 'fr-FR';
+
+      // When formatting the date
+      const result = formatRewardsDate(timestamp, locale);
+
+      // Then it should return formatted date in French locale
+      expect(result).toMatch(/15 janv., \d{1,2}:\d{2}/);
+    });
+  });
+
+  describe('formatRewardsDateLabel', () => {
+    it('formats date with short month, day, and year', () => {
+      const date = new Date('2025-04-23T10:30:00Z');
+      const result = formatRewardsDateLabel(date, 'en-US');
+      expect(result).toBe('Apr 23, 2025');
+    });
+
+    it('formats date correctly with custom locale', () => {
+      const date = new Date('2025-04-23T10:30:00Z');
+      const result = formatRewardsDateLabel(date, 'fr-FR');
+      expect(result).toMatch(/23 avr\. 2025|23 avr 2025/);
+    });
+  });
+
+  describe('formatRewardsTimeOnly', () => {
+    it('formats time with hour and minute', () => {
+      const date = new Date('2025-04-23T14:30:00Z');
+      const result = formatRewardsTimeOnly(date, 'en-US');
+      expect(result).toMatch(/\d{1,2}:\d{2}\s?(AM|PM)/);
+    });
+
+    it('formats time correctly with custom locale', () => {
+      const date = new Date('2025-04-23T14:30:00Z');
+      const result = formatRewardsTimeOnly(date, 'fr-FR');
+      expect(result).toMatch(/\d{1,2}:\d{2}/);
+    });
+  });
+
+  describe('formatDuration', () => {
+    const now = Date.parse('2026-10-01T00:00:00.000Z');
+    const templates = {
+      day: '{count} day',
+      days: '{count} days',
+      hour: '{count} hour',
+      hours: '{count} hours',
+    };
+
+    it('uses whole days when at least a day remains', () => {
+      expect(formatDuration('2026-10-03T12:00:00.000Z', templates, now)).toBe(
+        '2 days',
+      );
+    });
+
+    it('uses hours below a day and keeps at least one hour', () => {
+      expect(formatDuration('2026-10-01T05:00:00.000Z', templates, now)).toBe(
+        '5 hours',
+      );
+      expect(formatDuration('2026-10-01T00:20:00.000Z', templates, now)).toBe(
+        '1 hour',
+      );
+    });
+
+    it('returns null for a missing, invalid, or past end', () => {
+      expect(formatDuration(null, templates, now)).toBeNull();
+      expect(formatDuration('not-a-date', templates, now)).toBeNull();
+      expect(
+        formatDuration('2026-09-01T00:00:00.000Z', templates, now),
+      ).toBeNull();
+    });
+
+    it('returns null when the unit template has no count placeholder', () => {
+      expect(
+        formatDuration(
+          '2026-10-03T12:00:00.000Z',
+          { ...templates, days: 'days' },
+          now,
+        ),
+      ).toBeNull();
+    });
+  });
+
+  describe('formatRewardsRelativeTime', () => {
+    const now = new Date('2026-09-25T12:00:00.000Z');
+
+    it('returns an empty string for an invalid date', () => {
+      expect(formatRewardsRelativeTime(new Date('not-a-date'), now)).toBe('');
+    });
+
+    it('returns just now when the instant is under a minute ago', () => {
+      expect(
+        formatRewardsRelativeTime(new Date('2026-09-25T11:59:30.000Z'), now),
+      ).toBe('just now');
+    });
+
+    it('returns minutes, hours, then days', () => {
+      expect(
+        formatRewardsRelativeTime(new Date('2026-09-25T11:55:00.000Z'), now),
+      ).toBe('5m ago');
+      expect(
+        formatRewardsRelativeTime(new Date('2026-09-25T09:00:00.000Z'), now),
+      ).toBe('3h ago');
+      expect(
+        formatRewardsRelativeTime(new Date('2026-09-21T12:00:00.000Z'), now),
+      ).toBe('4d ago');
+    });
+
+    it('rolls days into weeks, months, then years', () => {
+      expect(
+        formatRewardsRelativeTime(new Date('2026-09-18T12:00:00.000Z'), now),
+      ).toBe('1w ago');
+      expect(
+        formatRewardsRelativeTime(new Date('2026-08-26T12:00:00.000Z'), now),
+      ).toBe('1mo ago');
+      expect(
+        formatRewardsRelativeTime(new Date('2026-06-25T12:00:00.000Z'), now),
+      ).toBe('3mo ago');
+      expect(
+        formatRewardsRelativeTime(new Date('2025-09-25T12:00:00.000Z'), now),
+      ).toBe('1y ago');
+      expect(
+        formatRewardsRelativeTime(new Date('2024-09-25T12:00:00.000Z'), now),
+      ).toBe('2y ago');
+    });
+  });
+
+  describe('formatRewardsRelativeDay', () => {
+    const now = new Date('2026-09-25T23:30:00.000Z');
+
+    it('returns an empty string for a value that is not a UTC day', () => {
+      expect(formatRewardsRelativeDay('2026-09-25T00:00:00.000Z', now)).toBe(
+        '',
+      );
+    });
+
+    it('returns today for the current UTC day', () => {
+      expect(formatRewardsRelativeDay('2026-09-25', now)).toBe('Today');
+    });
+
+    it('counts whole UTC days', () => {
+      expect(formatRewardsRelativeDay('2026-09-24', now)).toBe('1d ago');
+      expect(formatRewardsRelativeDay('2026-09-21', now)).toBe('4d ago');
+    });
+
+    it('rolls days into weeks, months, then years', () => {
+      expect(formatRewardsRelativeDay('2026-09-18', now)).toBe('1w ago');
+      expect(formatRewardsRelativeDay('2026-08-27', now)).toBe('4w ago');
+      expect(formatRewardsRelativeDay('2026-08-26', now)).toBe('1mo ago');
+      expect(formatRewardsRelativeDay('2025-09-26', now)).toBe('12mo ago');
+      expect(formatRewardsRelativeDay('2025-09-25', now)).toBe('1y ago');
+      expect(formatRewardsRelativeDay('2024-09-25', now)).toBe('2y ago');
+    });
+  });
+
+  describe('formatTimeRemaining', () => {
+    it('returns formatted time with days, hours, and minutes when all are positive', () => {
+      // Given: 2 days, 5 hours, 30 minutes remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 2,
+        hours: 5,
+        minutes: 30,
+      });
+
+      const endDate = new Date('2024-12-31T23:59:59Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return days, hours, and minutes format
+      expect(result).toBe('2d 5h 30m');
+      expect(mockGetTimeDifferenceFromNow).toHaveBeenCalledWith(
+        endDate.getTime(),
+      );
+    });
+
+    it('returns formatted time with only minutes when hours and days are zero', () => {
+      // Given: 0 hours, 45 minutes remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 0,
+        hours: 0,
+        minutes: 45,
+      });
+
+      const endDate = new Date('2024-01-01T12:45:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return minutes format
+      expect(result).toBe('45m');
+    });
+
+    it('returns null when days, hours, and minutes are all zero', () => {
+      // Given: 0 hours, 0 minutes remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 0,
+        hours: 0,
+        minutes: 0,
+      });
+
+      const endDate = new Date('2024-01-01T12:00:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return null
+      expect(result).toBeNull();
+    });
+
+    it('returns null when time values are negative for past date', () => {
+      // Given: negative minutes (past date)
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 0,
+        hours: 0,
+        minutes: -10,
+      });
+
+      const endDate = new Date('2023-01-01T12:00:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return null
+      expect(result).toBeNull();
+    });
+
+    it('returns only hours when days and minutes are zero', () => {
+      // Given: exactly 1 hour remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 0,
+        hours: 1,
+        minutes: 0,
+      });
+
+      const endDate = new Date('2024-01-01T13:00:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return hours format only
+      expect(result).toBe('1h');
+    });
+
+    it('returns days, hours, and minutes for large time differences', () => {
+      // Given: 365 days, 23 hours, 59 minutes remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 365,
+        hours: 23,
+        minutes: 59,
+      });
+
+      const endDate = new Date('2025-01-01T23:59:59Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return days, hours, and minutes format
+      expect(result).toBe('365d 23h 59m');
+    });
+
+    it('returns single digit values without padding', () => {
+      // Given: 1 day, 1 hour, 1 minute remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 1,
+        hours: 1,
+        minutes: 1,
+      });
+
+      const endDate = new Date('2024-01-02T13:01:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return days, hours, and minutes format without padding
+      expect(result).toBe('1d 1h 1m');
+    });
+
+    it('returns hours and minutes when days are zero', () => {
+      // Given: 0 days, 2 hours, 59 minutes remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 0,
+        hours: 2,
+        minutes: 59,
+      });
+
+      const endDate = new Date('2024-01-01T14:59:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return hours and minutes format
+      expect(result).toBe('2h 59m');
+    });
+
+    it('returns exactly 1 minute when only minutes remain', () => {
+      // Given: exactly 1 minute remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 0,
+        hours: 0,
+        minutes: 1,
+      });
+
+      const endDate = new Date('2024-01-01T12:01:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return minutes format
+      expect(result).toBe('1m');
+    });
+
+    it('returns hours and minutes with double-digit values when days are zero', () => {
+      // Given: 0 days, 12 hours, 30 minutes remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 0,
+        hours: 12,
+        minutes: 30,
+      });
+
+      const endDate = new Date('2024-01-02T00:30:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: returns hours and minutes format
+      expect(result).toBe('12h 30m');
+    });
+
+    it('calls getTimeDifferenceFromNow with correct timestamp', () => {
+      // Given: a specific end date
+      const endDate = new Date('2024-06-15T10:30:00Z');
+      const expectedTimestamp = endDate.getTime();
+
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 1,
+        hours: 2,
+        minutes: 30,
+      });
+
+      // When: formatting time remaining
+      formatTimeRemaining(endDate);
+
+      // Then: should call getTimeDifferenceFromNow with correct timestamp
+      expect(mockGetTimeDifferenceFromNow).toHaveBeenCalledWith(
+        expectedTimestamp,
+      );
+      expect(mockGetTimeDifferenceFromNow).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns days and minutes when hours are zero', () => {
+      // Given: 3 days, 0 hours, 15 minutes remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 3,
+        hours: 0,
+        minutes: 15,
+      });
+
+      const endDate = new Date('2024-01-04T12:15:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return days and minutes format
+      expect(result).toBe('3d 15m');
+    });
+
+    it('returns only days when hours and minutes are zero', () => {
+      // Given: 5 days, 0 hours, 0 minutes remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 5,
+        hours: 0,
+        minutes: 0,
+      });
+
+      const endDate = new Date('2024-01-06T12:00:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return days format only
+      expect(result).toBe('5d');
+    });
+
+    it('trims trailing space when minutes are zero', () => {
+      // Given: 2 days, 3 hours, 0 minutes remaining
+      mockGetTimeDifferenceFromNow.mockReturnValue({
+        days: 2,
+        hours: 3,
+        minutes: 0,
+      });
+
+      const endDate = new Date('2024-12-31T15:00:00Z');
+
+      // When: formatting time remaining
+      const result = formatTimeRemaining(endDate);
+
+      // Then: should return days and hours format without trailing space
+      expect(result).toBe('2d 3h');
+    });
+  });
+
+  describe('resolveBenefitEndDate', () => {
+    const validTo = '2026-12-31T23:59:59Z';
+    const actionDate = '2026-09-01T00:00:00Z';
+
+    it('prefers validTo when both dates are valid', () => {
+      const result = resolveBenefitEndDate(validTo, actionDate);
+
+      expect(result).toBe(validTo);
+    });
+
+    it('falls back to actionDate when validTo is null', () => {
+      const result = resolveBenefitEndDate(null, actionDate);
+
+      expect(result).toBe(actionDate);
+    });
+
+    it('falls back to actionDate when validTo is empty', () => {
+      const result = resolveBenefitEndDate('  ', actionDate);
+
+      expect(result).toBe(actionDate);
+    });
+
+    it('falls back to actionDate when validTo is malformed', () => {
+      const result = resolveBenefitEndDate('not-a-date', actionDate);
+
+      expect(result).toBe(actionDate);
+    });
+
+    it('returns null when neither date is valid', () => {
+      const result = resolveBenefitEndDate('not-a-date', null);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('formatDateRemaining', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('handles multi-month day borrowing when previous month is shorter', () => {
+      jest.useFakeTimers().setSystemTime(new Date('2025-01-31T00:00:00Z'));
+
+      const result = formatDateRemaining('2025-03-03T00:00:00Z');
+
+      expect(result).toBe('1mo 3d');
+    });
+
+    it('handles leap-year February correctly with calendar month stepping', () => {
+      jest.useFakeTimers().setSystemTime(new Date('2024-01-31T00:00:00Z'));
+
+      const result = formatDateRemaining('2024-03-03T00:00:00Z');
+
+      expect(result).toBe('1mo 3d');
+    });
+
+    it('keeps end-of-month anchor when stepping across shorter months', () => {
+      const now = new Date('2025-01-31T00:00:00Z');
+
+      const result = formatDateRemaining('2025-03-31T00:00:00Z', now);
+
+      expect(result).toBe('2mo');
+    });
+
+    it('returns null for past dates', () => {
+      jest.useFakeTimers().setSystemTime(new Date('2025-03-03T00:00:00Z'));
+
+      const result = formatDateRemaining('2025-03-02T00:00:00Z');
+
+      expect(result).toBeNull();
+    });
+
+    it('uses explicit now when provided (no reliance on system time)', () => {
+      const now = new Date('2025-01-31T00:00:00Z');
+
+      const result = formatDateRemaining('2025-03-03T00:00:00Z', now);
+
+      expect(result).toBe('1mo 3d');
+    });
+
+    it('returns minutes only when remaining time is under one hour', () => {
+      const now = new Date('2025-03-03T10:00:00Z');
+
+      expect(formatDateRemaining('2025-03-03T10:45:00Z', now)).toBe('45min');
+      expect(formatDateRemaining('2025-03-03T10:59:00Z', now)).toBe('59min');
+    });
+
+    it('returns 1m when under one hour but less than one full minute remains', () => {
+      const now = new Date('2025-03-03T10:00:00Z');
+
+      expect(formatDateRemaining('2025-03-03T10:00:30Z', now)).toBe('1min');
+    });
+
+    it('returns hour and minute pair when same calendar day and at least one hour remains', () => {
+      const now = new Date('2025-03-03T10:00:00Z');
+
+      expect(formatDateRemaining('2025-03-03T11:00:00Z', now)).toBe('1h');
+      expect(formatDateRemaining('2025-03-03T12:30:00Z', now)).toBe('2h 30min');
+    });
+
+    it('returns day and hour pair when no full calendar months remain', () => {
+      const now = new Date('2025-03-01T00:00:00Z');
+
+      expect(formatDateRemaining('2025-03-02T01:00:00Z', now)).toBe('1d 1h');
+    });
+
+    it('returns year and month pair when at least one full year remains', () => {
+      const now = new Date('2024-01-15T00:00:00Z');
+
+      expect(formatDateRemaining('2026-03-20T00:00:00Z', now)).toBe('2y 2mo');
+    });
+
+    it('skips zero-value month and uses next non-zero unit', () => {
+      const now = new Date('2025-01-10T00:00:00Z');
+
+      expect(formatDateRemaining('2026-01-30T00:00:00Z', now)).toBe('1y 20d');
+    });
+
+    it('returns a single unit when only one non-zero unit remains', () => {
+      const now = new Date('2025-01-10T00:00:00Z');
+
+      expect(formatDateRemaining('2026-01-10T00:00:00Z', now)).toBe('1y');
+    });
+  });
+
+  describe('formatNumber', () => {
+    it('should format positive numbers correctly', () => {
+      expect(formatNumber(1234)).toBe('1234');
+      expect(formatNumber(1000000)).toBe('1000000');
+      expect(formatNumber(500)).toBe('500');
+    });
+
+    it('should handle zero', () => {
+      expect(formatNumber(0)).toBe('0');
+    });
+
+    it('should handle null values', () => {
+      expect(formatNumber(null)).toBe('0');
+    });
+
+    it('should handle undefined values', () => {
+      expect(formatNumber(undefined as unknown as number)).toBe('0');
+    });
+
+    it('should handle negative numbers', () => {
+      expect(formatNumber(-1234)).toBe('-1234');
+      expect(formatNumber(-500)).toBe('-500');
+    });
+
+    it('should handle decimal numbers', () => {
+      expect(formatNumber(1234.56)).toBe('1234.56');
+      expect(formatNumber(999.99)).toBe('999.99');
+    });
+
+    it('should handle very large numbers', () => {
+      expect(formatNumber(5000000)).toBe('5000000');
+      expect(formatNumber(1500000)).toBe('1500000');
+    });
+
+    it('should fallback to string conversion on formatter error', () => {
+      // Mock the formatter to throw an error
+      const mockErrorFormatter = {
+        format: jest.fn().mockImplementation(() => {
+          throw new Error('Formatter error');
+        }),
+      };
+
+      mockGetIntlNumberFormatter.mockReturnValue(mockErrorFormatter);
+
+      expect(formatNumber(1234)).toBe('1234');
+
+      // Restore original mock
+      mockGetIntlNumberFormatter.mockReturnValue({ format: mockFormat });
+    });
+  });
+
+  describe('getIconName', () => {
+    it('should return valid IconName when provided valid icon name', () => {
+      expect(getIconName('Star')).toBe(IconName.Star);
+      expect(getIconName('ArrowDown')).toBe(IconName.ArrowDown);
+      expect(getIconName('Lock')).toBe(IconName.Lock);
+    });
+
+    it('should return Star as fallback for invalid icon names', () => {
+      expect(getIconName('InvalidIcon')).toBe(IconName.Star);
+      expect(getIconName('NonExistentIcon')).toBe(IconName.Star);
+      expect(getIconName('')).toBe(IconName.Star);
+    });
+
+    it('should handle null and undefined inputs', () => {
+      expect(getIconName(null as unknown as string)).toBe(IconName.Star);
+      expect(getIconName(undefined as unknown as string)).toBe(IconName.Star);
+    });
+
+    it('should handle case-sensitive icon names', () => {
+      expect(getIconName('star')).toBe(IconName.Star); // lowercase should fallback
+      expect(getIconName('STAR')).toBe(IconName.Star); // uppercase should fallback
+    });
+
+    it('should handle special characters and numbers', () => {
+      expect(getIconName('Star123')).toBe(IconName.Star);
+      expect(getIconName('Star-Icon')).toBe(IconName.Star);
+      expect(getIconName('Star_Icon')).toBe(IconName.Star);
+    });
+
+    it('should work with all valid IconName enum values', () => {
+      // Test a few common IconName values
+      const validIcons = [
+        'Add',
+        'Arrow2Down',
+        'Arrow2Left',
+        'Arrow2Right',
+        'Arrow2Up',
+        'ArrowDown',
+        'ArrowLeft',
+        'ArrowRight',
+        'ArrowUp',
+        'Bank',
+        'Bold',
+        'Book',
+        'Bookmark',
+        'Calculator',
+        'Calendar',
+        'Camera',
+        'Card',
+        'CardPos',
+        'CardToken',
+        'Category',
+        'Chart',
+        'Check',
+        'CheckBold',
+        'CheckBoxOff',
+        'CheckBoxOn',
+        'Clock',
+        'Close',
+        'Coin',
+        'Confirmation',
+        'Connect',
+        'Copy',
+        'CopySuccess',
+        'Danger',
+        'Dark',
+        'Data',
+        'Diagram',
+        'DocumentCode',
+        'Download',
+        'Edit',
+        'Eraser',
+        'Ethereum',
+        'Expand',
+        'Export',
+        'EyeSlash',
+        'File',
+        'Filter',
+        'Flag',
+        'FlashSlash',
+        'FullCircle',
+        'Gas',
+        'Global',
+        'GlobalSearch',
+        'Graph',
+        'Hardware',
+        'Heart',
+        'Hierarchy',
+        'Home',
+        'Import',
+        'Info',
+        'Key',
+        'Light',
+        'Link',
+        'Loading',
+        'Lock',
+        'LockCircle',
+        'LockSlash',
+        'Login',
+        'Logout',
+        'Menu',
+        'MessageQuestion',
+        'Messages',
+        'MinusCircle',
+        'Mobile',
+        'Money',
+        'Monitor',
+        'MoreHorizontal',
+        'MoreVertical',
+        'Notification',
+        'NotificationCircle',
+        'PasswordCheck',
+        'People',
+        'PlusCircle',
+        'Programming',
+        'QrCode',
+        'Question',
+        'Received',
+        'Refresh',
+        'Save',
+        'ScanBarcode',
+        'ScanFocus',
+        'Search',
+        'Security',
+        'SecurityCard',
+        'SecurityCross',
+        'SecurityKey',
+        'SecuritySearch',
+        'SecuritySlash',
+        'SecurityTick',
+        'SecurityTime',
+        'SecurityUser',
+        'Send1',
+        'Send2',
+        'Setting',
+        'Slash',
+        'SnapsMobile',
+        'SpeedUp',
+        'Star',
+        'Swap',
+        'SwapHorizontal',
+        'SwapVertical',
+        'Tag',
+        'Tilde',
+        'Timer',
+        'Trash',
+        'TrendDown',
+        'TrendUp',
+        'Twitter',
+        'Upload',
+        'Usb',
+        'User',
+        'UserAdd',
+        'UserCheck',
+        'UserCircle',
+        'UserCircleAdd',
+        'UserMinus',
+        'UserRemove',
+        'UserSearch',
+        'UserTick',
+        'Wallet',
+        'WalletCard',
+        'WalletMoney',
+        'Warning',
+      ];
+
+      validIcons.forEach((iconName) => {
+        if (Object.values(IconName).includes(iconName as IconName)) {
+          expect(getIconName(iconName)).toBe(iconName);
+        }
+      });
+    });
+  });
+
+  describe('formatUrl', () => {
+    describe('valid URLs', () => {
+      it('should extract hostname from https URLs', () => {
+        expect(formatUrl('https://example.com')).toBe('example.com');
+        expect(formatUrl('https://www.google.com')).toBe('www.google.com');
+        expect(formatUrl('https://subdomain.example.com')).toBe(
+          'subdomain.example.com',
+        );
+      });
+
+      it('should extract hostname from http URLs', () => {
+        expect(formatUrl('http://example.com')).toBe('example.com');
+        expect(formatUrl('http://www.test.org')).toBe('www.test.org');
+      });
+
+      it('should extract hostname and ignore paths', () => {
+        expect(formatUrl('https://example.com/path/to/page')).toBe(
+          'example.com',
+        );
+        expect(formatUrl('https://api.github.com/users/username')).toBe(
+          'api.github.com',
+        );
+        expect(formatUrl('http://localhost:3000/dashboard')).toBe('localhost');
+      });
+
+      it('should extract hostname and ignore query parameters', () => {
+        expect(formatUrl('https://example.com?param=value')).toBe(
+          'example.com',
+        );
+        expect(formatUrl('https://search.google.com?q=test&lang=en')).toBe(
+          'search.google.com',
+        );
+        expect(
+          formatUrl('http://example.com/path?param1=value1&param2=value2'),
+        ).toBe('example.com');
+      });
+
+      it('should extract hostname and ignore fragments', () => {
+        expect(formatUrl('https://example.com#section')).toBe('example.com');
+        expect(formatUrl('https://docs.example.com/guide#installation')).toBe(
+          'docs.example.com',
+        );
+      });
+
+      it('should handle URLs with ports', () => {
+        expect(formatUrl('https://example.com:8080')).toBe('example.com');
+        expect(formatUrl('http://localhost:3000')).toBe('localhost');
+        expect(formatUrl('https://api.example.com:443/v1/users')).toBe(
+          'api.example.com',
+        );
+      });
+
+      it('should handle complex URLs', () => {
+        expect(
+          formatUrl(
+            'https://user:pass@example.com:8080/path?query=value#fragment',
+          ),
+        ).toBe('example.com');
+        expect(
+          formatUrl(
+            'https://api.v2.example.com:443/users/123?include=profile&format=json',
+          ),
+        ).toBe('api.v2.example.com');
+      });
+    });
+
+    describe('invalid URLs - fallback behavior', () => {
+      it('should handle URLs without protocol using fallback', () => {
+        expect(formatUrl('example.com')).toBe('example.com');
+        expect(formatUrl('www.google.com')).toBe('www.google.com');
+        expect(formatUrl('subdomain.example.org')).toBe(
+          'subdomain.example.org',
+        );
+      });
+
+      it('should handle URLs without protocol with paths using fallback', () => {
+        expect(formatUrl('example.com/path/to/page')).toBe(
+          'example.com/path/to/page',
+        );
+        expect(formatUrl('api.github.com/users')).toBe('api.github.com/users');
+      });
+
+      it('should handle URLs without protocol with query parameters using fallback', () => {
+        expect(formatUrl('example.com?param=value')).toBe('example.com');
+        expect(formatUrl('search.google.com?q=test&lang=en')).toBe(
+          'search.google.com',
+        );
+        expect(formatUrl('example.com/path?param1=value1&param2=value2')).toBe(
+          'example.com/path',
+        );
+      });
+
+      it('should handle malformed URLs using fallback', () => {
+        expect(formatUrl('not-a-url')).toBe('not-a-url');
+        expect(formatUrl('just-text-here')).toBe('just-text-here');
+        expect(formatUrl('ftp://example.com')).toBe('ftp://example.com');
+      });
+
+      it('should handle URLs with only protocol using fallback', () => {
+        expect(formatUrl('https://')).toBe('');
+        expect(formatUrl('http://')).toBe('');
+      });
+    });
+
+    describe('edge cases', () => {
+      it('should return empty string for empty input', () => {
+        expect(formatUrl('')).toBe('');
+      });
+
+      it('should return empty string for whitespace-only input', () => {
+        expect(formatUrl('   ')).toBe('');
+        expect(formatUrl('\t\n')).toBe('');
+      });
+
+      it('should handle URLs with special characters', () => {
+        expect(formatUrl('https://example-site.com')).toBe('example-site.com');
+        expect(formatUrl('https://test_site.org')).toBe('test_site.org');
+        expect(formatUrl('https://site123.net')).toBe('site123.net');
+      });
+
+      it('should handle international domain names', () => {
+        expect(formatUrl('https://例え.テスト')).toBe('例え.テスト');
+        expect(formatUrl('https://münchen.de')).toBe('münchen.de');
+      });
+
+      it('should handle URLs with backticks and spaces', () => {
+        expect(formatUrl(' `https://例え.テスト` ')).toBe('例え.テスト');
+        expect(formatUrl(' `https://münchen.de` ')).toBe('münchen.de');
+        expect(formatUrl('  https://example.com  ')).toBe('example.com');
+        expect(formatUrl('`https://example.com`')).toBe('example.com');
+      });
+
+      it('should handle very long URLs', () => {
+        const longDomain =
+          'very-long-subdomain-name-that-exceeds-normal-length.example.com';
+        expect(formatUrl(`https://${longDomain}/very/long/path`)).toBe(
+          longDomain,
+        );
+      });
+    });
+
+    describe('security considerations', () => {
+      it('should handle non-http protocols safely', () => {
+        expect(formatUrl('file:///etc/passwd')).toBe('file:///etc/passwd');
+        expect(formatUrl('mailto:user@example.com')).toBe(
+          'mailto:user@example.com',
+        );
+      });
+
+      it('should handle URLs with encoded characters', () => {
+        expect(formatUrl('https://example.com%2Fmalicious')).toBe(
+          'example.com%2Fmalicious',
+        );
+        expect(formatUrl('https://example.com/path%20with%20spaces')).toBe(
+          'example.com',
+        );
+      });
+    });
+
+    describe('real-world examples', () => {
+      it('should handle common website URLs', () => {
+        expect(formatUrl('https://www.github.com/user/repo')).toBe(
+          'www.github.com',
+        );
+        expect(formatUrl('https://stackoverflow.com/questions/123456')).toBe(
+          'stackoverflow.com',
+        );
+        expect(formatUrl('https://docs.google.com/document/d/abc123')).toBe(
+          'docs.google.com',
+        );
+      });
+
+      it('should handle API endpoints', () => {
+        expect(formatUrl('https://api.twitter.com/v1/tweets')).toBe(
+          'api.twitter.com',
+        );
+        expect(formatUrl('https://jsonplaceholder.typicode.com/posts/1')).toBe(
+          'jsonplaceholder.typicode.com',
+        );
+      });
+
+      it('should handle CDN URLs', () => {
+        expect(
+          formatUrl('https://cdn.jsdelivr.net/npm/package@1.0.0/dist/file.js'),
+        ).toBe('cdn.jsdelivr.net');
+        expect(formatUrl('https://unpkg.com/react@17.0.0/index.js')).toBe(
+          'unpkg.com',
+        );
+      });
+    });
+  });
+
+  describe('formatUTCDate', () => {
+    it('formats ISO date string in default locale (en-US)', () => {
+      // Given an ISO date string
+      const isoDate = '2025-11-11';
+
+      // When formatting the date
+      const result = formatUTCDate(isoDate);
+
+      // Then it should return formatted date in en-US format
+      expect(result).toMatch(/11\/11\/2025|11\.11\.2025|Nov 11, 2025/);
+    });
+
+    it('formats ISO date string with custom locale', () => {
+      // Given an ISO date string and French locale
+      const isoDate = '2025-11-11';
+      const locale = 'fr-FR';
+
+      // When formatting the date
+      const result = formatUTCDate(isoDate, locale);
+
+      // Then it should return formatted date in French format
+      expect(result).toMatch(/11\/11\/2025|11\.11\.2025/);
+    });
+
+    it('formats ISO date string with custom options', () => {
+      // Given an ISO date string with custom formatting options
+      const isoDate = '2025-11-11';
+      const options: Intl.DateTimeFormatOptions = {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      };
+
+      // When formatting the date
+      const result = formatUTCDate(isoDate, 'en-US', options);
+
+      // Then it should return formatted date with long month name
+      expect(result).toBe('November 11, 2025');
+    });
+
+    it('handles dates at year boundaries correctly', () => {
+      // Given dates at year boundaries
+      const newYear = '2025-01-01';
+      const endYear = '2025-12-31';
+
+      // When formatting the dates
+      const newYearResult = formatUTCDate(newYear);
+      const endYearResult = formatUTCDate(endYear);
+
+      // Then they should be formatted correctly
+      expect(newYearResult).toMatch(/1\/1\/2025|1\.1\.2025|Jan 1, 2025/);
+      expect(endYearResult).toMatch(/12\/31\/2025|31\.12\.2025|Dec 31, 2025/);
+    });
+
+    it('prevents timezone shifts by using UTC', () => {
+      // Given an ISO date string
+      const isoDate = '2025-11-11';
+
+      // When formatting the date
+      const result = formatUTCDate(isoDate, 'en-US');
+
+      // Then it should always show November 11 regardless of local timezone
+      // The date should be interpreted as midnight UTC
+      expect(result).toMatch(/11/);
+    });
+
+    it('handles leap year dates correctly', () => {
+      // Given a leap year date
+      const leapYearDate = '2024-02-29';
+
+      // When formatting the date
+      const result = formatUTCDate(leapYearDate);
+
+      // Then it should format correctly
+      expect(result).toMatch(/29/);
+    });
+
+    it('uses default options when custom options are provided', () => {
+      // Given an ISO date string with partial custom options
+      const isoDate = '2025-11-11';
+      const options: Intl.DateTimeFormatOptions = {
+        month: 'short',
+      };
+
+      // When formatting the date
+      const result = formatUTCDate(isoDate, 'en-US', options);
+
+      // Then it should merge with default options (year, day, timeZone)
+      expect(result).toMatch(/Nov/);
+      expect(result).toMatch(/11/);
+      expect(result).toMatch(/2025/);
+    });
+
+    it('handles different locales correctly', () => {
+      // Given an ISO date string
+      const isoDate = '2025-11-11';
+
+      // When formatting with different locales
+      const enResult = formatUTCDate(isoDate, 'en-US');
+      const deResult = formatUTCDate(isoDate, 'de-DE');
+      const jaResult = formatUTCDate(isoDate, 'ja-JP');
+
+      // Then they should be formatted according to locale conventions
+      expect(enResult).toBeTruthy();
+      expect(deResult).toBeTruthy();
+      expect(jaResult).toBeTruthy();
+      // All should contain the date components
+      expect(enResult).toMatch(/11/);
+      expect(deResult).toMatch(/11/);
+      expect(jaResult).toMatch(/11/);
+    });
+  });
+
+  describe('formatRewardsMusdDepositPayloadDate', () => {
+    it('formats ISO date string for mUSD deposit with default locale', () => {
+      // Given an ISO date string
+      const isoDate = '2025-11-11';
+
+      // When formatting the date
+      const result = formatRewardsMusdDepositPayloadDate(isoDate);
+
+      // Then it should return formatted date with short month name
+      expect(result).toMatch(/Nov 11, 2025|11 Nov 2025/);
+    });
+
+    it('formats ISO date string for mUSD deposit with custom locale', () => {
+      // Given an ISO date string and French locale
+      const isoDate = '2025-11-11';
+      const locale = 'fr-FR';
+
+      // When formatting the date
+      const result = formatRewardsMusdDepositPayloadDate(isoDate, locale);
+
+      // Then it should return formatted date in French format
+      expect(result).toMatch(/nov\.|nov/);
+      expect(result).toMatch(/11/);
+      expect(result).toMatch(/2025/);
+    });
+
+    it('formats date with correct format (year, short month, day)', () => {
+      // Given an ISO date string
+      const isoDate = '2025-12-25';
+
+      // When formatting the date
+      const result = formatRewardsMusdDepositPayloadDate(isoDate, 'en-US');
+
+      // Then it should have year, short month, and day
+      expect(result).toMatch(/Dec/);
+      expect(result).toMatch(/25/);
+      expect(result).toMatch(/2025/);
+    });
+
+    it('handles dates at month boundaries', () => {
+      // Given dates at month boundaries
+      const firstOfMonth = '2025-01-01';
+      const lastOfMonth = '2025-01-31';
+
+      // When formatting the dates
+      const firstResult = formatRewardsMusdDepositPayloadDate(firstOfMonth);
+      const lastResult = formatRewardsMusdDepositPayloadDate(lastOfMonth);
+
+      // Then they should be formatted correctly
+      expect(firstResult).toMatch(/Jan/);
+      expect(firstResult).toMatch(/1/);
+      expect(lastResult).toMatch(/Jan/);
+      expect(lastResult).toMatch(/31/);
+    });
+
+    it('prevents timezone shifts by using UTC', () => {
+      // Given an ISO date string
+      const isoDate = '2025-11-11';
+
+      // When formatting the date
+      const result = formatRewardsMusdDepositPayloadDate(isoDate);
+
+      // Then it should always show the correct date regardless of local timezone
+      expect(result).toMatch(/Nov/);
+      expect(result).toMatch(/11/);
+    });
+
+    it('uses I18n.locale as default when no locale provided', () => {
+      // Given an ISO date string without locale
+      const isoDate = '2025-11-11';
+
+      // When formatting the date
+      const result = formatRewardsMusdDepositPayloadDate(isoDate);
+
+      // Then it should use the default locale from I18n
+      expect(result).toBeTruthy();
+      expect(result).toMatch(/11/);
+    });
+
+    it('returns null for undefined input', () => {
+      // Given undefined input
+      const isoDate = undefined;
+
+      // When formatting the date
+      const result = formatRewardsMusdDepositPayloadDate(isoDate);
+
+      // Then it should return null
+      expect(result).toBeNull();
+    });
+
+    it('returns null for empty string', () => {
+      // Given an empty string
+      const isoDate = '';
+
+      // When formatting the date
+      const result = formatRewardsMusdDepositPayloadDate(isoDate);
+
+      // Then it should return null
+      expect(result).toBeNull();
+    });
+
+    it('returns null for non-string input', () => {
+      // Given non-string inputs
+      const numberInput = 20251111 as unknown as string;
+      const objectInput = { date: '2025-11-11' } as unknown as string;
+      const arrayInput = ['2025', '11', '11'] as unknown as string;
+
+      // When formatting the dates
+      const numberResult = formatRewardsMusdDepositPayloadDate(numberInput);
+      const objectResult = formatRewardsMusdDepositPayloadDate(objectInput);
+      const arrayResult = formatRewardsMusdDepositPayloadDate(arrayInput);
+
+      // Then they should all return null
+      expect(numberResult).toBeNull();
+      expect(objectResult).toBeNull();
+      expect(arrayResult).toBeNull();
+    });
+
+    it('returns null for invalid date format - wrong separator', () => {
+      // Given date strings with wrong separators
+      const slashDate = '2025/11/11';
+      const dotDate = '2025.11.11';
+      const spaceDate = '2025 11 11';
+
+      // When formatting the dates
+      const slashResult = formatRewardsMusdDepositPayloadDate(slashDate);
+      const dotResult = formatRewardsMusdDepositPayloadDate(dotDate);
+      const spaceResult = formatRewardsMusdDepositPayloadDate(spaceDate);
+
+      // Then they should all return null
+      expect(slashResult).toBeNull();
+      expect(dotResult).toBeNull();
+      expect(spaceResult).toBeNull();
+    });
+
+    it('returns null for invalid date format - wrong length', () => {
+      // Given date strings with wrong length
+      const shortDate = '2025-11';
+      const longDate = '2025-11-11-12';
+      const noSeparators = '20251111';
+
+      // When formatting the dates
+      const shortResult = formatRewardsMusdDepositPayloadDate(shortDate);
+      const longResult = formatRewardsMusdDepositPayloadDate(longDate);
+      const noSeparatorsResult =
+        formatRewardsMusdDepositPayloadDate(noSeparators);
+
+      // Then they should all return null
+      expect(shortResult).toBeNull();
+      expect(longResult).toBeNull();
+      expect(noSeparatorsResult).toBeNull();
+    });
+
+    it('returns null for invalid date format - non-numeric characters', () => {
+      // Given date strings with non-numeric characters
+      const textDate = 'abcd-ef-gh';
+      const mixedDate = '2025-1a-11';
+      const lettersDate = 'YYYY-MM-DD';
+
+      // When formatting the dates
+      const textResult = formatRewardsMusdDepositPayloadDate(textDate);
+      const mixedResult = formatRewardsMusdDepositPayloadDate(mixedDate);
+      const lettersResult = formatRewardsMusdDepositPayloadDate(lettersDate);
+
+      // Then they should all return null
+      expect(textResult).toBeNull();
+      expect(mixedResult).toBeNull();
+      expect(lettersResult).toBeNull();
+    });
+
+    it('returns null for invalid date format - incomplete date parts', () => {
+      // Given date strings with incomplete parts
+      const oneDigitYear = '5-11-11';
+      const oneDigitMonth = '2025-1-11';
+      const oneDigitDay = '2025-11-1';
+      const twoDigitYear = '25-11-11';
+
+      // When formatting the dates
+      const oneDigitYearResult =
+        formatRewardsMusdDepositPayloadDate(oneDigitYear);
+      const oneDigitMonthResult =
+        formatRewardsMusdDepositPayloadDate(oneDigitMonth);
+      const oneDigitDayResult =
+        formatRewardsMusdDepositPayloadDate(oneDigitDay);
+      const twoDigitYearResult =
+        formatRewardsMusdDepositPayloadDate(twoDigitYear);
+
+      // Then they should all return null
+      expect(oneDigitYearResult).toBeNull();
+      expect(oneDigitMonthResult).toBeNull();
+      expect(oneDigitDayResult).toBeNull();
+      expect(twoDigitYearResult).toBeNull();
+    });
+
+    it('returns null for date with extra whitespace', () => {
+      // Given date strings with whitespace
+      const leadingSpace = ' 2025-11-11';
+      const trailingSpace = '2025-11-11 ';
+      const bothSpaces = ' 2025-11-11 ';
+
+      // When formatting the dates
+      const leadingResult = formatRewardsMusdDepositPayloadDate(leadingSpace);
+      const trailingResult = formatRewardsMusdDepositPayloadDate(trailingSpace);
+      const bothResult = formatRewardsMusdDepositPayloadDate(bothSpaces);
+
+      // Then they should all return null
+      expect(leadingResult).toBeNull();
+      expect(trailingResult).toBeNull();
+      expect(bothResult).toBeNull();
+    });
+
+    it('handles leap year dates correctly', () => {
+      // Given a leap year date
+      const leapYearDate = '2024-02-29';
+
+      // When formatting the date
+      const result = formatRewardsMusdDepositPayloadDate(leapYearDate);
+
+      // Then it should format correctly
+      expect(result).toBeTruthy();
+      expect(result).toMatch(/Feb/);
+      expect(result).toMatch(/29/);
+      expect(result).toMatch(/2024/);
+    });
+
+    it('handles dates at year boundaries correctly', () => {
+      // Given dates at year boundaries
+      const newYear = '2025-01-01';
+      const endYear = '2025-12-31';
+
+      // When formatting the dates
+      const newYearResult = formatRewardsMusdDepositPayloadDate(newYear);
+      const endYearResult = formatRewardsMusdDepositPayloadDate(endYear);
+
+      // Then they should be formatted correctly
+      expect(newYearResult).toBeTruthy();
+      expect(newYearResult).toMatch(/Jan/);
+      expect(newYearResult).toMatch(/1/);
+      expect(endYearResult).toBeTruthy();
+      expect(endYearResult).toMatch(/Dec/);
+      expect(endYearResult).toMatch(/31/);
+    });
+
+    it('handles different locales correctly', () => {
+      // Given an ISO date string
+      const isoDate = '2025-11-11';
+
+      // When formatting with different locales
+      const enResult = formatRewardsMusdDepositPayloadDate(isoDate, 'en-US');
+      const deResult = formatRewardsMusdDepositPayloadDate(isoDate, 'de-DE');
+      const jaResult = formatRewardsMusdDepositPayloadDate(isoDate, 'ja-JP');
+
+      // Then they should be formatted according to locale conventions
+      expect(enResult).toBeTruthy();
+      expect(deResult).toBeTruthy();
+      expect(jaResult).toBeTruthy();
+      // All should contain the date components
+      expect(enResult).toMatch(/11/);
+      expect(deResult).toMatch(/11/);
+      expect(jaResult).toMatch(/11/);
+    });
+  });
+
+  describe('resolveTemplate', () => {
+    it('replaces single placeholder with provided value', () => {
+      const template = 'Hello, ${name}!';
+      const values = { name: 'Alice' };
+      expect(resolveTemplate(template, values)).toBe('Hello, Alice!');
+    });
+
+    it('replaces multiple placeholders with provided values', () => {
+      const template = 'User: ${name}, Tier: ${tier}';
+      const values = { name: 'Bob', tier: 'Gold' };
+      expect(resolveTemplate(template, values)).toBe('User: Bob, Tier: Gold');
+    });
+
+    it('leaves placeholders intact when value is missing', () => {
+      const template = 'Hello, ${name}! Tier: ${tier}';
+      const values = { name: 'Charlie' };
+      expect(resolveTemplate(template, values)).toBe(
+        'Hello, Charlie! Tier: ${tier}',
+      );
+    });
+
+    it('replaces repeated occurrences of the same placeholder', () => {
+      const template = '${name} is ${name}';
+      const values = { name: 'Dana' };
+      expect(resolveTemplate(template, values)).toBe('Dana is Dana');
+    });
+
+    it('does not replace when value is an empty string (fallback to original token)', () => {
+      const template = 'Optional: ${field}';
+      const values = { field: '' };
+      expect(resolveTemplate(template, values)).toBe('Optional: ${field}');
+    });
+
+    it('does not match non-word placeholders (e.g., dot paths)', () => {
+      const template = 'Tx: ${payload.txHash}';
+      const values = { 'payload.txHash': '0xabc' } as unknown as Record<
+        string,
+        string
+      >;
+      expect(resolveTemplate(template, values)).toBe('Tx: ${payload.txHash}');
+    });
+
+    it('returns the original string when no placeholders exist', () => {
+      const template = 'Static string with no tokens';
+      const values = { anything: 'value' };
+      expect(resolveTemplate(template, values)).toBe(
+        'Static string with no tokens',
+      );
+    });
+  });
+
+  describe('validateEmail', () => {
+    it('returns true for valid email with standard format', () => {
+      const email = 'user@example.com';
+
+      const result = validateEmail(email);
+
+      expect(result).toBe(true);
+    });
+
+    it('returns false for email missing domain after @', () => {
+      const email = 'user@';
+
+      const result = validateEmail(email);
+
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('formatPercentChange', () => {
+    it('formats a positive number as signed percent', () => {
+      expect(formatPercentChange(0.15)).toBe('+15.00%');
+    });
+
+    it('formats a negative number', () => {
+      expect(formatPercentChange(-0.05)).toBe('-5.00%');
+    });
+
+    it('formats zero with plus sign', () => {
+      expect(formatPercentChange(0)).toBe('+0.00%');
+    });
+
+    it('formats a positive string', () => {
+      expect(formatPercentChange('0.0775')).toBe('+7.75%');
+    });
+
+    it('formats a negative string', () => {
+      expect(formatPercentChange('-0.05')).toBe('-5.00%');
+    });
+
+    it('returns empty string for non-numeric string', () => {
+      expect(formatPercentChange('—')).toBe('');
+    });
+  });
+
+  describe('isPositiveBaseUnits', () => {
+    it('is true only for a positive integer string', () => {
+      expect(isPositiveBaseUnits('1')).toBe(true);
+      expect(isPositiveBaseUnits('1000000')).toBe(true);
+      expect(isPositiveBaseUnits('0')).toBe(false);
+      expect(isPositiveBaseUnits('-1')).toBe(false);
+      expect(isPositiveBaseUnits(undefined)).toBe(false);
+      expect(isPositiveBaseUnits(null)).toBe(false);
+      expect(isPositiveBaseUnits('')).toBe(false);
+      expect(isPositiveBaseUnits('not-a-number')).toBe(false);
+      expect(isPositiveBaseUnits('1.5')).toBe(false);
+    });
+  });
+
+  describe('formatMusdBaseUnits', () => {
+    it('shifts base units to USD at 6 decimals', () => {
+      expect(formatMusdBaseUnits('41750000')).toBe('$41.75');
+    });
+
+    it('formats zero as an amount rather than nothing', () => {
+      expect(formatMusdBaseUnits('0')).toBe('$0.00');
+    });
+
+    it('keeps precision on a total larger than a JSON number holds exactly', () => {
+      expect(formatMusdBaseUnits('90071992547409910')).toBe(
+        '$90,071,992,547.41',
+      );
+    });
+
+    it('returns null for a missing amount', () => {
+      expect(formatMusdBaseUnits(null)).toBeNull();
+      expect(formatMusdBaseUnits(undefined)).toBeNull();
+      expect(formatMusdBaseUnits('')).toBeNull();
+    });
+
+    it('returns null for an unparseable amount', () => {
+      expect(formatMusdBaseUnits('not-a-number')).toBeNull();
+    });
+
+    it('prefixes a positive amount when signed', () => {
+      expect(formatMusdBaseUnits('41750000', { signed: true })).toBe('+$41.75');
+      expect(formatMusdBaseUnits('-1250000', { signed: true })).toBe('$-1.25');
+      expect(formatMusdBaseUnits('0', { signed: true })).toBe('$0.00');
+    });
+
+    it('pins two decimals when maximumFractionDigits is 2', () => {
+      expect(
+        formatMusdBaseUnits('1000000', {
+          signed: true,
+          maximumFractionDigits: 2,
+        }),
+      ).toBe('+$1.00');
+      expect(
+        formatMusdBaseUnits('2500000', {
+          signed: true,
+          maximumFractionDigits: 2,
+        }),
+      ).toBe('+$2.50');
+    });
+  });
+
+  describe('formatOrdinalRank', () => {
+    it('formats 1 as 1st', () => {
+      expect(formatOrdinalRank(1)).toBe('1st');
+    });
+
+    it('formats 2 as 2nd', () => {
+      expect(formatOrdinalRank(2)).toBe('2nd');
+    });
+
+    it('formats 3 as 3rd', () => {
+      expect(formatOrdinalRank(3)).toBe('3rd');
+    });
+
+    it('formats 4 as 4th', () => {
+      expect(formatOrdinalRank(4)).toBe('4th');
+    });
+
+    it('formats 11 as 11th', () => {
+      expect(formatOrdinalRank(11)).toBe('11th');
+    });
+
+    it('formats 12 as 12th', () => {
+      expect(formatOrdinalRank(12)).toBe('12th');
+    });
+
+    it('formats 13 as 13th', () => {
+      expect(formatOrdinalRank(13)).toBe('13th');
+    });
+
+    it('formats 21 as 21st', () => {
+      expect(formatOrdinalRank(21)).toBe('21st');
+    });
+
+    it('formats 22 as 22nd', () => {
+      expect(formatOrdinalRank(22)).toBe('22nd');
+    });
+
+    it('formats 23 as 23rd', () => {
+      expect(formatOrdinalRank(23)).toBe('23rd');
+    });
+
+    it('formats 111 as 111th', () => {
+      expect(formatOrdinalRank(111)).toBe('111th');
+    });
+
+    it('uses absolute value for negative ranks', () => {
+      expect(formatOrdinalRank(-5)).toBe('5th');
+    });
+
+    it('floors non-integer ranks', () => {
+      expect(formatOrdinalRank(3.7)).toBe('3rd');
+    });
+  });
+
+  describe('isPercentChangeNonNegative', () => {
+    it('returns true for positive number', () => {
+      expect(isPercentChangeNonNegative(0.15)).toBe(true);
+    });
+
+    it('returns true for zero', () => {
+      expect(isPercentChangeNonNegative(0)).toBe(true);
+    });
+
+    it('returns false for negative number', () => {
+      expect(isPercentChangeNonNegative(-0.05)).toBe(false);
+    });
+
+    it('returns true for positive string', () => {
+      expect(isPercentChangeNonNegative('0.1')).toBe(true);
+    });
+
+    it('returns false for non-numeric string', () => {
+      expect(isPercentChangeNonNegative('—')).toBe(false);
+    });
+  });
+
+  describe('getChainHex', () => {
+    it('extracts hex chain ID from EIP-155 CAIP-19', () => {
+      expect(getChainHex('eip155:1/erc20:0xabc')).toBe('0x1');
+    });
+
+    it('converts decimal chain ID to hex', () => {
+      expect(getChainHex('eip155:59144/erc20:0xdef')).toBe('0xe708');
+    });
+
+    it('returns undefined for non-EIP-155 identifier', () => {
+      expect(getChainHex('solana:mainnet/token:abc')).toBeUndefined();
+    });
+
+    it('returns undefined for invalid CAIP-19', () => {
+      expect(getChainHex('not-a-caip')).toBeUndefined();
+    });
+  });
+
+  describe('parseCaip19', () => {
+    it('parses a valid EIP-155 ERC-20 CAIP-19 identifier', () => {
+      expect(
+        parseCaip19(
+          'eip155:1/erc20:0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c',
+        ),
+      ).toEqual({
+        namespace: 'eip155',
+        chainId: '1',
+        assetReference: '0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c',
+      });
+    });
+
+    it('parses a non-mainnet chain ID', () => {
+      expect(parseCaip19('eip155:137/erc20:0xdef')).toEqual({
+        namespace: 'eip155',
+        chainId: '137',
+        assetReference: '0xdef',
+      });
+    });
+
+    it('returns null for an invalid CAIP-19 string', () => {
+      expect(parseCaip19('not-a-caip')).toBeNull();
+    });
+
+    it('returns null for an empty string', () => {
+      expect(parseCaip19('')).toBeNull();
+    });
+  });
+
+  describe('caipChainIdToHex', () => {
+    it('converts eip155:1 to 0x1', () => {
+      expect(
+        caipChainIdToHex('eip155:1' as import('@metamask/utils').CaipChainId),
+      ).toBe('0x1');
+    });
+
+    it('converts eip155:137 to 0x89', () => {
+      expect(
+        caipChainIdToHex('eip155:137' as import('@metamask/utils').CaipChainId),
+      ).toBe('0x89');
+    });
+
+    it('converts eip155:42161 to 0xa4b1', () => {
+      expect(
+        caipChainIdToHex(
+          'eip155:42161' as import('@metamask/utils').CaipChainId,
+        ),
+      ).toBe('0xa4b1');
+    });
+  });
+
+  describe('getAssetReference', () => {
+    it('extracts asset reference from valid CAIP-19', () => {
+      expect(
+        getAssetReference(
+          'eip155:1/erc20:0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c',
+        ),
+      ).toBe('0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c');
+    });
+
+    it('returns raw string for invalid CAIP-19', () => {
+      expect(getAssetReference('not-a-caip')).toBe('not-a-caip');
+    });
+  });
+
+  describe('shortenAddress', () => {
+    it('shortens a long address', () => {
+      expect(shortenAddress('0x14c3abf95cb9c93a8b82c1cdcb76d72cb87b2d4c')).toBe(
+        '0x14c3...2d4c',
+      );
+    });
+
+    it('returns short strings unchanged', () => {
+      expect(shortenAddress('0x1234')).toBe('0x1234');
+    });
+
+    it('returns strings of length 10 unchanged', () => {
+      expect(shortenAddress('0x12345678')).toBe('0x12345678');
+    });
+  });
+
+  describe('formatUsd', () => {
+    it('formats a string with decimals', () => {
+      expect(formatUsd('11500.000000')).toBe('$11,500.00');
+    });
+
+    it('formats a number', () => {
+      expect(formatUsd(12500.5)).toBe('$12,500.50');
+    });
+
+    it('formats zero', () => {
+      expect(formatUsd('0')).toBe('$0.00');
+    });
+
+    it('formats a small decimal value', () => {
+      expect(formatUsd('0.99')).toBe('$0.99');
+    });
+
+    it('formats a large value', () => {
+      expect(formatUsd('1000000.00')).toBe('$1,000,000.00');
+    });
+
+    it('formats a negative value', () => {
+      expect(formatUsd('-500.75')).toBe('$-500.75');
+    });
+
+    it('formats an integer string', () => {
+      expect(formatUsd('100')).toBe('$100.00');
+    });
+
+    it('returns em dash for invalid values', () => {
+      expect(formatUsd(null)).toBe('—');
+      expect(formatUsd(undefined)).toBe('—');
+      expect(formatUsd(Number.NaN)).toBe('—');
+      expect(formatUsd('not-a-number')).toBe('—');
+    });
+  });
+
+  describe('formatPredictPositionUsd', () => {
+    it.each([
+      [10, '$10'],
+      [0, '$0'],
+      [12.5, '$12.50'],
+      [1234.567, '$1,234.57'],
+      [9.999, '$10'],
+      [-3.2, '-$3.20'],
+      [NaN, '$0.00'],
+    ])('formats %p as %p', (value, expected) => {
+      expect(formatPredictPositionUsd(value)).toBe(expected);
+    });
+  });
+
+  describe('formatPredictPositionPercent', () => {
+    it.each([
+      [25, '25%'],
+      [0, '0%'],
+      [-12.5, '-12.5%'],
+      [33.3333, '33.33%'],
+      [10.1, '10.1%'],
+      [-0.001, '0%'],
+      [NaN, '0%'],
+    ])('formats %p as %p', (value, expected) => {
+      expect(formatPredictPositionPercent(value)).toBe(expected);
+    });
+  });
+
+  describe('formatSignedUsd', () => {
+    it('returns em dash for null', () => {
+      expect(formatSignedUsd(null)).toBe('—');
+    });
+
+    it('prepends + for positive amounts', () => {
+      expect(formatSignedUsd('5000.000000')).toBe('+$5,000.00');
+    });
+
+    it('keeps - for negative amounts', () => {
+      expect(formatSignedUsd('-1250.500000')).toBe('$-1,250.50');
+    });
+
+    it('formats zero without sign', () => {
+      expect(formatSignedUsd('0')).toBe('$0.00');
+    });
+
+    it('prepends + for positive number input', () => {
+      expect(formatSignedUsd(5000)).toBe('+$5,000.00');
+    });
+
+    it('formats negative number input', () => {
+      expect(formatSignedUsd(-1250.5)).toBe('$-1,250.50');
+    });
+
+    it('returns em dash for non-numeric string', () => {
+      expect(formatSignedUsd('abc')).toBe('—');
+    });
+
+    it('returns em dash for empty string', () => {
+      expect(formatSignedUsd('')).toBe('—');
+    });
+  });
+
+  describe('formatCompactUsd', () => {
+    it('formats billions with a dollar sign and B suffix', () => {
+      expect(formatCompactUsd(1_500_000_000)).toBe('$1.5B');
+      expect(formatCompactUsd(1_000_000_000)).toBe('$1B');
+    });
+
+    it('formats millions with decimal', () => {
+      expect(formatCompactUsd(1_500_000)).toBe('$1.5M');
+    });
+
+    it('formats whole millions without trailing .0', () => {
+      expect(formatCompactUsd(6_000_000)).toBe('$6M');
+    });
+
+    it('formats thousands', () => {
+      expect(formatCompactUsd(25_000)).toBe('$25K');
+    });
+
+    it('formats thousands with decimal', () => {
+      expect(formatCompactUsd(2_500)).toBe('$2.5K');
+    });
+
+    it('formats whole thousands without trailing .0', () => {
+      expect(formatCompactUsd(50_000)).toBe('$50K');
+    });
+
+    it('formats small values without suffix', () => {
+      expect(formatCompactUsd(500)).toBe('$500');
+    });
+
+    it('limits fraction digits for small values', () => {
+      expect(formatCompactUsd(233.208062, { maximumFractionDigits: 2 })).toBe(
+        '$233.21',
+      );
+    });
+
+    it('formats zero', () => {
+      expect(formatCompactUsd(0)).toBe('$0');
+    });
+
+    it('formats negative millions', () => {
+      expect(formatCompactUsd(-3_500_000)).toBe('-$3.5M');
+    });
+
+    it('formats negative thousands', () => {
+      expect(formatCompactUsd(-75_000)).toBe('-$75K');
+    });
+
+    it('formats compact values without decimals when requested', () => {
+      expect(formatCompactUsd(123_456, { maximumFractionDigits: 0 })).toBe(
+        '$123K',
+      );
+    });
+
+    it('reuses compact value formatting with custom precision', () => {
+      expect(formatCompactUsd(5_750_000, { maximumFractionDigits: 2 })).toBe(
+        '$5.75M',
+      );
+    });
+  });
+
+  describe('formatCompactValue', () => {
+    it('formats thousands with an uppercase K suffix by default', () => {
+      expect(formatCompactValue(750_000)).toBe('750K');
+      expect(formatCompactValue(2_500)).toBe('2.5K');
+    });
+
+    it('formats millions with an uppercase M suffix by default', () => {
+      expect(formatCompactValue(5_750_000)).toBe('5.75M');
+      expect(formatCompactValue(6_000_000)).toBe('6M');
+    });
+
+    it('formats billions with an uppercase B suffix by default', () => {
+      expect(formatCompactValue(1_500_000_000)).toBe('1.5B');
+      expect(formatCompactValue(1_000_000_000)).toBe('1B');
+      expect(formatCompactValue(2_350_000_000)).toBe('2.35B');
+    });
+
+    it('formats small values without suffix', () => {
+      expect(formatCompactValue(500)).toBe('500');
+      expect(formatCompactValue(0)).toBe('0');
+    });
+
+    it('limits fraction digits for small values', () => {
+      expect(formatCompactValue(233.208062)).toBe('233.21');
+      expect(formatCompactValue(233.208062, { maximumFractionDigits: 0 })).toBe(
+        '233',
+      );
+    });
+
+    it('respects custom maximum fraction digits and suffixes', () => {
+      expect(formatCompactValue(123_456, { maximumFractionDigits: 0 })).toBe(
+        '123K',
+      );
+      expect(
+        formatCompactValue(123_456, {
+          maximumFractionDigits: 0,
+          thousandSuffix: 'k',
+        }),
+      ).toBe('123k');
+    });
+  });
+});

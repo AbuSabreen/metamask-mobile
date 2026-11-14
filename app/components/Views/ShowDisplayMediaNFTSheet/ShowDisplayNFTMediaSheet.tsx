@@ -1,29 +1,49 @@
 // Third party dependencies
 import React, { useRef } from 'react';
+import {
+  Text,
+  TextVariant,
+  TextColor,
+  FontWeight,
+} from '@metamask/design-system-react-native';
 
 // External dependencies
 import BottomSheet, {
   BottomSheetRef,
 } from '../../../component-library/components/BottomSheets/BottomSheet';
-import SheetHeader from '../../../component-library/components/Sheet/SheetHeader/SheetHeader';
-import Text from '../../../component-library/components/Texts/Text/Text';
-import { TextVariant } from '../../../component-library/components/Texts/Text';
+import BottomSheetFooter, {
+  ButtonsAlignment,
+} from '../../../component-library/components/BottomSheets/BottomSheetFooter';
+import {
+  ButtonSize,
+  ButtonVariants,
+} from '../../../component-library/components/Buttons/Button';
 import Engine from '../../../core/Engine';
 import { strings } from '../../../../locales/i18n';
-import SheetActionView from '../../../components/UI/SheetActionView';
 
 // Internal dependencies
 import createStyles from './ShowDisplayNFTMediaSheet.styles';
+import { UserProfileProperty } from '../../../util/metrics/UserSettingsAnalyticsMetaData/UserProfileAnalyticsMetaData.types';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import { useSelector } from 'react-redux';
+import { selectGlassHeadersEnabled } from '../../../selectors/featureFlagController/glassHeaders';
 
 const ShowDisplayNftMediaSheet = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
   const styles = createStyles();
   const sheetRef = useRef<BottomSheetRef>(null);
+  const { identify } = useAnalytics();
 
   const onConfirm = () => {
     const { PreferencesController } = Engine.context;
-    sheetRef.current?.onCloseBottomSheet(() =>
-      PreferencesController.setDisplayNftMedia(true),
-    );
+    sheetRef.current?.onCloseBottomSheet(() => {
+      PreferencesController.setDisplayNftMedia(true);
+      const traits = {
+        [UserProfileProperty.ENABLE_OPENSEA_API]: UserProfileProperty.ON,
+      };
+      identify(traits);
+    });
   };
 
   const onCancel = () => {
@@ -32,27 +52,55 @@ const ShowDisplayNftMediaSheet = () => {
 
   return (
     <BottomSheet ref={sheetRef}>
-      <SheetHeader
+      <HeaderStandardGlass
+        isFloating={false}
+        isGlass={isGlassHeader}
         title={strings('show_display_nft_media.show_display_nft_media_title')}
+        onClose={onCancel}
       />
-      <Text style={styles.textContent}>
+      <Text style={styles.textContent} color={TextColor.TextAlternative}>
         {strings('show_display_nft_media.show_display_nft_media_content_1')}{' '}
         {
-          <Text variant={TextVariant.BodyMDBold}>
+          <Text
+            variant={TextVariant.BodyMd}
+            color={TextColor.TextAlternative}
+            fontWeight={FontWeight.Bold}
+          >
             {strings('show_display_nft_media.show_display_nft_media_content_2')}
           </Text>
         }{' '}
         {strings('show_display_nft_media.show_display_nft_media_content_3')}
         {'\n'}
         {'\n'}
-        <Text>
+        <Text color={TextColor.TextAlternative}>
           {strings('show_display_nft_media.show_display_nft_media_content_4')}{' '}
-          <Text variant={TextVariant.BodyMDBold}>
+          <Text
+            variant={TextVariant.BodyMd}
+            color={TextColor.TextAlternative}
+            fontWeight={FontWeight.Bold}
+          >
             {strings('show_display_nft_media.show_display_nft_media_content_5')}
           </Text>
         </Text>
       </Text>
-      <SheetActionView onCancel={onCancel} onConfirm={onConfirm} />
+      <BottomSheetFooter
+        buttonPropsArray={[
+          {
+            onPress: onCancel,
+            label: strings('confirmation_modal.cancel_cta'),
+            variant: ButtonVariants.Secondary,
+            size: ButtonSize.Lg,
+          },
+          {
+            onPress: onConfirm,
+            label: strings('confirmation_modal.confirm_cta'),
+            variant: ButtonVariants.Primary,
+            size: ButtonSize.Lg,
+          },
+        ]}
+        buttonsAlignment={ButtonsAlignment.Horizontal}
+        style={styles.footerContainer}
+      />
     </BottomSheet>
   );
 };

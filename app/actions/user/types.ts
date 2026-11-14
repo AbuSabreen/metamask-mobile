@@ -1,0 +1,216 @@
+import { type AppThemeKey } from '../../util/theme/models';
+import { type Action } from 'redux';
+import { type ChartType } from '../../components/UI/Charts/AdvancedChart/AdvancedChart.types';
+import { type PendingAppInstall } from '../../reducers/user/types';
+
+// Action type enum
+export enum UserActionType {
+  CHECK_FOR_DEEPLINK = 'CHECK_FOR_DEEPLINK',
+  LOGIN = 'LOGIN',
+  LOGOUT = 'LOGOUT',
+  ON_PERSISTED_DATA_LOADED = 'ON_PERSISTED_DATA_LOADED',
+  PASSWORD_SET = 'PASSWORD_SET',
+  PASSWORD_UNSET = 'PASSWORD_UNSET',
+  SEEDPHRASE_BACKED_UP = 'SEEDPHRASE_BACKED_UP',
+  SEEDPHRASE_NOT_BACKED_UP = 'SEEDPHRASE_NOT_BACKED_UP',
+  BACK_UP_SEEDPHRASE_VISIBLE = 'BACK_UP_SEEDPHRASE_VISIBLE',
+  BACK_UP_SEEDPHRASE_NOT_VISIBLE = 'BACK_UP_SEEDPHRASE_NOT_VISIBLE',
+  PROTECT_MODAL_VISIBLE = 'PROTECT_MODAL_VISIBLE',
+  PROTECT_MODAL_NOT_VISIBLE = 'PROTECT_MODAL_NOT_VISIBLE',
+  LOADING_SET = 'LOADING_SET',
+  LOADING_UNSET = 'LOADING_UNSET',
+  SET_GAS_EDUCATION_CAROUSEL_SEEN = 'SET_GAS_EDUCATION_CAROUSEL_SEEN',
+  SET_APP_THEME = 'SET_APP_THEME',
+  CHECKED_AUTH = 'CHECKED_AUTH',
+  SET_APP_SERVICES_READY = 'SET_APP_SERVICES_READY',
+  SET_EXISTING_USER = 'SET_EXISTING_USER',
+  SET_IS_CONNECTION_REMOVED = 'SET_IS_CONNECTION_REMOVED',
+  SET_MULTICHAIN_ACCOUNTS_INTRO_MODAL_SEEN = 'SET_MULTICHAIN_ACCOUNTS_INTRO_MODAL_SEEN',
+  SET_MUSD_CONVERSION_EDUCATION_SEEN = 'SET_MUSD_CONVERSION_EDUCATION_SEEN',
+  SET_MUSD_CONVERSION_ASSET_DETAIL_CTA_SEEN = 'SET_MUSD_CONVERSION_ASSET_DETAIL_CTA_SEEN',
+  CLEAR_MUSD_CONVERSION_ASSET_DETAIL_CTAS_SEEN = 'CLEAR_MUSD_CONVERSION_ASSET_DETAIL_CTAS_SEEN',
+  SET_MONEY_ONBOARDING_SEEN = 'SET_MONEY_ONBOARDING_SEEN',
+  SET_MONEY_SPLASH_SEEN = 'SET_MONEY_SPLASH_SEEN',
+  SET_MONEY_EARN_BANNER_DISMISSED = 'SET_MONEY_EARN_BANNER_DISMISSED',
+  CLEAR_MONEY_EARN_BANNER_DISMISSED_TOKENS = 'CLEAR_MONEY_EARN_BANNER_DISMISSED_TOKENS',
+  SET_TOKEN_OVERVIEW_CHART_TYPE = 'SET_TOKEN_OVERVIEW_CHART_TYPE',
+  SET_TOKEN_OVERVIEW_CHART_INTERVAL = 'SET_TOKEN_OVERVIEW_CHART_INTERVAL',
+  SET_TOKEN_INDICATORS = 'SET_TOKEN_INDICATORS',
+  SET_ONBOARDING_STEPPER_STEP = 'SET_ONBOARDING_STEPPER_STEP',
+  SET_APP_INSTALL_EVENT_FIRED = 'SET_APP_INSTALL_EVENT_FIRED',
+  SET_PENDING_APP_INSTALL = 'SET_PENDING_APP_INSTALL',
+  CLEAR_PENDING_APP_INSTALL = 'CLEAR_PENDING_APP_INSTALL',
+  SET_BRIDGE_LIMIT_TAB_SEEN = 'SET_BRIDGE_LIMIT_TAB_SEEN',
+}
+
+// User actions
+export type CheckForDeeplinkAction = Action<UserActionType.CHECK_FOR_DEEPLINK>;
+
+export type LoginAction = Action<UserActionType.LOGIN>;
+
+export type LogoutAction = Action<UserActionType.LOGOUT>;
+
+export type PersistedDataLoadedAction =
+  Action<UserActionType.ON_PERSISTED_DATA_LOADED>;
+
+export type PasswordSetAction = Action<UserActionType.PASSWORD_SET>;
+
+export type PasswordUnsetAction = Action<UserActionType.PASSWORD_UNSET>;
+
+export type SeedphraseBackedUpAction =
+  Action<UserActionType.SEEDPHRASE_BACKED_UP>;
+
+export type SeedphraseNotBackedUpAction =
+  Action<UserActionType.SEEDPHRASE_NOT_BACKED_UP>;
+
+export type BackUpSeedphraseVisibleAction =
+  Action<UserActionType.BACK_UP_SEEDPHRASE_VISIBLE>;
+
+export type BackUpSeedphraseNotVisibleAction =
+  Action<UserActionType.BACK_UP_SEEDPHRASE_NOT_VISIBLE>;
+
+export type ProtectModalVisibleAction =
+  Action<UserActionType.PROTECT_MODAL_VISIBLE>;
+
+export type ProtectModalNotVisibleAction =
+  Action<UserActionType.PROTECT_MODAL_NOT_VISIBLE>;
+
+export type LoadingSetAction = Action<UserActionType.LOADING_SET> & {
+  loadingMsg: string;
+};
+
+export type LoadingUnsetAction = Action<UserActionType.LOADING_UNSET>;
+
+export type SetGasEducationCarouselSeenAction =
+  Action<UserActionType.SET_GAS_EDUCATION_CAROUSEL_SEEN>;
+
+export type SetAppThemeAction = Action<UserActionType.SET_APP_THEME> & {
+  payload: { theme: AppThemeKey };
+};
+
+export type CheckedAuthAction = Action<UserActionType.CHECKED_AUTH> & {
+  payload: { initialScreen: string };
+};
+
+export type SetAppServicesReadyAction =
+  Action<UserActionType.SET_APP_SERVICES_READY>;
+
+export type SetExistingUserAction = Action<UserActionType.SET_EXISTING_USER> & {
+  payload: { existingUser: boolean };
+};
+
+export type SetIsConnectionRemovedAction =
+  Action<UserActionType.SET_IS_CONNECTION_REMOVED> & {
+    payload: { isConnectionRemoved: boolean };
+  };
+
+export type SetMultichainAccountsIntroModalSeenAction =
+  Action<UserActionType.SET_MULTICHAIN_ACCOUNTS_INTRO_MODAL_SEEN> & {
+    payload: { seen: boolean };
+  };
+
+export type SetMusdConversionEducationSeenAction =
+  Action<UserActionType.SET_MUSD_CONVERSION_EDUCATION_SEEN> & {
+    payload: { seen: boolean };
+  };
+
+export type SetMusdConversionAssetDetailCtaSeenAction =
+  Action<UserActionType.SET_MUSD_CONVERSION_ASSET_DETAIL_CTA_SEEN> & {
+    payload: { key: string };
+  };
+
+export type ClearMusdConversionAssetDetailCtasSeenAction =
+  Action<UserActionType.CLEAR_MUSD_CONVERSION_ASSET_DETAIL_CTAS_SEEN>;
+
+export type SetMoneyOnboardingSeenAction =
+  Action<UserActionType.SET_MONEY_ONBOARDING_SEEN> & {
+    payload: { seen: boolean };
+  };
+
+export type SetMoneySplashSeenAction =
+  Action<UserActionType.SET_MONEY_SPLASH_SEEN> & {
+    payload: { seen: boolean };
+  };
+
+export type SetMoneyEarnBannerDismissedAction =
+  Action<UserActionType.SET_MONEY_EARN_BANNER_DISMISSED> & {
+    payload: { key: string };
+  };
+
+export type ClearMoneyEarnBannerDismissedTokensAction =
+  Action<UserActionType.CLEAR_MONEY_EARN_BANNER_DISMISSED_TOKENS>;
+
+export type SetTokenOverviewChartTypeAction =
+  Action<UserActionType.SET_TOKEN_OVERVIEW_CHART_TYPE> & {
+    payload: { chartType: ChartType };
+  };
+
+export type SetTokenOverviewChartIntervalAction =
+  Action<UserActionType.SET_TOKEN_OVERVIEW_CHART_INTERVAL> & {
+    payload: { interval: string };
+  };
+
+export type SetTokenIndicatorsAction =
+  Action<UserActionType.SET_TOKEN_INDICATORS> & {
+    payload: { indicators: string[] };
+  };
+
+export type SetOnboardingStepperStepAction =
+  Action<UserActionType.SET_ONBOARDING_STEPPER_STEP> & {
+    payload: { stepperId: string; step: number };
+  };
+
+export type SetAppInstallEventFiredAction =
+  Action<UserActionType.SET_APP_INSTALL_EVENT_FIRED>;
+
+export type SetPendingAppInstallAction =
+  Action<UserActionType.SET_PENDING_APP_INSTALL> & {
+    payload: { pendingAppInstall: PendingAppInstall };
+  };
+
+export type ClearPendingAppInstallAction =
+  Action<UserActionType.CLEAR_PENDING_APP_INSTALL>;
+
+export type SetBridgeLimitTabSeenAction =
+  Action<UserActionType.SET_BRIDGE_LIMIT_TAB_SEEN>;
+
+/**
+ * User actions union type
+ */
+export type UserAction =
+  | CheckForDeeplinkAction
+  | LoginAction
+  | LogoutAction
+  | PersistedDataLoadedAction
+  | PasswordSetAction
+  | PasswordUnsetAction
+  | SeedphraseBackedUpAction
+  | SeedphraseNotBackedUpAction
+  | BackUpSeedphraseVisibleAction
+  | BackUpSeedphraseNotVisibleAction
+  | ProtectModalVisibleAction
+  | ProtectModalNotVisibleAction
+  | LoadingSetAction
+  | LoadingUnsetAction
+  | SetGasEducationCarouselSeenAction
+  | SetAppThemeAction
+  | CheckedAuthAction
+  | SetAppServicesReadyAction
+  | SetExistingUserAction
+  | SetIsConnectionRemovedAction
+  | SetMultichainAccountsIntroModalSeenAction
+  | SetMusdConversionEducationSeenAction
+  | SetMusdConversionAssetDetailCtaSeenAction
+  | ClearMusdConversionAssetDetailCtasSeenAction
+  | SetMoneyOnboardingSeenAction
+  | SetMoneySplashSeenAction
+  | SetMoneyEarnBannerDismissedAction
+  | ClearMoneyEarnBannerDismissedTokensAction
+  | SetTokenOverviewChartTypeAction
+  | SetTokenOverviewChartIntervalAction
+  | SetTokenIndicatorsAction
+  | SetOnboardingStepperStepAction
+  | SetAppInstallEventFiredAction
+  | SetPendingAppInstallAction
+  | ClearPendingAppInstallAction
+  | SetBridgeLimitTabSeenAction;

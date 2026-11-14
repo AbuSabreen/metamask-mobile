@@ -1,0 +1,679 @@
+import React from 'react';
+import {
+  render,
+  fireEvent,
+  waitFor,
+  renderHook,
+  act,
+} from '@testing-library/react-native';
+import { useSelector, useDispatch } from 'react-redux';
+import { Linking } from 'react-native';
+import SharedDeeplinkManager from '../../../core/DeeplinkManager/DeeplinkManager';
+import AppConstants from '../../../core/AppConstants';
+import Carousel, { useFetchCarouselSlides } from './';
+import { WalletViewSelectorsIDs } from '../../Views/Wallet/WalletView.testIds';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { fetchCarouselSlidesFromContentful } from './fetchCarouselSlidesFromContentful';
+import { CarouselSlide } from './types';
+// eslint-disable-next-line import-x/no-namespace
+import * as FeatureFlagSelectorsModule from './selectors/featureFlags';
+import { RootState } from '../../../reducers';
+import { createMockUseAnalyticsHook } from '../../../util/test/analyticsMock';
+import { useAnalytics } from '../../../components/hooks/useAnalytics/useAnalytics';
+import {
+  AnalyticsEventBuilder,
+  type AnalyticsTrackingEvent,
+} from '../../../util/analytics/AnalyticsEventBuilder';
+import type { UseAnalyticsHook } from '../../../components/hooks/useAnalytics/useAnalytics.types';
+import { dismissBanner } from '../../../reducers/banners';
+
+const mockExecuteTransitionToNextCard = jest.fn();
+const mockExecuteTransitionToEmpty = jest.fn();
+
+jest.mock('./animations', () => ({
+  useTransitionToNextCard: () => ({
+    executeTransition: mockExecuteTransitionToNextCard,
+  }),
+  useTransitionToEmpty: () => ({
+    executeTransition: mockExecuteTransitionToEmpty,
+  }),
+}));
+
+const makeMockState = () =>
+  ({
+    browser: { tabs: [] },
+    engine: {
+      backgroundState: {
+        ...backgroundState,
+      },
+    },
+    settings: { showFiatOnTestnets: false },
+    banners: { dismissedBanners: [] },
+  }) as unknown as RootState;
+
+// Mocks
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(),
+  useDispatch: jest.fn(),
+}));
+
+const mockNavigate = jest.fn();
+jest.mock('@react-navigation/native', () => ({
+  useNavigation: () => ({ navigate: mockNavigate }),
+}));
+
+jest.mock('../../../components/hooks/useAnalytics/useAnalytics');
+
+jest.mock('../../../core/DeeplinkManager/DeeplinkManager', () => {
+  const mockParse = jest.fn().mockResolvedValue(true);
+  return {
+    __esModule: true,
+    default: {
+      init: jest.fn(),
+      start: jest.fn(),
+      getInstance: jest.fn(() => ({ parse: mockParse })),
+      parse: mockParse,
+      setDeeplink: jest.fn(),
+      getPendingDeeplink: jest.fn(),
+      expireDeeplink: jest.fn(),
+    },
+  };
+});
+
+jest.mock('react-native/Libraries/Linking/Linking', () => ({
+  openURL: jest.fn(() => Promise.resolve()),
+}));
+
+jest.mock('./fetchCarouselSlidesFromContentful', () => ({
+  ...jest.requireActual('./fetchCarouselSlidesFromContentful'),
+  fetchCarouselSlidesFromContentful: jest.fn(),
+}));
+
+const mockDispatch = jest.fn();
+const mockFetchCarouselSlides = jest.mocked(fetchCarouselSlidesFromContentful);
+
+const createMockSlide = (
+  overrides: Partial<CarouselSlide> = {},
+): CarouselSlide => ({
+  id: 'test-slide',
+  title: 'Test Slide',
+  description: 'Test Description',
+  navigation: { type: 'url', href: 'https://example.com' },
+  image: 'https://example.com/image.jpg',
+  ...overrides,
+});
+
+const mockReduxHooks = (state?: RootState) => {
+  jest.mocked(useDispatch).mockReturnValue(mockDispatch);
+  jest
+    .mocked(useSelector)
+    .mockImplementation((selector) => selector(state ?? makeMockState()));
+};
+
+const mockAnalyticsTracking = () => {
+  const mockTrackEvent = jest.fn<
+    ReturnType<UseAnalyticsHook['trackEvent']>,
+    Parameters<UseAnalyticsHook['trackEvent']>
+  >();
+
+  jest.mocked(useAnalytics).mockReturnValue(
+    createMockUseAnalyticsHook({
+      trackEvent: mockTrackEvent,
+      createEventBuilder: AnalyticsEventBuilder.createEventBuilder,
+    }),
+  );
+
+  return mockTrackEvent;
+};
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest.mocked(useAnalytics).mockReturnValue(createMockUseAnalyticsHook());
+  mockReduxHooks();
+  jest
+    .spyOn(FeatureFlagSelectorsModule, 'selectContentfulCarouselEnabledFlag')
+    .mockReturnValue(true);
+  mockFetchCarouselSlides.mockResolvedValue({
+    prioritySlides: [],
+    regularSlides: [],
+  });
+  mockExecuteTransitionToNextCard.mockResolvedValue(undefined);
+  mockExecuteTransitionToEmpty.mockImplementation(async (callback) => {
+    if (typeof callback === 'function') {
+      callback();
+    }
+  });
+});
+
+describe('Carousel Feature Flag Control', () => {
+  const setupFeatureFlagTests = (isEnabled: boolean) => {
+    jest
+      .spyOn(FeatureFlagSelectorsModule, 'selectContentfulCarouselEnabledFlag')
+      .mockReturnValue(isEnabled);
+  };
+
+  it('does not render when carousel feature is disabled', () => {
+    setupFeatureFlagTests(false);
+    const { toJSON } = render(<Carousel />);
+    expect(toJSON()).toBeNull();
+  });
+
+  it('does not fetch carousel data when feature is disabled', () => {
+    setupFeatureFlagTests(false);
+    render(<Carousel />);
+    expect(mockFetchCarouselSlides).not.toHaveBeenCalled();
+  });
+});
+
+describe('Carousel Data Fetching', () => {
+  it('fetches and renders contentful slides', async () => {
+    const testSlide = createMockSlide({ id: 'cms-slide', title: 'CMS Slide' });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [testSlide],
+      regularSlides: [],
+    });
+
+    const { findByText } = render(<Carousel />);
+
+    await waitFor(() => expect(mockFetchCarouselSlides).toHaveBeenCalled());
+    expect(await findByText('CMS Slide')).toBeOnTheScreen();
+  });
+
+  it('handles CMS fetch errors gracefully', async () => {
+    mockFetchCarouselSlides.mockRejectedValue(new Error('CMS Error'));
+
+    const { toJSON } = render(<Carousel />);
+
+    await waitFor(() => expect(toJSON()).toBeNull());
+  });
+
+  it('prioritizes priority slides over regular slides', async () => {
+    const prioritySlide = createMockSlide({
+      id: 'priority',
+      title: 'Priority',
+      description: '',
+    });
+    const regularSlide = createMockSlide({
+      id: 'regular',
+      title: 'Regular',
+      description: '',
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [prioritySlide],
+      regularSlides: [regularSlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+
+    // In the new stack implementation, only the current slide is rendered
+    // Priority slides should appear first
+    await waitFor(async () => {
+      const currentSlide = await findByTestId('carousel-slide-priority');
+      expect(currentSlide).toHaveTextContent('Priority');
+    });
+  });
+});
+
+describe('Carousel Slide Filtering', () => {
+  const setupFilteringTests = (dismissedBanners: string[] = []) => {
+    const mockState = makeMockState();
+    mockState.banners = { dismissedBanners };
+    mockReduxHooks(mockState);
+  };
+
+  it('filters out dismissed slides', async () => {
+    setupFilteringTests(['dismissed-slide']);
+    const slide = createMockSlide({ id: 'dismissed-slide' });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [slide],
+    });
+
+    const { toJSON } = render(<Carousel />);
+
+    await waitFor(() => expect(toJSON()).toBeNull());
+  });
+});
+
+describe('Carousel Navigation', () => {
+  it('opens external URLs when slide is clicked', async () => {
+    const slideID = 'deeplink-slide';
+    const slideTestID = `carousel-slide-${slideID}`;
+    const urlSlide = createMockSlide({
+      id: slideID,
+      navigation: { type: 'url', href: 'https://metamask.io' },
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [urlSlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+    const slide = await findByTestId(slideTestID);
+    fireEvent.press(slide);
+
+    expect(Linking.openURL).toHaveBeenCalledWith('https://metamask.io');
+    expect(SharedDeeplinkManager.parse).not.toHaveBeenCalled();
+  });
+
+  it('handles internal deeplinks through SharedDeeplinkManager', async () => {
+    const slideID = 'deeplink-slide';
+    const slideTestID = `carousel-slide-${slideID}`;
+    const deeplinkSlide = createMockSlide({
+      id: slideID,
+      navigation: { type: 'url', href: 'https://link.metamask.io/swap' },
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [deeplinkSlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+    const slide = await findByTestId(slideTestID);
+    fireEvent.press(slide);
+
+    expect(SharedDeeplinkManager.parse).toHaveBeenCalledWith(
+      'https://link.metamask.io/swap',
+      {
+        origin: AppConstants.DEEPLINKS.ORIGIN_CAROUSEL,
+      },
+    );
+    expect(Linking.openURL).not.toHaveBeenCalled();
+  });
+
+  it('navigates to buy flow for fund slides', async () => {
+    const fundSlide = createMockSlide({
+      id: 'fund-slide',
+      variableName: 'fund',
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [fundSlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+    const slide = await findByTestId('carousel-slide-fund-slide');
+    fireEvent.press(slide);
+    expect(mockNavigate).toHaveBeenCalled();
+  });
+
+  it('navigates to route when slide has route navigation', async () => {
+    const routeSlide = createMockSlide({
+      id: 'route-slide',
+      navigation: { type: 'route', route: 'Settings' },
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [routeSlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+    const slide = await findByTestId('carousel-slide-route-slide');
+    fireEvent.press(slide);
+    expect(mockNavigate).toHaveBeenCalledWith('Settings');
+  });
+});
+
+describe('Carousel Analytics', () => {
+  it('tracks Banner Display with the Contentful id when variableName is blank', async () => {
+    const mockTrackEvent = mockAnalyticsTracking();
+    const slide = createMockSlide({
+      id: 'contentful-empty-variable-name',
+      variableName: '',
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [slide],
+    });
+
+    render(<Carousel />);
+
+    await waitFor(() => {
+      const displayEvents = mockTrackEvent.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.name === 'Banner Display');
+
+      expect(displayEvents).toEqual([
+        expect.objectContaining<Partial<AnalyticsTrackingEvent>>({
+          name: 'Banner Display',
+          properties: { name: 'contentful-empty-variable-name' },
+        }),
+      ]);
+    });
+  });
+
+  it('tracks Banner Display only for the current displayed slide', async () => {
+    const mockTrackEvent = mockAnalyticsTracking();
+    const slides = [
+      createMockSlide({
+        id: 'current-slide',
+        variableName: 'current',
+      }),
+      createMockSlide({
+        id: 'stacked-slide',
+        variableName: 'stacked',
+      }),
+    ];
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: slides,
+    });
+
+    render(<Carousel />);
+
+    await waitFor(() => {
+      const displayEvents = mockTrackEvent.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.name === 'Banner Display');
+
+      expect(displayEvents).toEqual([
+        expect.objectContaining<Partial<AnalyticsTrackingEvent>>({
+          name: 'Banner Display',
+          properties: { name: 'current' },
+        }),
+      ]);
+    });
+  });
+
+  it('tracks Banner Select with the variableName', async () => {
+    const mockTrackEvent = mockAnalyticsTracking();
+    const slide = createMockSlide({
+      id: 'contentful-card-banner',
+      variableName: 'card',
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [slide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+
+    fireEvent.press(
+      await findByTestId('carousel-slide-contentful-card-banner'),
+    );
+
+    expect(mockTrackEvent).toHaveBeenCalledWith(
+      expect.objectContaining<Partial<AnalyticsTrackingEvent>>({
+        name: 'Banner Select',
+        properties: { name: 'card' },
+      }),
+    );
+  });
+});
+
+describe('Carousel transition state', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const flushRequestAnimationFrame = async () => {
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+  };
+
+  it('dispatches dismissBanner after transitioning past the last slide', async () => {
+    const onlySlide = createMockSlide({ id: 'only-slide' });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [onlySlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+    fireEvent.press(
+      await findByTestId('carousel-slide-only-slide-close-button'),
+    );
+
+    await waitFor(() => {
+      expect(mockExecuteTransitionToNextCard).toHaveBeenCalledWith('nextCard');
+      expect(mockDispatch).toHaveBeenCalledWith(dismissBanner('only-slide'));
+    });
+
+    await flushRequestAnimationFrame();
+  });
+
+  it('shows empty state card after dismissing the last slide', async () => {
+    const onlySlide = createMockSlide({ id: 'final-slide' });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [onlySlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+    fireEvent.press(
+      await findByTestId('carousel-slide-final-slide-close-button'),
+    );
+
+    await waitFor(() => {
+      expect(mockDispatch).toHaveBeenCalledWith(dismissBanner('final-slide'));
+    });
+
+    await flushRequestAnimationFrame();
+
+    await waitFor(async () => {
+      expect(await findByTestId('carousel-empty-state')).toBeOnTheScreen();
+    });
+  });
+
+  it('ignores dismiss while previous transition is in progress', async () => {
+    let resolveTransition: (() => void) | undefined;
+    mockExecuteTransitionToNextCard.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveTransition = resolve;
+        }),
+    );
+
+    const slides = [
+      createMockSlide({ id: 'slide-1' }),
+      createMockSlide({ id: 'slide-2' }),
+    ];
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: slides,
+    });
+
+    const { findByTestId } = render(<Carousel />);
+    const closeButton = await findByTestId(
+      'carousel-slide-slide-1-close-button',
+    );
+
+    fireEvent.press(closeButton);
+    fireEvent.press(closeButton);
+
+    expect(mockExecuteTransitionToNextCard).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveTransition?.();
+      await Promise.resolve();
+    });
+    await flushRequestAnimationFrame();
+  });
+
+  it('resets animation flags when transition to next card fails', async () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation();
+    mockExecuteTransitionToNextCard.mockRejectedValueOnce(
+      new Error('transition failed'),
+    );
+
+    const onlySlide = createMockSlide({ id: 'failing-slide' });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [onlySlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+    fireEvent.press(
+      await findByTestId('carousel-slide-failing-slide-close-button'),
+    );
+
+    await waitFor(() => {
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Transition to next card failed:',
+        expect.any(Error),
+      );
+    });
+
+    errorSpy.mockRestore();
+  });
+});
+
+describe('Carousel Slide Dismissal', () => {
+  it('triggers transition animation when close button is clicked', async () => {
+    const dismissibleSlide = createMockSlide({
+      id: 'dismissible-slide',
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [dismissibleSlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+
+    const closeButton = await findByTestId(
+      'carousel-slide-dismissible-slide-close-button',
+    );
+
+    // In the new implementation, close button triggers animation transition
+    // The dispatch happens as part of the transition animation
+    fireEvent.press(closeButton);
+
+    // The close button should exist and be pressable
+    expect(closeButton).toBeOnTheScreen();
+  });
+
+  it('tracks Banner Dismissed with the slide name when a slide is closed', async () => {
+    const mockTrackEvent = mockAnalyticsTracking();
+    const dismissibleSlide = createMockSlide({
+      id: 'contentful-dismissible',
+      variableName: 'dismissible',
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [dismissibleSlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+
+    const closeButton = await findByTestId(
+      'carousel-slide-contentful-dismissible-close-button',
+    );
+    fireEvent.press(closeButton);
+
+    await waitFor(() => {
+      const dismissEvents = mockTrackEvent.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.name === 'Banner Dismissed');
+
+      expect(dismissEvents).toEqual([
+        expect.objectContaining<Partial<AnalyticsTrackingEvent>>({
+          name: 'Banner Dismissed',
+          properties: { name: 'dismissible' },
+        }),
+      ]);
+    });
+  });
+
+  it('shows close button for all slides in new implementation', async () => {
+    const testSlide = createMockSlide({
+      id: 'test-slide',
+    });
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [testSlide],
+    });
+
+    const { findByTestId } = render(<Carousel />);
+
+    const slide = await findByTestId('carousel-slide-test-slide');
+    const closeButton = await findByTestId(
+      'carousel-slide-test-slide-close-button',
+    );
+
+    expect(slide).toBeOnTheScreen();
+    expect(closeButton).toBeOnTheScreen();
+  });
+});
+
+describe('Carousel UI Behavior', () => {
+  it('renders stack-based carousel with current slide', async () => {
+    const slides = [
+      createMockSlide({ id: 'slide-1', title: 'First Slide' }),
+      createMockSlide({ id: 'slide-2', title: 'Second Slide' }),
+    ];
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: slides,
+    });
+
+    const { findByTestId } = render(<Carousel />);
+
+    // New implementation renders stack-based carousel without progress dots
+    const carouselContainer = await findByTestId(
+      WalletViewSelectorsIDs.CAROUSEL_CONTAINER,
+    );
+    expect(carouselContainer).toBeOnTheScreen();
+
+    // Should show the current (first) slide
+    const currentSlide = await findByTestId('carousel-slide-slide-1');
+    expect(currentSlide).toBeOnTheScreen();
+
+    // Check that the slide contains the expected title
+    const slideTitle = await findByTestId('carousel-slide-slide-1-title');
+    expect(slideTitle).toHaveTextContent('First Slide');
+  });
+
+  it('shows stacked cards when multiple slides exist', async () => {
+    const slides = [
+      createMockSlide({ id: 'slide-1', title: 'Current Slide' }),
+      createMockSlide({ id: 'slide-2', title: 'Next Slide' }),
+    ];
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: slides,
+    });
+
+    const { findByTestId } = render(<Carousel />);
+
+    const carouselContainer = await findByTestId(
+      WalletViewSelectorsIDs.CAROUSEL_CONTAINER,
+    );
+    expect(carouselContainer).toBeOnTheScreen();
+
+    // Current slide should be visible
+    const currentSlide = await findByTestId('carousel-slide-slide-1');
+    expect(currentSlide).toBeOnTheScreen();
+
+    // Next slide should also be rendered (stacked behind)
+    const nextSlide = await findByTestId('carousel-slide-slide-2');
+    expect(nextSlide).toBeOnTheScreen();
+  });
+});
+
+describe('useFetchCarouselSlides()', () => {
+  it('fetches initial content', async () => {
+    mockFetchCarouselSlides.mockResolvedValue({
+      prioritySlides: [],
+      regularSlides: [createMockSlide({ id: 'initial-slide' })],
+    });
+    const { result } = renderHook(() => useFetchCarouselSlides());
+    await waitFor(() => {
+      expect(mockFetchCarouselSlides).toHaveBeenCalled();
+      expect(result.current.priorityContentfulSlides).toHaveLength(0);
+      expect(result.current.regularContentfulSlides).toHaveLength(1);
+    });
+  });
+
+  it('does not fetch when feature flag is disabled', () => {
+    jest
+      .spyOn(FeatureFlagSelectorsModule, 'selectContentfulCarouselEnabledFlag')
+      .mockReturnValue(false);
+
+    renderHook(() => useFetchCarouselSlides());
+
+    // Should not fetch when feature is disabled
+    expect(mockFetchCarouselSlides).not.toHaveBeenCalled();
+  });
+});

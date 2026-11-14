@@ -1,6 +1,11 @@
-// eslint-disable-next-line import/no-nodejs-modules
+// eslint-disable-next-line import-x/no-nodejs-modules
 import { inspect } from 'util';
-import type { JsonRpcRequest, PendingJsonRpcResponse } from 'json-rpc-engine';
+import type {
+  Json,
+  JsonRpcParams,
+  JsonRpcRequest,
+  PendingJsonRpcResponse,
+} from '@metamask/utils';
 import type {
   TransactionParams,
   TransactionController,
@@ -8,6 +13,8 @@ import type {
 } from '@metamask/transaction-controller';
 import eth_sendTransaction from './eth_sendTransaction';
 import PPOMUtil from '../../lib/ppom/ppom-util';
+import { updateConfirmationMetric } from '../redux/slices/confirmationMetrics';
+import { store } from '../../store';
 
 jest.mock('../../core/Engine', () => ({
   context: {
@@ -16,13 +23,18 @@ jest.mock('../../core/Engine', () => ({
         securityAlertsEnabled: true,
       },
     },
-    PPOMController: {
-      usePPOM: jest.fn(),
-    },
     NetworkController: {
+      getNetworkClientById: () => ({
+        configuration: {
+          chainId: '0x1',
+        },
+      }),
+    },
+    AccountsController: {
       state: {
-        providerConfig: { chainId: '0x1' },
+        internalAccounts: { accounts: [] },
       },
+      listAccounts: () => [],
     },
   },
 }));
@@ -33,6 +45,8 @@ jest.mock('../../util/transaction-controller', () => ({
   updateTransaction: jest.fn(),
 }));
 
+const NETWORK_CLIENT_ID_MOCK = 'testNetworkClientId';
+
 /**
  * Construct a `eth_sendTransaction` JSON-RPC request.
  *
@@ -40,12 +54,16 @@ jest.mock('../../util/transaction-controller', () => ({
  * @returns The JSON-RPC request.
  */
 function constructSendTransactionRequest(
-  params: unknown,
-): JsonRpcRequest<unknown> & { method: 'eth_sendTransaction' } {
+  params: [TransactionParams & JsonRpcParams],
+): JsonRpcRequest<[TransactionParams & JsonRpcParams]> & {
+  method: 'eth_sendTransaction';
+  networkClientId: string;
+} {
   return {
     jsonrpc: '2.0',
     id: 1,
     method: 'eth_sendTransaction',
+    networkClientId: 'testNetworkClientId',
     params,
   };
 }
@@ -55,7 +73,7 @@ function constructSendTransactionRequest(
  *
  * @returns A pending JSON-RPC response.
  */
-function constructPendingJsonRpcResponse(): PendingJsonRpcResponse<unknown> {
+function constructPendingJsonRpcResponse(): PendingJsonRpcResponse<Json> {
   return {
     jsonrpc: '2.0',
     id: 1,
@@ -134,6 +152,8 @@ function getMockAddTransaction({
 }
 
 describe('eth_sendTransaction', () => {
+  const analytics = { dapp_url: 'example.metamask.io', request_source: 'test' };
+
   it('sends the transaction and returns the resulting hash', async () => {
     const mockAddress = '0x0000000000000000000000000000000000000001';
     const mockTransactionParameters = { from: mockAddress };
@@ -146,10 +166,14 @@ describe('eth_sendTransaction', () => {
       res: pendingResult,
       sendTransaction: getMockAddTransaction({
         expectedTransaction: mockTransactionParameters,
-        expectedOrigin: { origin: 'example.metamask.io' },
+        expectedOrigin: {
+          origin: 'example.metamask.io',
+          networkClientId: NETWORK_CLIENT_ID_MOCK,
+        },
         returnValue: expectedResult,
       }),
       validateAccountAndChainId: jest.fn(),
+      analytics,
     });
 
     expect(pendingResult.result).toBe(expectedResult);
@@ -164,12 +188,14 @@ describe('eth_sendTransaction', () => {
         async () =>
           await eth_sendTransaction({
             hostname: 'example.metamask.io',
+            //@ts-expect-error - invalid parameters forced
             req: constructSendTransactionRequest(invalidParameter),
             res: constructPendingJsonRpcResponse(),
             sendTransaction: getMockAddTransaction({
               returnValue: 'fake-hash',
             }),
             validateAccountAndChainId: jest.fn(),
+            analytics,
           }),
       ).rejects.toThrow('Invalid parameters: expected an array');
     });
@@ -186,12 +212,14 @@ describe('eth_sendTransaction', () => {
         async () =>
           await eth_sendTransaction({
             hostname: 'example.metamask.io',
+            //@ts-expect-error - invalid parameters forced
             req: constructSendTransactionRequest(invalidParameter),
             res: constructPendingJsonRpcResponse(),
             sendTransaction: getMockAddTransaction({
               returnValue: 'fake-hash',
             }),
             validateAccountAndChainId: jest.fn(),
+            analytics,
           }),
       ).rejects.toThrow(
         'Invalid parameters: expected the first parameter to be an object',
@@ -215,6 +243,7 @@ describe('eth_sendTransaction', () => {
           validateAccountAndChainId: jest.fn().mockImplementation(async () => {
             throw new Error('test validation error');
           }),
+          analytics,
         }),
     ).rejects.toThrow('test validation error');
   });
@@ -231,10 +260,14 @@ describe('eth_sendTransaction', () => {
           res: constructPendingJsonRpcResponse(),
           sendTransaction: getMockAddTransaction({
             expectedTransaction: mockTransactionParameters,
-            expectedOrigin: { origin: 'example.metamask.io' },
+            expectedOrigin: {
+              origin: 'example.metamask.io',
+              networkClientId: NETWORK_CLIENT_ID_MOCK,
+            },
             addTransactionError: new Error('Failed to add transaction'),
           }),
           validateAccountAndChainId: jest.fn(),
+          analytics,
         }),
     ).rejects.toThrow('Failed to add transaction');
   });
@@ -251,10 +284,14 @@ describe('eth_sendTransaction', () => {
           res: constructPendingJsonRpcResponse(),
           sendTransaction: getMockAddTransaction({
             expectedTransaction: mockTransactionParameters,
-            expectedOrigin: { origin: 'example.metamask.io' },
+            expectedOrigin: {
+              origin: 'example.metamask.io',
+              networkClientId: NETWORK_CLIENT_ID_MOCK,
+            },
             processTransactionError: new Error('User rejected the transaction'),
           }),
           validateAccountAndChainId: jest.fn(),
+          analytics,
         }),
     ).rejects.toThrow('User rejected the transaction');
   });
@@ -272,12 +309,114 @@ describe('eth_sendTransaction', () => {
       res: pendingResult,
       sendTransaction: getMockAddTransaction({
         expectedTransaction: mockTransactionParameters,
-        expectedOrigin: { origin: 'example.metamask.io' },
+        expectedOrigin: {
+          origin: 'example.metamask.io',
+          networkClientId: NETWORK_CLIENT_ID_MOCK,
+        },
         returnValue: expectedResult,
       }),
       validateAccountAndChainId: jest.fn(),
+      analytics: {
+        dapp_url: 'example.metamask.io',
+        request_source: 'test',
+      },
     });
 
     expect(spy).toBeCalledTimes(1);
+  });
+
+  it('throws if transaction params contain an extraneous top-level key', async () => {
+    const mockAddress = '0x0000000000000000000000000000000000000001';
+    const maliciousParams = { from: mockAddress, evil: { a: { b: 'nested' } } };
+
+    await expect(
+      async () =>
+        await eth_sendTransaction({
+          hostname: 'example.metamask.io',
+          req: constructSendTransactionRequest([maliciousParams]),
+          res: constructPendingJsonRpcResponse(),
+          sendTransaction: getMockAddTransaction({ returnValue: 'fake-hash' }),
+          validateAccountAndChainId: jest.fn(),
+          analytics,
+        }),
+    ).rejects.toThrow();
+  });
+
+  it('throws if transaction params exceed the max serialized size', async () => {
+    const mockAddress = '0x0000000000000000000000000000000000000001';
+    const oversizedData = '0x' + 'aa'.repeat(105 * 1024);
+    const oversizedParams = { from: mockAddress, data: oversizedData };
+
+    await expect(
+      async () =>
+        await eth_sendTransaction({
+          hostname: 'example.metamask.io',
+          req: constructSendTransactionRequest([oversizedParams]),
+          res: constructPendingJsonRpcResponse(),
+          sendTransaction: getMockAddTransaction({ returnValue: 'fake-hash' }),
+          validateAccountAndChainId: jest.fn(),
+          analytics,
+        }),
+    ).rejects.toThrow('Request too large');
+  });
+
+  it('does not call sendTransaction when validateTransactionParams throws', async () => {
+    const mockAddress = '0x0000000000000000000000000000000000000001';
+    const maliciousParams = { from: mockAddress, evil: 'injected' };
+    const mockSendTransaction = getMockAddTransaction({
+      returnValue: 'fake-hash',
+    });
+
+    await expect(
+      async () =>
+        await eth_sendTransaction({
+          hostname: 'example.metamask.io',
+          req: constructSendTransactionRequest([maliciousParams]),
+          res: constructPendingJsonRpcResponse(),
+          sendTransaction: mockSendTransaction,
+          validateAccountAndChainId: jest.fn(),
+          analytics,
+        }),
+    ).rejects.toThrow();
+
+    expect(mockSendTransaction).not.toHaveBeenCalled();
+  });
+
+  it('dispatches updateConfirmationMetric with analytics payload', async () => {
+    const mockAddress = '0x0000000000000000000000000000000000000001';
+    const mockTransactionParameters = { from: mockAddress };
+    const expectedResult = 'fake-hash';
+    const pendingResult = constructPendingJsonRpcResponse();
+
+    const dispatchSpy = jest.spyOn(store, 'dispatch');
+
+    await eth_sendTransaction({
+      hostname: 'example.metamask.io',
+      req: constructSendTransactionRequest([mockTransactionParameters]),
+      res: pendingResult,
+      sendTransaction: getMockAddTransaction({
+        expectedTransaction: mockTransactionParameters,
+        expectedOrigin: {
+          origin: 'example.metamask.io',
+          networkClientId: NETWORK_CLIENT_ID_MOCK,
+        },
+        returnValue: expectedResult,
+      }),
+      validateAccountAndChainId: jest.fn(),
+      analytics: {
+        dapp_url: 'example.metamask.io',
+        request_source: 'test',
+      },
+    });
+
+    const id = '123';
+    expect(dispatchSpy).toHaveBeenCalledWith(
+      updateConfirmationMetric({
+        id,
+        params: {
+          properties: { ...analytics },
+        },
+      }),
+    );
   });
 });

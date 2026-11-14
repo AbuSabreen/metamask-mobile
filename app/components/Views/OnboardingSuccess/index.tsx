@@ -1,219 +1,97 @@
-import React, { useLayoutEffect, useState } from 'react';
+import React, { useLayoutEffect, useRef } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 import {
-  View,
-  Linking,
-  Keyboard,
-  TouchableOpacity,
-  Text as RNText,
-} from 'react-native';
-import Button from '../../../component-library/components/Buttons/Button';
-import {
-  ButtonSize,
-  ButtonVariants,
-  ButtonWidthTypes,
-} from '../../../component-library/components/Buttons/Button/Button.types';
-import Text from '../../../component-library/components/Texts/Text';
-import { TextColor } from '../../../component-library/components/Texts/Text/Text.types';
-import { useNavigation } from '@react-navigation/native';
-import { strings } from '../../../../locales/i18n';
+  CommonActions,
+  RouteProp,
+  useNavigation,
+  useRoute,
+} from '@react-navigation/native';
 import Routes from '../../../constants/navigation/Routes';
-import { getTransparentOnboardingNavbarOptions } from '../../UI/Navbar';
-import HintModal from '../../UI/HintModal';
-import { useTheme } from '../../../util/theme';
-import AsyncStorage from '../../../store/async-storage-wrapper';
-import { SEED_PHRASE_HINTS } from '../../../constants/storage';
-import Icon, {
-  IconName,
-  IconColor,
-  IconSize,
-} from '../../../component-library/components/Icons/Icon';
-import AppConstants from '../../../core/AppConstants';
-import Emoji from 'react-native-emoji';
-import { OnboardingSuccessSelectorIDs } from '../../../../e2e/selectors/Onboarding/OnboardingSuccess.selectors';
-import styles from './index.styles';
+import { ONBOARDING_SUCCESS_FLOW } from '../../../constants/onboarding';
+import { selectOnboardingAccountType } from '../../../selectors/onboarding';
+import { selectBasicFunctionalityEnabled } from '../../../selectors/settings';
+import { selectWalletSetupCompletedAttributionAnalyticsProps } from '../../../selectors/attribution';
+import { selectQrSyncNeedsProvisioning } from '../../../selectors/qrSyncController';
+import { finalizeOnboardingCompletion } from '../../../util/onboarding/finalizeOnboardingCompletion';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+
+export const ResetNavigationToHome = CommonActions.reset({
+  index: 0,
+  routes: [{ name: Routes.ONBOARDING.HOME_NAV }],
+});
+
+interface OnboardingSuccessRouteParams {
+  successFlow?: ONBOARDING_SUCCESS_FLOW;
+}
+
+interface OnboardingSuccessParamList {
+  OnboardingSuccess: OnboardingSuccessRouteParams;
+  [key: string]: object | undefined;
+}
 
 interface OnboardingSuccessProps {
   onDone: () => void;
-  backedUpSRP: boolean;
-  noSRP: boolean;
+  successFlow: ONBOARDING_SUCCESS_FLOW;
 }
 
-const OnboardingSuccess = ({
+export const OnboardingSuccessComponent: React.FC<OnboardingSuccessProps> = ({
   onDone,
-  backedUpSRP,
-  noSRP,
-}: OnboardingSuccessProps) => {
-  const navigation = useNavigation();
-  const { colors } = useTheme();
-  const [showHint, setShowHint] = useState(false);
-  const [hintText, setHintText] = useState('');
+  successFlow,
+}) => {
+  const dispatch = useDispatch();
+  const hasCompleted = useRef(false);
+  const accountType = useSelector(selectOnboardingAccountType);
+  const isBasicFunctionalityEnabled = useSelector(
+    selectBasicFunctionalityEnabled,
+  );
+  const walletSetupAttributionProps = useSelector(
+    selectWalletSetupCompletedAttributionAnalyticsProps,
+  );
+  const needsQrProvisioning = useSelector(selectQrSyncNeedsProvisioning);
 
   useLayoutEffect(() => {
-    navigation.setOptions(getTransparentOnboardingNavbarOptions(colors));
-  }, [navigation, colors]);
+    if (hasCompleted.current) {
+      return;
+    }
+    hasCompleted.current = true;
 
-  const goToDefaultSettings = () => {
-    navigation.navigate(Routes.ONBOARDING.SUCCESS_FLOW, {
-      screen: Routes.ONBOARDING.DEFAULT_SETTINGS,
+    finalizeOnboardingCompletion({
+      successFlow,
+      accountType,
+      isBasicFunctionalityEnabled,
+      walletSetupAttributionProps,
+      dispatch,
+      discoverAccountsLogContext: 'OnboardingSuccess',
+      needsQrProvisioning,
     });
-  };
 
-  const handleLink = () => {
-    Linking.openURL(AppConstants.URLS.WHAT_IS_SRP);
-  };
+    onDone();
+  }, [
+    accountType,
+    dispatch,
+    isBasicFunctionalityEnabled,
+    needsQrProvisioning,
+    onDone,
+    successFlow,
+    walletSetupAttributionProps,
+  ]);
 
-  const saveHint = async () => {
-    if (!hintText) return;
-    setShowHint(false);
-    const currentSeedphraseHints = await AsyncStorage.getItem(
-      SEED_PHRASE_HINTS,
-    );
-    if (currentSeedphraseHints) {
-      const parsedHints = JSON.parse(currentSeedphraseHints);
-      await AsyncStorage.setItem(
-        SEED_PHRASE_HINTS,
-        JSON.stringify({ ...parsedHints, manualBackup: hintText }),
-      );
-    }
-  };
+  return null;
+};
 
-  const toggleHint = () => {
-    setShowHint((hintVisible) => !hintVisible);
-  };
-
-  const renderHint = () => (
-    <HintModal
-      onConfirm={saveHint}
-      onCancel={toggleHint}
-      modalVisible={showHint}
-      onRequestClose={Keyboard.dismiss}
-      value={hintText}
-      onChangeText={setHintText}
-    />
-  );
-
-  const renderContent = () => {
-    if (backedUpSRP) {
-      return (
-        <>
-          <Emoji name="tada" style={styles.emoji} />
-          <Text style={styles.title}>
-            {strings('onboarding_success.title')}
-          </Text>
-          <View style={styles.descriptionWrapper}>
-            <Text style={styles.description}>
-              {strings('onboarding_success.description')}
-              <Text style={styles.descriptionBold}>
-                {strings('onboarding_success.description_bold')}
-                {'\n'}
-                {'\n'}
-              </Text>
-              <Text color={TextColor.Info} onPress={() => setShowHint(true)}>
-                {strings('onboarding_success.leave_hint')}
-                {'\n'}
-                {'\n'}
-              </Text>
-              <Text style={styles.description}>
-                {strings('onboarding_success.description_continued')}
-                <Text color={TextColor.Info} onPress={handleLink}>
-                  {' '}
-                  {strings('onboarding_success.learn_more')}
-                </Text>
-              </Text>
-            </Text>
-          </View>
-        </>
-      );
-    } else if (noSRP) {
-      return (
-        <>
-          <RNText style={styles.emoji}>🔓</RNText>
-          <Text style={styles.title}>
-            {strings('onboarding_success.no_srp_title')}
-          </Text>
-          <View style={styles.descriptionWrapper}>
-            <Text style={styles.description}>
-              {strings('onboarding_success.no_srp_description')}
-              <Text style={styles.descriptionBold}>
-                {' '}
-                {strings('onboarding_success.description_bold')}
-                {'\n'}
-                {'\n'}
-              </Text>
-            </Text>
-          </View>
-        </>
-      );
-    }
-    return (
-      <>
-        <RNText style={styles.emoji}>🎉</RNText>
-        <Text style={styles.title}>
-          {strings('onboarding_success.import_title')}
-        </Text>
-        <View style={styles.descriptionWrapper}>
-          <Text style={styles.description}>
-            {strings('onboarding_success.import_description')}
-            <Text style={styles.description}>
-              <Text color={TextColor.Info} onPress={handleLink}>
-                {strings('onboarding_success.learn_how')}{' '}
-              </Text>
-              {strings('onboarding_success.import_description2')}
-            </Text>
-          </Text>
-        </View>
-      </>
-    );
-  };
-
-  const renderFooter = () => {
-    const linkStyle = { paddingTop: backedUpSRP ? 20 : 10 };
-    return (
-      <View style={styles.footer}>
-        <TouchableOpacity
-          style={[styles.linkWrapper, linkStyle]}
-          onPress={goToDefaultSettings}
-        >
-          <View style={styles.iconWrapper}>
-            <Icon
-              name={IconName.Setting}
-              size={IconSize.Sm}
-              color={IconColor.Info}
-            />
-          </View>
-          <Text color={TextColor.Info}>
-            {strings('onboarding_success.manage_default_settings')}
-          </Text>
-        </TouchableOpacity>
-        <Text style={styles.footerText}>
-          {strings('onboarding_success.default_settings_footer')}
-        </Text>
-      </View>
-    );
-  };
+export const OnboardingSuccess = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const route =
+    useRoute<RouteProp<OnboardingSuccessParamList, 'OnboardingSuccess'>>();
+  const successFlow =
+    route?.params?.successFlow ?? ONBOARDING_SUCCESS_FLOW.BACKED_UP_SRP;
+  const nextScreen = ResetNavigationToHome;
 
   return (
-    <View
-      style={styles.root}
-      testID={OnboardingSuccessSelectorIDs.CONTAINER_ID}
-    >
-      <View style={styles.contentWrapper}>
-        {renderContent()}
-        {renderFooter()}
-      </View>
-
-      <View style={styles.buttonWrapper}>
-        <Button
-          testID={OnboardingSuccessSelectorIDs.DONE_BUTTON}
-          label={strings('onboarding_success.done')}
-          variant={ButtonVariants.Primary}
-          onPress={onDone}
-          size={ButtonSize.Lg}
-          width={ButtonWidthTypes.Full}
-        />
-      </View>
-      {renderHint()}
-    </View>
+    <OnboardingSuccessComponent
+      successFlow={successFlow}
+      onDone={() => navigation.dispatch(nextScreen)}
+    />
   );
 };
 

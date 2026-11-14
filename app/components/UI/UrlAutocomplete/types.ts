@@ -1,0 +1,119 @@
+/**
+ * Props for the UrlAutocomplete component
+ */
+
+import type { Hex } from '@metamask/utils';
+import type { MarketType } from '@metamask/perps-controller';
+import type { PredictSearchResult } from '../PredictNext';
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type UrlAutocompleteComponentProps = {
+  /**
+   * Callback that is triggered while
+   * choosing one of the autocomplete options
+   */
+  onSelect: (item: AutocompleteSearchResult) => void;
+  /**
+   * Called on press-in for URL-based results (Sites/Recents/Favorites) before
+   * blur, so the browser can keep the URL bar focused until navigation starts.
+   */
+  onSelectPressIn?: () => void;
+  /**
+   * Callback that is triggered while
+   * tapping on the background
+   */
+  onDismiss: () => void;
+};
+
+export enum UrlAutocompleteCategory {
+  Sites = 'sites',
+  Recents = 'recents',
+  Favorites = 'favorites',
+  Tokens = 'tokens',
+  Perps = 'perps',
+  Predictions = 'predictions',
+}
+
+/**
+ * Ref for the UrlAutocomplete component
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type UrlAutocompleteRef = {
+  /**
+   * Search for autocomplete results
+   */
+  search: (text: string) => void;
+  /**
+   * Hide the autocomplete results
+   */
+  hide: () => void;
+  /**
+   * Show the autocomplete results
+   */
+  show: () => void;
+};
+
+/**
+ * The result of a Fuse search
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type FuseSearchResult = {
+  category:
+    | UrlAutocompleteCategory.Sites
+    | UrlAutocompleteCategory.Recents
+    | UrlAutocompleteCategory.Favorites;
+  url: string;
+  name: string;
+};
+
+/**
+ * The result of a token search
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type TokenSearchResult = {
+  category: UrlAutocompleteCategory.Tokens;
+  name: string;
+  symbol: string;
+  address: string;
+  decimals: number;
+  chainId: Hex;
+  logoUrl?: string;
+  price: number;
+  percentChange: number;
+  assetId: string;
+  isFromSearch: true;
+};
+
+/**
+ * The result of a perps market search
+ * Re-exports PerpsMarketData from the Perps controller with category added
+ */
+// eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+export type PerpsSearchResult = {
+  category: UrlAutocompleteCategory.Perps;
+  symbol: string;
+  name: string;
+  maxLeverage: string;
+  price: string;
+  change24h: string;
+  change24hPercent: string;
+  volume: string;
+  openInterest?: string;
+  marketType?: MarketType;
+  marketSource?: string | null;
+};
+
+/**
+ * A Predict search result: venue-neutral display values and the intent that
+ * opens it, from `usePredictSearchResults`. Render it with
+ * `PredictSearchResultRow` and open it with `openPredict(result.intent)`.
+ */
+export type PredictionsSearchResult = PredictSearchResult & {
+  category: UrlAutocompleteCategory.Predictions;
+};
+
+export type AutocompleteSearchResult =
+  | FuseSearchResult
+  | TokenSearchResult
+  | PerpsSearchResult
+  | PredictionsSearchResult;

@@ -13,9 +13,7 @@ import Text, {
   TextVariant,
   TextColor,
 } from '../../../component-library/components/Texts/Text';
-import ButtonIcon, {
-  ButtonIconSizes,
-} from '../../../component-library/components/Buttons/ButtonIcon';
+import ButtonIcon from '../../../component-library/components/Buttons/ButtonIcon';
 import { IconName } from '../../../component-library/components/Icons/Icon';
 
 const createStyles = (colors) =>
@@ -58,7 +56,7 @@ const createStyles = (colors) =>
 const HintModal = ({
   onCancel,
   onConfirm,
-  modalVisible,
+  modalVisible = false,
   onRequestClose,
   value,
   onChangeText,
@@ -82,11 +80,7 @@ const HintModal = ({
             <Text variant={TextVariant.HeadingMD} style={styles.recovery}>
               {strings('manual_backup_step_3.recovery_hint')}
             </Text>
-            <ButtonIcon
-              size={ButtonIconSizes.Sm}
-              iconName={IconName.Close}
-              onPress={onCancel}
-            />
+            <ButtonIcon iconName={IconName.Close} onPress={onCancel} />
           </View>
           <Text variant={TextVariant.BodyMD} style={styles.leaveHint}>
             {strings('manual_backup_step_3.leave_hint')}
@@ -122,11 +116,6 @@ const propTypes = {
   value: PropTypes.string,
   onChangeText: PropTypes.func.isRequired,
 };
-const defaultProps = {
-  modalVisible: false,
-};
-
 HintModal.propTypes = propTypes;
-HintModal.defaultProps = defaultProps;
 
 export default HintModal;

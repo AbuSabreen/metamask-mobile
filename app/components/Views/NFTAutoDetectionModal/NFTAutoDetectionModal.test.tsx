@@ -1,0 +1,121 @@
+import React from 'react';
+import NFTAutoDetectionModal from './NFTAutoDetectionModal';
+import renderWithProvider, {
+  DeepPartial,
+} from '../../../util/test/renderWithProvider';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import Routes from '../../../constants/navigation/Routes';
+import Engine from '../../../core/Engine';
+import { fireEvent } from '@testing-library/react-native';
+import { RootState } from 'app/reducers';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { createMockUseAnalyticsHook } from '../../../util/test/analyticsMock';
+
+const setUseNftDetectionSpy = jest.spyOn(
+  Engine.context.PreferencesController,
+  'setUseNftDetection',
+);
+
+const setDisplayNftMediaSpy = jest.spyOn(
+  Engine.context.PreferencesController,
+  'setDisplayNftMedia',
+);
+jest.mock('../../../core/Engine', () => ({
+  context: {
+    PreferencesController: {
+      setUseNftDetection: jest.fn(),
+      setDisplayNftMedia: jest.fn(),
+    },
+  },
+}));
+
+const initialState = {
+  engine: {
+    backgroundState: {
+      PreferencesController: {
+        displayNftMedia: true,
+      },
+    },
+  },
+};
+
+jest.mock('../../hooks/useAnalytics/useAnalytics');
+
+const mockTrackEvent = jest.fn();
+const mockIdentify = jest.fn();
+
+const Stack = createNativeStackNavigator();
+
+const renderComponent = (state: DeepPartial<RootState> = {}) =>
+  renderWithProvider(
+    <Stack.Navigator>
+      <Stack.Screen name={Routes.MODAL.NFT_AUTO_DETECTION_MODAL}>
+        {() => <NFTAutoDetectionModal />}
+      </Stack.Screen>
+    </Stack.Navigator>,
+    { state },
+  );
+describe('NFT Auto detection modal', () => {
+  beforeEach(() => {
+    jest.mocked(useAnalytics).mockReturnValue(
+      createMockUseAnalyticsHook({
+        trackEvent: mockTrackEvent,
+        identify: mockIdentify,
+      }),
+    );
+  });
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+  it('renders the allow and cancel buttons', () => {
+    const { getByTestId } = renderComponent(initialState);
+    expect(getByTestId('allow')).toBeOnTheScreen();
+    expect(getByTestId('cancel')).toBeOnTheScreen();
+  });
+
+  it('calls setUseNftDetection and setDisplayNftMedia when clicking on allow button with nftDisplayMedia initially off', () => {
+    const { getByTestId } = renderComponent({
+      engine: {
+        backgroundState: {
+          PreferencesController: {
+            displayNftMedia: false,
+          },
+        },
+      },
+    });
+    const allowButton = getByTestId('allow');
+
+    fireEvent.press(allowButton);
+    expect(setUseNftDetectionSpy).toHaveBeenCalled();
+    expect(setDisplayNftMediaSpy).toHaveBeenCalled();
+
+    expect(mockIdentify).toHaveBeenCalledWith({
+      'Enable OpenSea API': 'ON',
+      'NFT Autodetection': 'ON',
+    });
+  });
+
+  it('calls setDisplayNftMedia when clicking on allow button if displayNftMedia if on', () => {
+    const { getByTestId } = renderComponent(initialState);
+    const allowButton = getByTestId('allow');
+
+    fireEvent.press(allowButton);
+    expect(setUseNftDetectionSpy).toHaveBeenCalled();
+    expect(setDisplayNftMediaSpy).not.toHaveBeenCalled();
+
+    expect(mockIdentify).toHaveBeenCalledWith({
+      'NFT Autodetection': 'ON',
+    });
+  });
+
+  it('Does not call setUseNftDetection nor setDisplayNftMedia when clicking on not right now button', () => {
+    const { getByTestId } = renderComponent(initialState);
+    const cancelButton = getByTestId('cancel');
+
+    fireEvent.press(cancelButton);
+    expect(setUseNftDetectionSpy).not.toHaveBeenCalled();
+    expect(setDisplayNftMediaSpy).not.toHaveBeenCalled();
+
+    expect(mockIdentify).not.toHaveBeenCalled();
+  });
+});

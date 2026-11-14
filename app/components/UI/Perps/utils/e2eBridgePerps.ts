@@ -1,0 +1,265 @@
+/**
+ * E2E Bridge - Dynamic Mock Injection
+ *
+ * This bridge allows production code to conditionally use E2E mocks
+ * without direct dependencies on E2E files. The bridge automatically
+ * configures itself when the hasTestOverrides flag is detected.
+ */
+
+import DevLogger from '../../../../core/SDKConnect/utils/DevLogger';
+import { hasTestOverrides } from '../../../../util/test/utils';
+import { Linking } from 'react-native';
+
+// Global bridge for E2E mock injection
+export interface E2EBridgePerpsStreaming {
+  mockStreamManager?: unknown;
+  applyControllerMocks?: (controller: unknown) => void;
+}
+
+// Global bridge instance
+let e2eBridgePerps: E2EBridgePerpsStreaming = {};
+
+// Ensure we only register the deep link handler once
+let hasRegisteredDeepLinkHandler = false;
+
+// Track processed URLs to avoid duplicate handling when both initial URL and event fire
+const processedDeepLinks = new Set<string>();
+
+// Remove all leading E2E perps scheme prefixes to avoid partial matches when duplicated
+function stripE2EPerpsScheme(url: string): string {
+  const prefixes = ['metamask://e2e/perps/', 'e2e://perps/'];
+  let current = url;
+  // Repeatedly remove any matching prefix at the start
+  // Handles cases like "metamask://e2e/perps/metamask://e2e/perps/push-price"
+  // and mixed forms with both prefixes.
+  // Breaks when no prefix matches the current string start.
+  // This is intentionally strict and only strips at the beginning.
+  // Do not use replace() here to avoid removing mid-string occurrences.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    let matched = false;
+    for (const prefix of prefixes) {
+      if (current.startsWith(prefix)) {
+        current = current.slice(prefix.length);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) break;
+  }
+  return current;
+}
+
+/**
+ * Register a lightweight deep link handler for E2E-only schema (e2e://perps/*)
+ * This avoids touching production deeplink parsing while enabling deterministic
+ * E2E commands like price push and forced liquidation.
+ * !! TODO: E2E perps deeplink handler can be later removed if HTTP polling is stable !!
+ */
+function registerE2EPerpsDeepLinkHandler(): void {
+  if (hasRegisteredDeepLinkHandler || !hasTestOverrides) {
+    return;
+  }
+
+  try {
+    const handleUrl = (incomingUrl?: string) => {
+      try {
+        const url = incomingUrl || '';
+        if (!url) return;
+
+        const isExpoMappedScheme = url.startsWith('metamask://e2e/perps/');
+        const isRawScheme = url.startsWith('e2e://perps/');
+        // Support both the Expo-mapped scheme and the raw e2e scheme used in tests
+        if (!isExpoMappedScheme && !isRawScheme) {
+          return;
+        }
+
+        if (processedDeepLinks.has(url)) {
+          return; // Avoid duplicate processing
+        }
+        processedDeepLinks.add(url);
+
+        // Lazy require to keep bridge tree-shakeable in prod and avoid ESM import in Jest
+        /* eslint-disable @typescript-eslint/no-require-imports */
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const mod = require('../../../../../tests/controller-mocking/mock-responses/perps/perps-e2e-mocks');
+          const service = mod?.PerpsE2EMockService?.getInstance?.();
+
+          // Parse path and query
+          const withoutScheme = stripE2EPerpsScheme(url);
+          const [path, queryString] = withoutScheme.split('?');
+          const params = new URLSearchParams(queryString || '');
+          const symbol = params.get('symbol') || '';
+
+          if (path === 'push-price') {
+            const price = params.get('price') || '';
+            DevLogger.log('[E2E Bridge] push-price', symbol, price);
+            if (service && typeof service.mockPushPrice === 'function') {
+              service.mockPushPrice(symbol, price);
+            }
+            return;
+          }
+
+          if (path === 'mock-deposit') {
+            const amount = params.get('amount') || '';
+            DevLogger.log('[E2E Bridge] mock-deposit', amount);
+            if (service && typeof service.mockDepositUSD === 'function') {
+              service.mockDepositUSD(amount);
+            }
+            return;
+          }
+
+          if (path === 'force-liquidation') {
+            DevLogger.log('[E2E Bridge] force-liquidation', symbol);
+            if (service && typeof service.mockForceLiquidation === 'function') {
+              service.mockForceLiquidation(symbol);
+            }
+            return;
+          }
+        } catch (e) {
+          DevLogger.log('[E2E Bridge] E2E mocks not available');
+        } finally {
+          /* eslint-enable @typescript-eslint/no-require-imports */
+        }
+      } catch (err) {
+        DevLogger.log('[E2E Bridge] Error handling E2E perps deeplink', err);
+      }
+    };
+
+    // Listen to runtime deep links
+    Linking.addEventListener('url', (event: { url: string }) => {
+      handleUrl(event?.url);
+    });
+
+    // Also process the initial URL if present (e.g., app launched via link)
+    // This ensures E2E commands are honored even if delivered as initial URL
+    Linking.getInitialURL()
+      .then((initialUrl) => {
+        if (initialUrl) {
+          DevLogger.log('[E2E Bridge] Processing initial URL', initialUrl);
+          handleUrl(initialUrl);
+        }
+      })
+      .catch(() => {
+        // no-op
+      });
+
+    hasRegisteredDeepLinkHandler = true;
+    DevLogger.log('[E2E Bridge] Registered E2E perps deep link handler');
+  } catch (error) {
+    DevLogger.log(
+      '[E2E Bridge] Failed to register E2E perps deep link handler',
+    );
+  }
+}
+
+/**
+ * Auto-configure E2E bridge when hasTestOverrides is true
+ */
+function autoConfigureE2EBridge(): void {
+  if (!hasTestOverrides || e2eBridgePerps.mockStreamManager) {
+    return; // Already configured or not in E2E mode
+  }
+
+  try {
+    // Dynamically import E2E modules to avoid build-time dependencies
+    // This will only work in E2E environment where these files exist
+
+    // Try to require the modules directly - if they don't exist, this will throw
+    /* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+    const {
+      PerpsE2EMockService,
+    } = require('../../../../../tests/controller-mocking/mock-responses/perps/perps-e2e-mocks');
+    const {
+      applyE2EPerpsControllerMocks,
+      createE2EMockStreamManager,
+    } = require('../../../../../tests/controller-mocking/mock-config/perps-controller-mixin');
+    /* eslint-enable @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires */
+
+    // Initialize mock service
+    const mockService = PerpsE2EMockService.getInstance();
+    mockService.reset();
+
+    // Create mock stream manager
+    const mockStreamManager = createE2EMockStreamManager();
+
+    // Configure bridge
+    e2eBridgePerps = {
+      mockStreamManager,
+      applyControllerMocks: applyE2EPerpsControllerMocks,
+    };
+
+    // Register E2E deep link handler for price/liq commands
+    registerE2EPerpsDeepLinkHandler();
+
+    DevLogger.log('E2E Bridge auto-configured successfully');
+    DevLogger.log('Mock state:', {
+      accountBalance: mockService.getMockAccountState().spendableBalance,
+      positionsCount: mockService.getMockPositions().length,
+      marketsCount: mockService.getMockMarkets().length,
+    });
+    DevLogger.log(
+      'Mock markets:',
+      mockService
+        .getMockMarkets()
+        .map(
+          (m: { symbol: string; volume: string }) => `${m.symbol}: ${m.volume}`,
+        ),
+    );
+  } catch (error) {
+    // This is expected in production builds where E2E files don't exist
+    // or when running in environments that don't have the e2e directory
+    DevLogger.log(
+      'E2E files not found (expected in production) - skipping mock setup',
+    );
+  }
+}
+
+/**
+ * Set E2E bridge from external test setup (legacy support)
+ */
+export function setE2EBridge(bridge: E2EBridgePerpsStreaming): void {
+  if (hasTestOverrides) {
+    e2eBridgePerps = bridge;
+    DevLogger.log('E2E Bridge manually configured:', Object.keys(bridge));
+  }
+}
+
+/**
+ * Get mock stream manager if available
+ */
+export function getE2EMockStreamManager(): unknown {
+  if (hasTestOverrides) {
+    autoConfigureE2EBridge();
+    DevLogger.log(
+      'E2E Bridge: Returning mock stream manager:',
+      !!e2eBridgePerps.mockStreamManager,
+    );
+    return e2eBridgePerps.mockStreamManager;
+  }
+  return null;
+}
+
+/**
+ * Apply controller mocks if available
+ */
+export function applyE2EControllerMocks(controller: unknown): void {
+  // Use unified hasTestOverrides flag so CI/local runs with either HAS_TEST_OVERRIDES=true
+  if (hasTestOverrides) {
+    DevLogger.log('[E2E Bridge] Applying E2E PerpsController mocks');
+    autoConfigureE2EBridge();
+    if (e2eBridgePerps.applyControllerMocks) {
+      e2eBridgePerps.applyControllerMocks(controller);
+      DevLogger.log('[E2E Bridge] PerpsController mocks applied');
+    } else {
+      DevLogger.log('[E2E Bridge] applyControllerMocks not available');
+    }
+  }
+}
+
+export default {
+  setE2EBridge,
+  getE2EMockStreamManager,
+  applyE2EControllerMocks,
+};

@@ -1,43 +1,46 @@
-/* eslint-disable import/prefer-default-export */
-import { StyleSheet, TextStyle } from 'react-native';
+/* eslint-disable import-x/prefer-default-export */
+import { StyleSheet } from 'react-native';
 import type { Theme } from '@metamask/design-tokens';
 
-export const createStyles = ({ colors, typography }: Theme) =>
+export type NotificationListStyles = ReturnType<typeof createStyles>;
+
+export const createStyles = ({ colors }: Theme) =>
   StyleSheet.create({
     container: {
       flex: 1,
       backgroundColor: colors.background.default,
     },
+    itemContainer: {
+      flex: 1,
+      paddingVertical: 10,
+      paddingHorizontal: 32,
+    },
+    unreadItemContainer: {
+      flex: 1,
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      backgroundColor: colors.info.muted,
+    },
+    readItemContainer: {
+      flex: 1,
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      backgroundColor: colors.background.default,
+    },
     wrapper: {
       flex: 1,
-      paddingHorizontal: 16,
       paddingVertical: 10,
       justifyContent: 'center',
       borderRadius: 10,
+      backgroundColor: colors.primary.default,
     },
     loaderContainer: {
       position: 'absolute',
       zIndex: 999,
       width: '100%',
       height: '100%',
-    },
-    base: {
-      paddingHorizontal: 16,
-    },
-    tabUnderlineStyle: {
-      height: 2,
-      backgroundColor: colors.primary.default,
-    },
-    tabStyle: {
-      paddingBottom: 0,
-      paddingVertical: 8,
-    },
-    tabBar: {
-      borderColor: colors.background.default,
-    },
-    textStyle: {
-      ...(typography.sBodyMD as TextStyle),
-      fontWeight: '500',
+      justifyContent: 'center',
+      alignItems: 'center',
     },
     loader: {
       backgroundColor: colors.background.default,
@@ -45,23 +48,17 @@ export const createStyles = ({ colors, typography }: Theme) =>
       justifyContent: 'center',
       alignItems: 'center',
     },
-    TabWrapper: {
-      backgroundColor: colors.background.default,
-      flex: 1,
-    },
-    list: { flexGrow: 1 },
+    list: { flexGrow: 1, paddingBottom: 100 },
     fox: {
       width: 20,
       height: 20,
     },
-    badgeWrapper: {
-      alignItems: 'center',
-      justifyContent: 'center',
-      alignSelf: 'flex-start',
-      position: 'absolute',
-      top: '10%',
+    itemLogoSize: {
+      width: 32,
+      height: 32,
     },
-    assetLogo: {
+    containerFill: { flex: 1 },
+    circleLogo: {
       width: 32,
       height: 32,
       borderRadius: 16,
@@ -69,15 +66,7 @@ export const createStyles = ({ colors, typography }: Theme) =>
       borderWidth: 0.5,
       borderColor: colors.background.alternative,
     },
-    assetPlaceholder: {
-      backgroundColor: colors.background.alternative,
-      width: 32,
-      height: 32,
-      borderRadius: 16,
-      borderWidth: 0.5,
-      borderColor: colors.background.alternative,
-    },
-    nftLogo: {
+    squareLogo: {
       width: 32,
       height: 32,
       borderRadius: 8,
@@ -85,18 +74,10 @@ export const createStyles = ({ colors, typography }: Theme) =>
       borderWidth: 0.5,
       borderColor: colors.background.alternative,
     },
-    nftPlaceholder: {
-      backgroundColor: colors.background.alternative,
-      width: 32,
-      height: 32,
-      borderRadius: 8,
-      borderWidth: 0.5,
-      borderColor: colors.background.alternative,
-    },
-    rowContainer: { flex: 1, marginLeft: 42, alignItem: 'center' },
     rowInsider: {
       flex: 1,
       flexDirection: 'row',
+      gap: 8,
       justifyContent: 'space-between',
     },
     ethLogo: {
@@ -114,10 +95,6 @@ export const createStyles = ({ colors, typography }: Theme) =>
       alignSelf: 'flex-start',
       position: 'absolute',
       top: '25%',
-    },
-    textBox: {
-      flexShrink: 1,
-      maxWidth: '85%',
     },
     button: {
       marginTop: 16,

@@ -1,0 +1,165 @@
+import React, { memo, useCallback, useMemo } from 'react';
+import KeypadComponent, { KeypadChangeData } from '../../../../Base/Keypad';
+import { useStyles } from '../../../../hooks/useStyles';
+import styleSheet from './deposit-keyboard.styles';
+import {
+  Button,
+  ButtonBaseSize,
+  ButtonVariant,
+} from '@metamask/design-system-react-native';
+import { Box } from '../../../../UI/Box/Box';
+import { FlexDirection, JustifyContent } from '../../../../UI/Box/box.types';
+import { strings } from '../../../../../../locales/i18n';
+import { View } from 'react-native';
+import { PERPS_CURRENCY } from '../../constants/perps';
+import { Skeleton } from '../../../../../component-library/components-temp/Skeleton';
+import Keypad from '../../../../Base/Keypad/components';
+import { formatAmountForDisplay } from '../../utils/transaction-pay';
+
+const PERCENTAGE_BUTTONS = [
+  {
+    label: '10%',
+    value: 10,
+  },
+  {
+    label: '25%',
+    value: 25,
+  },
+  {
+    label: '50%',
+    value: 50,
+  },
+  {
+    label: '90%',
+    value: 90,
+  },
+];
+
+const MAX_BUTTON = {
+  label: 'Max',
+  value: 100,
+};
+
+export interface DepositKeyboardProps {
+  doneLabel?: string;
+  hasInput?: boolean;
+  hasMax?: boolean;
+  hidePercentageButtons?: boolean;
+  isDoneDisabled?: boolean;
+  onChange: (value: string) => void;
+  onPercentagePress: (percentage: number) => void;
+  onDonePress: () => void;
+  value: string;
+}
+
+export const DepositKeyboard = memo(
+  ({
+    doneLabel,
+    hasInput,
+    hasMax,
+    hidePercentageButtons,
+    isDoneDisabled,
+    onChange,
+    onDonePress,
+    onPercentagePress,
+    value,
+  }: DepositKeyboardProps) => {
+    const currentCurrency = PERPS_CURRENCY;
+    const { styles } = useStyles(styleSheet, {});
+    const valueString = formatAmountForDisplay(value.toString());
+
+    const handleChange = useCallback(
+      (data: KeypadChangeData) => {
+        onChange(data.value);
+      },
+      [onChange],
+    );
+
+    const handlePercentagePress = useCallback(
+      (percentage: number) => {
+        onPercentagePress(percentage);
+      },
+      [onPercentagePress],
+    );
+
+    const buttons = useMemo(() => {
+      const newButtons = [...PERCENTAGE_BUTTONS];
+
+      if (hasMax) {
+        newButtons.pop();
+        newButtons.push(MAX_BUTTON);
+      }
+
+      return newButtons;
+    }, [hasMax]);
+
+    return (
+      <View>
+        <Box
+          testID="deposit-keyboard"
+          flexDirection={FlexDirection.Row}
+          justifyContent={JustifyContent.spaceBetween}
+          gap={10}
+        >
+          {!hasInput &&
+            !hidePercentageButtons &&
+            buttons.map(({ label, value: buttonValue }) => (
+              <Button
+                key={buttonValue}
+                size={ButtonBaseSize.Lg}
+                onPress={() => handlePercentagePress(buttonValue)}
+                variant={ButtonVariant.Secondary}
+                // Match Keypad.Button border radius
+                twClassName="flex-1 rounded-xl mb-3"
+              >
+                {label}
+              </Button>
+            ))}
+          {hasInput && (
+            <Button
+              testID="deposit-keyboard-done-button"
+              onPress={onDonePress}
+              isDisabled={isDoneDisabled}
+              size={ButtonBaseSize.Lg}
+              isFullWidth
+              variant={ButtonVariant.Primary}
+              twClassName="mb-3"
+            >
+              {doneLabel ?? strings('confirm.edit_amount_done')}
+            </Button>
+          )}
+        </Box>
+        <KeypadComponent
+          value={valueString}
+          onChange={handleChange}
+          currency={currentCurrency}
+          decimals={2}
+        />
+      </View>
+    );
+  },
+);
+
+export function DepositKeyboardSkeleton() {
+  return (
+    <Keypad>
+      <DepositKeyboardSkeletonRow count={4} />
+      <DepositKeyboardSkeletonRow />
+      <DepositKeyboardSkeletonRow />
+      <DepositKeyboardSkeletonRow />
+      <DepositKeyboardSkeletonRow />
+    </Keypad>
+  );
+}
+
+function DepositKeyboardSkeletonRow({ count = 3 }) {
+  const { styles } = useStyles(styleSheet, {});
+
+  return (
+    <Keypad.Row>
+      {[...Array(count)].map((_, index) => (
+        <Skeleton key={index} style={styles.skeletonButton} />
+      ))}
+    </Keypad.Row>
+  );
+}

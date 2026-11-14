@@ -1,0 +1,309 @@
+import React from 'react';
+import { fireEvent } from '@testing-library/react-native';
+import { Platform, StatusBar, StyleSheet } from 'react-native';
+import { EditMultichainAccountName } from './EditMultichainAccountName';
+import { strings } from '../../../../../../locales/i18n';
+import { EditAccountNameIds } from '../EditAccountName.testIds';
+import renderWithProvider from '../../../../../util/test/renderWithProvider';
+
+const mockGoBack = jest.fn();
+const mockAccountGroup = {
+  id: 'entropy:wallet1/0',
+  metadata: { name: 'Test Account Group' },
+};
+const mockRoute = {
+  params: {
+    accountGroup: mockAccountGroup,
+  },
+};
+const mockUseRoute = jest.fn().mockReturnValue(mockRoute);
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: () => ({
+    goBack: () => mockGoBack(),
+  }),
+  useRoute: () => mockUseRoute(),
+}));
+
+const mockBottomSafeAreaInset = jest.fn();
+
+jest.mock('../../../../hooks/useBottomSafeAreaInset', () => ({
+  useBottomSafeAreaInset: () => mockBottomSafeAreaInset(),
+}));
+
+const mockSetAccountGroupName = jest.fn();
+
+jest.mock('../../../../../core/Engine', () => ({
+  context: {
+    AccountTreeController: {
+      setAccountGroupName: (groupId: string, name: string) =>
+        mockSetAccountGroupName(groupId, name),
+    },
+  },
+}));
+
+describe('EditMultichainAccountName', () => {
+  const originalPlatformOs = Platform.OS;
+  const originalStatusBarCurrentHeight = StatusBar.currentHeight;
+  const render = () => renderWithProvider(<EditMultichainAccountName />);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSetAccountGroupName.mockReset();
+    mockUseRoute.mockReturnValue(mockRoute);
+    mockBottomSafeAreaInset.mockReturnValue(0);
+    Platform.OS = 'ios';
+    Object.defineProperty(StatusBar, 'currentHeight', {
+      configurable: true,
+      writable: true,
+      value: originalStatusBarCurrentHeight,
+    });
+  });
+
+  afterAll(() => {
+    Platform.OS = originalPlatformOs;
+    Object.defineProperty(StatusBar, 'currentHeight', {
+      configurable: true,
+      writable: true,
+      value: originalStatusBarCurrentHeight,
+    });
+  });
+
+  describe('rendering', () => {
+    it('renders correctly with account group information', () => {
+      const { getByText, getByTestId } = render();
+
+      expect(getByText('Test Account Group')).toBeTruthy();
+      expect(
+        getByText(
+          strings('multichain_accounts.edit_account_name.account_name'),
+        ),
+      ).toBeTruthy();
+      expect(
+        getByText(
+          strings('multichain_accounts.edit_account_name.confirm_button'),
+        ),
+      ).toBeTruthy();
+      expect(
+        getByTestId(EditAccountNameIds.EDIT_ACCOUNT_NAME_CONTAINER),
+      ).toBeTruthy();
+    });
+
+    it('displays account group name input with current name', () => {
+      const { getByTestId } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      expect(nameInput).toBeTruthy();
+      expect(nameInput.props.value).toBe('Test Account Group');
+    });
+  });
+
+  describe('user interactions', () => {
+    it('handles account group name input changes', () => {
+      const { getByTestId } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      fireEvent.changeText(nameInput, 'New Group Name');
+
+      expect(nameInput.props.value).toBe('New Group Name');
+    });
+
+    it('navigates back when back button is pressed', () => {
+      const { getByTestId } = render();
+
+      const backButton = getByTestId(EditAccountNameIds.BACK_BUTTON);
+      fireEvent.press(backButton);
+
+      expect(mockGoBack).toHaveBeenCalledTimes(1);
+    });
+
+    it('saves account group name when save button is pressed', () => {
+      const { getByTestId } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      const saveButton = getByTestId(EditAccountNameIds.SAVE_BUTTON);
+
+      fireEvent.changeText(nameInput, 'Updated Group Name');
+      fireEvent.press(saveButton);
+
+      expect(mockSetAccountGroupName).toHaveBeenCalledWith(
+        mockAccountGroup.id,
+        'Updated Group Name',
+      );
+      expect(mockGoBack).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('validation', () => {
+    it('shows error when account group name is empty', () => {
+      const { getByTestId, getByText } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      const saveButton = getByTestId(EditAccountNameIds.SAVE_BUTTON);
+
+      fireEvent.changeText(nameInput, '');
+      fireEvent.press(saveButton);
+
+      expect(mockSetAccountGroupName).not.toHaveBeenCalled();
+      expect(mockGoBack).not.toHaveBeenCalled();
+      expect(getByText('Account name cannot be empty')).toBeTruthy();
+    });
+
+    it('shows error when account group name is only whitespace', () => {
+      const { getByTestId, getByText } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      const saveButton = getByTestId(EditAccountNameIds.SAVE_BUTTON);
+
+      fireEvent.changeText(nameInput, '   ');
+      fireEvent.press(saveButton);
+
+      expect(mockSetAccountGroupName).not.toHaveBeenCalled();
+      expect(mockGoBack).not.toHaveBeenCalled();
+      expect(getByText('Account name cannot be empty')).toBeTruthy();
+    });
+  });
+
+  describe('error handling', () => {
+    it('handles save error and displays error message', () => {
+      mockSetAccountGroupName.mockImplementation(() => {
+        throw new Error('Duplicate name');
+      });
+
+      const { getByTestId, getByText } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      const saveButton = getByTestId(EditAccountNameIds.SAVE_BUTTON);
+
+      fireEvent.changeText(nameInput, 'Duplicate Group Name');
+      fireEvent.press(saveButton);
+
+      expect(getByText('Failed to edit account name')).toBeTruthy();
+    });
+
+    it('shows duplicate name error when account name already exists', () => {
+      mockSetAccountGroupName.mockImplementation(() => {
+        throw new Error('name already exists');
+      });
+
+      const { getByTestId, getByText } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      const saveButton = getByTestId(EditAccountNameIds.SAVE_BUTTON);
+
+      fireEvent.changeText(nameInput, 'Existing Group Name');
+      fireEvent.press(saveButton);
+
+      expect(mockSetAccountGroupName).toHaveBeenCalledWith(
+        mockAccountGroup.id,
+        'Existing Group Name',
+      );
+      expect(mockGoBack).not.toHaveBeenCalled();
+      expect(getByText('This name is already in use.')).toBeTruthy();
+    });
+
+    it('clears error when input changes after error', () => {
+      mockSetAccountGroupName.mockImplementation(() => {
+        throw new Error('Duplicate name');
+      });
+
+      const { getByTestId, getByText, queryByText } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      const saveButton = getByTestId(EditAccountNameIds.SAVE_BUTTON);
+
+      // First, trigger an error
+      fireEvent.changeText(nameInput, 'Duplicate Group Name');
+      fireEvent.press(saveButton);
+      expect(getByText('Failed to edit account name')).toBeTruthy();
+
+      // Then, change the input to clear the error
+      fireEvent.changeText(nameInput, 'New Name');
+      expect(queryByText('Failed to edit account name')).toBeNull();
+    });
+  });
+
+  describe('edge cases', () => {
+    it('handles long account group names correctly', () => {
+      const longNameGroup = {
+        id: 'entropy:wallet1/1',
+        metadata: {
+          name: 'Very Long Account Group Name That Should Still Work Correctly',
+        },
+      };
+
+      mockUseRoute.mockReturnValue({
+        params: { accountGroup: longNameGroup },
+      });
+
+      const { getByTestId } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      expect(nameInput.props.value).toBe(
+        'Very Long Account Group Name That Should Still Work Correctly',
+      );
+    });
+
+    it('handles account group with empty name', () => {
+      const emptyNameGroup = {
+        id: 'entropy:wallet1/2',
+        metadata: { name: '' },
+      };
+
+      mockUseRoute.mockReturnValue({
+        params: { accountGroup: emptyNameGroup },
+      });
+
+      const { getByTestId } = render();
+
+      const nameInput = getByTestId(EditAccountNameIds.ACCOUNT_NAME_INPUT);
+      expect(nameInput.props.value).toBe('');
+    });
+
+    it('renders fallback header when route omits account group', () => {
+      mockUseRoute.mockReturnValue({
+        params: {},
+      } as typeof mockRoute);
+
+      const { getByText } = render();
+      expect(getByText('Account Group')).toBeOnTheScreen();
+    });
+  });
+
+  describe('platform-specific layout', () => {
+    it('renders on Android with status bar inset and keyboard avoiding height behavior', () => {
+      Platform.OS = 'android';
+      Object.defineProperty(StatusBar, 'currentHeight', {
+        configurable: true,
+        writable: true,
+        value: 24,
+      });
+
+      const { getByTestId } = render();
+      expect(getByTestId(EditAccountNameIds.BACK_BUTTON)).toBeOnTheScreen();
+    });
+
+    const renderContainerStyle = () => {
+      const tree = render().toJSON();
+      const container = Array.isArray(tree) ? tree[0] : tree;
+      return StyleSheet.flatten(container?.props.style);
+    };
+
+    // Android draws edge-to-edge, so a fixed gap left the confirm button under
+    // the navigation bar and taps landed on the system home button instead.
+    it('reserves the Android navigation bar inset below the confirm button', () => {
+      Platform.OS = 'android';
+      mockBottomSafeAreaInset.mockReturnValue(48);
+
+      expect(renderContainerStyle().paddingBottom).toBe(48);
+    });
+
+    it('keeps the minimum gap on Android when there is no navigation bar', () => {
+      Platform.OS = 'android';
+      mockBottomSafeAreaInset.mockReturnValue(0);
+
+      expect(renderContainerStyle().paddingBottom).toBe(10);
+    });
+  });
+});

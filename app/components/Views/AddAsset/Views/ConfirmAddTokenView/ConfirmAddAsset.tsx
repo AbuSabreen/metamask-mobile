@@ -1,0 +1,163 @@
+import React, { useCallback, useState } from 'react';
+import { Platform } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import { useParams } from '../../../../../util/navigation/navUtils';
+import { strings } from '../../../../../../locales/i18n';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import {
+  ButtonSize,
+  ButtonVariants,
+} from '../../../../../component-library/components/Buttons/Button';
+import BottomSheetFooter, {
+  ButtonsAlignment,
+} from '../../../../../component-library/components/BottomSheets/BottomSheetFooter';
+import ListItem from '../../../../../component-library/components/List/ListItem';
+import Routes from '../../../../../constants/navigation/Routes';
+import { ImportTokenViewSelectorsIDs } from '../../ImportAssetView.testIds';
+import { FlashList, ListRenderItem } from '@shopify/flash-list';
+import { Box, Text, TextVariant } from '@metamask/design-system-react-native';
+import { ImportAsset } from '../../utils/utils';
+import AddAssetTokenRow from '../../components/AddAssetTokenRow/AddAssetTokenRow';
+import Logger from '../../../../../util/Logger';
+import { useAddNetworkIfMissingMutation } from '../../../../hooks/useAddNetworkIfMissing/useAddNetworkIfMissing';
+import { useSelector } from 'react-redux';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+interface ConfirmAddAssetRowProps {
+  asset: ImportAsset;
+}
+
+const getAssetRowKey = (asset: ImportAsset) =>
+  `${asset.chainId}-${asset.address.toLowerCase()}`;
+
+function ConfirmAddAssetRowComponent({ asset }: ConfirmAddAssetRowProps) {
+  const tw = useTailwind();
+
+  return (
+    <ListItem gap={20} style={tw.style('p-0')}>
+      <AddAssetTokenRow asset={asset} />
+    </ListItem>
+  );
+}
+
+const ConfirmAddAssetRow = React.memo(ConfirmAddAssetRowComponent);
+
+const ConfirmAddAsset = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const { selectedAsset, addTokenList } = useParams<{
+    selectedAsset: ImportAsset[];
+    addTokenList: () => Promise<void>;
+  }>();
+
+  const tw = useTailwind();
+  const navigation = useNavigation<AppNavigationProp>();
+  const [isImporting, setIsImporting] = useState(false);
+  const { mutateAsync: addNetworkIfMissing } = useAddNetworkIfMissingMutation();
+
+  /**
+   * Return to the View all tokens screen after a successful import.
+   */
+  const goToTokensFullView = useCallback(() => {
+    navigation.navigate(Routes.WALLET.TOKENS_FULL_VIEW, undefined, {
+      pop: true,
+    });
+  }, [navigation]);
+
+  const handleImport = useCallback(async () => {
+    if (isImporting) {
+      return;
+    }
+
+    setIsImporting(true);
+
+    const addAllMissingNetworks = async () => {
+      const uniqueChainIds = [
+        ...new Set(selectedAsset.map((asset) => asset.chainId)),
+      ];
+
+      for (const chainId of uniqueChainIds) {
+        await addNetworkIfMissing(chainId);
+      }
+    };
+
+    try {
+      await addAllMissingNetworks();
+      await addTokenList();
+      goToTokensFullView();
+    } catch (error) {
+      Logger.error(error as Error, 'ConfirmAddAsset: failed to import tokens');
+      setIsImporting(false);
+    }
+  }, [
+    addNetworkIfMissing,
+    addTokenList,
+    goToTokensFullView,
+    isImporting,
+    selectedAsset,
+  ]);
+
+  const renderItem = useCallback<ListRenderItem<ImportAsset>>(
+    ({ item }) => <ConfirmAddAssetRow asset={item} />,
+    [],
+  );
+
+  return (
+    <SafeAreaView
+      edges={['left', 'right', 'bottom']}
+      style={tw.style('flex-1 bg-default')}
+      testID={ImportTokenViewSelectorsIDs.ADD_CONFIRM_CUSTOM_ASSET}
+    >
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        title={strings('add_asset.title')}
+        onBack={() => navigation.goBack()}
+        includesTopInset
+      />
+
+      <Box twClassName="flex-1 pt-2">
+        <Text variant={TextVariant.BodyMd} style={tw.style('text-center px-4')}>
+          {selectedAsset.length > 1
+            ? strings('wallet.import_tokens')
+            : strings('wallet.import_token')}
+        </Text>
+
+        <FlashList
+          data={selectedAsset}
+          style={tw.style('flex-1 bg-default')}
+          contentContainerStyle={tw.style('pt-6 px-4 pb-4')}
+          renderItem={renderItem}
+          keyExtractor={getAssetRowKey}
+        />
+      </Box>
+
+      <BottomSheetFooter
+        buttonPropsArray={[
+          {
+            onPress: () => navigation.goBack(),
+            label: strings('confirmation_modal.cancel_cta'),
+            variant: ButtonVariants.Secondary,
+            size: ButtonSize.Lg,
+            isDisabled: isImporting,
+          },
+          {
+            // Called here
+            onPress: handleImport,
+            label: strings('swaps.Import'),
+            variant: ButtonVariants.Primary,
+            size: ButtonSize.Lg,
+            loading: isImporting,
+            isDisabled: isImporting,
+          },
+        ]}
+        buttonsAlignment={ButtonsAlignment.Horizontal}
+        style={tw.style('px-4 pt-4', Platform.OS !== 'android' && 'pb-4')}
+      />
+    </SafeAreaView>
+  );
+};
+
+export default ConfirmAddAsset;

@@ -1,4 +1,14 @@
-import { isPortfolioUrl, isBridgeUrl } from './index';
+import {
+  isPortfolioUrl,
+  isBridgeUrl,
+  isCardUrl,
+  isCardTravelUrl,
+  isCardTosUrl,
+  isCardLoginUrl,
+  isValidASCIIURL,
+  toPunycodeURL,
+  isSameOrigin,
+} from './index';
 import AppConstants from '../../core/AppConstants';
 
 describe('URL Check Functions', () => {
@@ -58,6 +68,164 @@ describe('URL Check Functions', () => {
     it('returns false for invalid URLs', () => {
       const url = 'invalid url';
       expect(isBridgeUrl(url)).toBe(false);
+    });
+  });
+
+  describe('isCardUrl', () => {
+    it.each([
+      [AppConstants.CARD.URL, true],
+      [`${AppConstants.CARD.URL}/path`, true],
+      ['https://example.com', false],
+      ['invalid url', false],
+    ])('returns expected result for %s', (url, expected) => {
+      expect(isCardUrl(url)).toBe(expected);
+    });
+
+    it('matches against a provided base origin', () => {
+      const devBase = AppConstants.CARD.WEB_URL.DEV;
+      expect(isCardUrl(`${devBase}/account`, devBase)).toBe(true);
+      expect(isCardUrl(AppConstants.CARD.URL, devBase)).toBe(false);
+    });
+  });
+
+  describe('isCardTravelUrl', () => {
+    it.each([
+      [AppConstants.CARD.TRAVEL_URL, true],
+      [`${AppConstants.CARD.TRAVEL_URL}/booking`, true],
+      ['https://example.com', false],
+      ['invalid url', false],
+    ])('returns expected result for %s', (url, expected) => {
+      expect(isCardTravelUrl(url)).toBe(expected);
+    });
+  });
+
+  describe('isCardTosUrl', () => {
+    const tosOrigin = new URL(AppConstants.CARD.CARD_TOS_URL).origin;
+
+    it.each([
+      [AppConstants.CARD.CARD_TOS_URL, true],
+      [`${tosOrigin}/other-doc.pdf`, true],
+      ['https://example.com', false],
+      ['invalid url', false],
+    ])('returns expected result for %s', (url, expected) => {
+      expect(isCardTosUrl(url)).toBe(expected);
+    });
+  });
+
+  describe('isCardLoginUrl', () => {
+    it.each([
+      [`${AppConstants.CARD.URL}${AppConstants.CARD.LOGIN_PATH}`, true],
+      [`${AppConstants.CARD.URL}/account/login?foo=bar`, true],
+      [
+        `${AppConstants.CARD.URL}${AppConstants.CARD.PASSWORD_RESET_PATH}`,
+        false,
+      ],
+      [`${AppConstants.CARD.URL}/account`, false],
+      ['https://example.com/account/login', false],
+      ['invalid url', false],
+    ])('returns expected result for %s', (url, expected) => {
+      expect(isCardLoginUrl(url)).toBe(expected);
+    });
+
+    it('matches the login path against a provided base origin', () => {
+      const uatBase = AppConstants.CARD.WEB_URL.UAT;
+      expect(
+        isCardLoginUrl(`${uatBase}${AppConstants.CARD.LOGIN_PATH}`, uatBase),
+      ).toBe(true);
+      expect(
+        isCardLoginUrl(
+          `${AppConstants.CARD.URL}${AppConstants.CARD.LOGIN_PATH}`,
+          uatBase,
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe('isValidASCIIURL', () => {
+    it('returns true for URL containing only ASCII characters in its hostname', () => {
+      expect(isValidASCIIURL('https://www.google.com')).toEqual(true);
+    });
+
+    it('returns true for URL with both its hostname and path containing ASCII characters', () => {
+      expect(
+        isValidASCIIURL('https://infura.io/gnosis?x=xn--ifura-dig.io'),
+      ).toStrictEqual(true);
+    });
+
+    it('returns true for URL with its hostname containing ASCII characters and its path containing non-ASCII characters', () => {
+      expect(
+        isValidASCIIURL('https://infura.io/gnosis?x=iոfura.io'),
+      ).toStrictEqual(true);
+      expect(
+        isValidASCIIURL('infura.io:7777/gnosis?x=iոfura.io'),
+      ).toStrictEqual(true);
+    });
+
+    it('returns false for URL with its hostname containing non-ASCII characters', () => {
+      expect(isValidASCIIURL('https://iոfura.io/gnosis')).toStrictEqual(false);
+      expect(isValidASCIIURL('iոfura.io:7777/gnosis?x=test')).toStrictEqual(
+        false,
+      );
+    });
+
+    it('returns false for empty string', () => {
+      expect(isValidASCIIURL('')).toStrictEqual(false);
+    });
+  });
+
+  describe('toPunycodeURL', () => {
+    it('returns punycode version of URL', () => {
+      expect(toPunycodeURL('https://iոfura.io/gnosis')).toStrictEqual(
+        'https://xn--ifura-dig.io/gnosis',
+      );
+      expect(toPunycodeURL('https://iոfura.io')).toStrictEqual(
+        'https://xn--ifura-dig.io',
+      );
+      expect(toPunycodeURL('https://iոfura.io/')).toStrictEqual(
+        'https://xn--ifura-dig.io/',
+      );
+      expect(
+        toPunycodeURL('https://iոfura.io/gnosis:5050?test=iոfura&foo=bar'),
+      ).toStrictEqual(
+        'https://xn--ifura-dig.io/gnosis:5050?test=i%D5%B8fura&foo=bar',
+      );
+
+      expect(toPunycodeURL('https://www.google.com')).toStrictEqual(
+        'https://www.google.com',
+      );
+      expect(
+        toPunycodeURL('https://opensea.io/language=français'),
+      ).toStrictEqual('https://opensea.io/language=fran%C3%A7ais');
+    });
+  });
+
+  describe('isSameOrigin', () => {
+    it('return true for urls with the same origin', () => {
+      expect(
+        isSameOrigin(
+          'https://metamask.io/page.html',
+          'https://metamask.io/page2.html',
+        ),
+      ).toBeTruthy();
+      expect(
+        isSameOrigin(
+          'https://metamask.io/other.html',
+          'https://usr:pw@metamask.io/',
+        ),
+      ).toBeTruthy();
+      expect(
+        isSameOrigin('https://metamask.io:80/page', 'https://metamask.io:80/'),
+      ).toBeTruthy();
+      expect(
+        isSameOrigin('https://metamask.io:81/', 'https://metamask.io:80'),
+      ).toBeFalsy();
+      expect(
+        isSameOrigin(
+          'https://en.metamask.io/page.html',
+          'https://metamask.io/',
+        ),
+      ).toBeFalsy();
+      expect(isSameOrigin('invalid url', 'https://metamask.io/')).toBeFalsy();
     });
   });
 });

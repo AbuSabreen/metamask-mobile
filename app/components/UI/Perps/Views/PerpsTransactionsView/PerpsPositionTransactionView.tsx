@@ -1,0 +1,302 @@
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+
+import React, { useMemo } from 'react';
+import { ScrollView, View } from 'react-native';
+import { strings } from '../../../../../../locales/i18n';
+
+import { BigNumber } from 'bignumber.js';
+import { useSelector } from 'react-redux';
+import {
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { useStyles } from '../../../../../component-library/hooks';
+import { selectSelectedInternalAccountByScope } from '../../../../../selectors/multichainAccounts/accounts';
+import Routes from '../../../../../constants/navigation/Routes';
+import ScreenView from '../../../../Base/ScreenView';
+import PerpsTransactionDetailAssetHero from '../../components/PerpsTransactionDetailAssetHero';
+import { usePerpsBlockExplorerUrl } from '../../hooks';
+import {
+  PERPS_EVENT_VALUE,
+  type PerpsMarketData,
+} from '@metamask/perps-controller';
+import {
+  PerpsPositionTransactionRouteProp,
+  PerpsTransaction,
+} from '../../types/transactionHistory';
+import {
+  formatPerpsFiat,
+  formatPositiveFiat,
+  formatTransactionDate,
+  PRICE_RANGES_UNIVERSAL,
+} from '../../utils/formatUtils';
+import { styleSheet } from './PerpsPositionTransactionView.styles';
+import { useAnalytics } from '../../../../hooks/useAnalytics/useAnalytics';
+import { trackBlockExplorerLinkClicked } from '../../../../../util/analytics/externalLinkTracking';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectPerpsBrandRefreshEnabled } from '../../../../../selectors/featureFlagController/perpsBrandRefresh';
+
+const PerpsPositionTransactionView: React.FC = () => {
+  const isBrandRefresh = useSelector(selectPerpsBrandRefreshEnabled) === true;
+  const { styles } = useStyles(styleSheet, {});
+  const navigation = useNavigation<AppNavigationProp>();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const route = useRoute<PerpsPositionTransactionRouteProp>();
+  const selectedInternalAccount = useSelector(
+    selectSelectedInternalAccountByScope,
+  )('eip155:1');
+  const { getExplorerUrl } = usePerpsBlockExplorerUrl();
+
+  // Get transaction from route params
+  const transaction = route.params?.transaction as PerpsTransaction;
+
+  // Create a minimal market object from transaction asset for navigation
+  // PerpsMarketDetailsView will enrich this with full market data from usePerpsMarkets
+  const market = useMemo<Partial<PerpsMarketData> | undefined>(
+    () =>
+      transaction?.asset
+        ? { symbol: transaction.asset, name: transaction.asset }
+        : undefined,
+    [transaction?.asset],
+  );
+
+  if (!transaction) {
+    // Handle missing transaction data
+    return (
+      <ScreenView>
+        <HeaderStandardGlass
+          isGlass={isBrandRefresh}
+          isFloating={false}
+          includesTopInset
+          onBack={() => navigation.goBack()}
+        />
+        <View style={styles.content}>
+          <Text>{strings('perps.transactions.not_found')}</Text>
+        </View>
+      </ScreenView>
+    );
+  }
+
+  const handleViewOnBlockExplorer = () => {
+    if (!selectedInternalAccount) {
+      return;
+    }
+    const explorerUrl = getExplorerUrl(selectedInternalAccount.address);
+    if (!explorerUrl) {
+      return;
+    }
+    trackBlockExplorerLinkClicked(trackEvent, createEventBuilder, {
+      location: 'perps_transaction_details',
+      text: strings('perps.transactions.view_on_explorer'),
+      url: explorerUrl,
+    });
+    navigation.navigate('Webview', {
+      screen: 'SimpleWebview',
+      params: {
+        url: explorerUrl,
+      },
+    });
+  };
+
+  const handleTradeAgain = () => {
+    if (!market) {
+      return;
+    }
+    navigation.navigate(Routes.PERPS.ROOT, {
+      screen: Routes.PERPS.MARKET_DETAILS,
+      params: {
+        market,
+        source: PERPS_EVENT_VALUE.SOURCE.TRADE_DETAILS,
+      },
+    });
+  };
+
+  // Main detail rows - only show if values exist
+  const mainDetailRows = [
+    {
+      label: strings('perps.transactions.position.date'),
+      value: formatTransactionDate(transaction.timestamp),
+    },
+    transaction.fill?.amount && {
+      label: strings('perps.transactions.position.size'),
+      value: `${formatPositiveFiat(
+        Math.abs(
+          BigNumber(transaction.fill?.size || '0')
+            .times(transaction.fill?.entryPrice || '0')
+            .toNumber(),
+        ),
+      )}`,
+    },
+    transaction.fill?.entryPrice !== undefined &&
+      transaction.fill?.entryPrice !== null && {
+        label:
+          transaction.fill?.action === 'Closed'
+            ? strings('perps.transactions.position.close_price')
+            : strings('perps.transactions.position.entry_price'),
+        value: formatPerpsFiat(transaction.fill.entryPrice, {
+          ranges: PRICE_RANGES_UNIVERSAL,
+        }),
+      },
+  ].filter(Boolean);
+
+  // Secondary detail rows - only show if values exist
+  const secondaryDetailRows: {
+    label: string;
+    value: string;
+    textColor: TextColor;
+  }[] = [];
+
+  // An empty fee is unknown (a grouped order with a fill missing its fee):
+  // leave the row out rather than show $0.00.
+  if (transaction.fill?.fee) {
+    secondaryDetailRows.push({
+      label: strings('perps.transactions.position.fees'),
+      value: formatPositiveFiat(transaction.fill.fee),
+      textColor: TextColor.TextDefault,
+    });
+  }
+
+  if (
+    transaction.fill?.action === 'Closed' ||
+    transaction.fill?.action === 'Flipped'
+  ) {
+    const pnlValue =
+      transaction.fill.amountNumber === undefined
+        ? undefined
+        : BigNumber(transaction.fill.amountNumber);
+
+    secondaryDetailRows.push({
+      label: strings('perps.transactions.position.pnl'),
+      value:
+        pnlValue === undefined
+          ? strings('perps.transactions.unknown_pnl')
+          : transaction.fill.amount,
+      textColor:
+        pnlValue === undefined
+          ? TextColor.TextDefault
+          : pnlValue.isGreaterThanOrEqualTo(0)
+            ? TextColor.SuccessDefault
+            : TextColor.ErrorDefault,
+    });
+  }
+
+  // Points feature not activated yet - commented out
+  // TODO: Uncomment when points feature is enabled
+  // if (transaction.fill?.points) {
+  //   secondaryDetailRows.push({
+  //     label: strings('perps.transactions.position.points'),
+  //     value: `+${transaction.fill?.points}`,
+  //     textColor: TextColor.SuccessDefault,
+  //   });
+  // }
+
+  return (
+    <ScreenView>
+      <HeaderStandardGlass
+        isGlass={isBrandRefresh}
+        isFloating={false}
+        title={transaction?.fill?.shortTitle || ''}
+        onBack={() => navigation.goBack()}
+        includesTopInset
+      />
+      <ScrollView style={styles.container}>
+        <View style={styles.content}>
+          <PerpsTransactionDetailAssetHero
+            transaction={transaction}
+            styles={styles}
+          />
+
+          {/* Transaction details */}
+          <View style={styles.detailsContainer}>
+            {mainDetailRows.map(
+              (detail, index) =>
+                detail && (
+                  <View
+                    key={detail.label}
+                    style={[
+                      styles.detailRow,
+                      index === mainDetailRows.length - 1 &&
+                        styles.detailRowLast,
+                    ]}
+                  >
+                    <Text
+                      variant={TextVariant.BodySm}
+                      color={TextColor.TextAlternative}
+                    >
+                      {detail.label}
+                    </Text>
+                    <Text
+                      variant={TextVariant.BodySm}
+                      color={TextColor.TextDefault}
+                    >
+                      {detail.value}
+                    </Text>
+                  </View>
+                ),
+            )}
+
+            {/* Separator between sections */}
+            {secondaryDetailRows.length > 0 && (
+              <View style={styles.sectionSeparator} />
+            )}
+
+            {/* Secondary details (fees, P&L, etc.) */}
+            {secondaryDetailRows.map(
+              (detail, index) =>
+                detail && (
+                  <View
+                    key={detail.label}
+                    style={[
+                      styles.detailRow,
+                      index === secondaryDetailRows.length - 1 &&
+                        styles.detailRowLast,
+                    ]}
+                  >
+                    <Text style={styles.detailLabel}>{detail.label}</Text>
+                    <Text
+                      variant={TextVariant.BodySm}
+                      color={detail.textColor}
+                      style={styles.detailValue}
+                    >
+                      {detail.value}
+                    </Text>
+                  </View>
+                ),
+            )}
+          </View>
+
+          <View style={styles.buttonsContainer}>
+            {/* Trade again button */}
+            {market && (
+              <Button
+                variant={ButtonVariant.Primary}
+                size={ButtonSize.Lg}
+                isFullWidth
+                onPress={handleTradeAgain}
+              >
+                {strings('perps.transactions.trade_again')}
+              </Button>
+            )}
+            {/* Block explorer button */}
+            <Button
+              variant={ButtonVariant.Secondary}
+              size={ButtonSize.Lg}
+              isFullWidth
+              onPress={handleViewOnBlockExplorer}
+              style={styles.blockExplorerButton}
+            >
+              {strings('perps.transactions.view_on_explorer')}
+            </Button>
+          </View>
+        </View>
+      </ScrollView>
+    </ScreenView>
+  );
+};
+
+export default PerpsPositionTransactionView;

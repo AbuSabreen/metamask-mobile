@@ -2,13 +2,14 @@
 
 // Third party dependencies.
 import React, { useCallback, useEffect, useState } from 'react';
-import { Image, ImageSourcePropType } from 'react-native';
+import { ImageSourcePropType } from 'react-native';
+import { SvgUri } from 'react-native-svg';
+import { Image } from 'expo-image';
 
 // External dependencies.
 import AvatarBase from '../../foundation/AvatarBase';
 import Text from '../../../../Texts/Text';
 import { useStyles } from '../../../../../hooks';
-import { TEXTVARIANT_BY_AVATARSIZE } from '../../Avatar.constants';
 
 // Internal dependencies.
 import { AvatarNetworkProps } from './AvatarNetwork.types';
@@ -19,6 +20,12 @@ import {
   AVATARNETWORK_IMAGE_TESTID,
 } from './AvatarNetwork.constants';
 
+/**
+ * @deprecated Please update your code to use `AvatarNetwork` from `@metamask/design-system-react-native`.
+ * The API may have changed — compare props before migrating.
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/src/components/AvatarNetwork/README.md}
+ * @see {@link https://github.com/MetaMask/metamask-design-system/blob/main/packages/design-system-react-native/MIGRATION.md#avatarnetwork-component Migration docs}
+ */
 const AvatarNetwork = ({
   size = DEFAULT_AVATARNETWORK_SIZE,
   style,
@@ -39,16 +46,29 @@ const AvatarNetwork = ({
   return (
     <AvatarBase size={size} style={styles.base} {...props}>
       {showFallback ? (
-        <Text style={styles.label} variant={TEXTVARIANT_BY_AVATARSIZE[size]}>
-          {chainNameFirstLetter}
-        </Text>
+        <Text style={styles.label}>{chainNameFirstLetter}</Text>
+      ) : imageSource &&
+        typeof imageSource === 'object' &&
+        'uri' in imageSource &&
+        (imageSource.uri?.endsWith('.svg') ||
+          imageSource.uri?.startsWith('data:image/svg+xml')) ? (
+        <SvgUri
+          uri={imageSource.uri}
+          width={size}
+          height={size}
+          onError={onError}
+          testID={AVATARNETWORK_IMAGE_TESTID}
+        />
       ) : (
+        // expo-image caches by URI on disk by default, unlike react-native's
+        // plain `Image`, which otherwise re-fetches the same network badge
+        // every time this component remounts (e.g. on list re-renders).
         <Image
           source={imageSource as ImageSourcePropType}
           style={styles.image}
           onError={onError}
           testID={AVATARNETWORK_IMAGE_TESTID}
-          resizeMode={'contain'}
+          contentFit="contain"
         />
       )}
     </AvatarBase>

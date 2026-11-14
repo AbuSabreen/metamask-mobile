@@ -1,0 +1,232 @@
+import React, {
+  useState,
+  createContext,
+  useContext,
+  useMemo,
+  useEffect,
+  useCallback,
+  useRef,
+} from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { useQueryClient } from '@tanstack/react-query';
+
+import Logger from '../../../../util/Logger';
+import Engine from '../../../../core/Engine';
+import { CardSDK } from './CardSDK';
+import {
+  CardFeatureFlag,
+  selectCardFeatureFlag,
+} from '../../../../selectors/featureFlagController/card';
+import {
+  selectOnboardingId,
+  resetOnboardingState,
+  setContactVerificationId,
+} from '../../../../core/redux/slices/card';
+import {
+  selectCardUserLocation,
+  selectIsCardAuthenticated,
+  selectCardLastUnauthenticatedReason,
+} from '../../../../selectors/cardController';
+import { cardQueries } from '../queries';
+import { UserResponse } from '../types';
+import { getErrorMessage } from '../util/getErrorMessage';
+import { mapCountryToLocation } from '../util/mapCountryToLocation';
+
+// Types
+export interface ICardSDK {
+  sdk: CardSDK | null;
+  isLoading: boolean;
+  user: UserResponse | null;
+  setUser: (user: UserResponse | null) => void;
+  logoutFromProvider: () => Promise<void>;
+  fetchUserData: () => Promise<void>;
+  isReturningSession: boolean;
+}
+
+interface ProviderProps<T> {
+  value?: T;
+  children?: React.ReactNode;
+}
+
+// Context
+const CardSDKContext = createContext<ICardSDK | undefined>(undefined);
+
+/**
+ * CardSDKProvider manages the Card SDK instance.
+ * It handles SDK initialization. Authentication is handled separately
+ * by the CardAuthenticationVerification component at the app level.
+ */
+export const CardSDKProvider = ({
+  value,
+  ...props
+}: ProviderProps<ICardSDK>) => {
+  const cardFeatureFlag = useSelector(selectCardFeatureFlag);
+  const userCardLocation = useSelector(selectCardUserLocation);
+  const effectiveLocation = userCardLocation ?? 'international';
+  const onboardingId = useSelector(selectOnboardingId);
+  const dispatch = useDispatch();
+  const queryClient = useQueryClient();
+  const isAuthenticated = useSelector(selectIsCardAuthenticated);
+  const lastUnauthenticatedReason = useSelector(
+    selectCardLastUnauthenticatedReason,
+  );
+  const [sdk, setSdk] = useState<CardSDK | null>(null);
+  // Start with true to indicate initialization in progress
+  const [isLoading, setIsLoading] = useState(true);
+  // Add user state management
+  const [user, setUser] = useState<UserResponse | null>(null);
+
+  // Drop credit / cashback caches on session expiry (logout already clears all
+  // card queries; this covers controller-driven unauth without explicit logout).
+  const wasAuthenticatedRef = useRef(isAuthenticated);
+  useEffect(() => {
+    const wasAuthenticated = wasAuthenticatedRef.current;
+    wasAuthenticatedRef.current = isAuthenticated;
+    if (wasAuthenticated && !isAuthenticated) {
+      queryClient.removeQueries({ queryKey: cardQueries.credit.keys.all() });
+      queryClient.removeQueries({ queryKey: cardQueries.cashback.keys.all() });
+    }
+  }, [isAuthenticated, lastUnauthenticatedReason, queryClient]);
+
+  // Initialize CardSDK when feature flag is enabled
+  useEffect(() => {
+    if (cardFeatureFlag) {
+      setIsLoading(true);
+      const cardSDK = new CardSDK({
+        cardFeatureFlag: cardFeatureFlag as CardFeatureFlag,
+        userCardLocation: effectiveLocation,
+      });
+      setSdk(cardSDK);
+      setIsLoading(false);
+    } else {
+      setSdk(null);
+      setIsLoading(false);
+    }
+  }, [cardFeatureFlag, effectiveLocation]);
+
+  const fetchUserData = useCallback(async () => {
+    if (!sdk || !onboardingId) {
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const userData = await sdk.getRegistrationStatus(
+        onboardingId,
+        effectiveLocation,
+      );
+
+      if (userData.contactVerificationId) {
+        dispatch(setContactVerificationId(userData.contactVerificationId));
+      }
+      if (userData.countryOfResidence) {
+        Engine.context.CardController.setUserLocation(
+          mapCountryToLocation(userData.countryOfResidence),
+        );
+      }
+
+      setUser(userData);
+    } catch (err) {
+      const errorMessage = getErrorMessage(err);
+      if (errorMessage?.includes('Invalid onboarding ID')) {
+        dispatch(resetOnboardingState());
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [sdk, onboardingId, dispatch, effectiveLocation]);
+
+  // Track whether onboardingId existed at initial mount (for resuming incomplete onboarding)
+  const [hasInitialOnboardingId] = useState(() => !!onboardingId);
+
+  // Keep latest fetchUserData without putting it in the resume-fetch effect deps.
+  // fetchUserData changes when effectiveLocation changes (and when the first fetch
+  // writes location), which would otherwise re-trigger getRegistrationStatus.
+  const fetchUserDataRef = useRef(fetchUserData);
+  useEffect(() => {
+    fetchUserDataRef.current = fetchUserData;
+  }, [fetchUserData]);
+
+  // One-shot resume fetch: run when SDK is ready and onboardingId existed at mount.
+  // hasFetchedInitialUserDataRef also blocks re-runs when SDK is recreated after a
+  // location update from the first fetch.
+  const hasFetchedInitialUserDataRef = useRef(false);
+  useEffect(() => {
+    if (
+      !sdk ||
+      !onboardingId ||
+      !hasInitialOnboardingId ||
+      hasFetchedInitialUserDataRef.current
+    ) {
+      return;
+    }
+
+    hasFetchedInitialUserDataRef.current = true;
+    fetchUserDataRef.current();
+  }, [sdk, onboardingId, hasInitialOnboardingId]);
+
+  const logoutFromProvider = useCallback(async () => {
+    try {
+      // CardController.logout() calls the provider API, removes stored tokens,
+      // and sets isAuthenticated = false in controller state.
+      await Engine.context.CardController.logout();
+    } catch (error) {
+      Logger.error(error as Error, {
+        message: '[CardSDK] Logout failed, clearing local state anyway',
+      });
+    }
+
+    queryClient.removeQueries({ queryKey: cardQueries.keys.all() });
+    dispatch(resetOnboardingState());
+    setUser(null);
+  }, [dispatch, queryClient]);
+
+  // Memoized context value to prevent unnecessary re-renders
+  const contextValue = useMemo(
+    (): ICardSDK => ({
+      sdk,
+      isLoading,
+      user,
+      setUser,
+      logoutFromProvider,
+      fetchUserData,
+      isReturningSession: hasInitialOnboardingId,
+    }),
+    [
+      sdk,
+      isLoading,
+      user,
+      setUser,
+      logoutFromProvider,
+      fetchUserData,
+      hasInitialOnboardingId,
+    ],
+  );
+
+  return <CardSDKContext.Provider value={value || contextValue} {...props} />;
+};
+
+/**
+ * Hook to access CardSDK context.
+ * Must be used within a CardSDKProvider.
+ */
+export const useCardSDK = () => {
+  const contextValue = useContext(CardSDKContext);
+  if (!contextValue) {
+    throw new Error('useCardSDK must be used within a CardSDKProvider');
+  }
+  return contextValue;
+};
+
+/**
+ * Higher-order component that wraps a component with CardSDKProvider.
+ */
+export const withCardSDK =
+  (Component: React.ComponentType) => (props: Record<string, unknown>) => (
+    <CardSDKProvider>
+      <Component {...props} />
+    </CardSDKProvider>
+  );
+
+export default CardSDKContext;

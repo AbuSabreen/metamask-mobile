@@ -1,0 +1,168 @@
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
+import {
+  Box,
+  Text,
+  TextVariant,
+  BoxAlignItems,
+  BoxJustifyContent,
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import { InteractionManager, TouchableOpacity } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { strings } from '../../../../../../locales/i18n';
+
+// Internal dependencies.
+import BottomSheet from '../../../../../component-library/components/BottomSheets/BottomSheet/BottomSheet';
+import { BottomSheetRef } from '../../../../../component-library/components/BottomSheets/BottomSheet/BottomSheet.types';
+import BottomSheetFooter from '../../../../../component-library/components/BottomSheets/BottomSheetFooter/BottomSheetFooter';
+import { ButtonVariants } from '../../../../../component-library/components/Buttons/Button/Button.types';
+import { PREDICT_UNAVAILABLE_TEST_IDS } from './PredictUnavailable.testIds';
+import { useSelector } from 'react-redux';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+
+interface PredictUnavailableProps {
+  onDismiss?: () => void;
+}
+
+export interface PredictUnavailableRef {
+  onOpenBottomSheet: () => void;
+  onCloseBottomSheet: () => void;
+}
+
+const PredictUnavailable = forwardRef<
+  PredictUnavailableRef,
+  PredictUnavailableProps
+>(({ onDismiss }, ref) => {
+  const sheetRef = useRef<BottomSheetRef>(null);
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const [isVisible, setIsVisible] = useState(false);
+  const tw = useTailwind();
+  const navigation = useNavigation<AppNavigationProp>();
+
+  const handleSheetClosed = useCallback(() => {
+    setIsVisible(false);
+    onDismiss?.();
+  }, [onDismiss]);
+
+  const closeSheet = useCallback(() => {
+    if (!sheetRef.current) {
+      setIsVisible(false);
+      onDismiss?.();
+      return;
+    }
+
+    sheetRef.current.onCloseBottomSheet(() => {
+      setIsVisible(false);
+    });
+  }, [onDismiss]);
+
+  const handleClose = () => {
+    closeSheet();
+  };
+
+  const handleGotItPress = () => {
+    handleClose();
+  };
+
+  const handlePolymarketTermsPress = useCallback(() => {
+    InteractionManager.runAfterInteractions(() => {
+      navigation.navigate('Webview', {
+        screen: 'SimpleWebview',
+        params: {
+          url: 'https://polymarket.com/tos',
+          title: strings('predict.unavailable.webview_title'),
+        },
+      });
+    });
+  }, [navigation]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      onOpenBottomSheet: () => {
+        if (!isVisible) {
+          setIsVisible(true);
+          return;
+        }
+
+        sheetRef.current?.onOpenBottomSheet();
+      },
+      onCloseBottomSheet: () => {
+        closeSheet();
+      },
+    }),
+    [closeSheet, isVisible],
+  );
+
+  useEffect(() => {
+    if (isVisible) {
+      sheetRef.current?.onOpenBottomSheet();
+    }
+  }, [isVisible]);
+
+  if (!isVisible) {
+    return null;
+  }
+
+  return (
+    <BottomSheet
+      ref={sheetRef}
+      shouldNavigateBack={false}
+      isInteractable
+      onClose={handleSheetClosed}
+    >
+      <HeaderStandardGlass
+        isFloating={false}
+        isGlass={isGlassHeader}
+        testID="header"
+        title={strings('predict.unavailable.title')}
+        onClose={handleClose}
+      />
+
+      <TouchableOpacity
+        onPress={handlePolymarketTermsPress}
+        testID={PREDICT_UNAVAILABLE_TEST_IDS.POLYMARKET_TERMS_LINK}
+        activeOpacity={0.8}
+      >
+        <Box
+          alignItems={BoxAlignItems.Start}
+          justifyContent={BoxJustifyContent.Start}
+          twClassName="px-4 pb-4"
+        >
+          <Text variant={TextVariant.BodyMd} twClassName="text-alternative">
+            {strings('predict.unavailable.description')}{' '}
+            <Text
+              variant={TextVariant.BodyMd}
+              twClassName="text-primary text-primary-default"
+            >
+              {strings('predict.unavailable.link')}
+            </Text>
+            .
+          </Text>
+        </Box>
+      </TouchableOpacity>
+
+      <BottomSheetFooter
+        buttonPropsArray={[
+          {
+            variant: ButtonVariants.Primary,
+            label: strings('predict.unavailable.button'),
+            onPress: handleGotItPress,
+          },
+        ]}
+        style={tw.style('px-4')}
+      />
+    </BottomSheet>
+  );
+});
+
+export default PredictUnavailable;

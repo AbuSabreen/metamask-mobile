@@ -1,5 +1,6 @@
 import { BrowserActionTypes } from '../../actions/browser';
 import AppConstants from '../../core/AppConstants';
+import { appendURLParams } from '../../util/browser';
 
 const initialState = {
   history: [],
@@ -9,6 +10,7 @@ const initialState = {
   activeTab: null,
   // Keep track of viewed Dapps, which is used for MetaMetricsEvents.DAPP_VIEWED event
   visitedDappsByHostname: {},
+  isFullscreen: false,
 };
 const browserReducer = (state = initialState, action) => {
   switch (action.type) {
@@ -27,7 +29,7 @@ const browserReducer = (state = initialState, action) => {
 
       return {
         ...state,
-        history: [...state.history, { url, name }].slice(0, 50),
+        history: [...state.history, { url, name }].slice(-50),
       };
     }
     case 'ADD_TO_BROWSER_WHITELIST':
@@ -40,7 +42,15 @@ const browserReducer = (state = initialState, action) => {
         ...state,
         history: [],
         favicons: [],
-        tabs: [{ url: AppConstants.HOMEPAGE_URL, id: action.id }],
+        tabs: [
+          {
+            url: appendURLParams(AppConstants.HOMEPAGE_URL, {
+              metricsEnabled: action.metricsEnabled,
+              marketingEnabled: action.marketingEnabled,
+            }).href,
+            id: action.id,
+          },
+        ],
         activeTab: action.id,
       };
     case 'CLOSE_ALL_TABS':
@@ -51,7 +61,15 @@ const browserReducer = (state = initialState, action) => {
     case 'CREATE_NEW_TAB':
       return {
         ...state,
-        tabs: [...state.tabs, { url: action.url, id: action.id }],
+        tabs: [
+          ...state.tabs,
+          {
+            url: action.url,
+            ...(action.linkType && { linkType: action.linkType }),
+            id: action.id,
+            lastActiveAt: Date.now(),
+          },
+        ],
       };
     case 'CLOSE_TAB':
       return {
@@ -62,6 +80,9 @@ const browserReducer = (state = initialState, action) => {
       return {
         ...state,
         activeTab: action.id,
+        tabs: state.tabs.map((tab) =>
+          tab.id === action.id ? { ...tab, lastActiveAt: Date.now() } : tab,
+        ),
       };
     case 'UPDATE_TAB':
       return {
@@ -80,6 +101,11 @@ const browserReducer = (state = initialState, action) => {
           { origin: action.origin, url: action.url },
           ...state.favicons,
         ].slice(0, AppConstants.FAVICON_CACHE_MAX_SIZE),
+      };
+    case 'TOGGLE_FULLSCREEN':
+      return {
+        ...state,
+        isFullscreen: action.isFullscreen,
       };
     default:
       return state;

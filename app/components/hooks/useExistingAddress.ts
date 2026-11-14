@@ -1,35 +1,59 @@
-import { toChecksumAddress } from 'ethereumjs-util';
 import { useSelector } from 'react-redux';
 
-import { selectChainId } from '../../selectors/networkController';
-import { selectIdentities } from '../../selectors/preferencesController';
+import { selectInternalAccounts } from '../../selectors/accountsController';
+import { areAddressesEqual, toChecksumAddress } from '../../util/address';
+import { AddressBookEntry } from '@metamask/address-book-controller';
+import { selectAddressBook } from '../../selectors/addressBookController';
+import { selectIsEvmNetworkSelected } from '../../selectors/multichainNetworkController';
+import { useMemo } from 'react';
 
-export interface Address {
-  address: string;
-  chainId: string;
-  isEns: boolean;
-  isSmartContract: boolean;
-  memo: string;
-  name: string;
-}
+type AccountInfo = Pick<AddressBookEntry, 'name' | 'address'>;
 
-const useExistingAddress = (address?: string): Address | undefined => {
-  const chainId = useSelector(selectChainId);
-  const { addressBook, identities } = useSelector((state: any) => ({
-    addressBook: state.engine.backgroundState.AddressBookController.addressBook,
-    identities: selectIdentities(state),
-  }));
+const useExistingAddress = (address?: string): AccountInfo | undefined => {
+  const isEvmSelected = useSelector(selectIsEvmNetworkSelected);
 
-  if (!address) return;
+  const addressBook = useSelector(selectAddressBook);
+  const internalAccounts = useSelector(selectInternalAccounts);
 
-  const networkAddressBook = addressBook[chainId] || {};
+  const filteredAddressBook = useMemo(
+    () =>
+      Object.values(addressBook).reduce(
+        (acc, networkAddressBook) => ({
+          ...acc,
+          ...networkAddressBook,
+        }),
+        {},
+      ),
+    [addressBook],
+  );
+
+  if (!address || !isEvmSelected) return;
+
+  // TODO: [SOLANA] Revisit this before shipping, Address Book controller should support non evm networks
   const checksummedAddress = toChecksumAddress(address);
 
-  return (
-    networkAddressBook?.[checksummedAddress] ??
-    identities?.[checksummedAddress] ??
-    undefined
+  const matchingAddressBookEntry: AddressBookEntry | undefined =
+    filteredAddressBook?.[checksummedAddress];
+
+  if (matchingAddressBookEntry) {
+    return {
+      name: matchingAddressBookEntry.name,
+      address: matchingAddressBookEntry.address,
+    };
+  }
+
+  const accountWithMatchingAddress = internalAccounts.find((account) =>
+    areAddressesEqual(account.address, address),
   );
+
+  if (accountWithMatchingAddress) {
+    return {
+      address: accountWithMatchingAddress.address,
+      name: accountWithMatchingAddress.metadata.name,
+    };
+  }
+
+  return undefined;
 };
 
 export default useExistingAddress;

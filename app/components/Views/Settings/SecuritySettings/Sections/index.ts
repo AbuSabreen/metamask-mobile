@@ -1,27 +1,27 @@
-import AutomaticSecurityChecks from './AutomaticSecurityChecks';
 import ClearCookiesSection from './ClearCookiesSection';
 import DeleteMetaMetricsData from './DeleteMetaMetricsData';
 import DeleteWalletData from './DeleteWalletData';
-import RememberMeOptionSection from './RememberMeOptionSection';
 import ProtectYourWallet from './ProtectYourWallet/ProtectYourWallet';
-import LoginOptionsSettings from './LoginOptionsSettings';
-import RevealPrivateKey from './RevealPrivateKey/RevealPrivateKey';
+import DeviceSecurityToggle from './DeviceSecurityToggle';
 import ChangePassword from './ChangePassword/ChangePassword';
+import MfaSection from './MfaSection/MfaSection';
 import AutoLock from './AutoLock/AutoLock';
 import ClearPrivacy from './ClearPrivacy/ClearPrivacy';
 import BlockaidSettings from './BlockaidSettings';
+import SupportConsentPreferenceSection from './SupportConsentPreferenceSection';
+import DeleteIdentityData from './DeleteIdentityData';
 
 export {
-  AutomaticSecurityChecks,
   ClearCookiesSection,
   DeleteMetaMetricsData,
   DeleteWalletData,
-  RememberMeOptionSection,
   ProtectYourWallet,
-  LoginOptionsSettings,
-  RevealPrivateKey,
+  DeviceSecurityToggle,
   ChangePassword,
+  MfaSection,
   AutoLock,
   ClearPrivacy,
   BlockaidSettings,
+  SupportConsentPreferenceSection,
+  DeleteIdentityData,
 };

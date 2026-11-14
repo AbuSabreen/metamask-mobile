@@ -1,0 +1,273 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createNativeStackNavigator,
+  NativeStackNavigationOptions,
+} from '@react-navigation/native-stack';
+import Routes from '../../../../constants/navigation/Routes';
+import SignUp from '../components/Onboarding/SignUp';
+import ConfirmEmail from '../components/Onboarding/ConfirmEmail';
+import SetPhoneNumber from '../components/Onboarding/SetPhoneNumber';
+import ConfirmPhoneNumber from '../components/Onboarding/ConfirmPhoneNumber';
+import VerifyIdentity from '../components/Onboarding/VerifyIdentity';
+import VerifyingVeriffKYC from '../components/Onboarding/VerifyingVeriffKYC';
+import ImmersveKYCProcessing from '../components/Onboarding/ImmersveKYCProcessing';
+import ImmersveKYCModal from '../components/ImmersveKYCModal/ImmersveKYCModal';
+import ImmersveFundingApproval from '../components/Onboarding/ImmersveFundingApproval';
+import KYCFailed from '../components/Onboarding/KYCFailed';
+import PersonalDetails from '../components/Onboarding/PersonalDetails';
+import PhysicalAddress from '../components/Onboarding/PhysicalAddress';
+import { selectOnboardingId } from '../../../../core/redux/slices/card';
+import { useSelector } from 'react-redux';
+import { useCardSDK } from '../sdk';
+import { IconName } from '../../../../component-library/components/Icons/Icon';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import { strings } from '../../../../../locales/i18n';
+import { Box, IconSize, Spinner } from '@metamask/design-system-react-native';
+import { useParams } from '../../../../util/navigation/navUtils';
+import { CardUserPhase } from '../types';
+import Complete from '../components/Onboarding/Complete';
+
+const Stack = createNativeStackNavigator();
+
+// All onboarding screens render HeaderStandard in-screen via OnboardingStep.
+const onboardingScreenOptions: NativeStackNavigationOptions = {
+  headerShown: false,
+  gestureEnabled: false,
+};
+
+const OnboardingNavigator: React.FC = () => {
+  const { cardUserPhase } = useParams<{
+    cardUserPhase?: CardUserPhase;
+  }>();
+  const onboardingId = useSelector(selectOnboardingId);
+  const { user, isLoading, fetchUserData, isReturningSession } = useCardSDK();
+  // Track user data fetch separately from SDK's isLoading to guard against
+  // the SDK init effect resetting isLoading mid-fetch (e.g. when fetchUserData
+  // dispatches setUserCardLocation and triggers SDK re-initialization).
+  const [isFetchingUserData, setIsFetchingUserData] = useState(
+    () => !!onboardingId && !user,
+  );
+  const navigation = useNavigation<AppNavigationProp>();
+  const route =
+    useRoute<
+      RouteProp<
+        { OnboardingNavigator: { screen?: string } },
+        'OnboardingNavigator'
+      >
+    >();
+  const hasShownKeepGoingModal = useRef(false);
+  const didMountFetchRef = useRef(false);
+
+  // Check if deeplink is navigating directly to Complete screen
+  const isDeeplinkToComplete =
+    route.params?.screen === Routes.CARD.ONBOARDING.COMPLETE;
+
+  // Fetch fresh user data once on mount if user data is missing.
+  // didMountFetchRef keeps the one-shot behavior without an exhaustive-deps
+  // disable (inline React-rule disables make React Compiler skip the file).
+  useEffect(() => {
+    if (didMountFetchRef.current) {
+      return;
+    }
+    didMountFetchRef.current = true;
+
+    if (onboardingId && !user) {
+      fetchUserData().finally(() => setIsFetchingUserData(false));
+    } else {
+      setIsFetchingUserData(false);
+    }
+  }, [onboardingId, user, fetchUserData]);
+
+  const initialRouteName = useMemo(() => {
+    // Priority 1: Use cardUserPhase if provided (from login response)
+    if (cardUserPhase) {
+      if (cardUserPhase === 'ACCOUNT') {
+        return Routes.CARD.ONBOARDING.SIGN_UP;
+      }
+      if (cardUserPhase === 'PHONE_NUMBER') {
+        return Routes.CARD.ONBOARDING.SET_PHONE_NUMBER;
+      }
+      if (cardUserPhase === 'PERSONAL_INFORMATION') {
+        if (user?.verificationState === 'VERIFIED') {
+          return Routes.CARD.ONBOARDING.PERSONAL_DETAILS;
+        }
+
+        if (user?.verificationState === 'REJECTED') {
+          return Routes.CARD.ONBOARDING.KYC_FAILED;
+        }
+
+        return Routes.CARD.ONBOARDING.VERIFY_IDENTITY;
+      }
+      if (cardUserPhase === 'PHYSICAL_ADDRESS') {
+        if (user?.verificationState !== 'VERIFIED') {
+          if (user?.verificationState === 'REJECTED') {
+            return Routes.CARD.ONBOARDING.KYC_FAILED;
+          }
+          return Routes.CARD.ONBOARDING.VERIFY_IDENTITY;
+        }
+        if (!user?.countryOfNationality) {
+          return Routes.CARD.ONBOARDING.PERSONAL_DETAILS;
+        }
+        return Routes.CARD.ONBOARDING.PHYSICAL_ADDRESS;
+      }
+    }
+
+    // Priority 2: Use cached user data if available
+    if (user?.verificationState && onboardingId) {
+      if (user.verificationState === 'REJECTED') {
+        return Routes.CARD.ONBOARDING.KYC_FAILED;
+      }
+
+      if (user.verificationState === 'UNVERIFIED') {
+        if (!user?.phoneNumber) {
+          return Routes.CARD.ONBOARDING.SET_PHONE_NUMBER;
+        }
+
+        return Routes.CARD.ONBOARDING.VERIFY_IDENTITY;
+      }
+
+      if (user.verificationState === 'PENDING') {
+        if (!user.firstName) {
+          return Routes.CARD.ONBOARDING.VERIFY_IDENTITY;
+        }
+
+        return Routes.CARD.ONBOARDING.VERIFYING_VERIFF_KYC;
+      }
+
+      if (user.verificationState === 'VERIFIED') {
+        if (!user?.countryOfNationality) {
+          return Routes.CARD.ONBOARDING.PERSONAL_DETAILS;
+        }
+
+        if (!user?.addressLine1 || !user?.city || !user?.zip) {
+          return Routes.CARD.ONBOARDING.PHYSICAL_ADDRESS;
+        }
+
+        return Routes.CARD.ONBOARDING.COMPLETE;
+      }
+    }
+
+    // Default to SIGN_UP route if no user data is available
+    return Routes.CARD.ONBOARDING.SIGN_UP;
+  }, [user, cardUserPhase, onboardingId]);
+
+  // Stable primitives derived from the user object — avoids re-firing the effect
+  // when fetchUserData resolves with a new object reference but identical data.
+  const isUserLoaded = !!user;
+  const userVerificationState = user?.verificationState;
+
+  // Show "keep going" modal only when a returning user resumes an incomplete flow
+  // isReturningSession is determined at CardSDKProvider mount (when card flow starts),
+  // not when this navigator mounts, so it correctly identifies returning users
+  // Skip when deeplink navigates directly to Complete screen (e.g., KYC notification)
+  useEffect(() => {
+    if (
+      (isReturningSession || cardUserPhase) &&
+      isUserLoaded &&
+      initialRouteName !== Routes.CARD.ONBOARDING.SIGN_UP &&
+      initialRouteName !== Routes.CARD.ONBOARDING.COMPLETE &&
+      !hasShownKeepGoingModal.current &&
+      userVerificationState !== 'REJECTED' &&
+      !isDeeplinkToComplete
+    ) {
+      hasShownKeepGoingModal.current = true;
+      navigation.navigate(Routes.CARD.MODALS.ID, {
+        screen: Routes.CARD.MODALS.CONFIRM_MODAL,
+        params: {
+          title: strings('card.card_onboarding.keep_going.title'),
+          description: strings('card.card_onboarding.keep_going.description'),
+          confirmAction: {
+            label: strings('card.card_onboarding.keep_going.confirm_button'),
+            onPress: () => {
+              navigation.navigate(initialRouteName);
+            },
+          },
+          icon: IconName.ArrowDoubleRight,
+        },
+      });
+    }
+  }, [
+    isReturningSession,
+    initialRouteName,
+    cardUserPhase,
+    navigation,
+    isUserLoaded,
+    userVerificationState,
+    isDeeplinkToComplete,
+  ]);
+
+  // Only a Baanx resume has user data to wait for. Holding the stack back on a
+  // fresh Card mount (Immersve from Money home) lets the navigator's own mount
+  // effect overwrite the KYC webview push.
+  if (onboardingId && !user && (isLoading || isFetchingUserData)) {
+    return (
+      <Box twClassName="flex-1 items-center justify-center">
+        <Spinner
+          testID="activity-indicator"
+          spinnerIconProps={{ size: IconSize.Xl }}
+        />
+      </Box>
+    );
+  }
+
+  return (
+    <Stack.Navigator
+      initialRouteName={initialRouteName}
+      screenOptions={onboardingScreenOptions}
+    >
+      <Stack.Screen name={Routes.CARD.ONBOARDING.SIGN_UP} component={SignUp} />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.CONFIRM_EMAIL}
+        component={ConfirmEmail}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.SET_PHONE_NUMBER}
+        component={SetPhoneNumber}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.CONFIRM_PHONE_NUMBER}
+        component={ConfirmPhoneNumber}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.VERIFY_IDENTITY}
+        component={VerifyIdentity}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.VERIFYING_VERIFF_KYC}
+        component={VerifyingVeriffKYC}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.PERSONAL_DETAILS}
+        component={PersonalDetails}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.PHYSICAL_ADDRESS}
+        component={PhysicalAddress}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.COMPLETE}
+        component={Complete}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.KYC_FAILED}
+        component={KYCFailed}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.KYC_PROCESSING}
+        component={ImmersveKYCProcessing}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.IMMERSVE_KYC}
+        component={ImmersveKYCModal}
+        options={{ animation: 'none' }}
+      />
+      <Stack.Screen
+        name={Routes.CARD.ONBOARDING.FUNDING_APPROVAL}
+        component={ImmersveFundingApproval}
+      />
+    </Stack.Navigator>
+  );
+};
+
+export default OnboardingNavigator;

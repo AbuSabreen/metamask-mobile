@@ -1,0 +1,492 @@
+/**
+ * Mobile Infrastructure Adapter
+ *
+ * Provides mobile-specific implementations of PerpsPlatformDependencies.
+ * Controller access uses messenger pattern (messenger.call()).
+ */
+
+import Logger from '../../../../util/Logger';
+import StorageWrapper from '../../../../store/storage-wrapper';
+import { lighterSignerBridge } from '../Lighter/lighterSignerBridge';
+import { isLighterProviderEnabled } from '../utils/lighterFeatureFlags';
+import { DevLogger } from '../../../../core/SDKConnect/utils/DevLogger';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { AnalyticsEventBuilder } from '../../../../util/analytics/AnalyticsEventBuilder';
+import { analytics } from '../../../../util/analytics/analytics';
+import {
+  trace,
+  endTrace,
+  setTraceMeasurement,
+  TraceName,
+} from '../../../../util/trace';
+import {
+  setMeasurement,
+  addBreadcrumb,
+  type SeverityLevel,
+} from '@sentry/react-native';
+import performance from 'react-native-performance';
+import { getStreamManagerInstance } from '../providers/PerpsStreamManager';
+import Engine from '../../../../core/Engine';
+import {
+  PERPS_CONSTANTS,
+  parseCommaSeparatedString,
+  type PerpsPlatformDependencies,
+  type PerpsControllerConfig,
+  type PerpsMetrics,
+  type PerpsTraceName,
+  type PerpsTraceValue,
+  type PerpsAnalyticsEvent,
+  type PerpsAnalyticsProperties,
+  type VersionGatedFeatureFlag,
+  type MarketDataFormatters,
+  type InvalidateCacheParams,
+} from '@metamask/perps-controller';
+import { PerpsCacheInvalidator } from '../services/PerpsCacheInvalidator';
+import { validatedVersionGatedFeatureFlag } from '../../../../util/remoteFeatureFlag';
+import { getHyperliquidMainnetBuilderAddress } from '../../../../core/Engine/controllers/rewards-controller/utils/hyperliquid-builder-address';
+import {
+  formatVolume,
+  formatPerpsFiat,
+  PRICE_RANGES_UNIVERSAL,
+} from '../utils/formatUtils';
+import { getIntlNumberFormatter } from '../../../../util/intl';
+
+import {
+  getTerminalApiUrl as buildTerminalMarketDataUrl,
+  getTerminalGlobalSnapshotUrl,
+  resolveTerminalApiHost,
+} from '../constants/terminalApi';
+import {
+  getActivePerpsLoadingSessionTraceData,
+  recordPerpsControllerConstructedAt,
+} from '../utils/perpsLoadingSession';
+
+/**
+ * Resolves the Terminal market-data URL based on build environment.
+ *
+ * Mapping:
+ * - dev / test / e2e → DEV (takes priority over beta build type)
+ * - beta build type (non-dev envs) → UAT
+ * - production / rc → PRD
+ * - all other environments (local, undefined, etc.) → UAT
+ */
+export function getTerminalApiUrl(): string {
+  return buildTerminalMarketDataUrl(
+    resolveTerminalApiHost(
+      process.env.METAMASK_ENVIRONMENT,
+      process.env.METAMASK_BUILD_TYPE,
+    ),
+  );
+}
+
+/**
+ * Type conversion helper - isolated cast for platform bridge.
+ * PerpsTraceName values are string literals that match TraceName enum values.
+ */
+function toTraceName(name: PerpsTraceName): TraceName {
+  return name as unknown as TraceName;
+}
+
+function getPreloadTraceData(
+  name: PerpsTraceName,
+): { perps_session_id: string } | undefined {
+  const traceName = toTraceName(name);
+  if (
+    traceName !== TraceName.PerpsMarketDataPreload &&
+    traceName !== TraceName.PerpsUserDataPreload
+  ) {
+    return undefined;
+  }
+  return getActivePerpsLoadingSessionTraceData();
+}
+
+const MAX_TRACKED_PERPS_TRACE_IDS = 100;
+
+/**
+ * Creates a mobile-specific analytics adapter that implements PerpsMetrics
+ */
+function createMobileMetrics(): PerpsMetrics {
+  return {
+    isEnabled(): boolean {
+      return analytics.isEnabled();
+    },
+    trackPerpsEvent(
+      event: PerpsAnalyticsEvent,
+      properties: PerpsAnalyticsProperties,
+    ): void {
+      // Find matching MetaMetricsEvents entry by name value
+      // PerpsAnalyticsEvent enum values are the actual event names (e.g., 'Perp Withdrawal Transaction')
+      const metaMetricsEvent = Object.values(MetaMetricsEvents).find(
+        (e) =>
+          typeof e === 'object' &&
+          e !== null &&
+          'name' in e &&
+          e.name === event,
+      );
+
+      if (metaMetricsEvent && typeof metaMetricsEvent === 'object') {
+        const built = AnalyticsEventBuilder.createEventBuilder(metaMetricsEvent)
+          .addProperties(properties)
+          .build();
+        analytics.trackEvent(built);
+      } else {
+        // Fallback: log warning and track with a generic Perps event
+        DevLogger.log(
+          `PerpsAnalyticsEvent "${event}" not found in MetaMetricsEvents`,
+        );
+        const fallbackEvent = AnalyticsEventBuilder.createEventBuilder({
+          category: event,
+        })
+          .addProperties(properties)
+          .build();
+        analytics.trackEvent(fallbackEvent);
+      }
+    },
+  };
+}
+
+/**
+ * Creates a stream manager adapter for pause/resume operations.
+ * Maps channel names to the actual channel objects on PerpsStreamManager.
+ */
+function createStreamManagerAdapter() {
+  return {
+    pauseChannel(channel: string): void {
+      const streamManager = getStreamManagerInstance();
+      if (streamManager) {
+        // Access the channel by name and call pause on it
+        const channelInstance =
+          streamManager[channel as keyof typeof streamManager];
+        if (
+          channelInstance &&
+          typeof channelInstance === 'object' &&
+          'pause' in channelInstance
+        ) {
+          (channelInstance as { pause: () => void }).pause();
+        }
+      }
+    },
+    resumeChannel(channel: string): void {
+      const streamManager = getStreamManagerInstance();
+      if (streamManager) {
+        // Access the channel by name and call resume on it
+        const channelInstance =
+          streamManager[channel as keyof typeof streamManager];
+        if (
+          channelInstance &&
+          typeof channelInstance === 'object' &&
+          'resume' in channelInstance
+        ) {
+          (channelInstance as { resume: () => void }).resume();
+        }
+      }
+    },
+    clearAllChannels(): void {
+      const streamManager = getStreamManagerInstance();
+      if (
+        streamManager &&
+        typeof streamManager.clearAllChannels === 'function'
+      ) {
+        streamManager.clearAllChannels();
+      }
+    },
+  };
+}
+
+/**
+ * Creates a cache invalidator adapter that delegates to the mobile singleton.
+ * This allows controller services to invalidate caches without direct dependency
+ * on the mobile-specific PerpsCacheInvalidator singleton.
+ */
+function createCacheInvalidatorAdapter() {
+  return {
+    invalidate({ cacheType }: InvalidateCacheParams): void {
+      PerpsCacheInvalidator.invalidate(cacheType);
+    },
+    invalidateAll(): void {
+      PerpsCacheInvalidator.invalidateAll();
+    },
+  };
+}
+
+/** Parse optional decimal signer indices without selecting a fallback on malformed input. */
+function parseLighterIndex(
+  value: string | undefined,
+  name: string,
+  maximum: number,
+): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (
+    !/^\d+$/u.test(value) ||
+    !Number.isSafeInteger(Number(value)) ||
+    Number(value) > maximum
+  ) {
+    throw new Error(`${name} must be an integer between 0 and ${maximum}`);
+  }
+  return Number(value);
+}
+
+/**
+ * Creates mobile-specific client config from environment variables.
+ * Centralizes all process.env reads so the Engine init file stays pure wiring.
+ */
+export function createMobileClientConfig(): PerpsControllerConfig {
+  const lighterProviderEnabled = isLighterProviderEnabled();
+
+  return {
+    fallbackBlockedRegions: parseCommaSeparatedString(
+      process.env.MM_PERPS_BLOCKED_REGIONS ?? '',
+    ),
+    fallbackHip3Enabled: process.env.MM_PERPS_HIP3_ENABLED === 'true',
+    fallbackHip3AllowlistMarkets: parseCommaSeparatedString(
+      process.env.MM_PERPS_HIP3_ALLOWLIST_MARKETS ?? '',
+    ),
+    fallbackHip3BlocklistMarkets: parseCommaSeparatedString(
+      process.env.MM_PERPS_HIP3_BLOCKLIST_MARKETS ?? '',
+    ),
+    providerCredentials: {
+      hyperliquid: {
+        builderAddressTestnet:
+          process.env.MM_PERPS_HL_BUILDER_ADDRESS_TESTNET ?? '',
+        builderAddressMainnet: getHyperliquidMainnetBuilderAddress(),
+      },
+      lighter: {
+        enabled: lighterProviderEnabled,
+        // This explicit probe config reaches only Core's actual testnet provider.
+        // Pro mode and the version-gated Chase rollout still control UI entry.
+        chaseTestnetProbe:
+          lighterProviderEnabled &&
+          process.env.MM_PERPS_LIGHTER_CHASE_TESTNET_PROBE === 'true',
+        // Lighter Go/WASM signer transport (hidden WebView). Handed to the
+        // controller before the WebView mounts; calls queue behind the
+        // bridge's readiness promise (see lighterSignerBridge.ts). Only
+        // supplied under the same enablement rule that mounts the WebView, so
+        // the controller's enablement gate and the client's signer mount
+        // can never disagree (remote flag alone cannot register a trading
+        // provider whose signer was never mounted).
+        ...(lighterProviderEnabled
+          ? { signerBridge: lighterSignerBridge }
+          : {}),
+        accountIndexTestnet: lighterProviderEnabled
+          ? parseLighterIndex(
+              process.env.MM_PERPS_LIGHTER_ACCOUNT_INDEX_TESTNET,
+              'MM_PERPS_LIGHTER_ACCOUNT_INDEX_TESTNET',
+              Number.MAX_SAFE_INTEGER,
+            )
+          : undefined,
+        apiKeyIndex: lighterProviderEnabled
+          ? parseLighterIndex(
+              process.env.MM_PERPS_LIGHTER_API_KEY_INDEX,
+              'MM_PERPS_LIGHTER_API_KEY_INDEX',
+              254,
+            )
+          : undefined,
+      },
+    },
+  };
+}
+
+/**
+ * Creates mobile-specific platform dependencies for PerpsController.
+ * Controller access uses messenger pattern (messenger.call()).
+ */
+export function createMobileInfrastructure(): PerpsPlatformDependencies {
+  const terminalHost = resolveTerminalApiHost(
+    process.env.METAMASK_ENVIRONMENT,
+    process.env.METAMASK_BUILD_TYPE,
+  );
+  const terminalMarketDataUrl = buildTerminalMarketDataUrl(terminalHost);
+  const terminalGlobalSnapshotUrl = getTerminalGlobalSnapshotUrl(terminalHost);
+  const traceNamesById = new Map<string, TraceName>();
+
+  return {
+    // === Observability (stateless utilities) ===
+    logger: {
+      error(
+        error: Error,
+        options?: {
+          tags?: Record<string, string | number>;
+          context?: { name: string; data: Record<string, unknown> };
+          extras?: Record<string, unknown>;
+        },
+      ): void {
+        Logger.error(error, {
+          ...options,
+          tags: {
+            feature: PERPS_CONSTANTS.FeatureName,
+            ...options?.tags,
+          },
+        });
+      },
+    },
+    debugLogger: {
+      log(...args: unknown[]): void {
+        DevLogger.log(...args);
+      },
+    },
+    metrics: createMobileMetrics(),
+    performance: {
+      now(): number {
+        return performance.now();
+      },
+      onControllerConstructed: recordPerpsControllerConstructedAt,
+    },
+    tracer: {
+      trace(params: {
+        name: PerpsTraceName;
+        id: string;
+        op: string;
+        tags?: Record<string, PerpsTraceValue>;
+        data?: Record<string, PerpsTraceValue>;
+      }): void {
+        const traceName = toTraceName(params.name);
+        const loadingSessionData = getPreloadTraceData(params.name);
+        if (
+          !traceNamesById.has(params.id) &&
+          traceNamesById.size >= MAX_TRACKED_PERPS_TRACE_IDS
+        ) {
+          const oldestId = traceNamesById.keys().next().value;
+          if (oldestId) {
+            traceNamesById.delete(oldestId);
+            DevLogger.log('Perps tracing evicted an unfinished trace id', {
+              traceId: oldestId,
+            });
+          }
+        }
+        traceNamesById.set(params.id, traceName);
+        trace({
+          name: traceName,
+          id: params.id,
+          op: params.op,
+          tags: params.tags,
+          data: loadingSessionData
+            ? { ...params.data, ...loadingSessionData }
+            : params.data,
+        });
+      },
+      endTrace(params: {
+        name: PerpsTraceName;
+        id: string;
+        status?: 'ok' | 'error';
+        data?: Record<string, PerpsTraceValue>;
+      }): void {
+        endTrace({
+          name: toTraceName(params.name),
+          id: params.id,
+          status: params.status,
+          data: params.data,
+        });
+        traceNamesById.delete(params.id);
+      },
+      setMeasurement(
+        name: string,
+        value: number,
+        unit: string,
+        id?: string,
+      ): void {
+        if (id) {
+          const traceName = traceNamesById.get(id);
+          if (!traceName) {
+            DevLogger.log(
+              'Perps tracing dropped a measurement for an unknown trace id',
+              {
+                traceId: id,
+                measurement: name,
+              },
+            );
+            return;
+          }
+          setTraceMeasurement(
+            { name: traceName, id },
+            name,
+            value,
+            unit as Parameters<typeof setTraceMeasurement>[3],
+          );
+          return;
+        }
+        setMeasurement(name, value, unit);
+      },
+      addBreadcrumb(breadcrumb: {
+        category: string;
+        message: string;
+        level: SeverityLevel;
+        data?: Record<string, unknown>;
+      }): void {
+        addBreadcrumb(breadcrumb);
+      },
+    },
+
+    // === Platform Services ===
+    streamManager: createStreamManagerAdapter(),
+
+    // === Feature Flags ===
+    featureFlags: {
+      validateVersionGated(flag: VersionGatedFeatureFlag): boolean | undefined {
+        return validatedVersionGatedFeatureFlag(flag);
+      },
+    },
+
+    // === Market Data Formatting ===
+    marketDataFormatters: createMobileMarketDataFormatters(),
+
+    // === Cache Invalidation ===
+    cacheInvalidator: createCacheInvalidatorAdapter(),
+
+    // === Disk Cache (cold-start persistence via MMKV) ===
+    diskCache: {
+      getItem: (key: string) => StorageWrapper.getItem(key),
+      getItemSync: (key: string) => StorageWrapper.getItemSync(key),
+      setItem: (key: string, value: string) =>
+        StorageWrapper.setItem(key, value),
+      removeItem: (key: string) =>
+        StorageWrapper.removeItem(key).then(() => undefined),
+    },
+
+    // v1 remains available for legacy metadata enrichment; v4 provides the
+    // atomic bootstrap snapshot. Both routes use the same environment host.
+    terminalApi: {
+      marketDataUrl: terminalMarketDataUrl,
+      globalSnapshotUrl: terminalGlobalSnapshotUrl,
+    },
+
+    // === Rewards (DI — no RewardsController in Core yet) ===
+    rewards: {
+      getPerpsDiscountForAccount(
+        caipAccountId: `${string}:${string}:${string}`,
+        baseFeeBips: number,
+      ) {
+        return Engine.context.RewardsController.getPerpsDiscountForAccount(
+          caipAccountId,
+          baseFeeBips,
+        );
+      },
+      getPerpsTradingFeeGrant(scope) {
+        return Engine.context.RewardsController.getPerpsTradingFeeGrant(scope);
+      },
+    },
+  };
+}
+
+/**
+ * Creates mobile-specific market data formatters.
+ * Wires up platform dependencies (intl, formatUtils) for portable market data transformation.
+ */
+function createMobileMarketDataFormatters(): MarketDataFormatters {
+  return {
+    formatVolume,
+    formatPerpsFiat,
+    formatPercentage: (percent: number): string => {
+      if (isNaN(percent) || !isFinite(percent)) return '0.00%';
+      if (percent === 0) return '0.00%';
+
+      const formatted = getIntlNumberFormatter('en-US', {
+        style: 'percent',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(percent / 100);
+
+      return percent > 0 ? `+${formatted}` : formatted;
+    },
+    priceRangesUniversal: PRICE_RANGES_UNIVERSAL,
+  };
+}

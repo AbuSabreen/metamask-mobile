@@ -1,0 +1,127 @@
+import { AccountsController } from '@metamask/accounts-controller';
+import { PreferencesControllerMessenger } from '@metamask/preferences-controller';
+import {
+  CodefiTokenPricesServiceV2,
+  type TokensController,
+} from '@metamask/assets-controllers';
+import { merge } from 'lodash';
+
+import { ExtendedMessenger } from '../../ExtendedMessenger';
+import { preferencesControllerInit } from '../controllers/preferences-controller-init';
+import type { PreferencesControllerWithSavedGasFees } from '../controllers/preferences-controller-types';
+import { createMockMessengerClientInitFunction } from './test-utils';
+import { getMessengerClientOrThrow, initMessengerClients } from './utils';
+import { tokensControllerInit } from '../controllers/tokens-controller-init';
+import { InitMessengerClientsFunctionRequest } from '../types';
+import { QrKeyringDeferredPromiseBridge } from '@metamask/eth-qr-keyring';
+import { MOCK_ANY_NAMESPACE, MockAnyNamespace } from '@metamask/messenger';
+import { Wallet } from '@metamask/wallet';
+
+jest.mock('../controllers/preferences-controller-init');
+jest.mock('../controllers/tokens-controller-init');
+jest.mock('../controllers/delegation/delegation-controller-init');
+
+describe('initMessengerClients', () => {
+  const mockPreferencesControllerInit = jest.mocked(preferencesControllerInit);
+  const mockTokensControllerInit = jest.mocked(tokensControllerInit);
+
+  function buildModularizedControllerRequest(
+    overrides?: Record<string, unknown>,
+  ): InitMessengerClientsFunctionRequest {
+    const partialRequest = merge(
+      {
+        wallet: { getInstance: jest.fn() } as unknown as Wallet,
+        initFunctions: {
+          PreferencesController: mockPreferencesControllerInit,
+          TokensController: mockTokensControllerInit,
+        },
+        persistedState: {},
+        baseControllerMessenger: new ExtendedMessenger<MockAnyNamespace>({
+          namespace: MOCK_ANY_NAMESPACE,
+        }),
+        codefiTokenApiV2: jest.fn() as unknown as CodefiTokenPricesServiceV2,
+        getGlobalChainId: jest.fn(),
+        getState: jest.fn(),
+        removeAccount: jest.fn(),
+        qrKeyringScanner:
+          jest.fn() as unknown as QrKeyringDeferredPromiseBridge,
+        initialKeyringState: null,
+      },
+      overrides,
+    );
+
+    // @ts-expect-error: Intentionally only providing a subset of all
+    // controllers, to avoid excessive boilerplate in tests.
+    return partialRequest as InitMessengerClientsFunctionRequest;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    mockPreferencesControllerInit.mockReturnValue({
+      controller: {} as unknown as PreferencesControllerWithSavedGasFees,
+    });
+    mockTokensControllerInit.mockReturnValue({
+      controller: {} as unknown as TokensController,
+    });
+  });
+
+  it('initializes controllers', () => {
+    const request = buildModularizedControllerRequest();
+    const controllers = initMessengerClients(request);
+
+    expect(
+      controllers.messengerClientsByName.PreferencesController,
+    ).toBeDefined();
+    expect(controllers.messengerClientsByName.TokensController).toBeDefined();
+  });
+
+  it('initializes function including initMessenger', () => {
+    const request = buildModularizedControllerRequest();
+    initMessengerClients(request);
+
+    const tokensControllerInitMessenger =
+      mockTokensControllerInit.mock.calls[0][0].initMessenger;
+
+    expect(tokensControllerInitMessenger).toBeDefined();
+  });
+
+  it('throws when controller is not found', async () => {
+    const request = buildModularizedControllerRequest({
+      initFunctions: {
+        PreferencesController: createMockMessengerClientInitFunction<
+          PreferencesControllerWithSavedGasFees,
+          PreferencesControllerMessenger
+        >('GasFeeController'),
+      },
+    });
+
+    expect(() => initMessengerClients(request)).toThrow(
+      'Messenger client requested before it was initialized: GasFeeController',
+    );
+  });
+});
+
+describe('getMessengerClientOrThrow', () => {
+  it('throws when controller is not found', () => {
+    expect(() =>
+      getMessengerClientOrThrow({
+        wallet: { getInstance: jest.fn() } as unknown as Wallet,
+        messengerClientsByName: {},
+        name: 'AccountsController',
+      }),
+    ).toThrow();
+  });
+
+  it('does not throw when controller is found', () => {
+    expect(() =>
+      getMessengerClientOrThrow({
+        wallet: { getInstance: jest.fn() } as unknown as Wallet,
+        messengerClientsByName: {
+          AccountsController: jest.fn() as unknown as AccountsController,
+        },
+        name: 'AccountsController',
+      }),
+    ).not.toThrow();
+  });
+});

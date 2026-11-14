@@ -1,0 +1,631 @@
+import { ORIGIN_METAMASK } from '@metamask/controller-utils';
+import { CHAIN_IDS, TransactionType } from '@metamask/transaction-controller';
+import { Hex } from '@metamask/utils';
+import { fireEvent, act, render } from '@testing-library/react-native';
+import React from 'react';
+import { useNavigation, useTheme } from '@react-navigation/native';
+import { useSelector } from 'react-redux';
+import { selectSelectedInternalAccountAddress } from '../../../../../../selectors/accountsController';
+import { selectSelectedInternalAccountByScope } from '../../../../../../selectors/multichainAccounts/accounts';
+import { selectDefaultEndpointByChainId } from '../../../../../../selectors/networkController';
+import { addTransactionBatch } from '../../../../../../util/transaction-controller';
+import { generateTransferData } from '../../../../../../util/transactions';
+import Routes from '../../../../../../constants/navigation/Routes';
+import { useStyles } from '../../../../../../component-library/hooks';
+import { useConfirmNavigation } from '../../../hooks/useConfirmNavigation';
+import { ConfirmationLoader } from '../../confirm/confirm-component';
+import { useMoneyAccountDeposit } from '../../../../../UI/Money/hooks/useMoneyAccount';
+import { usePerpsTrading } from '../../../../../UI/Perps/hooks/usePerpsTrading';
+import Logger from '../../../../../../util/Logger';
+import { createMockInternalAccount } from '../../../../../../util/test/accountsControllerTestUtils';
+import { ConfirmationsDeveloperOptions } from './confirmations-developer-options';
+import { ConfirmationsDeveloperOptionsTestIds } from './confirmations-developer-options.testIds';
+import {
+  selectMoneyAccountDepositEnabledFlag,
+  selectMoneyAccountWithdrawEnabledFlag,
+} from '../../../../../../selectors/featureFlagController/moneyAccount';
+
+const MEMBERSHIP_SUBSCRIPTION_TRANSACTION_TYPE =
+  TransactionType.membershipSubscription;
+
+jest.mock('react-redux', () => ({
+  ...jest.requireActual('react-redux'),
+  useSelector: jest.fn(),
+  useDispatch: jest.fn(),
+}));
+
+jest.mock('@react-navigation/native', () => ({
+  ...jest.requireActual('@react-navigation/native'),
+  useNavigation: jest.fn(),
+  useTheme: jest.fn(),
+}));
+
+jest.mock('../../../../../../component-library/hooks', () => ({
+  useStyles: jest.fn(),
+}));
+
+jest.mock('../../../../../../selectors/accountsController', () => ({
+  ...jest.requireActual('../../../../../../selectors/accountsController'),
+  selectSelectedInternalAccountAddress: jest.fn(),
+}));
+
+jest.mock('../../../../../../selectors/multichainAccounts/accounts', () => ({
+  ...jest.requireActual(
+    '../../../../../../selectors/multichainAccounts/accounts',
+  ),
+  selectSelectedInternalAccountByScope: jest.fn(),
+}));
+
+jest.mock('../../../../../../selectors/networkController', () => ({
+  ...jest.requireActual('../../../../../../selectors/networkController'),
+  selectDefaultEndpointByChainId: jest.fn(),
+}));
+
+jest.mock('../../../../../../util/transaction-controller', () => ({
+  addTransactionBatch: jest.fn(),
+}));
+
+jest.mock('../../../../../../util/transactions', () => ({
+  generateTransferData: jest.fn(),
+}));
+
+jest.mock('../../../../../UI/Money/hooks/useMoneyAccount', () => ({
+  useMoneyAccountDeposit: jest.fn(),
+}));
+
+jest.mock('../../../../../UI/Perps/hooks/usePerpsTrading', () => ({
+  usePerpsTrading: jest.fn(),
+}));
+
+jest.mock('../../../../../../util/Logger', () => ({
+  error: jest.fn(),
+}));
+
+jest.mock('../../../hooks/useConfirmNavigation', () => ({
+  useConfirmNavigation: jest.fn(),
+}));
+
+jest.mock(
+  '../../../../../../selectors/featureFlagController/moneyAccount',
+  () => ({
+    ...jest.requireActual(
+      '../../../../../../selectors/featureFlagController/moneyAccount',
+    ),
+    selectMoneyAccountDepositEnabledFlag: jest.fn(),
+    selectMoneyAccountWithdrawEnabledFlag: jest.fn(),
+    selectMoneyOnboardingStepperAnimationEnabled: jest.fn(() => false),
+  }),
+);
+
+const MOCK_ACCOUNT = '0x1234567890123456789012345678901234567890' as Hex;
+const MOCK_TRANSFER_DATA = '0xabcdef' as Hex;
+const MOCK_ARBITRUM_USDC = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' as Hex;
+const MOCK_POLYGON_USDCE = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174' as Hex;
+const MOCK_PROXY_ADDRESS = '0x13032833b30f3388208cda38971fdc839936b042' as Hex;
+const MOCK_NETWORK_CLIENT_ID = 'arbitrum-mainnet';
+const mockNavigateToConfirmation = jest.fn();
+const mockGoBack = jest.fn();
+const mockSelectMoneyAccountDepositEnabledFlag = jest.mocked(
+  selectMoneyAccountDepositEnabledFlag,
+);
+const mockSelectMoneyAccountWithdrawEnabledFlag = jest.mocked(
+  selectMoneyAccountWithdrawEnabledFlag,
+);
+const mockInitiateDeposit = jest.fn();
+const mockControllerDeposit = jest.fn();
+const mockLoggerError = jest.mocked(Logger.error);
+const mockUseMoneyAccountDeposit = jest.mocked(useMoneyAccountDeposit);
+const mockUsePerpsTrading = jest.mocked(usePerpsTrading);
+
+describe('ConfirmationsDeveloperOptions', () => {
+  const mockUseSelector = jest.mocked(useSelector);
+  const mockUseNavigation = jest.mocked(useNavigation);
+  const mockUseTheme = jest.mocked(useTheme);
+  const mockUseStyles = jest.mocked(useStyles);
+  const mockSelectSelectedInternalAccountAddress = jest.mocked(
+    selectSelectedInternalAccountAddress,
+  );
+  const mockSelectSelectedInternalAccountByScope = jest.mocked(
+    selectSelectedInternalAccountByScope,
+  );
+  const mockSelectDefaultEndpointByChainId = jest.mocked(
+    selectDefaultEndpointByChainId,
+  );
+  const mockAddTransactionBatch = jest.mocked(addTransactionBatch);
+  const mockGenerateTransferData = jest.mocked(generateTransferData);
+  const mockUseConfirmNavigation = jest.mocked(useConfirmNavigation);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+
+    mockUseTheme.mockReturnValue({
+      colors: {},
+    } as ReturnType<typeof useTheme>);
+    mockUseNavigation.mockReturnValue({
+      goBack: mockGoBack,
+    } as ReturnType<typeof useNavigation>);
+
+    mockUseStyles.mockReturnValue({
+      styles: {
+        accessory: {},
+        desc: {},
+        heading: {},
+      },
+    } as ReturnType<typeof useStyles>);
+
+    mockSelectSelectedInternalAccountAddress.mockReturnValue(MOCK_ACCOUNT);
+    mockSelectSelectedInternalAccountByScope.mockReturnValue(() =>
+      createMockInternalAccount(MOCK_ACCOUNT, 'Account 1'),
+    );
+    mockSelectDefaultEndpointByChainId.mockReturnValue({
+      networkClientId: MOCK_NETWORK_CLIENT_ID,
+    } as ReturnType<typeof selectDefaultEndpointByChainId>);
+    mockGenerateTransferData.mockReturnValue(MOCK_TRANSFER_DATA);
+    mockAddTransactionBatch.mockResolvedValue(undefined as never);
+    mockUseConfirmNavigation.mockReturnValue({
+      navigateToConfirmation: mockNavigateToConfirmation,
+    });
+    mockSelectMoneyAccountDepositEnabledFlag.mockReturnValue(false);
+    mockSelectMoneyAccountWithdrawEnabledFlag.mockReturnValue(false);
+    mockInitiateDeposit.mockResolvedValue(undefined);
+    mockUseMoneyAccountDeposit.mockReturnValue({
+      initiateDeposit: mockInitiateDeposit,
+    });
+    mockControllerDeposit.mockResolvedValue(undefined);
+    mockUsePerpsTrading.mockReturnValue({
+      depositWithConfirmation: mockControllerDeposit,
+      placeOrder: jest.fn(),
+      cancelOrder: jest.fn(),
+      editOrder: jest.fn(),
+      closePosition: jest.fn(),
+      getMarkets: jest.fn(),
+      getPositions: jest.fn(),
+      getAccountState: jest.fn(),
+      subscribeToPrices: jest.fn(),
+      subscribeToPositions: jest.fn(),
+      subscribeToOrderFills: jest.fn(),
+      depositWithOrder: jest.fn(),
+      clearDepositResult: jest.fn(),
+      withdraw: jest.fn(),
+      calculateLiquidationPrice: jest.fn(),
+      previewPositionModify: jest.fn(),
+      calculateMaintenanceMargin: jest.fn(),
+      getMaxLeverage: jest.fn(),
+      updatePositionTPSL: jest.fn(),
+      updateMargin: jest.fn(),
+      flipPosition: jest.fn(),
+      calculateFees: jest.fn(),
+      validateOrder: jest.fn(),
+      validateClosePosition: jest.fn(),
+      validateWithdrawal: jest.fn(),
+      getOrderFills: jest.fn(),
+      getOrders: jest.fn(),
+      getFunding: jest.fn(),
+    });
+    mockUseSelector.mockImplementation(((
+      selector: (state: object) => unknown,
+    ) => selector({})) as typeof useSelector);
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it('renders the Perps Withdraw developer option', () => {
+    const { getByText, getByTestId } = render(
+      <ConfirmationsDeveloperOptions />,
+    );
+
+    expect(getByText('Perps Withdraw')).toBeOnTheScreen();
+    expect(
+      getByText('Trigger a Perps withdraw confirmation.'),
+    ).toBeOnTheScreen();
+    expect(
+      getByTestId(ConfirmationsDeveloperOptionsTestIds.PERPS_WITHDRAW_BUTTON),
+    ).toBeOnTheScreen();
+  });
+
+  it('navigates to the Perps confirmation flow when the Perps Withdraw button is pressed', async () => {
+    const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+    await act(async () => {
+      fireEvent.press(
+        getByTestId(ConfirmationsDeveloperOptionsTestIds.PERPS_WITHDRAW_BUTTON),
+      );
+    });
+
+    expect(mockGenerateTransferData).toHaveBeenCalledWith('transfer', {
+      toAddress: MOCK_ARBITRUM_USDC,
+      amount: '0x0',
+    });
+    expect(mockNavigateToConfirmation).toHaveBeenCalledWith({
+      loader: ConfirmationLoader.CustomAmount,
+      stack: Routes.PERPS.ROOT,
+    });
+    expect(mockSelectDefaultEndpointByChainId).toHaveBeenCalledWith(
+      {},
+      CHAIN_IDS.ARBITRUM,
+    );
+    expect(mockAddTransactionBatch).toHaveBeenCalledWith({
+      from: MOCK_ACCOUNT,
+      origin: ORIGIN_METAMASK,
+      isInternal: true,
+      networkClientId: MOCK_NETWORK_CLIENT_ID,
+      disableHook: true,
+      disableSequential: true,
+      overwriteUpgrade: true,
+      transactions: [
+        {
+          params: {
+            to: MOCK_ARBITRUM_USDC,
+            data: MOCK_TRANSFER_DATA,
+          },
+          type: TransactionType.perpsWithdraw,
+        },
+      ],
+    });
+  });
+
+  describe('Perps Deposit', () => {
+    it('navigates and calls controller deposit for full screen', async () => {
+      const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(
+            ConfirmationsDeveloperOptionsTestIds.PERPS_DEPOSIT_BUTTON,
+          ),
+        );
+      });
+
+      expect(mockNavigateToConfirmation).toHaveBeenCalledWith({
+        stack: Routes.PERPS.ROOT,
+        forceBottomSheet: false,
+        bottomSheetHeightPercentage: undefined,
+      });
+      expect(mockControllerDeposit).toHaveBeenCalled();
+    });
+
+    it('navigates and calls controller deposit for bottom sheet', async () => {
+      const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(
+            ConfirmationsDeveloperOptionsTestIds.PERPS_DEPOSIT_BOTTOM_SHEET_BUTTON,
+          ),
+        );
+      });
+
+      expect(mockNavigateToConfirmation).toHaveBeenCalledWith({
+        stack: Routes.PERPS.ROOT,
+        forceBottomSheet: true,
+        bottomSheetHeightPercentage: undefined,
+      });
+      expect(mockControllerDeposit).toHaveBeenCalled();
+    });
+
+    it('logs error if controller deposit fails', async () => {
+      const error = new Error('Deposit failed');
+      mockControllerDeposit.mockRejectedValue(error);
+      const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(
+            ConfirmationsDeveloperOptionsTestIds.PERPS_DEPOSIT_BUTTON,
+          ),
+        );
+      });
+
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        error,
+        'usePerpsDepositConfirmation: deposit initiation failed',
+      );
+    });
+  });
+
+  describe('Predict developer options', () => {
+    it('adds overwriteUpgrade for the Predict Deposit batch', async () => {
+      const { getAllByText } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(getAllByText('Deposit')[1]);
+      });
+
+      expect(mockNavigateToConfirmation).toHaveBeenCalledWith({
+        loader: ConfirmationLoader.CustomAmount,
+        stack: Routes.PREDICT.ROOT,
+      });
+      expect(mockAddTransactionBatch).toHaveBeenCalledWith({
+        from: MOCK_ACCOUNT,
+        origin: ORIGIN_METAMASK,
+        networkClientId: MOCK_NETWORK_CLIENT_ID,
+        disableHook: true,
+        disableSequential: true,
+        overwriteUpgrade: true,
+        transactions: [
+          {
+            params: {
+              to: MOCK_PROXY_ADDRESS,
+              data: '0x',
+              value: '0x1',
+            },
+          },
+          {
+            params: {
+              to: MOCK_POLYGON_USDCE,
+              data: MOCK_TRANSFER_DATA,
+            },
+            type: TransactionType.predictDeposit,
+          },
+        ],
+      });
+    });
+
+    it('adds overwriteUpgrade for the Predict Claim batch', async () => {
+      const { getByText } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(getByText('Claim'));
+      });
+
+      expect(mockNavigateToConfirmation).toHaveBeenCalledWith({
+        headerShown: false,
+        loader: ConfirmationLoader.PredictClaim,
+        stack: Routes.PREDICT.ROOT,
+      });
+      expect(mockAddTransactionBatch).toHaveBeenCalledWith({
+        from: MOCK_ACCOUNT,
+        origin: ORIGIN_METAMASK,
+        networkClientId: MOCK_NETWORK_CLIENT_ID,
+        disableHook: true,
+        disableSequential: true,
+        overwriteUpgrade: true,
+        transactions: [
+          {
+            params: {
+              to: MOCK_PROXY_ADDRESS,
+              data: '0x',
+              value: '0x1',
+            },
+          },
+          {
+            params: {
+              to: MOCK_POLYGON_USDCE,
+              data: MOCK_TRANSFER_DATA,
+            },
+            type: TransactionType.predictClaim,
+          },
+        ],
+      });
+    });
+
+    it('adds overwriteUpgrade for the Predict Withdraw batch', async () => {
+      const { getAllByText } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(getAllByText('Withdraw')[0]);
+      });
+
+      expect(mockNavigateToConfirmation).toHaveBeenCalledWith({
+        loader: ConfirmationLoader.CustomAmount,
+        stack: Routes.PREDICT.ROOT,
+      });
+      expect(mockAddTransactionBatch).toHaveBeenCalledWith({
+        from: MOCK_ACCOUNT,
+        origin: ORIGIN_METAMASK,
+        networkClientId: MOCK_NETWORK_CLIENT_ID,
+        disableHook: true,
+        disableSequential: true,
+        overwriteUpgrade: true,
+        transactions: [
+          {
+            params: {
+              to: MOCK_PROXY_ADDRESS,
+              data: '0x',
+              value: '0x1',
+            },
+          },
+          {
+            params: {
+              to: MOCK_POLYGON_USDCE,
+              data: MOCK_TRANSFER_DATA,
+            },
+            type: TransactionType.predictWithdraw,
+          },
+        ],
+      });
+    });
+  });
+
+  describe('Money Account Deposit', () => {
+    it('renders when moneyAccountDepositEnabled flag is true', () => {
+      mockSelectMoneyAccountDepositEnabledFlag.mockReturnValue(true);
+
+      const { getByText, getByTestId } = render(
+        <ConfirmationsDeveloperOptions />,
+      );
+
+      expect(getByText('Money Account Deposit')).toBeOnTheScreen();
+      expect(
+        getByText('Trigger a Money Account deposit confirmation.'),
+      ).toBeOnTheScreen();
+      expect(
+        getByTestId(
+          ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_DEPOSIT_BUTTON,
+        ),
+      ).toBeOnTheScreen();
+    });
+
+    it('does not render when moneyAccountDepositEnabled flag is false', () => {
+      mockSelectMoneyAccountDepositEnabledFlag.mockReturnValue(false);
+
+      const { queryByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+      expect(
+        queryByTestId(
+          ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_DEPOSIT_BUTTON,
+        ),
+      ).toBeNull();
+    });
+
+    it('calls production initiateDeposit for default full screen button', async () => {
+      mockSelectMoneyAccountDepositEnabledFlag.mockReturnValue(true);
+      const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(
+            ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_DEPOSIT_BUTTON,
+          ),
+        );
+      });
+
+      expect(mockInitiateDeposit).toHaveBeenCalledWith();
+    });
+
+    it('calls production initiateDeposit for bottom sheet button', async () => {
+      mockSelectMoneyAccountDepositEnabledFlag.mockReturnValue(true);
+      const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(
+            ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_DEPOSIT_BOTTOM_SHEET_BUTTON,
+          ),
+        );
+      });
+      expect(mockInitiateDeposit).toHaveBeenCalledWith({
+        forceBottomSheet: true,
+      });
+    });
+
+    it('calls production initiateDeposit for 5$ amount button', async () => {
+      mockSelectMoneyAccountDepositEnabledFlag.mockReturnValue(true);
+      const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(
+            ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_DEPOSIT_FIVE_DOLLARS_BUTTON,
+          ),
+        );
+      });
+      expect(mockInitiateDeposit).toHaveBeenCalledWith({
+        forceBottomSheet: true,
+        amount: '5',
+      });
+    });
+
+    it('opens the membership subscription with its own button and transaction type', async () => {
+      mockSelectMoneyAccountDepositEnabledFlag.mockReturnValue(true);
+      const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(
+            ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_MEMBERSHIP_TOP_UP_BUTTON,
+          ),
+        );
+      });
+
+      expect(mockInitiateDeposit).toHaveBeenCalledWith({
+        forceBottomSheet: true,
+        amount: '1',
+        transactionType: MEMBERSHIP_SUBSCRIPTION_TRANSACTION_TYPE,
+      });
+    });
+
+    it('logs error if initiateDeposit fails', async () => {
+      mockSelectMoneyAccountDepositEnabledFlag.mockReturnValue(true);
+      const error = new Error('Deposit setup error');
+      mockInitiateDeposit.mockRejectedValue(error);
+      const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(
+            ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_DEPOSIT_BUTTON,
+          ),
+        );
+      });
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        error,
+        'Developer Options: Money deposit failed',
+      );
+    });
+  });
+
+  describe('Money Account Withdraw', () => {
+    it('renders when moneyAccountWithdrawEnabled flag is true', () => {
+      mockSelectMoneyAccountWithdrawEnabledFlag.mockReturnValue(true);
+
+      const { getByText, getByTestId } = render(
+        <ConfirmationsDeveloperOptions />,
+      );
+
+      expect(getByText('Money Account Withdraw')).toBeOnTheScreen();
+      expect(
+        getByText('Trigger a Money Account withdraw confirmation.'),
+      ).toBeOnTheScreen();
+      expect(
+        getByTestId(
+          ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_WITHDRAW_BUTTON,
+        ),
+      ).toBeOnTheScreen();
+    });
+
+    it('does not render when moneyAccountWithdrawEnabled flag is false', () => {
+      mockSelectMoneyAccountWithdrawEnabledFlag.mockReturnValue(false);
+
+      const { queryByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+      expect(
+        queryByTestId(
+          ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_WITHDRAW_BUTTON,
+        ),
+      ).toBeNull();
+    });
+
+    it('triggers money account withdraw transaction batch on press', async () => {
+      mockSelectMoneyAccountWithdrawEnabledFlag.mockReturnValue(true);
+
+      const { getByTestId } = render(<ConfirmationsDeveloperOptions />);
+
+      await act(async () => {
+        fireEvent.press(
+          getByTestId(
+            ConfirmationsDeveloperOptionsTestIds.MONEY_ACCOUNT_WITHDRAW_BUTTON,
+          ),
+        );
+      });
+
+      expect(mockNavigateToConfirmation).toHaveBeenCalledWith({
+        loader: ConfirmationLoader.CustomAmount,
+        stack: Routes.PREDICT.ROOT,
+      });
+      expect(mockAddTransactionBatch).toHaveBeenCalledWith({
+        from: MOCK_ACCOUNT,
+        origin: ORIGIN_METAMASK,
+        networkClientId: MOCK_NETWORK_CLIENT_ID,
+        disableHook: true,
+        disableSequential: true,
+        transactions: [
+          {
+            params: {
+              to: MOCK_PROXY_ADDRESS,
+              data: '0x',
+              value: '0x1',
+            },
+          },
+          {
+            params: {
+              to: MOCK_POLYGON_USDCE,
+              data: MOCK_TRANSFER_DATA,
+            },
+            type: TransactionType.moneyAccountWithdraw,
+          },
+        ],
+      });
+    });
+  });
+});

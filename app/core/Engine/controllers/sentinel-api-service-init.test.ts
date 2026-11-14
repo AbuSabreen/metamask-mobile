@@ -1,0 +1,68 @@
+import { buildMessengerClientInitRequestMock } from '../utils/test-utils';
+import { ExtendedMessenger } from '../../ExtendedMessenger';
+import { getSentinelApiServiceMessenger } from '../messengers/sentinel-api-service-messenger';
+import type { MessengerClientInitRequest } from '../types';
+import { sentinelApiServiceInit } from './sentinel-api-service-init';
+import {
+  SentinelApiService,
+  type SentinelApiServiceMessenger,
+} from '@metamask/sentinel-api-service';
+import { MOCK_ANY_NAMESPACE, type MockAnyNamespace } from '@metamask/messenger';
+import { setSentinelApiMessenger } from '../../../util/transactions/sentinel-api';
+
+jest.mock('@metamask/sentinel-api-service');
+jest.mock('../../../util/transactions/sentinel-api');
+jest.mock('../../../util/version', () => ({
+  getBaseSemVerVersion: () => '1.2.3',
+}));
+
+const MOCK_BASE_VERSION = '1.2.3';
+
+function getInitRequestMock(): jest.Mocked<
+  MessengerClientInitRequest<SentinelApiServiceMessenger>
+> {
+  const baseMessenger = new ExtendedMessenger<MockAnyNamespace, never, never>({
+    namespace: MOCK_ANY_NAMESPACE,
+  });
+
+  return {
+    ...buildMessengerClientInitRequestMock(baseMessenger),
+    controllerMessenger: getSentinelApiServiceMessenger(baseMessenger),
+    initMessenger: undefined,
+  };
+}
+
+describe('sentinelApiServiceInit', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('initializes the service', () => {
+    const { controller } = sentinelApiServiceInit(getInitRequestMock());
+    expect(controller).toBeInstanceOf(SentinelApiService);
+  });
+
+  it('passes fetch, messenger, clientId, and clientVersion to the service', () => {
+    sentinelApiServiceInit(getInitRequestMock());
+
+    const ServiceMock = jest.mocked(SentinelApiService);
+    expect(ServiceMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messenger: expect.any(Object),
+        fetch: expect.any(Function),
+        clientId: 'mobile',
+        clientVersion: MOCK_BASE_VERSION,
+      }),
+    );
+  });
+
+  it('sets messenger for legacy Sentinel utils', () => {
+    const request = getInitRequestMock();
+
+    sentinelApiServiceInit(request);
+
+    expect(setSentinelApiMessenger).toHaveBeenCalledWith(
+      request.controllerMessenger,
+    );
+  });
+});

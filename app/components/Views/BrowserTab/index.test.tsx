@@ -1,35 +1,1796 @@
 import React from 'react';
-import { shallow } from 'enzyme';
-import { BrowserTab } from './';
-import { Provider } from 'react-redux';
-import configureMockStore from 'redux-mock-store';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
+import AppConstants from '../../../core/AppConstants';
+import renderWithProvider from '../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { MOCK_ACCOUNTS_CONTROLLER_STATE } from '../../../util/test/accountsControllerTestUtils';
+import BrowserTab from './BrowserTab';
+import UrlAutocomplete, {
+  UrlAutocompleteCategory,
+} from '../../UI/UrlAutocomplete';
+import Routes from '../../../constants/navigation/Routes';
+import {
+  DOCUMENT_URL_FOR_URL_BAR,
+  WEB_SHARE_MESSAGE_TYPE,
+  WEB_DOWNLOAD_MESSAGE_TYPE,
+} from '../../../util/browserScripts';
+import { handleWebShare } from '../../../util/browser/handleWebShare';
+import { handleWebDownload } from '../../../util/browser/handleWebDownload';
+import { getPhishingTestResultAsync } from '../../../util/phishingDetection';
+import {
+  PhishingDetectorResultType,
+  RequestSourceFlow,
+} from '@metamask/phishing-controller';
+import BackgroundBridge from '../../../core/BackgroundBridge/BackgroundBridge';
+
+const mockInjectJavaScript = jest.fn();
+const mockStopLoading = jest.fn();
+const mockReload = jest.fn();
+let webViewMountCount = 0;
+
+jest.mock('@metamask/react-native-webview', () => {
+  const { View } = jest.requireActual('react-native');
+  const ActualReact = jest.requireActual('react');
+
+  const MockWebView = ActualReact.forwardRef(
+    (props: Record<string, unknown>, ref: React.Ref<unknown>) => {
+      ActualReact.useEffect(() => {
+        webViewMountCount += 1;
+      }, []);
+      ActualReact.useImperativeHandle(ref, () => ({
+        injectJavaScript: mockInjectJavaScript,
+        stopLoading: mockStopLoading,
+        reload: mockReload,
+      }));
+      return <View {...props} />;
+    },
+  );
+  MockWebView.displayName = 'WebView';
+
+  return {
+    __esModule: true,
+    WebView: MockWebView,
+    default: MockWebView,
+  };
+});
+
+const mockNavigation = {
+  goBack: jest.fn(),
+  goForward: jest.fn(),
+  canGoBack: true,
+  canGoForward: true,
+  addListener: jest.fn(() => jest.fn()),
+  navigate: jest.fn(),
+  setParams: jest.fn(),
+};
+
+const mockRoute = {
+  params: { url: '' },
+};
+
+jest.mock('@react-navigation/native', () => {
+  const actualNav = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualNav,
+    useNavigation: () => mockNavigation,
+    useIsFocused: () => true,
+    useRoute: () => mockRoute,
+  };
+});
+
+jest.mock('react-native-device-info', () => ({
+  getVersion: jest.fn(() => '7.0.0'),
+}));
 
 const mockInitialState = {
-  browser: { activeTab: '' },
-  engine: {
-    backgroundState: initialBackgroundState,
+  browser: {
+    activeTab: 1,
+    history: [],
+    whitelist: [],
+    tabs: [],
+    favicons: [],
+    visitedDappsByHostname: {},
+    isFullscreen: false,
   },
-  transaction: {
-    selectedAsset: '',
+  engine: {
+    backgroundState: {
+      ...backgroundState,
+      AccountsController: MOCK_ACCOUNTS_CONTROLLER_STATE,
+    },
+  },
+  settings: {
+    searchEngine: 'Google',
   },
 };
 
-jest.mock('react-redux', () => ({
-  ...jest.requireActual('react-redux'),
-  useSelector: jest.fn().mockImplementation(() => mockInitialState),
+jest.mock('../../../core/Engine', () => ({
+  context: {
+    AccountsController: {
+      listMultichainAccounts: () => [],
+    },
+    CurrencyRateController: {
+      updateExchangeRate: jest.fn(),
+    },
+    PermissionController: {
+      state: {
+        subjects: {},
+      },
+    },
+  },
+  controllerMessenger: {
+    call: jest.fn(),
+  },
 }));
 
-const mockStore = configureMockStore();
-const store = mockStore(mockInitialState);
+interface MockBackgroundBridgeInstance {
+  url: string;
+  onDisconnect: jest.Mock;
+  onMessage: jest.Mock;
+  sendNotificationEip1193: jest.Mock;
+}
 
-describe('Browser', () => {
-  it('should render correctly', () => {
-    const wrapper = shallow(
-      <Provider store={store}>
-        <BrowserTab initialUrl="https://metamask.io" />
-      </Provider>,
+const mockBackgroundBridgeInstances: MockBackgroundBridgeInstance[] = [];
+
+jest.mock('../../../core/BackgroundBridge/BackgroundBridge', () =>
+  jest.fn().mockImplementation((opts: { url?: string } = {}) => {
+    const instance = {
+      url: opts.url ?? '',
+      onDisconnect: jest.fn(),
+      onMessage: jest.fn(),
+      sendNotificationEip1193: jest.fn(),
+    };
+    mockBackgroundBridgeInstances.push(instance);
+    return instance;
+  }),
+);
+
+jest.mock('../../../core/EntryScriptWeb3', () => ({
+  init: jest.fn(),
+  get: () => '',
+}));
+
+jest.mock('../../../util/phishingDetection', () => ({
+  getPhishingTestResultAsync: jest.fn(() =>
+    Promise.resolve({ result: false, name: '' }),
+  ),
+}));
+
+jest.mock('../../../util/browser/handleWebShare', () => ({
+  WEB_SHARE_MAX_MESSAGE_LENGTH: 15_000_000,
+  handleWebShare: jest.fn(() => Promise.resolve({ status: 'success' })),
+}));
+
+jest.mock('../../../util/browser/handleWebDownload', () => ({
+  WEB_DOWNLOAD_MAX_MESSAGE_LENGTH: 15_000_000,
+  handleWebDownload: jest.fn(() => Promise.resolve()),
+}));
+
+jest.mock('../../hooks/useNetworkEnablement/useNetworkEnablement', () => ({
+  useNetworkEnablement: () => ({
+    namespace: 'eip155',
+    enabledNetworksByNamespace: {},
+    enabledNetworksForCurrentNamespace: {},
+    enabledNetworksForAllNamespaces: {},
+    networkEnablementController: {},
+    enableNetwork: jest.fn(),
+    disableNetwork: jest.fn(),
+    enableAllPopularNetworks: jest.fn(),
+    popularEvmNetworks: [],
+    popularMultichainNetworks: [],
+    popularNetworks: [],
+    isNetworkEnabled: jest.fn(),
+    hasOneEnabledNetwork: false,
+    tryEnableEvmNetwork: jest.fn(),
+  }),
+}));
+
+const mockProps = {
+  id: 1,
+  activeTab: 1,
+  defaultProtocol: 'https://',
+  searchEngine: 'Google',
+  newTab: jest.fn(),
+  addBookmark: jest.fn(),
+  updateTabInfo: jest.fn(),
+  showTabs: jest.fn(),
+  isInTabsView: false,
+  initialUrl: 'https://metamask.io',
+  homePageUrl: AppConstants.HOMEPAGE_URL,
+};
+
+describe('BrowserTab', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockInjectJavaScript.mockClear();
+    webViewMountCount = 0;
+    mockBackgroundBridgeInstances.length = 0;
+  });
+
+  it('render Browser', async () => {
+    renderWithProvider(<BrowserTab {...mockProps} />, {
+      state: mockInitialState,
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('browser-webview')).toBeVisible(),
     );
-    expect(wrapper).toMatchSnapshot();
+  });
+
+  describe('Back Button', () => {
+    it('renders back button when URL bar is not focused', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+    });
+
+    it('goes back when close button is pressed and opened from benefit', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} fromBenefit />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      fireEvent.press(screen.getByTestId('browser-tab-close-button'));
+
+      expect(mockNavigation.goBack).toHaveBeenCalledTimes(1);
+      expect(mockNavigation.navigate).not.toHaveBeenCalledWith(
+        Routes.TRENDING_VIEW,
+        expect.anything(),
+      );
+    });
+
+    it('goes back when close button is pressed and opened from market insights', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} fromMarketInsights />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      fireEvent.press(screen.getByTestId('browser-tab-close-button'));
+
+      expect(mockNavigation.goBack).toHaveBeenCalledTimes(1);
+      expect(mockNavigation.navigate).not.toHaveBeenCalledWith(
+        Routes.TRENDING_VIEW,
+        expect.anything(),
+      );
+    });
+
+    it('returns to Explore search when close button is pressed and opened from explore search', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} fromExploreSearch />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      fireEvent.press(screen.getByTestId('browser-tab-close-button'));
+
+      // Search is the previous root-stack screen; goBack restores it.
+      expect(mockNavigation.goBack).toHaveBeenCalledTimes(1);
+      expect(mockNavigation.navigate).not.toHaveBeenCalledWith(
+        Routes.HOME_TABS,
+        undefined,
+        { pop: true },
+      );
+      expect(mockNavigation.navigate).not.toHaveBeenCalledWith(
+        Routes.TRENDING_VIEW,
+        expect.anything(),
+      );
+    });
+
+    it('navigates to Card Home when close button is pressed and opened from card', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} fromCard />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      fireEvent.press(screen.getByTestId('browser-tab-close-button'));
+
+      expect(mockNavigation.navigate).toHaveBeenCalledWith(
+        Routes.CARD.ROOT,
+        {
+          screen: Routes.CARD.HOME,
+          params: {
+            screen: Routes.CARD.HOME,
+          },
+        },
+        { pop: true },
+      );
+      expect(mockNavigation.navigate).not.toHaveBeenCalledWith(
+        Routes.TRENDING_VIEW,
+        expect.anything(),
+      );
+    });
+
+    it('navigates to Money Home when close button is pressed and opened from money', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} fromMoney />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      fireEvent.press(screen.getByTestId('browser-tab-close-button'));
+
+      expect(mockNavigation.navigate).toHaveBeenCalledWith(
+        Routes.HOME_TABS,
+        {
+          screen: Routes.MONEY.ROOT,
+          params: { screen: Routes.MONEY.HOME },
+        },
+        { pop: true },
+      );
+      expect(mockNavigation.navigate).not.toHaveBeenCalledWith(
+        Routes.TRENDING_VIEW,
+        expect.anything(),
+      );
+    });
+
+    it('goes back when close button is pressed from Earn strategy selection', async () => {
+      renderWithProvider(
+        <BrowserTab {...mockProps} fromEarnStrategySelection />,
+        {
+          state: mockInitialState,
+        },
+      );
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeOnTheScreen(),
+      );
+
+      fireEvent.press(screen.getByTestId('browser-tab-close-button'));
+
+      expect(mockNavigation.goBack).toHaveBeenCalledTimes(1);
+      expect(mockNavigation.navigate).not.toHaveBeenCalledWith(
+        Routes.TRENDING_VIEW,
+        expect.anything(),
+      );
+    });
+  });
+
+  describe('WebView originWhitelist', () => {
+    it('sets originWhitelist to wildcard for all URLs', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() => {
+        const webView = screen.getByTestId('browser-webview');
+        expect(webView.props.originWhitelist).toEqual(['*']);
+      });
+    });
+  });
+
+  describe('WebView onShouldStartLoadWithRequest', () => {
+    it('blocks ftp URL protocol', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      expect(
+        onShouldStartLoadWithRequest({
+          url: 'ftp://example.com',
+        }),
+      ).toBe(false);
+    });
+
+    it('Stops webview from loading resource and prompts user', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      expect(
+        onShouldStartLoadWithRequest({
+          url: 'tel:+1234567890',
+        }),
+      ).toBe(false);
+    });
+
+    it('allow https resorce to load on webview', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      expect(
+        onShouldStartLoadWithRequest({
+          url: 'https://google.com',
+        }),
+      ).toBe(true);
+    });
+
+    it('rejects https URLs with explicit non-default ports', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      expect(
+        onShouldStartLoadWithRequest({
+          url: 'https://example.com:83/page',
+        }),
+      ).toBe(false);
+    });
+
+    it('shows alert for non-whitelisted protocol javascript:', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const onShouldStartLoadWithRequest =
+        webView.props.onShouldStartLoadWithRequest;
+
+      expect(
+        onShouldStartLoadWithRequest({
+          // eslint-disable-next-line no-script-url
+          url: 'javascript://example.com',
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe('WebView onLoadStart dapp scanning', () => {
+    it('forwards the full URL including path to the scanner', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const fullUrl = 'https://shared-host.example/view/test-path';
+
+      // Flag the URL so onLoadStart cancels the load (early return).
+      jest.mocked(getPhishingTestResultAsync).mockResolvedValueOnce({
+        result: true,
+        name: '',
+        type: 'DAPP_SCANNING' as PhishingDetectorResultType,
+      });
+
+      let result: boolean | undefined;
+      await act(async () => {
+        result = await webView.props.onLoadStart({
+          nativeEvent: { url: fullUrl },
+        });
+      });
+
+      // The full URL (with path) must be forwarded to the scanner, not the origin.
+      expect(getPhishingTestResultAsync).toHaveBeenCalledWith(
+        fullUrl,
+        RequestSourceFlow.Browser,
+      );
+      expect(getPhishingTestResultAsync).not.toHaveBeenCalledWith(
+        'https://shared-host.example',
+        expect.anything(),
+      );
+      // Loading the flagged page is cancelled.
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('WebView onOpenWindow', () => {
+    it('passes onOpenWindow handler to WebView', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+
+      expect(typeof webView.props.onOpenWindow).toBe('function');
+    });
+
+    it('updates WebView source uri when onOpenWindow fires', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const { onOpenWindow } = screen.getByTestId('browser-webview').props;
+
+      await act(async () => {
+        onOpenWindow({
+          nativeEvent: { targetUrl: 'https://stake.lido.fi' },
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('browser-webview').props.source.uri).toBe(
+          'https://stake.lido.fi',
+        );
+      });
+      expect(mockInjectJavaScript).not.toHaveBeenCalledWith(
+        expect.stringContaining('window.location.href'),
+      );
+    });
+
+    it('sanitizes single quotes in the target URL before updating source', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const { onOpenWindow } = screen.getByTestId('browser-webview').props;
+
+      await act(async () => {
+        onOpenWindow({
+          nativeEvent: { targetUrl: "https://example.com/path?q='test'" },
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('browser-webview').props.source.uri).toBe(
+          'https://example.com/path?q=%27test%27',
+        );
+      });
+    });
+
+    it('does not update WebView source when targetUrl is empty', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const initialUri = webView.props.source.uri;
+      const { onOpenWindow } = webView.props;
+
+      await act(async () => {
+        onOpenWindow({
+          nativeEvent: { targetUrl: '' },
+        });
+      });
+
+      expect(screen.getByTestId('browser-webview').props.source.uri).toBe(
+        initialUri,
+      );
+      expect(mockStopLoading).not.toHaveBeenCalled();
+    });
+
+    it('reloads WebView when onOpenWindow targets the current uri', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const { onOpenWindow } = screen.getByTestId('browser-webview').props;
+
+      await act(async () => {
+        onOpenWindow({
+          nativeEvent: { targetUrl: mockProps.initialUrl },
+        });
+      });
+
+      expect(mockReload).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('browser-webview').props.source.uri).toBe(
+        mockProps.initialUrl,
+      );
+    });
+
+    it('does not navigate when targetUrl is a javascript: URL', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const initialUri = webView.props.source.uri;
+      const mountsBefore = webViewMountCount;
+
+      await act(async () => {
+        webView.props.onOpenWindow({
+          // eslint-disable-next-line no-script-url
+          nativeEvent: { targetUrl: 'javascript:alert(1)' },
+        });
+      });
+
+      expect(screen.getByTestId('browser-webview').props.source.uri).toBe(
+        initialUri,
+      );
+      expect(webViewMountCount).toBe(mountsBefore);
+      expect(mockReload).not.toHaveBeenCalled();
+    });
+
+    it('remounts WebView when onOpenWindow navigates to a new URL', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const mountsBefore = webViewMountCount;
+
+      await act(async () => {
+        screen.getByTestId('browser-webview').props.onOpenWindow({
+          nativeEvent: { targetUrl: 'https://example.com' },
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('browser-webview').props.source.uri).toBe(
+          'https://example.com',
+        );
+        expect(webViewMountCount).toBeGreaterThan(mountsBefore);
+      });
+    });
+  });
+
+  describe('Autocomplete Predictions result', () => {
+    it("opens Predict with the result's own intent", async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+      const autocomplete = screen.UNSAFE_getByType(UrlAutocomplete);
+
+      act(() => {
+        autocomplete.props.onSelect({
+          category: UrlAutocompleteCategory.Predictions,
+          id: 'market-1',
+          title: 'Will Bitcoin reach $100k?',
+          subtitle: 'Open',
+          intent: { type: 'home', entryPoint: 'search' },
+        });
+      });
+
+      expect(mockNavigation.navigate).toHaveBeenCalledWith(
+        Routes.PREDICT.ROOT,
+        expect.objectContaining({
+          screen: Routes.PREDICT.MARKET_LIST,
+          params: expect.objectContaining({ entryPoint: 'search' }),
+        }),
+      );
+    });
+  });
+
+  describe('URL bar navigation', () => {
+    it('updates WebView source uri when URL bar submits a new URL', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const mountsBefore = webViewMountCount;
+
+      fireEvent.press(screen.getByTestId('browser-url-display-text'));
+      const urlInput = screen.getByTestId('browser-modal-url-input');
+      fireEvent(urlInput, 'submitEditing', {
+        nativeEvent: { text: 'https://example.com' },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('browser-webview').props.source.uri).toBe(
+          'https://example.com',
+        );
+        expect(webViewMountCount).toBeGreaterThan(mountsBefore);
+      });
+      expect(mockInjectJavaScript).not.toHaveBeenCalledWith(
+        expect.stringContaining('window.location.href'),
+      );
+    });
+
+    it('updates WebView source uri when a Recents result is pressed', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: {
+          ...mockInitialState,
+          browser: {
+            ...mockInitialState.browser,
+            history: [{ url: 'https://example.com', name: 'Example' }],
+          },
+        },
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      fireEvent.press(screen.getByTestId('browser-url-display-text'));
+      // RNTL does not fire TextInput onFocus from ref.focus(); focus explicitly
+      // so isUrlBarFocused is true while editing.
+      fireEvent(screen.getByTestId('browser-modal-url-input'), 'focus');
+      expect(
+        screen.queryByTestId('browser-tab-close-button'),
+      ).not.toBeOnTheScreen();
+
+      const recentResult = await screen.findByText('Example', {
+        includeHiddenElements: true,
+      });
+      // pressIn suppresses URL-bar blur so onPress still runs
+      fireEvent(recentResult, 'pressIn');
+      fireEvent.press(recentResult);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('browser-webview').props.source.uri).toBe(
+          'https://example.com',
+        );
+      });
+
+      // Bottom bar stays mounted while editing (hidden visually), so edit mode
+      // can end immediately after navigation without remounting it (MCWP-748).
+      await waitFor(() => {
+        expect(
+          screen.queryByTestId('browser-tab-close-button'),
+        ).toBeOnTheScreen();
+      });
+      expect(mockInjectJavaScript).not.toHaveBeenCalledWith(
+        expect.stringContaining('window.location.href'),
+      );
+    });
+  });
+
+  describe('WebView onNavigationStateChange SPA URL resolution', () => {
+    const portfolioUrl = 'https://meyfi.meey.dev/portfolio';
+    const emailVerifyUrl = 'https://meyfi.meey.dev/portfolio/email-verify';
+
+    const commitPage = async (
+      webView: { props: Record<string, unknown> },
+      url: string,
+    ) => {
+      const onLoadEnd = webView.props.onLoadEnd as (event: {
+        nativeEvent: Record<string, unknown>;
+      }) => void;
+
+      await act(async () => {
+        onLoadEnd({
+          nativeEvent: {
+            url,
+            title: url,
+            canGoBack: false,
+            canGoForward: false,
+          },
+        });
+      });
+    };
+
+    it('updates the address bar when a same-origin path changes without a page load', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, portfolioUrl);
+
+      const bridge = mockBackgroundBridgeInstances.at(-1);
+      bridge?.onDisconnect.mockClear();
+      mockProps.updateTabInfo.mockClear();
+
+      const { onNavigationStateChange } = webView.props;
+
+      await act(async () => {
+        onNavigationStateChange({
+          url: emailVerifyUrl,
+          title: 'Email verify',
+          loading: false,
+          canGoBack: true,
+          canGoForward: false,
+        });
+      });
+
+      expect(bridge?.onDisconnect).not.toHaveBeenCalled();
+      expect(mockProps.updateTabInfo).toHaveBeenCalledWith(1, {
+        url: emailVerifyUrl,
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('browser-url-display-text'),
+        ).toHaveTextContent(emailVerifyUrl);
+      });
+    });
+
+    it('leaves the address bar on the current path while a same-origin navigation is loading', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, portfolioUrl);
+
+      mockProps.updateTabInfo.mockClear();
+
+      const { onNavigationStateChange } = webView.props;
+
+      // The handler is synchronous. An async act waits for every pending
+      // promise in the tree, which times out under a loaded CI worker.
+      act(() => {
+        onNavigationStateChange({
+          url: emailVerifyUrl,
+          title: 'Email verify',
+          loading: true,
+          canGoBack: true,
+          canGoForward: false,
+        });
+      });
+
+      expect(mockProps.updateTabInfo).not.toHaveBeenCalled();
+      expect(screen.getByTestId('browser-url-display-text')).toHaveTextContent(
+        portfolioUrl,
+      );
+    });
+  });
+
+  describe('WebView onNavigationStateChange backforward URL resolution', () => {
+    const extractRequestIdFromInjectScript = (): string => {
+      const injectScript = mockInjectJavaScript.mock.calls[0]?.[0] as string;
+      const match = injectScript.match(/requestId:\s*"([^"]+)"/);
+      if (!match?.[1]) {
+        throw new Error('Expected document URL sync script to be injected');
+      }
+      return match[1];
+    };
+
+    it('does not sync the URL bar while a backforward navigation is loading', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onNavigationStateChange } = webView.props;
+
+      mockNavigation.setParams.mockClear();
+      // Ignore the in-page bridge injected by an earlier load. A loading
+      // back/forward must not inject the document-URL sync script.
+      mockInjectJavaScript.mockClear();
+
+      act(() => {
+        onNavigationStateChange({
+          url: 'https://example.com:83/page',
+          title: 'Example',
+          loading: true,
+          canGoBack: true,
+          canGoForward: false,
+          navigationType: 'backforward',
+        });
+      });
+
+      expect(mockNavigation.setParams).not.toHaveBeenCalled();
+      expect(mockInjectJavaScript).not.toHaveBeenCalled();
+    });
+
+    it('updates the URL bar from the document URL when origin matches the native WebView URL', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onNavigationStateChange, onMessage } = webView.props;
+
+      mockNavigation.setParams.mockClear();
+
+      await act(async () => {
+        onNavigationStateChange({
+          url: 'https://example.org/page',
+          title: 'Example Org',
+          loading: false,
+          canGoBack: true,
+          canGoForward: false,
+          navigationType: 'backforward',
+        });
+      });
+
+      expect(mockInjectJavaScript).toHaveBeenCalledTimes(1);
+      expect(mockNavigation.setParams).not.toHaveBeenCalled();
+
+      const requestId = extractRequestIdFromInjectScript();
+
+      await act(async () => {
+        onMessage({
+          nativeEvent: {
+            data: JSON.stringify({
+              type: DOCUMENT_URL_FOR_URL_BAR,
+              payload: {
+                requestId,
+                url: 'https://example.org/app',
+                title: 'Example Org App',
+              },
+            }),
+          },
+        });
+      });
+
+      await waitFor(() =>
+        expect(mockNavigation.setParams).toHaveBeenCalledWith(
+          expect.objectContaining({
+            url: expect.stringContaining('example.org'),
+          }),
+        ),
+      );
+    });
+
+    it('keeps the native WebView origin when the page reports a different origin', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onNavigationStateChange, onMessage } = webView.props;
+
+      mockNavigation.setParams.mockClear();
+
+      await act(async () => {
+        onNavigationStateChange({
+          url: 'https://example.org/page',
+          title: 'Example Org',
+          loading: false,
+          canGoBack: true,
+          canGoForward: false,
+          navigationType: 'backforward',
+        });
+      });
+
+      const requestId = extractRequestIdFromInjectScript();
+
+      await act(async () => {
+        onMessage({
+          nativeEvent: {
+            data: JSON.stringify({
+              type: DOCUMENT_URL_FOR_URL_BAR,
+              payload: {
+                requestId,
+                url: 'https://example.com/page',
+                title: 'Example',
+              },
+            }),
+          },
+        });
+      });
+
+      await waitFor(() =>
+        expect(mockNavigation.setParams).toHaveBeenCalledWith(
+          expect.objectContaining({
+            url: expect.stringContaining('example.org'),
+          }),
+        ),
+      );
+      expect(mockNavigation.setParams).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: expect.stringContaining('example.com'),
+        }),
+      );
+    });
+
+    it('keeps the native WebView origin when the page reports a URL with a disallowed explicit port', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onNavigationStateChange, onMessage } = webView.props;
+
+      mockNavigation.setParams.mockClear();
+
+      await act(async () => {
+        onNavigationStateChange({
+          url: 'https://example.org/page',
+          title: 'Example Org',
+          loading: false,
+          canGoBack: true,
+          canGoForward: false,
+          navigationType: 'backforward',
+        });
+      });
+
+      const requestId = extractRequestIdFromInjectScript();
+
+      await act(async () => {
+        onMessage({
+          nativeEvent: {
+            data: JSON.stringify({
+              type: DOCUMENT_URL_FOR_URL_BAR,
+              payload: {
+                requestId,
+                url: 'https://example.com:8080/page',
+                title: 'Example',
+              },
+            }),
+          },
+        });
+      });
+
+      await waitFor(() =>
+        expect(mockNavigation.setParams).toHaveBeenCalledWith(
+          expect.objectContaining({
+            url: expect.stringContaining('example.org'),
+          }),
+        ),
+      );
+      expect(mockNavigation.setParams).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: expect.stringContaining('example.com'),
+        }),
+      );
+    });
+
+    it('does not commit a backforward URL when the native WebView URL has a disallowed explicit port', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onNavigationStateChange, onMessage } = webView.props;
+
+      mockNavigation.setParams.mockClear();
+
+      await act(async () => {
+        onNavigationStateChange({
+          url: 'https://example.com:8080/page',
+          title: 'Example',
+          loading: false,
+          canGoBack: true,
+          canGoForward: false,
+          navigationType: 'backforward',
+        });
+      });
+
+      const requestId = extractRequestIdFromInjectScript();
+
+      await act(async () => {
+        onMessage({
+          nativeEvent: {
+            data: JSON.stringify({
+              type: DOCUMENT_URL_FOR_URL_BAR,
+              payload: {
+                requestId,
+                url: 'https://example.com:8080/page',
+                title: 'Example',
+              },
+            }),
+          },
+        });
+      });
+
+      expect(mockNavigation.setParams).not.toHaveBeenCalled();
+    });
+
+    it('ignores document URL sync messages without a matching pending request', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onMessage } = webView.props;
+
+      mockNavigation.setParams.mockClear();
+
+      onMessage({
+        nativeEvent: {
+          data: JSON.stringify({
+            type: DOCUMENT_URL_FOR_URL_BAR,
+            payload: {
+              requestId: 'unexpected-request-id',
+              url: 'https://example.com',
+              title: 'Example',
+            },
+          }),
+        },
+      });
+
+      expect(mockNavigation.setParams).not.toHaveBeenCalled();
+    });
+
+    it('routes Web Share API messages to handleWebShare', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onMessage } = webView.props;
+      const sharePayload = {
+        title: 'Share title',
+        text: 'Share text',
+        url: 'https://example.com',
+      };
+
+      onMessage({
+        nativeEvent: {
+          data: JSON.stringify({
+            type: WEB_SHARE_MESSAGE_TYPE,
+            payload: sharePayload,
+          }),
+        },
+      });
+
+      expect(handleWebShare).toHaveBeenCalledWith(sharePayload);
+    });
+
+    it('injects the share result back into the WebView to settle navigator.share()', async () => {
+      jest.mocked(handleWebShare).mockResolvedValueOnce({
+        status: 'cancelled',
+      });
+
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onMessage } = webView.props;
+
+      mockInjectJavaScript.mockClear();
+
+      await act(async () => {
+        onMessage({
+          nativeEvent: {
+            data: JSON.stringify({
+              type: WEB_SHARE_MESSAGE_TYPE,
+              payload: {
+                id: 'mm-share-123',
+                url: 'https://example.com',
+              },
+            }),
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const injectedResultScript = mockInjectJavaScript.mock.calls
+          .map((call) => call[0] as string)
+          .find((script) => script.includes('__mmResolveWebShare'));
+        expect(injectedResultScript).toBeDefined();
+        expect(injectedResultScript).toContain('mm-share-123');
+        expect(injectedResultScript).toContain('cancelled');
+      });
+    });
+
+    it('settles navigator.share() with an error when a share message exceeds the size limit', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onMessage } = webView.props;
+
+      mockInjectJavaScript.mockClear();
+
+      // Construct an oversized share message (type first so it is detected as a
+      // Web Share message, id near the start so it is recoverable).
+      const oversizedData = `{"type":"${WEB_SHARE_MESSAGE_TYPE}","payload":{"id":"mm-share-oversized","files":[{"data":"${'a'.repeat(
+        15_000_001,
+      )}"}]}}`;
+
+      onMessage({
+        nativeEvent: {
+          data: oversizedData,
+        },
+      });
+
+      expect(handleWebShare).not.toHaveBeenCalled();
+
+      const injectedResultScript = mockInjectJavaScript.mock.calls
+        .map((call) => call[0] as string)
+        .find((script) => script.includes('__mmResolveWebShare'));
+      expect(injectedResultScript).toBeDefined();
+      expect(injectedResultScript).toContain('mm-share-oversized');
+      expect(injectedResultScript).toContain('error');
+    });
+
+    it('updates tab URL when onLoadEnd fires for a JS cross-origin redirect without onLoadStart', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const redirectedUrl = 'https://other-domain.com/page';
+      const { onLoadEnd } = screen.getByTestId('browser-webview').props;
+
+      await act(async () => {
+        onLoadEnd({
+          nativeEvent: {
+            url: redirectedUrl,
+            title: 'Redirect Target',
+            canGoBack: true,
+            canGoForward: false,
+          },
+        });
+      });
+
+      expect(mockProps.updateTabInfo).toHaveBeenCalledWith(1, {
+        url: redirectedUrl,
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId('browser-url-display-text'),
+        ).toHaveTextContent('https://other-domain.com/page');
+      });
+    });
+
+    it('routes Web Download messages to handleWebDownload', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      const { onMessage } = webView.props;
+      const downloadPayload = {
+        filename: 'mm-ten-card-blob.png',
+        mimeType: 'image/png',
+        data: 'data:image/png;base64,iVBORw0KGgo=',
+      };
+
+      onMessage({
+        nativeEvent: {
+          data: JSON.stringify({
+            type: WEB_DOWNLOAD_MESSAGE_TYPE,
+            payload: downloadPayload,
+          }),
+        },
+      });
+
+      expect(handleWebDownload).toHaveBeenCalledWith(downloadPayload);
+    });
+  });
+
+  describe('BackgroundBridge lifecycle on navigation', () => {
+    const dappUrl = 'https://app.uniswap.org/';
+    const otherOriginUrl = 'https://example.org/';
+    const sameOriginNextUrl = 'https://app.uniswap.org/swap';
+    const redirectOriginUrl = 'https://final.example/';
+
+    const commitPage = async (
+      webView: { props: Record<string, unknown> },
+      url: string,
+    ) => {
+      const onLoadEnd = webView.props.onLoadEnd as (event: {
+        nativeEvent: Record<string, unknown>;
+      }) => void;
+      await act(async () => {
+        onLoadEnd({
+          nativeEvent: {
+            url,
+            title: url,
+            canGoBack: true,
+            canGoForward: false,
+          },
+        });
+      });
+    };
+
+    const startLoad = async (
+      webView: { props: Record<string, unknown> },
+      url: string,
+    ) => {
+      const onLoadStart = webView.props.onLoadStart as (event: {
+        nativeEvent: { url: string };
+      }) => Promise<unknown>;
+      await act(async () => {
+        await onLoadStart({ nativeEvent: { url } });
+      });
+    };
+
+    it('disconnects the previous bridge on cross-origin onLoadStart and does not forward provider messages to it', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+
+      expect(BackgroundBridge).toHaveBeenCalled();
+      const previousBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(previousBridge).toBeDefined();
+
+      await startLoad(webView, otherOriginUrl);
+
+      expect(previousBridge?.onDisconnect).toHaveBeenCalledTimes(1);
+
+      const destinationBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(destinationBridge).toBeDefined();
+      expect(destinationBridge).not.toBe(previousBridge);
+      expect(BackgroundBridge).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          url: 'https://example.org',
+        }),
+      );
+
+      const onMessage = webView.props.onMessage as (event: {
+        nativeEvent: { data: string; url?: string };
+      }) => void;
+      onMessage({
+        nativeEvent: {
+          url: otherOriginUrl,
+          data: JSON.stringify({
+            name: 'metamask-provider',
+            origin: 'https://app.uniswap.org',
+            data: { method: 'eth_accounts', params: [] },
+          }),
+        },
+      });
+
+      expect(previousBridge?.onMessage).not.toHaveBeenCalled();
+      expect(destinationBridge?.onMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          origin: otherOriginUrl,
+        }),
+      );
+    });
+
+    it('does not disconnect the bridge on same-origin onLoadStart', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+
+      const previousBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(previousBridge).toBeDefined();
+      previousBridge?.onDisconnect.mockClear();
+
+      await startLoad(webView, sameOriginNextUrl);
+
+      expect(previousBridge?.onDisconnect).not.toHaveBeenCalled();
+    });
+
+    it('keeps the destination-origin bridge on a same-origin path load before commit', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+      await startLoad(webView, otherOriginUrl);
+
+      const destinationBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(destinationBridge).toBeDefined();
+      destinationBridge?.onDisconnect.mockClear();
+
+      // Document is still the previous origin until commit. Comparing against
+      // that committed URL would tear this bridge down incorrectly.
+      await startLoad(webView, 'https://example.org/path');
+
+      expect(destinationBridge?.onDisconnect).not.toHaveBeenCalled();
+      expect(mockBackgroundBridgeInstances.at(-1)).toBe(destinationBridge);
+    });
+
+    it('rebinds the bridge through a cross-origin redirect before commit', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+
+      const originBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(originBridge).toBeDefined();
+
+      await startLoad(webView, otherOriginUrl);
+
+      const intermediateBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(intermediateBridge).toBeDefined();
+      expect(intermediateBridge).not.toBe(originBridge);
+      expect(BackgroundBridge).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          url: 'https://example.org',
+        }),
+      );
+
+      await startLoad(webView, redirectOriginUrl);
+
+      expect(intermediateBridge?.onDisconnect).toHaveBeenCalledTimes(1);
+
+      const finalBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(finalBridge).toBeDefined();
+      expect(finalBridge).not.toBe(intermediateBridge);
+      expect(BackgroundBridge).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          url: 'https://final.example',
+        }),
+      );
+
+      const onMessage = webView.props.onMessage as (event: {
+        nativeEvent: { data: string; url?: string };
+      }) => void;
+      onMessage({
+        nativeEvent: {
+          url: redirectOriginUrl,
+          data: JSON.stringify({
+            name: 'metamask-provider',
+            origin: 'https://example.org',
+            data: { method: 'eth_accounts', params: [] },
+          }),
+        },
+      });
+
+      expect(intermediateBridge?.onMessage).not.toHaveBeenCalled();
+      expect(finalBridge?.onMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          origin: redirectOriginUrl,
+        }),
+      );
+    });
+
+    it('rebuilds the bridge on same-origin URL bar navigation because the WebView remounts', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+
+      const previousBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(previousBridge).toBeDefined();
+      previousBridge?.onDisconnect.mockClear();
+      const mountsBefore = webViewMountCount;
+
+      fireEvent.press(screen.getByTestId('browser-url-display-text'));
+      const urlInput = screen.getByTestId('browser-modal-url-input');
+      fireEvent(urlInput, 'submitEditing', {
+        nativeEvent: { text: sameOriginNextUrl },
+      });
+
+      await waitFor(() => {
+        expect(webViewMountCount).toBeGreaterThan(mountsBefore);
+      });
+
+      const remountedWebView = screen.getByTestId('browser-webview');
+      await startLoad(remountedWebView, sameOriginNextUrl);
+
+      expect(previousBridge?.onDisconnect).toHaveBeenCalled();
+      expect(mockBackgroundBridgeInstances.at(-1)).not.toBe(previousBridge);
+    });
+
+    it('keeps the bridge and drops provider messages when onLoadStart is a blank remount URL', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+
+      const previousBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(previousBridge).toBeDefined();
+      previousBridge?.onDisconnect.mockClear();
+      previousBridge?.onMessage.mockClear();
+
+      await startLoad(webView, 'about:blank');
+
+      expect(previousBridge?.onDisconnect).not.toHaveBeenCalled();
+
+      const onMessage = webView.props.onMessage as (event: {
+        nativeEvent: { data: string; url?: string };
+      }) => void;
+      onMessage({
+        nativeEvent: {
+          url: 'about:blank',
+          data: JSON.stringify({
+            name: 'metamask-provider',
+            origin: dappUrl,
+            data: { method: 'eth_accounts', params: [] },
+          }),
+        },
+      });
+
+      expect(previousBridge?.onMessage).not.toHaveBeenCalled();
+    });
+
+    it('uses the WebView frame URL as the provider message origin', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+
+      const bridge = mockBackgroundBridgeInstances.at(-1);
+      expect(bridge).toBeDefined();
+      bridge?.onMessage.mockClear();
+
+      const onMessage = webView.props.onMessage as (event: {
+        nativeEvent: { data: string; url?: string };
+      }) => void;
+      onMessage({
+        nativeEvent: {
+          url: dappUrl,
+          data: JSON.stringify({
+            name: 'metamask-provider',
+            origin: 'https://other.example',
+            data: { method: 'eth_accounts', params: [] },
+          }),
+        },
+      });
+
+      expect(bridge?.onMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          origin: dappUrl,
+          data: { method: 'eth_accounts', params: [] },
+        }),
+      );
+    });
+
+    it('drops provider messages when the native frame URL is missing', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+
+      const bridge = mockBackgroundBridgeInstances.at(-1);
+      expect(bridge).toBeDefined();
+      bridge?.onMessage.mockClear();
+
+      const onMessage = webView.props.onMessage as (event: {
+        nativeEvent: { data: string; url?: string };
+      }) => void;
+      onMessage({
+        nativeEvent: {
+          data: JSON.stringify({
+            name: 'metamask-provider',
+            origin: dappUrl,
+            data: { method: 'eth_accounts', params: [] },
+          }),
+        },
+      });
+
+      expect(bridge?.onMessage).not.toHaveBeenCalled();
+    });
+
+    it('disconnects the bridge on cross-origin backforward before document-URL commit and rebuilds after resolution', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+
+      const previousBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(previousBridge).toBeDefined();
+      previousBridge?.onDisconnect.mockClear();
+      mockInjectJavaScript.mockClear();
+      const bridgeCountAfterCommit = mockBackgroundBridgeInstances.length;
+
+      const onNavigationStateChange = webView.props.onNavigationStateChange as (
+        event: Record<string, unknown>,
+      ) => void;
+      const onMessage = webView.props.onMessage as (event: {
+        nativeEvent: { data: string };
+      }) => void;
+
+      await act(async () => {
+        onNavigationStateChange({
+          url: otherOriginUrl,
+          title: 'Example Org',
+          loading: false,
+          canGoBack: true,
+          canGoForward: false,
+          navigationType: 'backforward',
+        });
+      });
+
+      expect(previousBridge?.onDisconnect).toHaveBeenCalledTimes(1);
+      expect(mockInjectJavaScript).toHaveBeenCalledTimes(1);
+
+      const injectScript = mockInjectJavaScript.mock.calls[0]?.[0] as string;
+      const requestIdMatch = injectScript.match(/requestId:\s*"([^"]+)"/);
+      expect(requestIdMatch?.[1]).toBeDefined();
+
+      await act(async () => {
+        onMessage({
+          nativeEvent: {
+            data: JSON.stringify({
+              type: DOCUMENT_URL_FOR_URL_BAR,
+              payload: {
+                requestId: requestIdMatch?.[1],
+                url: otherOriginUrl,
+                title: 'Example Org',
+              },
+            }),
+          },
+        });
+      });
+
+      await waitFor(() =>
+        expect(mockBackgroundBridgeInstances.length).toBeGreaterThan(
+          bridgeCountAfterCommit,
+        ),
+      );
+      expect(BackgroundBridge).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          url: 'https://example.org',
+        }),
+      );
+    });
+
+    it('rebinds on backforward against the live bridge when the committed URL is stale', async () => {
+      renderWithProvider(<BrowserTab {...mockProps} />, {
+        state: mockInitialState,
+      });
+
+      await waitFor(() =>
+        expect(screen.getByTestId('browser-webview')).toBeVisible(),
+      );
+
+      const webView = screen.getByTestId('browser-webview');
+      await commitPage(webView, dappUrl);
+      await startLoad(webView, otherOriginUrl);
+
+      const destinationBridge = mockBackgroundBridgeInstances.at(-1);
+      expect(destinationBridge).toBeDefined();
+      destinationBridge?.onDisconnect.mockClear();
+      mockInjectJavaScript.mockClear();
+
+      const onNavigationStateChange = webView.props.onNavigationStateChange as (
+        event: Record<string, unknown>,
+      ) => void;
+
+      // Committed document is still the dapp. Back to that origin must still
+      // tear down the destination bridge that was bound on navigation start.
+      await act(async () => {
+        onNavigationStateChange({
+          url: dappUrl,
+          title: 'Uniswap',
+          loading: false,
+          canGoBack: true,
+          canGoForward: true,
+          navigationType: 'backforward',
+        });
+      });
+
+      expect(destinationBridge?.onDisconnect).toHaveBeenCalledTimes(1);
+      expect(BackgroundBridge).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          url: 'https://app.uniswap.org',
+        }),
+      );
+    });
   });
 });

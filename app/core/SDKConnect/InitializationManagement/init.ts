@@ -1,6 +1,8 @@
-import { NavigationContainerRef } from '@react-navigation/native';
+import {
+  NavigationContainerRef,
+  ParamListBase,
+} from '@react-navigation/native';
 import { Platform } from 'react-native';
-import AndroidService from '../AndroidSDK/AndroidService';
 import SDKConnect from '../SDKConnect';
 import DevLogger from '../utils/DevLogger';
 import asyncInit from './asyncInit';
@@ -11,7 +13,7 @@ async function init({
   context,
   instance,
 }: {
-  navigation: NavigationContainerRef;
+  navigation: NavigationContainerRef<ParamListBase>;
   context?: string;
   instance: SDKConnect;
 }) {
@@ -28,15 +30,11 @@ async function init({
     return;
   }
 
-  if (!instance.state.androidSDKStarted && Platform.OS === 'android') {
-    DevLogger.log(`SDKConnect::init() - starting android service`);
-    instance.state.androidService = new AndroidService();
-    instance.state.androidSDKStarted = true;
-  }
-
   if (!instance.state.deeplinkingServiceStarted && Platform.OS === 'ios') {
     DevLogger.log(`SDKConnect::init() - starting deeplinking service`);
-    instance.state.deeplinkingService = new DeeplinkProtocolService();
+    const deeplinkingService = new DeeplinkProtocolService();
+    deeplinkingService.loadPersistedConnections();
+    instance.state.deeplinkingService = deeplinkingService;
     instance.state.deeplinkingServiceStarted = true;
   }
 

@@ -1,0 +1,64 @@
+import React from 'react';
+import { Box } from '@metamask/design-system-react-native';
+
+import { usePredictPositions } from '../../hooks/usePredictPositions';
+import type { PredictPosition } from '../../types';
+import PredictPicksForCardItem from './PredictPicksForCardItem';
+import {
+  PREDICT_PICKS_FOR_CARD_TEST_ID,
+  PREDICT_PICKS_FOR_CARD_TEST_IDS,
+} from './PredictPicksForCard.testIds';
+
+interface PredictPicksForCardProps {
+  marketId: string;
+  testID?: string;
+  /**
+   * When true, renders a separator line above the positions list
+   * Only renders if there are positions to display
+   */
+  showSeparator?: boolean;
+  /**
+   * Optional positions array. When provided, skips internal fetching
+   * and uses these positions directly.
+   */
+  positions?: PredictPosition[];
+}
+
+const PredictPicksForCard: React.FC<PredictPicksForCardProps> = ({
+  marketId,
+  testID = PREDICT_PICKS_FOR_CARD_TEST_ID,
+  showSeparator = false,
+  positions: positionsProp,
+}) => {
+  const { data: fetchedPositions = [] } = usePredictPositions({
+    marketId,
+    enabled: !positionsProp,
+    livePriceUpdates: !positionsProp,
+  });
+
+  const basePositions = positionsProp ?? fetchedPositions;
+
+  if (basePositions.length === 0) {
+    return null;
+  }
+
+  return (
+    <Box testID={testID} twClassName="flex-col gap-2">
+      {showSeparator && (
+        <Box
+          testID={`${testID}${PREDICT_PICKS_FOR_CARD_TEST_IDS.SEPARATOR}`}
+          twClassName="h-px bg-border-muted my-2"
+        />
+      )}
+      {basePositions.map((position) => (
+        <PredictPicksForCardItem
+          key={position.id}
+          position={position}
+          testID={testID}
+        />
+      ))}
+    </Box>
+  );
+};
+
+export default PredictPicksForCard;

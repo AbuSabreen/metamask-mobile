@@ -1,105 +1,54 @@
 import React from 'react';
-// eslint-disable-next-line @typescript-eslint/no-shadow
-import { fireEvent, waitFor } from '@testing-library/react-native';
+import {
+  Button,
+  InteractionManager,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { createMockUseAnalyticsHook } from '../../../util/test/analyticsMock';
+import { clone } from 'lodash';
+import {
+  act,
+  fireEvent,
+  waitFor,
+  userEvent,
+} from '@testing-library/react-native';
 import Tokens from './';
-import { BN } from 'ethereumjs-util';
 import renderWithProvider from '../../../util/test/renderWithProvider';
-import { createStackNavigator } from '@react-navigation/stack';
-import Engine from '../../../core/Engine';
-import {
-  getAssetTestId,
-  IMPORT_TOKEN_BUTTON_ID,
-  MAIN_WALLET_VIEW_VIA_TOKENS_ID,
-} from '../../../../wdio/screen-objects/testIDs/Screens/WalletView.testIds';
-import {
-  PORTFOLIO_BUTTON,
-  STAKE_BUTTON,
-  TOTAL_BALANCE_TEXT,
-} from '../../../../wdio/screen-objects/testIDs/Components/Tokens.testIds';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
-import { strings } from '../../../../locales/i18n';
-import AppConstants from '../../../../app/core/AppConstants';
-import Routes from '../../../../app/constants/navigation/Routes';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import initialRootState from '../../../util/test/initial-root-state';
+import { WalletViewSelectorsIDs } from '../../Views/Wallet/WalletView.testIds';
+import { TokenList } from './TokenList/TokenList';
+import { ScrollView } from 'react-native-gesture-handler';
+import { TokenI } from './types';
+import { MUSD_TOKEN_ADDRESS } from '../Earn/constants/musd';
+import BaseControlBar from '../shared/BaseControlBar/BaseControlBar';
+// eslint-disable-next-line import-x/no-namespace
+import * as AssetsListSelectorsModule from '../../../selectors/assets/assets-list';
+// eslint-disable-next-line import-x/no-namespace
+import * as RemoveEvmTokenModule from './util/removeEvmToken';
+// eslint-disable-next-line import-x/no-namespace
+import * as RemoveNonEvmTokenModule from './util/removeNonEvmToken';
 
-const mockEngine = Engine;
-
-jest.mock('../../../core/Engine', () => ({
-  init: () => mockEngine.init({}),
-  getTotalFiatAccountBalance: jest.fn(),
-  context: {
-    TokensController: {
-      ignoreTokens: jest.fn(() => Promise.resolve()),
-    },
-  },
+const mockRefreshTokensForGroup = jest.fn().mockResolvedValue(undefined);
+const mockUseTokenListFilteringEvent = jest.fn();
+jest.mock('./hooks/useTokenListFilteringEvent', () => ({
+  useTokenListFilteringEvent: () => mockUseTokenListFilteringEvent,
 }));
 
-const initialState = {
-  engine: {
-    backgroundState: {
-      ...initialBackgroundState,
-      TokensController: {
-        tokens: [
-          {
-            name: 'Ethereum',
-            symbol: 'ETH',
-            address: '0x0',
-            decimals: 18,
-            isETH: true,
+jest.mock('./hooks/useRefreshTokens', () => ({
+  useRefreshTokens: () => ({ refresh: mockRefreshTokensForGroup }),
+}));
 
-            balanceFiat: '< $0.01',
-            iconUrl: '',
-          },
-          {
-            name: 'Bat',
-            symbol: 'BAT',
-            address: '0x01',
-            decimals: 18,
-            balanceFiat: '$0',
-            iconUrl: '',
-          },
-          {
-            name: 'Link',
-            symbol: 'LINK',
-            address: '0x02',
-            decimals: 18,
-            balanceFiat: '$0',
-            iconUrl: '',
-          },
-        ],
-      },
-      TokenRatesController: {
-        contractExchangeRates: {
-          '0x0': 0.005,
-          '0x01': 0.005,
-          '0x02': 0.005,
-        },
-      },
-      CurrencyRateController: {
-        currentCurrency: 'USD',
-        currencyRates: {
-          ETH: {
-            conversionRate: 1,
-          },
-        },
-      },
-      TokenBalancesController: {
-        contractBalances: {
-          '0x00': new BN(2),
-          '0x01': new BN(2),
-          '0x02': new BN(0),
-        },
-      },
-    },
-  },
-  settings: {
-    primaryCurrency: 'usd',
-    hideZeroBalanceTokens: true,
-  },
-};
+// Mocking versioning for some selectors
+jest.mock('react-native-device-info', () => ({
+  getVersion: jest.fn().mockReturnValue('1.0.0'),
+}));
 
 const mockNavigate = jest.fn();
 const mockPush = jest.fn();
-
 jest.mock('@react-navigation/native', () => {
   const actualReactNavigation = jest.requireActual('@react-navigation/native');
   return {
@@ -111,15 +60,114 @@ jest.mock('@react-navigation/native', () => {
   };
 });
 
-const Stack = createStackNavigator();
-const renderComponent = (state: any = {}) =>
+jest.mock('./TokenList/TokenList', () => ({
+  TokenList: jest.fn().mockImplementation(() => null),
+}));
+
+jest.mock('../shared/BaseControlBar/BaseControlBar', () => ({
+  __esModule: true,
+  default: jest.fn().mockImplementation(() => null),
+}));
+
+/**
+ * For these unit tests, we do not need to test all the actual components, and can mock them.
+ * If we do need to test the actual components in this test, we can use `mockReset` to get back the original component
+ * @returns - Mocked components
+ */
+const arrangeMockComponents = () => {
+  const mockBaseControlBar = jest
+    .mocked(BaseControlBar)
+    .mockImplementation(() => (
+      <View testID="token-list-control-bar">
+        <Button testID="MOCK_NETWORK_FILTER" title="Network" />
+      </View>
+    ));
+
+  const mockTokensList = jest
+    .mocked(TokenList)
+    .mockImplementation(({ tokenKeys, onRefresh, showRemoveMenu }) => (
+      <ScrollView testID="tokens-list-scroll-view">
+        <Button
+          testID="MOCK_TEST_REFRESH_BUTTON"
+          title="Refresh"
+          onPress={onRefresh}
+        />
+        {tokenKeys.map((token) => (
+          <TouchableOpacity
+            key={token.address}
+            testID={`asset-${token.address}`}
+            onLongPress={() =>
+              showRemoveMenu({
+                address: token.address,
+                chainId: token.chainId,
+                isStaked: token.isStaked,
+              } as TokenI)
+            }
+          >
+            <Text>{token.address}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+    ));
+
+  return {
+    mockBaseControlBar,
+    mockTokensList,
+  };
+};
+
+const arrangeMockSelectors = () => {
+  const mockSelectSortedAssetsBySelectedAccountGroup = jest
+    .spyOn(
+      AssetsListSelectorsModule,
+      'selectSortedAssetsBySelectedAccountGroup',
+    )
+    .mockImplementation(() => [
+      { address: '0xToken1', chainId: '0x1', isStaked: false },
+      { address: '0xToken2', chainId: '0x2', isStaked: false },
+      { address: '0xToken3', chainId: '0x3', isStaked: false },
+    ]);
+
+  return {
+    mockSelectSortedAssetsBySelectedAccountGroup,
+  };
+};
+
+const arrangeMockInteractionManager = () => {
+  const mockRunAfterInteractions = jest
+    .spyOn(InteractionManager, 'runAfterInteractions')
+    .mockImplementation((cb) => {
+      if (typeof cb === 'function') {
+        cb();
+      }
+      return {
+        then: jest.fn(),
+        done: jest.fn(),
+        cancel: jest.fn(),
+      };
+    });
+
+  return { mockRunAfterInteractions };
+};
+
+const arrangeMockState = () => clone(initialRootState);
+const initialState = arrangeMockState();
+
+const Stack = createNativeStackNavigator();
+const renderComponent = (
+  state = initialState,
+  isFullView: boolean = false,
+  showOnlyMusd: boolean = false,
+  hasMusdBalanceOnAnyChain?: boolean,
+) =>
   renderWithProvider(
     <Stack.Navigator>
-      <Stack.Screen name="Amount" options={{}}>
-        {(props) => (
+      <Stack.Screen name="Tokens" options={{}}>
+        {() => (
           <Tokens
-            tokens={state.engine.backgroundState.TokensController.tokens}
-            {...props}
+            isFullView={isFullView}
+            showOnlyMusd={showOnlyMusd}
+            hasMusdBalanceOnAnyChain={hasMusdBalanceOnAnyChain}
           />
         )}
       </Stack.Screen>
@@ -128,142 +176,447 @@ const renderComponent = (state: any = {}) =>
   );
 
 describe('Tokens', () => {
+  beforeEach(() => {
+    arrangeMockComponents();
+    arrangeMockSelectors();
+    arrangeMockInteractionManager();
+  });
+
   afterEach(() => {
     mockNavigate.mockClear();
     mockPush.mockClear();
-  });
-  it('should render correctly', () => {
-    const { toJSON } = renderComponent(initialState);
-    expect(toJSON()).toMatchSnapshot();
-  });
-
-  it('should hide zero balance tokens when setting is on', async () => {
-    const { toJSON, getByText, queryByText } = renderComponent(initialState);
-    // ETH and BAT should display
-
-    expect(getByText('Ethereum')).toBeDefined();
-    await waitFor(() => expect(getByText('Bat')).toBeDefined());
-    expect(queryByText('Link')).toBeNull();
-    expect(toJSON()).toMatchSnapshot();
+    jest.clearAllMocks();
+    jest.restoreAllMocks();
+    jest.mocked(TokenList).mockReset();
   });
 
-  it('should show all balance tokens when hideZeroBalanceTokens setting is off', async () => {
-    const { toJSON, getByText } = renderComponent({
-      ...initialState,
-      settings: {
-        primaryCurrency: 'usd',
-        hideZeroBalanceTokens: false,
-      },
-    });
-
-    expect(getByText('Ethereum')).toBeDefined();
-    await waitFor(() => expect(getByText('Bat')).toBeDefined());
-    expect(getByText('Link')).toBeDefined();
-    // All three should display
-    expect(toJSON()).toMatchSnapshot();
-  });
-
-  it('navigates to Asset screen when token is pressed', () => {
-    const { getByText } = renderComponent(initialState);
-    fireEvent.press(getByText('Ethereum'));
-    expect(mockNavigate).toHaveBeenCalledWith('Asset', {
-      ...initialState.engine.backgroundState.TokensController.tokens[0],
-    });
-  });
-
-  it('navigates to AddAsset screen when Add Tokens button is pressed', () => {
-    const { getByTestId } = renderComponent(initialState);
-    fireEvent.press(getByTestId(IMPORT_TOKEN_BUTTON_ID));
-    expect(mockPush).toHaveBeenCalledWith('AddAsset', { assetType: 'token' });
-  });
-
-  it('shows remove menu when remove button is pressed', () => {
-    const { getByTestId, queryAllByTestId } = renderComponent(initialState);
-    fireEvent.press(queryAllByTestId(getAssetTestId('BAT'))[0], 'longPress');
-    expect(getByTestId(MAIN_WALLET_VIEW_VIA_TOKENS_ID)).toBeDefined();
-  });
-
-  it('fiat balance must be defined', () => {
-    const { getByTestId } = renderComponent(initialState);
-
-    expect(getByTestId(TOTAL_BALANCE_TEXT)).toBeDefined();
-  });
-  it('portfolio button should render correctly', () => {
-    const { getByTestId } = renderComponent(initialState);
-
-    expect(getByTestId(PORTFOLIO_BUTTON)).toBeDefined();
-  });
-  it('navigates to Portfolio url when portfolio button is pressed', () => {
-    const { getByTestId } = renderComponent(initialState);
-
-    fireEvent.press(getByTestId(PORTFOLIO_BUTTON));
-    expect(mockNavigate).toHaveBeenCalledWith(Routes.BROWSER.HOME, {
-      params: {
-        newTabUrl: `${AppConstants.PORTFOLIO.URL}/?metamaskEntry=mobile`,
-        timestamp: 123,
-      },
-      screen: Routes.BROWSER.VIEW,
-    });
-  });
-  it('should display unable to find conversion rate', async () => {
-    const state = {
-      engine: {
-        backgroundState: {
-          ...initialBackgroundState,
-          TokensController: {
-            tokens: [
-              {
-                name: 'Link',
-                symbol: 'LINK',
-                address: '0x02',
-                decimals: 18,
-                balanceFiat: '$0',
-                iconUrl: '',
-              },
-            ],
-          },
-          TokenRatesController: {
-            contractExchangeRates: {
-              '0x02': undefined,
-            },
-          },
-          CurrencyRateController: {
-            currentCurrency: 'USD',
-            currencyRates: {
-              ETH: {
-                conversionRate: 1,
-              },
-            },
-          },
-          TokenBalancesController: {
-            contractBalances: {
-              '0x02': new BN(1),
-            },
-          },
-        },
-      },
-    };
-    const { findByText } = renderComponent(state);
+  it('displays container', async () => {
+    const { getByTestId } = renderComponent();
 
     expect(
-      await findByText(strings('wallet.unable_to_find_conversion_rate')),
-    ).toBeDefined();
+      getByTestId(WalletViewSelectorsIDs.TOKENS_CONTAINER),
+    ).toBeOnTheScreen();
   });
-  it('renders stake button correctly', () => {
+
+  it('displays loading skeleton', async () => {
+    // Force mockInteraction to not run immediately to test the skeleton
+    const { mockRunAfterInteractions } = arrangeMockInteractionManager();
+    mockRunAfterInteractions.mockRestore();
+
+    const { getByTestId } = renderComponent();
+
+    expect(getByTestId('token-list-skeleton')).toBeOnTheScreen();
+  });
+
+  it('displays empty state when no tokens are present', async () => {
+    const { mockSelectSortedAssetsBySelectedAccountGroup } =
+      arrangeMockSelectors();
+    mockSelectSortedAssetsBySelectedAccountGroup.mockReturnValue([]);
+
     const { getByTestId } = renderComponent(initialState);
 
-    expect(getByTestId(STAKE_BUTTON)).toBeDefined();
+    expect(getByTestId('tokens-empty-state')).toBeOnTheScreen();
   });
-  it('navigates to Portfolio Stake url when stake button is pressed', () => {
+
+  it('displays token list', async () => {
     const { getByTestId } = renderComponent(initialState);
 
-    fireEvent.press(getByTestId(STAKE_BUTTON));
-    expect(mockNavigate).toHaveBeenCalledWith(Routes.BROWSER.HOME, {
-      params: {
-        newTabUrl: `${AppConstants.STAKE.URL}?metamaskEntry=mobile`,
-        timestamp: 123,
-      },
-      screen: Routes.BROWSER.VIEW,
+    expect(getByTestId('tokens-list-scroll-view')).toBeOnTheScreen();
+    expect(getByTestId('asset-0xToken1')).toBeOnTheScreen();
+    expect(getByTestId('asset-0xToken2')).toBeOnTheScreen();
+    expect(getByTestId('asset-0xToken3')).toBeOnTheScreen();
+  });
+
+  it('performs token refresh', async () => {
+    const { getByTestId } = renderComponent(initialState);
+
+    fireEvent.press(getByTestId('MOCK_TEST_REFRESH_BUTTON'));
+
+    await waitFor(() => {
+      expect(mockRefreshTokensForGroup).toHaveBeenCalled();
     });
   });
+
+  it('clears the refresh indicator and rethrows when the token refresh rejects', async () => {
+    const refreshError = new Error('refresh failed');
+    mockRefreshTokensForGroup.mockRejectedValueOnce(refreshError);
+
+    renderComponent(initialState);
+    const onRefresh = jest.mocked(TokenList).mock.calls.at(-1)?.[0].onRefresh;
+
+    if (!onRefresh) {
+      throw new Error('TokenList did not receive onRefresh');
+    }
+
+    let caught: unknown;
+    await act(async () => {
+      try {
+        await onRefresh();
+      } catch (error) {
+        caught = error;
+      }
+    });
+
+    expect(caught).toBe(refreshError);
+    expect(mockRefreshTokensForGroup).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(jest.mocked(TokenList).mock.calls.at(-1)?.[0].refreshing).toBe(
+        false,
+      );
+    });
+  });
+
+  const removeTokenTests = [
+    // EVM Token Removal
+    {
+      address: '0xToken1',
+      chainId: '0x1',
+      isStaked: false,
+      type: 'evm',
+      arrangeMockRemoval: () =>
+        jest.spyOn(RemoveEvmTokenModule, 'removeEvmToken').mockResolvedValue(),
+      assertRemovalCalled: (mockRemoveEvmToken: jest.Mock) =>
+        expect(mockRemoveEvmToken).toHaveBeenCalled(),
+    },
+    // Non-EVM Token Removal
+    {
+      address: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/slip44:501',
+      chainId: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
+      isStaked: false,
+      type: 'non-evm',
+      arrangeMockRemoval: () =>
+        jest
+          .spyOn(RemoveNonEvmTokenModule, 'removeNonEvmToken')
+          .mockResolvedValue(),
+      assertRemovalCalled: (mockRemoveNonEvmToken: jest.Mock) =>
+        expect(mockRemoveNonEvmToken).toHaveBeenCalled(),
+    },
+  ];
+
+  describe('Position Screen Viewed Analytics', () => {
+    let mockTrackEvent: jest.Mock;
+    let mockAddProperties: jest.Mock;
+
+    beforeEach(() => {
+      mockTrackEvent = jest.fn();
+      mockAddProperties = jest.fn().mockReturnThis();
+      jest.mocked(useAnalytics).mockReturnValue(
+        createMockUseAnalyticsHook({
+          trackEvent: mockTrackEvent,
+          createEventBuilder: jest.fn().mockReturnValue({
+            addProperties: mockAddProperties,
+            addSensitiveProperties: jest.fn().mockReturnThis(),
+            removeProperties: jest.fn().mockReturnThis(),
+            removeSensitiveProperties: jest.fn().mockReturnThis(),
+            build: jest.fn(),
+          }),
+        }),
+      );
+    });
+
+    it('tracks Position Screen Viewed when isFullView is true and tokens are loaded', async () => {
+      renderComponent(initialState, true);
+
+      await waitFor(() => {
+        expect(mockTrackEvent).toHaveBeenCalled();
+        expect(mockAddProperties).toHaveBeenCalledWith(
+          expect.objectContaining({
+            item_count: 3,
+            location: 'homepage',
+            is_empty: false,
+            screen_type: 'tokens',
+          }),
+        );
+      });
+    });
+
+    it('tracks Position Screen Viewed with is_empty true when no tokens are present', async () => {
+      const { mockSelectSortedAssetsBySelectedAccountGroup } =
+        arrangeMockSelectors();
+      mockSelectSortedAssetsBySelectedAccountGroup.mockReturnValue([]);
+
+      renderComponent(initialState, true);
+
+      await waitFor(() => {
+        expect(mockTrackEvent).toHaveBeenCalled();
+        expect(mockAddProperties).toHaveBeenCalledWith(
+          expect.objectContaining({
+            item_count: 0,
+            is_empty: true,
+            screen_type: 'tokens',
+          }),
+        );
+      });
+    });
+
+    it('does not track Position Screen Viewed when isFullView is false', async () => {
+      renderComponent(initialState, false);
+
+      await waitFor(() => {
+        expect(mockAddProperties).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            screen_type: 'tokens',
+            location: 'homepage',
+          }),
+        );
+      });
+    });
+
+    it('tracks screen_type cash when showOnlyMusd and isFullView', async () => {
+      const { mockSelectSortedAssetsBySelectedAccountGroup } =
+        arrangeMockSelectors();
+      mockSelectSortedAssetsBySelectedAccountGroup.mockReturnValue([]);
+
+      renderComponent(initialState, true, true);
+
+      await waitFor(() => {
+        expect(mockTrackEvent).toHaveBeenCalled();
+        expect(mockAddProperties).toHaveBeenCalledWith(
+          expect.objectContaining({
+            screen_type: 'cash',
+            location: 'homepage',
+            is_empty: true,
+          }),
+        );
+      });
+    });
+  });
+
+  describe('search', () => {
+    it('does not render the search bar outside full view', () => {
+      const { queryByTestId } = renderComponent(initialState, false);
+
+      expect(
+        queryByTestId(WalletViewSelectorsIDs.TOKENS_SEARCH_INPUT),
+      ).not.toBeOnTheScreen();
+    });
+
+    it('does not render the search bar when showOnlyMusd', () => {
+      const { queryByTestId } = renderComponent(initialState, true, true);
+
+      expect(
+        queryByTestId(WalletViewSelectorsIDs.TOKENS_SEARCH_INPUT),
+      ).not.toBeOnTheScreen();
+    });
+
+    describe('analytics', () => {
+      // Date.now is stubbed globally, so lodash debounce needs fake timers.
+      const settleDebounce = () =>
+        act(() => {
+          jest.advanceTimersByTime(250);
+        });
+
+      beforeEach(() => {
+        jest.useFakeTimers();
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it('tracks one searched event once the query settles', () => {
+        const { getByTestId } = renderComponent(initialState, true);
+        const input = getByTestId(WalletViewSelectorsIDs.TOKENS_SEARCH_INPUT);
+
+        fireEvent.changeText(input, 'z');
+        fireEvent.changeText(input, 'zz');
+        fireEvent.changeText(input, ' ZZ ');
+        settleDebounce();
+
+        expect(mockUseTokenListFilteringEvent).toHaveBeenCalledTimes(1);
+        expect(mockUseTokenListFilteringEvent).toHaveBeenCalledWith(
+          'searched',
+          {
+            searchQuery: 'zz',
+            extra: { query_length: 2, result_count: 0 },
+          },
+        );
+      });
+
+      it('does not track the same settled query twice', () => {
+        const { getByTestId } = renderComponent(initialState, true);
+        const input = getByTestId(WalletViewSelectorsIDs.TOKENS_SEARCH_INPUT);
+
+        fireEvent.changeText(input, 'zz');
+        settleDebounce();
+        fireEvent.changeText(input, 'zz ');
+        settleDebounce();
+
+        expect(mockUseTokenListFilteringEvent).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not track an extra event when the search is cleared', () => {
+        const { getByTestId } = renderComponent(initialState, true);
+        const input = getByTestId(WalletViewSelectorsIDs.TOKENS_SEARCH_INPUT);
+
+        fireEvent.changeText(input, 'zz');
+        settleDebounce();
+        fireEvent.changeText(input, '');
+        settleDebounce();
+
+        expect(mockUseTokenListFilteringEvent).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('showOnlyMusd (Cash view)', () => {
+    it('does not render the control bar when showOnlyMusd', async () => {
+      const { mockSelectSortedAssetsBySelectedAccountGroup } =
+        arrangeMockSelectors();
+      mockSelectSortedAssetsBySelectedAccountGroup.mockReturnValue([]);
+
+      const { queryByTestId } = renderComponent(initialState, true, true);
+
+      await waitFor(() => {
+        expect(queryByTestId('tokens-empty-state')).toBeOnTheScreen();
+      });
+
+      expect(queryByTestId('token-list-control-bar')).not.toBeOnTheScreen();
+      expect(BaseControlBar).not.toHaveBeenCalled();
+    });
+
+    it('shows empty state when showOnlyMusd and no mUSD tokens', async () => {
+      const { mockSelectSortedAssetsBySelectedAccountGroup } =
+        arrangeMockSelectors();
+      mockSelectSortedAssetsBySelectedAccountGroup.mockReturnValue([]);
+
+      const { getByTestId } = renderComponent(initialState, true, true);
+
+      await waitFor(() => {
+        expect(getByTestId('tokens-empty-state')).toBeOnTheScreen();
+      });
+    });
+
+    it('shows network-aware empty state when showOnlyMusd, empty list, and hasMusdBalanceOnAnyChain', async () => {
+      const { mockSelectSortedAssetsBySelectedAccountGroup } =
+        arrangeMockSelectors();
+      mockSelectSortedAssetsBySelectedAccountGroup.mockReturnValue([]);
+
+      const { getByText } = renderComponent(
+        initialState,
+        true,
+        true,
+        true, // hasMusdBalanceOnAnyChain
+      );
+
+      await waitFor(() => {
+        expect(
+          getByText(
+            'No mUSD on this network. Switch network to see your mUSD.',
+          ),
+        ).toBeOnTheScreen();
+      });
+    });
+
+    it('includes mUSD in main token list when Money Hub is disabled', async () => {
+      const { mockSelectSortedAssetsBySelectedAccountGroup } =
+        arrangeMockSelectors();
+      mockSelectSortedAssetsBySelectedAccountGroup.mockReturnValue([
+        { address: '0xToken1', chainId: '0x1', isStaked: false },
+        { address: '0xToken2', chainId: '0x2', isStaked: false },
+        {
+          address: MUSD_TOKEN_ADDRESS,
+          chainId: '0x1',
+          isStaked: false,
+        },
+      ]);
+
+      renderComponent(initialState, true, false);
+
+      await waitFor(() => {
+        expect(TokenList).toHaveBeenCalledWith(
+          expect.objectContaining({
+            tokenKeys: expect.arrayContaining([
+              expect.objectContaining({ address: MUSD_TOKEN_ADDRESS }),
+            ]),
+          }),
+          undefined,
+        );
+      });
+    });
+
+    it('excludes mUSD from token list when Money Hub is enabled', async () => {
+      const stateWithMoneyHubEnabled = clone(initialRootState);
+      (
+        stateWithMoneyHubEnabled as Record<string, unknown> &
+          typeof initialRootState
+      ).engine.backgroundState.RemoteFeatureFlagController = {
+        ...stateWithMoneyHubEnabled.engine.backgroundState
+          .RemoteFeatureFlagController,
+        remoteFeatureFlags: {
+          earnMoneyHubEnabled: {
+            enabled: true,
+            minimumVersion: '1.0.0',
+          },
+        },
+      };
+
+      const { mockSelectSortedAssetsBySelectedAccountGroup } =
+        arrangeMockSelectors();
+      mockSelectSortedAssetsBySelectedAccountGroup.mockReturnValue([
+        { address: '0xToken1', chainId: '0x1', isStaked: false },
+        {
+          address: MUSD_TOKEN_ADDRESS,
+          chainId: '0x1',
+          isStaked: false,
+        },
+      ]);
+
+      renderComponent(stateWithMoneyHubEnabled, false, false);
+
+      await waitFor(() => {
+        expect(TokenList).toHaveBeenCalledWith(
+          expect.objectContaining({
+            tokenKeys: expect.not.arrayContaining([
+              expect.objectContaining({ address: MUSD_TOKEN_ADDRESS }),
+            ]),
+          }),
+          undefined,
+        );
+      });
+    });
+  });
+
+  it.each(removeTokenTests)(
+    'performs token removal - $type',
+    async ({
+      address,
+      chainId,
+      isStaked,
+      arrangeMockRemoval,
+      assertRemovalCalled,
+    }) => {
+      const { mockSelectSortedAssetsBySelectedAccountGroup } =
+        arrangeMockSelectors();
+      mockSelectSortedAssetsBySelectedAccountGroup.mockReturnValue([
+        { address, chainId, isStaked },
+      ]);
+      const mockRemoveToken = arrangeMockRemoval() as jest.Mock;
+
+      const { getByTestId, queryByTestId } = renderComponent(initialState);
+
+      // Act - long press to remove token
+      await userEvent.longPress(getByTestId(`asset-${address}`));
+
+      // Assert - bottom sheet is displayed
+      await waitFor(() => {
+        expect(getByTestId('remove-token-bottom-sheet')).toBeOnTheScreen();
+      });
+
+      // Act - press remove button
+      await userEvent.press(
+        getByTestId('remove-token-bottom-sheet-remove-button'),
+      );
+
+      // Assert - remove token calls
+      assertRemovalCalled(mockRemoveToken);
+
+      // Assert - bottom sheet is closed
+      await waitFor(() => {
+        expect(
+          queryByTestId('remove-token-bottom-sheet'),
+        ).not.toBeOnTheScreen();
+      });
+    },
+  );
 });

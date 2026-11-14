@@ -1,0 +1,387 @@
+import React from 'react';
+import SettingsModal from './SettingsModal';
+import InAppBrowser from 'react-native-inappbrowser-reborn';
+import { renderScreen } from '../../../../../../util/test/renderWithProvider';
+import { backgroundState } from '../../../../../../util/test/initial-root-state';
+import { fireEvent, waitFor, act } from '@testing-library/react-native';
+import Routes from '../../../../../../constants/navigation/Routes';
+import { toast, ToastSeverity } from '@metamask/design-system-react-native';
+import {
+  getProviderToken,
+  resetProviderToken,
+} from '../../../utils/ProviderTokenVault';
+import { PROVIDER_LINKS } from '../../../Aggregator/types';
+import type { Provider } from '@metamask/ramps-controller';
+
+const MOCK_SUPPORT_URL = 'https://support.test-provider.com';
+const MOCK_TRANSAK_SUPPORT_URL = 'https://support.transak.com';
+
+const createMockProvider = (overrides?: Partial<Provider>): Provider => ({
+  id: 'test-provider',
+  name: 'Test Provider',
+  environmentType: 'PRODUCTION',
+  description: 'Test Provider Description',
+  hqAddress: '123 Test St',
+  links: [
+    {
+      name: PROVIDER_LINKS.SUPPORT,
+      url: MOCK_SUPPORT_URL,
+    },
+  ],
+  logos: { light: '', dark: '', height: 24, width: 79 },
+  ...overrides,
+});
+
+const TRANSAK_PROVIDER_ID = 'transak-native';
+const TRANSAK_STAGING_PROVIDER_ID = 'transak-native-staging';
+
+const createMockTransakProvider = (
+  overrides?: Partial<Provider>,
+): Provider => ({
+  id: TRANSAK_PROVIDER_ID,
+  name: 'Transak',
+  environmentType: 'PRODUCTION',
+  description: 'Transak Provider',
+  hqAddress: '123 Transak St',
+  links: [
+    {
+      name: PROVIDER_LINKS.SUPPORT,
+      url: MOCK_TRANSAK_SUPPORT_URL,
+    },
+  ],
+  logos: { light: '', dark: '', height: 24, width: 79 },
+  ...overrides,
+});
+
+const createMockTransakStagingProvider = (
+  overrides?: Partial<Provider>,
+): Provider => ({
+  id: TRANSAK_STAGING_PROVIDER_ID,
+  name: 'Transak',
+  environmentType: 'STAGING',
+  description: 'Transak Provider (Staging)',
+  hqAddress: '123 Transak St',
+  links: [
+    {
+      name: PROVIDER_LINKS.SUPPORT,
+      url: MOCK_TRANSAK_SUPPORT_URL,
+    },
+  ],
+  logos: { light: '', dark: '', height: 24, width: 79 },
+  ...overrides,
+});
+
+jest.mock('../../../utils/ProviderTokenVault', () => ({
+  getProviderToken: jest.fn(),
+  resetProviderToken: jest.fn(),
+}));
+
+const mockGetProviderToken = getProviderToken as jest.MockedFunction<
+  typeof getProviderToken
+>;
+const mockResetProviderToken = resetProviderToken as jest.MockedFunction<
+  typeof resetProviderToken
+>;
+
+jest.mock('@metamask/design-system-react-native', () => {
+  const actual = jest.requireActual('@metamask/design-system-react-native');
+  const ReactActual = jest.requireActual('react');
+  const { View } = jest.requireActual('react-native');
+  const BottomSheet = ReactActual.forwardRef(
+    (
+      props: { children?: unknown; goBack?: () => void },
+      ref: React.Ref<{ onCloseBottomSheet: (cb?: () => void) => void }>,
+    ) => {
+      ReactActual.useImperativeHandle(ref, () => ({
+        onCloseBottomSheet: (cb?: () => void) => {
+          if (cb) {
+            cb();
+            return;
+          }
+          props.goBack?.();
+        },
+      }));
+      return ReactActual.createElement(View, null, props.children);
+    },
+  );
+  BottomSheet.displayName = 'BottomSheet';
+  return {
+    ...actual,
+    BottomSheet,
+    toast: Object.assign(jest.fn(), { dismiss: jest.fn() }),
+  };
+});
+
+const mockNavigate = jest.fn();
+const mockGoBack = jest.fn();
+const mockSetNavigationOptions = jest.fn();
+
+jest.mock('@react-navigation/native', () => {
+  const actualReactNavigation = jest.requireActual('@react-navigation/native');
+  return {
+    ...actualReactNavigation,
+    useNavigation: () => ({
+      ...actualReactNavigation.useNavigation(),
+      navigate: mockNavigate,
+      goBack: mockGoBack,
+      setOptions: mockSetNavigationOptions.mockImplementation(
+        actualReactNavigation.useNavigation().setOptions,
+      ),
+    }),
+  };
+});
+
+jest.mock('react-native-inappbrowser-reborn', () => ({
+  isAvailable: jest.fn(),
+  open: jest.fn(),
+}));
+
+const mockInAppBrowser = InAppBrowser as jest.Mocked<typeof InAppBrowser>;
+
+let mockSelectedProvider: Provider | null = createMockProvider();
+const mockSetSelectedProvider = jest.fn();
+
+jest.mock('../../../hooks/useRampsProviders', () => ({
+  useRampsProviders: () => ({
+    selectedProvider: mockSelectedProvider,
+    setSelectedProvider: mockSetSelectedProvider,
+    setSelectedProviderForAsset: jest.fn(),
+  }),
+}));
+
+function renderWithProvider(component: React.ComponentType) {
+  const WrappedComponent = () => {
+    const Component = component;
+    return <Component />;
+  };
+
+  return renderScreen(
+    WrappedComponent,
+    {
+      name: 'SettingsModal',
+    },
+    {
+      state: {
+        engine: {
+          backgroundState,
+        },
+      },
+    },
+  );
+}
+
+describe('SettingsModal', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSelectedProvider = createMockProvider();
+    mockGetProviderToken.mockResolvedValue({
+      success: false,
+      error: 'No token found',
+    });
+  });
+
+  it('displays settings title in header', () => {
+    const { getByText } = renderWithProvider(SettingsModal);
+
+    expect(getByText('Settings')).toBeOnTheScreen();
+  });
+
+  it('displays view order history menu item', () => {
+    const { getByText } = renderWithProvider(SettingsModal);
+
+    expect(getByText('View order history')).toBeOnTheScreen();
+  });
+
+  it('navigates to transactions view when view order history is pressed', () => {
+    const { getByText } = renderWithProvider(SettingsModal);
+
+    const viewOrderHistoryButton = getByText('View order history');
+    fireEvent.press(viewOrderHistoryButton);
+
+    expect(mockNavigate).toHaveBeenCalledWith(Routes.TRANSACTIONS_VIEW, {
+      screen: Routes.TRANSACTIONS_VIEW,
+      params: {
+        redirectToOrders: true,
+      },
+    });
+  });
+
+  describe('contact support', () => {
+    it('displays contact support menu item when provider has support URL', () => {
+      const { getByText } = renderWithProvider(SettingsModal);
+
+      expect(getByText('Contact support')).toBeOnTheScreen();
+    });
+
+    it('opens support URL via InAppBrowser when available', async () => {
+      mockInAppBrowser.isAvailable.mockResolvedValue(true);
+      mockInAppBrowser.open.mockResolvedValue({ type: 'dismiss' });
+
+      const { getByText } = renderWithProvider(SettingsModal);
+
+      await act(async () => {
+        fireEvent.press(getByText('Contact support'));
+      });
+
+      expect(mockInAppBrowser.open).toHaveBeenCalledWith(MOCK_SUPPORT_URL);
+    });
+
+    it('falls back to SimpleWebview when InAppBrowser is unavailable', async () => {
+      mockInAppBrowser.isAvailable.mockResolvedValue(false);
+
+      const { getByText } = renderWithProvider(SettingsModal);
+
+      await act(async () => {
+        fireEvent.press(getByText('Contact support'));
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'Webview',
+        expect.objectContaining({ screen: 'SimpleWebview' }),
+      );
+    });
+
+    it('hides contact support when provider has no support URL', () => {
+      mockSelectedProvider = createMockProvider({ links: [] });
+
+      const { queryByText } = renderWithProvider(SettingsModal);
+
+      expect(queryByText('Contact support')).not.toBeOnTheScreen();
+    });
+  });
+
+  describe('logout (Transak only)', () => {
+    beforeEach(() => {
+      mockSelectedProvider = createMockTransakProvider();
+      mockGetProviderToken.mockResolvedValue({
+        success: true,
+        token: {
+          created: new Date(),
+          accessToken: 'test-access-token',
+          ttl: 3600,
+        },
+      });
+    });
+
+    it('displays logout option when user is authenticated with Transak', async () => {
+      const { findByText } = renderWithProvider(SettingsModal);
+
+      const logoutButton = await findByText('Log out of Transak');
+
+      expect(logoutButton).toBeOnTheScreen();
+    });
+
+    it('clears provider token and shows success toast on logout', async () => {
+      mockResetProviderToken.mockResolvedValue(undefined);
+
+      const { findByText } = renderWithProvider(SettingsModal);
+
+      const logoutButton = await findByText('Log out of Transak');
+      await act(async () => {
+        fireEvent.press(logoutButton);
+      });
+
+      await waitFor(() => {
+        expect(mockResetProviderToken).toHaveBeenCalled();
+      });
+
+      expect(mockSetSelectedProvider).toHaveBeenCalledWith(null);
+      expect(toast).toHaveBeenCalledWith({
+        title: 'Successfully logged out',
+        severity: ToastSeverity.Success,
+        hasNoTimeout: false,
+        showCloseButton: false,
+      });
+    });
+
+    it('shows error toast when logout fails', async () => {
+      const mockError = new Error('Logout failed');
+      mockResetProviderToken.mockRejectedValue(mockError);
+
+      const { findByText } = renderWithProvider(SettingsModal);
+
+      const logoutButton = await findByText('Log out of Transak');
+      await act(async () => {
+        fireEvent.press(logoutButton);
+      });
+
+      await waitFor(() => {
+        expect(mockResetProviderToken).toHaveBeenCalled();
+      });
+
+      expect(toast).toHaveBeenCalledWith({
+        title: 'Error logging out',
+        severity: ToastSeverity.Danger,
+        hasNoTimeout: false,
+        showCloseButton: false,
+      });
+    });
+
+    it('displays logout option when user is authenticated with Transak staging', async () => {
+      mockSelectedProvider = createMockTransakStagingProvider();
+
+      const { findByText } = renderWithProvider(SettingsModal);
+
+      const logoutButton = await findByText('Log out of Transak');
+
+      expect(logoutButton).toBeOnTheScreen();
+    });
+
+    it('hides logout option for non-Transak providers even when authenticated', async () => {
+      mockSelectedProvider = createMockProvider();
+
+      const { queryByText } = renderWithProvider(SettingsModal);
+
+      await waitFor(() => {
+        expect(queryByText(/Log out of/)).not.toBeOnTheScreen();
+      });
+    });
+  });
+
+  describe('when user is not authenticated', () => {
+    beforeEach(() => {
+      mockSelectedProvider = createMockTransakProvider();
+      mockGetProviderToken.mockResolvedValue({
+        success: false,
+        error: 'No token found',
+      });
+    });
+
+    it('hides logout option for Transak', async () => {
+      const { queryByText } = renderWithProvider(SettingsModal);
+
+      await waitFor(() => {
+        expect(queryByText('Log out of Transak')).not.toBeOnTheScreen();
+      });
+    });
+  });
+
+  describe('when no preferred provider is set', () => {
+    beforeEach(() => {
+      mockSelectedProvider = null;
+    });
+
+    it('hides contact support option', () => {
+      const { queryByText } = renderWithProvider(SettingsModal);
+
+      expect(queryByText('Contact support')).not.toBeOnTheScreen();
+    });
+
+    it('hides logout option even when authenticated', async () => {
+      mockGetProviderToken.mockResolvedValue({
+        success: true,
+        token: {
+          created: new Date(),
+          accessToken: 'test-access-token',
+          ttl: 3600,
+        },
+      });
+
+      const { queryByText } = renderWithProvider(SettingsModal);
+
+      await waitFor(() => {
+        expect(queryByText(/Log out of/)).not.toBeOnTheScreen();
+      });
+    });
+  });
+});

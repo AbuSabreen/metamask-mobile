@@ -1,0 +1,507 @@
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import {
+  ScrollView,
+  BackHandler,
+  Alert,
+  Platform,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  LayoutChangeEvent,
+} from 'react-native';
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import {
+  Box,
+  ButtonSize,
+  ContentVariant,
+  FontWeight,
+  ListItemMultiSelect,
+  Text,
+  TextButton,
+  TextColor,
+  TextVariant,
+  TitleStandard,
+} from '@metamask/design-system-react-native';
+import HeaderStandardGlass from '../../../component-library/components-temp/HeaderStandardGlass';
+import FooterGlass from '../../../component-library/components-temp/FooterGlass';
+import { useHeaderGlassInset } from '../../../component-library/components-temp/HeaderGlass';
+import { strings } from '../../../../locales/i18n';
+import { useDispatch, useSelector } from 'react-redux';
+import { clearOnboardingEvents } from '../../../actions/onboarding';
+import { selectOnboardingAccountType } from '../../../selectors/onboarding';
+import { selectBasicFunctionalityEnabled } from '../../../selectors/settings';
+import { selectWalletSetupCompletedAttributionAnalyticsProps } from '../../../selectors/attribution';
+import { selectQrSyncNeedsProvisioning } from '../../../selectors/qrSyncController';
+import { setDataCollectionForMarketing } from '../../../actions/security';
+import { MetaMetricsEvents } from '../../../core/Analytics';
+import { useAnalytics } from '../../hooks/useAnalytics/useAnalytics';
+import { markMetricsOptInUISeen } from '../../../util/metrics/metricsOptInUIUtils';
+import { MetaMetricsOptInSelectorsIDs } from './MetaMetricsOptIn.testIds';
+import Routes from '../../../constants/navigation/Routes';
+import generateDeviceAnalyticsMetaData, {
+  UserSettingsAnalyticsMetaData as generateUserSettingsAnalyticsMetaData,
+} from '../../../util/metrics';
+import { UserProfileProperty } from '../../../util/metrics/UserSettingsAnalyticsMetaData/UserProfileAnalyticsMetaData.types';
+import { getConfiguredCaipChainIds } from '../../../util/metrics/MultichainAPI/networkMetricUtils';
+import {
+  updateCachedConsent,
+  flushBufferedTraces,
+  discardBufferedTraces,
+} from '../../../util/trace';
+import { setupSentry } from '../../../util/sentry/utils';
+import { HOWTO_MANAGE_METAMETRICS } from '../../../constants/urls';
+import type { OptinMetricsRouteParams } from './OptinMetrics.types';
+import {
+  useNavigation,
+  useRoute,
+  type RouteProp,
+  type ParamListBase,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../core/NavigationService/types';
+import type { RootState } from '../../../reducers';
+import { getWalletSetupAttributionPropsFromStore } from '../../../util/analytics/walletSetupCompletedAttribution';
+import { scheduleBufferedOnboardingEventReplay } from '../../../util/analytics/walletSetupCompletedAttributionReplay';
+import {
+  discardPendingAppInstall,
+  replayPendingAppInstall,
+} from '../../../util/analytics/appInstallEvent';
+import { finalizeOnboardingCompletion } from '../../../util/onboarding/finalizeOnboardingCompletion';
+import { useOnboardingInterestQuestionnaireEligibility } from '../../../hooks/useOnboardingInterestQuestionnaireEligibility';
+import { OnboardingScreenIds } from '../../../hooks/performance/onboardingPerformanceIds';
+import { useScreenPerformance } from '../../../hooks/performance/useScreenPerformance';
+
+/**
+ * View that is displayed in the flow to agree to metrics
+ */
+const OptinMetrics = () => {
+  const dispatch = useDispatch();
+  const navigation = useNavigation<AppNavigationProp>();
+  const route =
+    useRoute<
+      RouteProp<
+        ParamListBase & { OptinMetrics: OptinMetricsRouteParams },
+        'OptinMetrics'
+      >
+    >();
+  const tw = useTailwind();
+  const { top: safeAreaTop } = useSafeAreaInsets();
+  const { inset: headerInset, onLayout: onHeaderLayout } = useHeaderGlassInset(
+    true,
+    safeAreaTop,
+  );
+  const metrics = useAnalytics();
+
+  useScreenPerformance({
+    screenId: OnboardingScreenIds.OPTIN_METRICS,
+    contentReady: true,
+    isEmpty: false,
+  });
+
+  // Redux state selectors
+  const events = useSelector((state: RootState) => state.onboarding.events);
+  const reduxAccountType = useSelector(selectOnboardingAccountType);
+  const isBasicFunctionalityEnabled = useSelector(
+    selectBasicFunctionalityEnabled,
+  );
+  const walletSetupAttributionProps = useSelector(
+    selectWalletSetupCompletedAttributionAnalyticsProps,
+  );
+  const needsQrProvisioning = useSelector(selectQrSyncNeedsProvisioning);
+
+  // State
+  const [scrollViewContentHeight, setScrollViewContentHeight] = useState<
+    number | undefined
+  >(undefined);
+  const [isEndReached, setIsEndReached] = useState(false);
+  const [scrollViewHeight, setScrollViewHeight] = useState<number | undefined>(
+    undefined,
+  );
+  const [isMarketingChecked, setIsMarketingChecked] = useState(false);
+  const [isBasicUsageChecked, setIsBasicUsageChecked] = useState(true);
+
+  const { shouldShowQuestionnaire } =
+    useOnboardingInterestQuestionnaireEligibility();
+
+  /**
+   * Temporary disabling the back button so users can't go back
+   */
+  const handleBackPress = useCallback(() => {
+    Alert.alert(
+      strings('onboarding.optin_back_title'),
+      strings('onboarding.optin_back_desc'),
+    );
+    return true;
+  }, []);
+
+  // Component lifecycle effects
+  useEffect(() => {
+    const backHandlerSubscription = BackHandler.addEventListener(
+      'hardwareBackPress',
+      handleBackPress,
+    );
+
+    return () => {
+      backHandlerSubscription.remove();
+    };
+  }, [handleBackPress]);
+
+  // Check if content fits viewport when dimensions change
+  useEffect(() => {
+    if (scrollViewContentHeight === undefined) return;
+
+    // Check if content fits view port of scroll view
+    if (
+      scrollViewHeight &&
+      scrollViewHeight >= scrollViewContentHeight &&
+      !isEndReached
+    ) {
+      setIsEndReached(true);
+    }
+  }, [scrollViewContentHeight, scrollViewHeight, isEndReached]);
+
+  /**
+   * Action to be triggered when pressing any button
+   */
+  const accountType = route?.params?.accountType ?? reduxAccountType;
+
+  const continueNavigation = useCallback(async () => {
+    await markMetricsOptInUISeen();
+
+    const successFlow = route?.params?.successFlow;
+    finalizeOnboardingCompletion({
+      successFlow,
+      accountType,
+      isBasicFunctionalityEnabled,
+      walletSetupAttributionProps,
+      dispatch,
+      discoverAccountsLogContext: 'OptinMetrics',
+      needsQrProvisioning,
+    });
+
+    const onContinue = route?.params?.onContinue as (() => void) | undefined;
+    if (onContinue) {
+      return onContinue();
+    }
+
+    navigation.reset({
+      routes: [{ name: Routes.ONBOARDING.HOME_NAV }],
+    });
+  }, [
+    dispatch,
+    navigation,
+    route?.params,
+    accountType,
+    isBasicFunctionalityEnabled,
+    walletSetupAttributionProps,
+    needsQrProvisioning,
+  ]);
+
+  /**
+   * Callback on press confirm
+   */
+  const onConfirm = useCallback(async () => {
+    await metrics.enable(isBasicUsageChecked);
+    await setupSentry(); // enabled/disabled depend on the isBasicUsageChecked
+
+    if (isBasicUsageChecked) {
+      await flushBufferedTraces();
+    } else {
+      discardBufferedTraces();
+    }
+    updateCachedConsent(isBasicUsageChecked);
+
+    dispatch(setDataCollectionForMarketing(isMarketingChecked));
+
+    // Track opt-in / opt-out for metrics
+    metrics.trackEvent(
+      metrics
+        .createEventBuilder(
+          isBasicUsageChecked
+            ? MetaMetricsEvents.METRICS_OPT_IN
+            : MetaMetricsEvents.METRICS_OPT_OUT,
+        )
+        .addProperties({
+          updated_after_onboarding: false,
+          location: 'onboarding_metametrics',
+          ...(accountType && { account_type: accountType }),
+        })
+        .build(),
+    );
+
+    metrics.trackEvent(
+      metrics
+        .createEventBuilder(MetaMetricsEvents.ANALYTICS_PREFERENCE_SELECTED)
+        .addProperties({
+          [UserProfileProperty.HAS_MARKETING_CONSENT]:
+            Boolean(isMarketingChecked),
+          is_metrics_opted_in: isBasicUsageChecked,
+          location: 'onboarding_metametrics',
+          updated_after_onboarding: false,
+          ...(accountType && { account_type: accountType }),
+        })
+        .build(),
+    );
+
+    await metrics.identify({
+      ...generateDeviceAnalyticsMetaData(),
+      ...generateUserSettingsAnalyticsMetaData(),
+      [UserProfileProperty.CHAIN_IDS]: getConfiguredCaipChainIds(),
+    });
+
+    // track onboarding events that were stored before user opted in
+    // only if the user eventually opts in.
+    if (events?.length && isBasicUsageChecked) {
+      const attributionProps =
+        getWalletSetupAttributionPropsFromStore(isMarketingChecked);
+      scheduleBufferedOnboardingEventReplay({
+        events,
+        attributionProps,
+        trackEvent: (event) => metrics.trackEvent(event),
+      });
+    }
+
+    // Emit App Installed for an install captured before consent existed, or
+    // drop it when the user declines, same as the buffers handled above.
+    if (isBasicUsageChecked) {
+      await replayPendingAppInstall();
+    } else {
+      discardPendingAppInstall();
+    }
+
+    dispatch(clearOnboardingEvents());
+
+    if (isBasicUsageChecked && shouldShowQuestionnaire) {
+      navigation.navigate(Routes.ONBOARDING.INTEREST_QUESTIONNAIRE, {
+        onComplete: continueNavigation,
+        ...(accountType && { accountType }),
+      });
+    } else {
+      await continueNavigation();
+    }
+  }, [
+    metrics,
+    isBasicUsageChecked,
+    shouldShowQuestionnaire,
+    dispatch,
+    isMarketingChecked,
+    accountType,
+    events,
+    navigation,
+    continueNavigation,
+  ]);
+
+  /**
+   * Opens link when provided link params.
+   *
+   * @param {Object} linkParams
+   * @param {string} linkParams.url
+   * @param {string} linkParams.title
+   */
+  const onPressLink = useCallback(
+    (linkParams: { url: string; title: string }) => {
+      navigation.navigate('Webview', {
+        screen: 'SimpleWebview',
+        params: linkParams,
+      });
+    },
+    [navigation],
+  );
+
+  const openLearnMore = useCallback(
+    () =>
+      onPressLink({
+        url: HOWTO_MANAGE_METAMETRICS,
+        title: 'How to manage your MetaMetrics settings',
+      }),
+    [onPressLink],
+  );
+
+  const handleBasicUsageToggle = useCallback(() => {
+    setIsBasicUsageChecked((prevValue) => {
+      const newValue = !prevValue;
+      if (!newValue) {
+        setIsMarketingChecked(false);
+      }
+      return newValue;
+    });
+  }, []);
+
+  const handleMarketingToggle = useCallback(() => {
+    if (isBasicUsageChecked) {
+      setIsMarketingChecked((prev) => !prev);
+    }
+  }, [isBasicUsageChecked]);
+
+  const isMarketingDisabled = !isBasicUsageChecked;
+
+  /**
+   * Content size change event for the ScrollView.
+   *
+   * @param {number} _
+   * @param {number} height
+   */
+  const onContentSizeChange = useCallback(
+    (_: number, height: number) => setScrollViewContentHeight(height),
+    [],
+  );
+
+  /**
+   * Layout event for the ScrollView.
+   *
+   * @param {Object} event
+   */
+  const onLayout = useCallback(({ nativeEvent }: LayoutChangeEvent) => {
+    const height = nativeEvent.layout.height;
+    setScrollViewHeight(height);
+  }, []);
+
+  /**
+   * Scroll event for the ScrollView.
+   *
+   * @param {Object} event
+   */
+  const onScroll = useCallback(
+    ({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const currentYOffset = nativeEvent.contentOffset.y;
+      const paddingAllowance = Platform.select({
+        ios: 16,
+        android: 32,
+      });
+      const endThreshold =
+        nativeEvent.contentSize.height -
+        nativeEvent.layoutMeasurement.height -
+        (paddingAllowance || 16);
+
+      // Check when scroll has reached the end.
+      if (currentYOffset >= endThreshold && !isEndReached) {
+        setIsEndReached(true);
+      }
+    },
+    [isEndReached],
+  );
+
+  const rootStyle = useMemo(() => tw.style('flex-1 bg-default'), [tw]);
+
+  const goToDefaultSettings = () => {
+    navigation.navigate(Routes.ONBOARDING.SUCCESS_FLOW, {
+      screen: Routes.ONBOARDING.DEFAULT_SETTINGS,
+    });
+  };
+
+  return (
+    <SafeAreaView edges={{ bottom: 'additive' }} style={rootStyle}>
+      <HeaderStandardGlass
+        backdrop="static"
+        onLayout={onHeaderLayout}
+        includesTopInset
+        title=""
+      />
+      <ScrollView
+        style={[tw.style('flex-1'), { marginTop: headerInset }]}
+        scrollEventThrottle={150}
+        onContentSizeChange={onContentSizeChange}
+        onLayout={onLayout}
+        onScroll={onScroll}
+        testID={MetaMetricsOptInSelectorsIDs.METAMETRICS_OPT_IN_CONTAINER_ID}
+      >
+        <Box twClassName="flex-1 px-4 pb-6">
+          <Box marginBottom={6}>
+            <TitleStandard
+              title={strings('privacy_policy.description_title')}
+              bottomLabel={strings('privacy_policy.description_content_1')}
+              testID={MetaMetricsOptInSelectorsIDs.OPTIN_METRICS_TITLE_ID}
+              bottomLabelProps={{
+                testID:
+                  MetaMetricsOptInSelectorsIDs.OPTIN_METRICS_PRIVACY_POLICY_DESCRIPTION_CONTENT_1_ID,
+              }}
+            />
+          </Box>
+          <Box twClassName="gap-4">
+            <ListItemMultiSelect
+              variant={ContentVariant.MultiLine}
+              isSelected={isBasicUsageChecked}
+              onPress={handleBasicUsageToggle}
+              twClassName="rounded-xl border border-muted"
+              title={strings('privacy_policy.gather_basic_usage_title')}
+              description={
+                <Text
+                  variant={TextVariant.BodySm}
+                  fontWeight={FontWeight.Medium}
+                  color={TextColor.TextAlternative}
+                >
+                  {strings('privacy_policy.gather_basic_usage_description') +
+                    ' '}
+                  <TextButton
+                    variant={TextVariant.BodySm}
+                    onPress={(e) => {
+                      e?.stopPropagation?.();
+                      openLearnMore();
+                    }}
+                  >
+                    {strings('privacy_policy.gather_basic_usage_learn_more')}
+                  </TextButton>
+                </Text>
+              }
+              testID={
+                MetaMetricsOptInSelectorsIDs.OPTIN_METRICS_METRICS_CHECKBOX
+              }
+            />
+            <Box twClassName="gap-2">
+              <Text
+                variant={TextVariant.BodyMd}
+                fontWeight={FontWeight.Medium}
+                color={TextColor.TextAlternative}
+              >
+                {strings('privacy_policy.stay_informed')}
+              </Text>
+              <ListItemMultiSelect
+                variant={ContentVariant.MultiLine}
+                isSelected={isMarketingChecked}
+                onPress={handleMarketingToggle}
+                disabled={isMarketingDisabled}
+                twClassName={`rounded-xl border border-muted ${
+                  isMarketingDisabled ? 'opacity-50' : ''
+                }`}
+                title={strings('privacy_policy.checkbox_marketing')}
+                description={strings('privacy_policy.checkbox')}
+                testID={
+                  MetaMetricsOptInSelectorsIDs.OPTIN_METRICS_MARKETING_CHECKBOX
+                }
+              />
+            </Box>
+            <Text
+              variant={TextVariant.BodySm}
+              color={TextColor.TextAlternative}
+            >
+              {strings('privacy_policy.settings')}{' '}
+              <TextButton
+                variant={TextVariant.BodySm}
+                onPress={goToDefaultSettings}
+              >
+                {strings('privacy_policy.settings_link')}
+              </TextButton>
+            </Text>
+          </Box>
+        </Box>
+      </ScrollView>
+      <FooterGlass
+        twClassName="py-2"
+        primaryButtonProps={{
+          children: strings('privacy_policy.continue'),
+          onPress: onConfirm,
+          size: ButtonSize.Lg,
+          testID: MetaMetricsOptInSelectorsIDs.OPTIN_METRICS_CONTINUE_BUTTON_ID,
+        }}
+      />
+    </SafeAreaView>
+  );
+};
+
+OptinMetrics.navigationOptions = {
+  headerShown: false,
+};
+
+export default OptinMetrics;

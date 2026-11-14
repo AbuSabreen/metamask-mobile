@@ -3,47 +3,100 @@ import { Provider } from 'react-redux';
 
 import { NavigationContainer } from '@react-navigation/native';
 import {
-  createStackNavigator,
-  StackNavigationOptions,
-} from '@react-navigation/stack';
+  createNativeStackNavigator,
+  NativeStackNavigationOptions,
+} from '@react-navigation/native-stack';
 import {
   render,
   renderHook,
-  RenderHookResult,
+  RenderHookOptions,
 } from '@testing-library/react-native';
 
 import { mockTheme, ThemeContext } from '../theme';
 import { Theme } from '../theme/models';
 import configureStore from './configureStore';
+import { RootState } from '../../reducers';
+import { FeatureFlagOverrideProvider } from '../../contexts/FeatureFlagOverrideContext';
+import { UIMessengerProvider } from '../../contexts/ui-messenger';
+import { createMockUIMessenger } from './mock-ui-messenger';
+import { RouteMessengerContext } from '../../contexts/route-messenger';
+import { RouteMessenger } from '../../messengers/route-messenger';
+import { UIMessenger } from '../../messengers/ui-messenger';
 
-interface ProviderValues {
-  state?: Record<any, any>;
+// DeepPartial is a generic type that recursively makes all properties of a given type T optional
+export type DeepPartial<T> = T extends (...args: unknown[]) => unknown
+  ? // If T is a function, return T as is.
+    T
+  : T extends (infer U)[]
+    ? // If T is an array, apply DeepPartial to its elements.
+      DeepPartial<U>[]
+    : T extends object
+      ? // If T is an object, apply DeepPartial to each property of T.
+        { [K in keyof T]?: DeepPartial<T[K]> }
+      : // Otherwise, return T or undefined.
+        T | undefined;
+
+export interface ProviderValues {
+  state?: DeepPartial<RootState>;
   theme?: Theme;
+  uiMessenger?: UIMessenger;
+  routeMessenger?: RouteMessenger;
 }
 
 export default function renderWithProvider(
   component: React.ReactElement,
   providerValues?: ProviderValues,
   includeNavigationContainer = true,
+  includeFeatureFlagOverrideProvider = true,
 ) {
-  const { state = {}, theme = mockTheme } = providerValues ?? {};
+  const {
+    state = {},
+    theme = mockTheme,
+    uiMessenger = createMockUIMessenger(),
+    routeMessenger = null,
+  } = providerValues ?? {};
+
   const store = configureStore(state);
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  require('../../store')._updateMockState(state);
 
-  const InnerProvider = ({ children }: { children: React.ReactElement }) => (
-    <Provider store={store}>
-      <ThemeContext.Provider value={theme}>{children}</ThemeContext.Provider>
-    </Provider>
-  );
-
-  const AllProviders = ({ children }: { children: React.ReactElement }) => {
-    if (includeNavigationContainer) {
-      return (
-        <NavigationContainer>
-          <InnerProvider>{children}</InnerProvider>
-        </NavigationContainer>
+  const InnerProvider = ({ children }: { children: React.ReactElement }) => {
+    let wrappedChildren = children;
+    if (includeFeatureFlagOverrideProvider) {
+      wrappedChildren = (
+        <FeatureFlagOverrideProvider>
+          {wrappedChildren}
+        </FeatureFlagOverrideProvider>
       );
     }
-    return <InnerProvider>{children}</InnerProvider>;
+
+    if (routeMessenger) {
+      wrappedChildren = (
+        <RouteMessengerContext.Provider value={routeMessenger}>
+          {wrappedChildren}
+        </RouteMessengerContext.Provider>
+      );
+    }
+
+    return (
+      <Provider store={store}>
+        <UIMessengerProvider value={uiMessenger}>
+          <ThemeContext.Provider value={theme}>
+            {wrappedChildren}
+          </ThemeContext.Provider>
+        </UIMessengerProvider>
+      </Provider>
+    );
+  };
+
+  const AllProviders = ({ children }: { children: React.ReactElement }) => {
+    let wrappedChildren = <InnerProvider>{children}</InnerProvider>;
+    if (includeNavigationContainer) {
+      wrappedChildren = (
+        <NavigationContainer>{wrappedChildren}</NavigationContainer>
+      );
+    }
+    return wrappedChildren;
   };
 
   return { ...render(component, { wrapper: AllProviders }), store };
@@ -53,12 +106,14 @@ export function renderScreen(
   Component: React.ComponentType,
   options: {
     name: string;
-    options?: StackNavigationOptions;
+    options?: NativeStackNavigationOptions;
   },
   providerValues?: ProviderValues,
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   initialParams: Record<string, any> = {},
 ) {
-  const Stack = createStackNavigator();
+  const Stack = createNativeStackNavigator();
   return renderWithProvider(
     <Stack.Navigator>
       <Stack.Screen
@@ -72,16 +127,41 @@ export function renderScreen(
   );
 }
 
-export function renderHookWithProvider(
-  hook: () => void,
+export function renderHookWithProvider<Result, Props>(
+  hook: (props: Props) => Result,
   providerValues?: ProviderValues,
-): RenderHookResult<any, any> {
-  const { state = {} } = providerValues ?? {};
+) {
+  const {
+    state = {},
+    uiMessenger = createMockUIMessenger(),
+    routeMessenger = null,
+  } = providerValues ?? {};
+
   const store = configureStore(state);
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  require('../../store')._updateMockState(state);
 
-  const Providers = ({ children }: { children: React.ReactElement }) => (
-    <Provider store={store}>{children}</Provider>
-  );
+  const Providers = ({ children }: { children: React.ReactElement }) => {
+    let wrappedChildren = children;
+    if (routeMessenger) {
+      wrappedChildren = (
+        <RouteMessengerContext.Provider value={routeMessenger}>
+          {wrappedChildren}
+        </RouteMessengerContext.Provider>
+      );
+    }
 
-  return renderHook(hook, { wrapper: Providers });
+    return (
+      <Provider store={store}>
+        <UIMessengerProvider value={uiMessenger}>
+          {wrappedChildren}
+        </UIMessengerProvider>
+      </Provider>
+    );
+  };
+
+  return {
+    ...renderHook(hook, { wrapper: Providers } as RenderHookOptions<Props>),
+    store,
+  };
 }

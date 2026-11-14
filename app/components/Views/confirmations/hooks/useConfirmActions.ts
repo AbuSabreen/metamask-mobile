@@ -1,0 +1,162 @@
+import { useCallback, useMemo } from 'react';
+import { useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+import { ApprovalType } from '@metamask/controller-utils';
+import {
+  hasTransactionType,
+  TransactionType,
+} from '@metamask/transaction-controller';
+
+import PPOMUtil from '../../../../lib/ppom/ppom-util';
+import { navigateToActivityAfterConfirmation } from '../../../../util/navigation/navigateToActivityAfterConfirmation';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+
+import { isSignatureRequest } from '../utils/confirm';
+import { useQRHardwareContext } from '../context/qr-hardware-context';
+import useApprovalRequest from './useApprovalRequest';
+import { useConfirmReject } from './useConfirmReject';
+import { useSignatureMetrics } from './signatures/useSignatureMetrics';
+import { useTransactionConfirm } from './transactions/useTransactionConfirm';
+import { useTransactionMetadataRequest } from './transactions/useTransactionMetadataRequest';
+import { useIsConfirmationFromLedgerAccount } from './useIsConfirmationFromLedgerAccount';
+import { useTransactionPayingAccount } from './transactions/useTransactionPayingAccount';
+import { useIsConfirmationFromQrAccount } from '../../../../core/HardwareWallet/hooks/useIsConfirmationFromQrAccount';
+import { useLedgerConfirm } from './useLedgerConfirm';
+import { useQrConfirm } from '../../../../core/HardwareWallet/hooks/useQrConfirm';
+
+export const useConfirmActions = () => {
+  const { onConfirm: onRequestConfirm, approvalRequest } = useApprovalRequest();
+  const { onReject } = useConfirmReject();
+  const {
+    navigateOnConfirm: onTransactionSigningComplete,
+    onConfirm: onTransactionConfirm,
+  } = useTransactionConfirm();
+  const transactionMetadata = useTransactionMetadataRequest();
+  const { captureSignatureMetrics } = useSignatureMetrics();
+  const { isSigningQRObject, setScannerVisible, setSigningConfirmed } =
+    useQRHardwareContext();
+  const navigation = useNavigation<AppNavigationProp>();
+  const approvalType = approvalRequest?.type;
+  const isSignatureReq = approvalType && isSignatureRequest(approvalType);
+  const isTransactionReq =
+    approvalType && approvalType === ApprovalType.Transaction;
+
+  const isLedgerAccount = useIsConfirmationFromLedgerAccount();
+  const isQrAccount = useIsConfirmationFromQrAccount();
+  const payingAccount = useTransactionPayingAccount();
+  const batchSigningTransactionId =
+    transactionMetadata &&
+    hasTransactionType(transactionMetadata, [
+      TransactionType.moneyAccountDeposit,
+    ])
+      ? transactionMetadata.id
+      : undefined;
+
+  const executeApproval = useCallback(async () => {
+    const waitForResult = approvalType !== ApprovalType.TransactionBatch;
+    await onRequestConfirm({
+      waitForResult,
+      deleteAfterResult: true,
+      handleErrors: false,
+    });
+
+    if (approvalType === ApprovalType.TransactionBatch) {
+      navigateToActivityAfterConfirmation(navigation);
+    } else {
+      navigation.goBack();
+    }
+
+    if (isSignatureReq && approvalRequest?.id) {
+      captureSignatureMetrics(MetaMetricsEvents.SIGNATURE_APPROVED);
+      PPOMUtil.clearSignatureSecurityAlertResponse(approvalRequest.id);
+    }
+  }, [
+    approvalType,
+    onRequestConfirm,
+    navigation,
+    isSignatureReq,
+    approvalRequest?.id,
+    captureSignatureMetrics,
+  ]);
+
+  const sharedConfirmOptions = useMemo(
+    () => ({
+      fromAddress:
+        payingAccount || (approvalRequest?.requestData?.from as string),
+      onReject,
+      onSigningComplete: onTransactionSigningComplete,
+      onTransactionConfirm,
+      executeApproval,
+      isTransactionReq: Boolean(isTransactionReq),
+      transactionId: batchSigningTransactionId,
+    }),
+    [
+      approvalRequest?.requestData?.from,
+      payingAccount,
+      onReject,
+      onTransactionSigningComplete,
+      onTransactionConfirm,
+      executeApproval,
+      isTransactionReq,
+      batchSigningTransactionId,
+    ],
+  );
+
+  const { onConfirm: onLedgerConfirm } = useLedgerConfirm(sharedConfirmOptions);
+  const { onConfirm: onQrConfirm } = useQrConfirm(sharedConfirmOptions);
+
+  const onConfirm = useCallback(async () => {
+    if (isLedgerAccount) {
+      await onLedgerConfirm();
+      return;
+    }
+
+    if (isQrAccount) {
+      // MM-native sends (simpleSend / tokenMethodTransfer) defer to the
+      // HardwareWalletsSwaps step-progress screen instead of routing
+      // through onQrConfirm, which calls executeHardwareWalletOperation
+      // and shows an awaiting-confirmation bottom sheet that gets
+      // orphaned when deferHwSend navigates away immediately after.
+      if (
+        isTransactionReq &&
+        transactionMetadata &&
+        (transactionMetadata.type === TransactionType.simpleSend ||
+          transactionMetadata.type === TransactionType.tokenMethodTransfer)
+      ) {
+        await onTransactionConfirm();
+        return;
+      }
+      await onQrConfirm();
+      return;
+    }
+
+    if (isSigningQRObject) {
+      setSigningConfirmed();
+      setScannerVisible(true);
+      return;
+    }
+
+    if (isTransactionReq) {
+      setSigningConfirmed();
+      await onTransactionConfirm();
+      return;
+    }
+
+    setSigningConfirmed();
+    await executeApproval();
+  }, [
+    isLedgerAccount,
+    isQrAccount,
+    isSigningQRObject,
+    isTransactionReq,
+    setScannerVisible,
+    setSigningConfirmed,
+    onTransactionConfirm,
+    executeApproval,
+    onLedgerConfirm,
+    onQrConfirm,
+    transactionMetadata,
+  ]);
+
+  return { onConfirm, onReject };
+};

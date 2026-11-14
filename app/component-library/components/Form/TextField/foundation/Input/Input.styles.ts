@@ -1,9 +1,10 @@
 // Third party dependencies.
-import { StyleSheet, TextStyle } from 'react-native';
+import { Platform, StyleSheet, TextStyle } from 'react-native';
 
 // External dependencies.
 import { Theme } from '../../../../../../util/theme/models';
 import { colors } from '../../../../../../styles/common';
+import { getFontFamily } from '../../../../Texts/Text/';
 
 // Internal dependencies
 import { InputStyleSheetVars } from './Input.types';
@@ -18,8 +19,20 @@ import { InputStyleSheetVars } from './Input.types';
  */
 const styleSheet = (params: { theme: Theme; vars: InputStyleSheetVars }) => {
   const { theme, vars } = params;
-  const { style, textVariant, isDisabled, isStateStylesDisabled, isFocused } =
-    vars;
+  const {
+    style,
+    textVariant,
+    isDisabled,
+    isStateStylesDisabled,
+    isFocused,
+    value = '',
+    placeholder,
+  } = vars;
+
+  const hasPlaceholder = placeholder != null && placeholder !== '';
+  const isPlaceholderVisible =
+    hasPlaceholder && (value === '' || value == null);
+
   const stateObj = isStateStylesDisabled
     ? {
         opacity: 1,
@@ -30,20 +43,20 @@ const styleSheet = (params: { theme: Theme; vars: InputStyleSheetVars }) => {
           ? theme.colors.primary.default
           : colors.transparent,
       };
+
   return StyleSheet.create({
     base: Object.assign(
       {
         color: theme.colors.text.default,
         borderWidth: 1,
         borderColor: colors.transparent,
-        backgroundColor: theme.colors.background.default,
-        height: 24,
+        backgroundColor: colors.transparent,
         ...stateObj,
-        paddingVertical: 0,
-        fontFamily: theme.typography[textVariant].fontFamily,
+        fontFamily: getFontFamily(textVariant),
         fontWeight: theme.typography[textVariant].fontWeight,
         fontSize: theme.typography[textVariant].fontSize,
         letterSpacing: theme.typography[textVariant].letterSpacing,
+        ...(Platform.OS === 'ios' && isPlaceholderVisible && { lineHeight: 0 }),
       },
       style,
     ) as TextStyle,

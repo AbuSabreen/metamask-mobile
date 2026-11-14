@@ -1,0 +1,173 @@
+import React, { useCallback, useMemo, useState } from 'react';
+import { useSelector } from 'react-redux';
+import { KeyboardAvoidingView, Platform, StatusBar } from 'react-native';
+import { strings } from '../../../../../../locales/i18n';
+import Engine from '../../../../../core/Engine';
+import {
+  ParamListBase,
+  RouteProp,
+  useNavigation,
+  useRoute,
+} from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import {
+  Box,
+  BoxFlexDirection,
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  Text,
+  TextColor,
+  TextField,
+  TextVariant,
+  FontWeight,
+} from '@metamask/design-system-react-native';
+import { useTailwind } from '@metamask/design-system-twrnc-preset';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useBottomSafeAreaInset } from '../../../../hooks/useBottomSafeAreaInset';
+import { EditAccountNameIds } from '../EditAccountName.testIds';
+import { AccountGroupObject } from '@metamask/account-tree-controller';
+import { RootState } from '../../../../../reducers';
+import { selectAccountGroupById } from '../../../../../selectors/multichainAccounts/accountTreeController';
+import { useTheme } from '../../../../../util/theme';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../selectors/featureFlagController/glassHeaders';
+
+interface RootNavigationParamList extends ParamListBase {
+  EditMultichainAccountName: {
+    accountGroup: AccountGroupObject;
+  };
+}
+
+type EditMultichainAccountNameRouteProp = RouteProp<
+  RootNavigationParamList,
+  'EditMultichainAccountName'
+>;
+
+export const EditMultichainAccountName = () => {
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+  const tw = useTailwind();
+  const { themeAppearance } = useTheme();
+  const route = useRoute<EditMultichainAccountNameRouteProp>();
+  const { accountGroup: initialAccountGroup } = route.params;
+  const navigation = useNavigation<AppNavigationProp>();
+  const bottomSafeAreaInset = useBottomSafeAreaInset();
+
+  const accountGroupFromSelector = useSelector((state: RootState) =>
+    initialAccountGroup
+      ? selectAccountGroupById(state, initialAccountGroup.id)
+      : undefined,
+  );
+
+  const accountGroup = accountGroupFromSelector || initialAccountGroup;
+
+  const initialName = accountGroup?.metadata?.name || '';
+
+  const [accountName, setAccountName] = useState(initialName);
+  const [error, setError] = useState<string | null>(null);
+
+  const containerStyle = useMemo(
+    () =>
+      tw.style(
+        'flex-1 bg-default',
+        Platform.OS === 'android' && StatusBar.currentHeight
+          ? { paddingTop: StatusBar.currentHeight }
+          : undefined,
+        {
+          // Android draws edge-to-edge, so the confirm button has to clear the
+          // system navigation bar. 10dp stays the minimum visual gap.
+          paddingBottom:
+            Platform.OS === 'android'
+              ? Math.max(bottomSafeAreaInset, 10)
+              : bottomSafeAreaInset,
+        },
+      ),
+    [bottomSafeAreaInset, tw],
+  );
+
+  const handleAccountNameChange = useCallback(() => {
+    // Validate that account name is not empty
+    if (!accountName || accountName.trim() === '') {
+      setError(
+        strings('multichain_accounts.edit_account_name.error_empty_name'),
+      );
+      return;
+    }
+
+    //TODO: Validate that account name is not duplicate after it's added to the AccountTreeController
+
+    try {
+      const { AccountTreeController } = Engine.context;
+      AccountTreeController.setAccountGroupName(accountGroup.id, accountName);
+      navigation.goBack();
+    } catch (err: unknown) {
+      const errorMessage = err as Error;
+      if (errorMessage?.message?.includes('name already exists')) {
+        setError(
+          strings('multichain_accounts.edit_account_name.error_duplicate_name'),
+        );
+      } else {
+        setError(strings('multichain_accounts.edit_account_name.error'));
+      }
+    }
+  }, [accountName, accountGroup, navigation]);
+
+  return (
+    <SafeAreaView edges={['left', 'right']} style={containerStyle}>
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        includesTopInset
+        title={accountGroup?.metadata?.name || 'Account Group'}
+        onBack={() => navigation.goBack()}
+        backButtonProps={{
+          testID: EditAccountNameIds.BACK_BUTTON,
+        }}
+      />
+      <KeyboardAvoidingView
+        style={tw.style('flex-1  justify-between')}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <Box
+          flexDirection={BoxFlexDirection.Column}
+          twClassName="mt-4 gap-4 px-6"
+          testID={EditAccountNameIds.EDIT_ACCOUNT_NAME_CONTAINER}
+        >
+          <Text variant={TextVariant.BodyMd} fontWeight={FontWeight.Medium}>
+            {strings('multichain_accounts.edit_account_name.account_name')}
+          </Text>
+          <TextField
+            value={accountName}
+            onChangeText={(newName: string) => {
+              setAccountName(newName);
+              if (error) {
+                setError(null);
+              }
+            }}
+            placeholder={initialName}
+            isError={Boolean(error)}
+            autoFocus
+            inputProps={{
+              testID: EditAccountNameIds.ACCOUNT_NAME_INPUT,
+              spellCheck: false,
+              keyboardAppearance: themeAppearance,
+              autoCapitalize: 'none',
+            }}
+          />
+          {error ? <Text color={TextColor.ErrorDefault}>{error}</Text> : null}
+        </Box>
+        <Box twClassName="mt-4 w-full px-6 py-2.5">
+          <Button
+            isFullWidth
+            variant={ButtonVariant.Primary}
+            size={ButtonSize.Lg}
+            onPress={handleAccountNameChange}
+            testID={EditAccountNameIds.SAVE_BUTTON}
+          >
+            {strings('multichain_accounts.edit_account_name.confirm_button')}
+          </Button>
+        </Box>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+};

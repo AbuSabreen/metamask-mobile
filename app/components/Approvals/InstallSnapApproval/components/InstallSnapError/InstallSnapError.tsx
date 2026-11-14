@@ -1,12 +1,8 @@
-///: BEGIN:ONLY_INCLUDE_IF(snaps)
 import React, { useMemo } from 'react';
 import { View } from 'react-native';
 import styleSheet from '../../InstallSnapApproval.styles';
 import { strings } from '../../../../../../locales/i18n';
 import SheetHeader from '../../../../../component-library/components/Sheet/SheetHeader';
-import Text, {
-  TextVariant,
-} from '../../../../../component-library/components/Texts/Text';
 import Icon, {
   IconColor,
   IconName,
@@ -28,6 +24,7 @@ import { useStyles } from '../../../../hooks/useStyles';
 import { InstallSnapFlowProps } from '../../InstallSnapApproval.types';
 import { SNAP_INSTALL_OK } from '../../InstallSnapApproval.constants';
 import SNAP_INSTALL_ERROR from './InstallSnapError.constants';
+import { Text, TextVariant } from '@metamask/design-system-react-native';
 
 const InstallSnapError = ({
   onConfirm,
@@ -72,7 +69,7 @@ const InstallSnapError = ({
           </View>
         </View>
         <SheetHeader title={errorTitle} />
-        <Text style={styles.description} variant={TextVariant.BodyMD}>
+        <Text style={styles.description} variant={TextVariant.BodyMd}>
           {strings('install_snap.error_description', {
             snap: snapName,
           })}
@@ -89,4 +86,3 @@ const InstallSnapError = ({
 };
 
 export default React.memo(InstallSnapError);
-///: END:ONLY_INCLUDE_IF

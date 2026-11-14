@@ -7,22 +7,26 @@ import { useSelector } from 'react-redux';
 import { strings } from '../../../../../locales/i18n';
 import { IAccount } from './types';
 import useBlockExplorer from '../../../hooks/useBlockExplorer';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { trackBlockExplorerLinkClicked } from '../../../../util/analytics/externalLinkTracking';
 import { useAccountsBalance } from './hooks';
 import { useTheme } from '../../../../util/theme';
 import { createStyle } from './styles';
 import AccountDetails from '../AccountDetails';
 import StyledButton from '../../../UI/StyledButton';
 import { selectProviderConfig } from '../../../../selectors/networkController';
+import { AccountSelectorSelectorsIDs } from './AccountSelector.testIds';
+import { toFormattedAddress } from '../../../../util/address';
 
 interface ISelectQRAccountsProps {
   accounts: IAccount[];
   selectedAccounts: string[];
   nextPage: () => void;
   prevPage: () => void;
-  toggleAccount: (index: number) => void;
+  onCheck?: (index: number) => void;
   onUnlock: (accountIndex: number[]) => void;
   onForget: () => void;
-  title: string;
+  title?: string;
 }
 
 const AccountSelector = (props: ISelectQRAccountsProps) => {
@@ -30,7 +34,7 @@ const AccountSelector = (props: ISelectQRAccountsProps) => {
     accounts,
     prevPage,
     nextPage,
-    toggleAccount,
+    onCheck,
     selectedAccounts,
     onForget,
     onUnlock,
@@ -41,7 +45,23 @@ const AccountSelector = (props: ISelectQRAccountsProps) => {
   const styles = createStyle(colors);
   const providerConfig = useSelector(selectProviderConfig);
   const accountsBalance = useAccountsBalance(accounts);
-  const { toBlockExplorer } = useBlockExplorer();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+  const { toBlockExplorer, getBlockExplorerUrl } = useBlockExplorer();
+
+  const handleToBlockExplorer = useCallback(
+    (address: string) => {
+      const url = getBlockExplorerUrl(address);
+      if (url) {
+        trackBlockExplorerLinkClicked(trackEvent, createEventBuilder, {
+          location: 'hardware_wallet_account',
+          text: strings('asset_details.options.view_on_block'),
+          url,
+        });
+      }
+      toBlockExplorer(address);
+    },
+    [createEventBuilder, getBlockExplorerUrl, toBlockExplorer, trackEvent],
+  );
 
   const [checkedAccounts, setCheckedAccounts] = useState<Set<number>>(
     new Set(),
@@ -49,11 +69,13 @@ const AccountSelector = (props: ISelectQRAccountsProps) => {
 
   const formattedAccounts: IAccount[] = useMemo(() => {
     const selectedAccountsSet = new Set<string>(
-      selectedAccounts.map((address) => address.toLowerCase()),
+      selectedAccounts.map((address) => toFormattedAddress(address)),
     );
     return accounts.map((account) => {
       const checked = checkedAccounts.has(account.index);
-      const selected = selectedAccountsSet.has(account.address.toLowerCase());
+      const selected = selectedAccountsSet.has(
+        toFormattedAddress(account.address),
+      );
       return {
         ...account,
         checked: checked || selected,
@@ -69,14 +91,17 @@ const AccountSelector = (props: ISelectQRAccountsProps) => {
         prev.has(index) ? prev.delete(index) : prev.add(index);
         return new Set(prev);
       });
-      toggleAccount(index);
+
+      if (onCheck) {
+        onCheck(index);
+      }
     },
-    [toggleAccount],
+    [onCheck],
   );
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{title}</Text>
+      {title && <Text style={styles.title}>{title}</Text>}
       <FlatList
         data={formattedAccounts}
         keyExtractor={(item) => `address-${item.index}`}
@@ -101,23 +126,31 @@ const AccountSelector = (props: ISelectQRAccountsProps) => {
               address={item.address}
               balance={item.balance}
               ticker={providerConfig.ticker}
-              toBlockExplorer={toBlockExplorer}
+              toBlockExplorer={handleToBlockExplorer}
             />
           </View>
         )}
       />
       <View style={styles.pagination}>
-        <TouchableOpacity style={styles.paginationItem} onPress={prevPage}>
+        <TouchableOpacity
+          style={styles.paginationItem}
+          onPress={prevPage}
+          testID={AccountSelectorSelectorsIDs.PREVIOUS_BUTTON}
+        >
           <Icon name={'chevron-left'} color={colors.primary.default} />
           <Text style={styles.paginationText}>
             {strings('account_selector.prev')}
           </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.paginationItem} onPress={nextPage}>
+        <TouchableOpacity
+          style={styles.paginationItem}
+          onPress={nextPage}
+          testID={AccountSelectorSelectorsIDs.NEXT_BUTTON}
+        >
           <Text style={styles.paginationText}>
             {strings('account_selector.next')}
           </Text>
-          <Icon name={'chevron-right'} color={colors.primary.default} />
+          {<Icon name={'chevron-right'} color={colors.primary.default} />}
         </TouchableOpacity>
       </View>
       <View style={styles.bottom}>
@@ -133,6 +166,7 @@ const AccountSelector = (props: ISelectQRAccountsProps) => {
           type={'transparent-blue'}
           onPress={onForget}
           containerStyle={[styles.button]}
+          testID={AccountSelectorSelectorsIDs.FORGET_BUTTON}
         >
           {strings('account_selector.forget')}
         </StyledButton>

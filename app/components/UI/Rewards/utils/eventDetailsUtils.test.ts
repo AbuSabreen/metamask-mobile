@@ -1,0 +1,1772 @@
+import { IconName } from '@metamask/design-system-react-native';
+import TEST_ADDRESS from '../../../../constants/address';
+import {
+  PointsEventDto,
+  PointsEventEarnType,
+  SwapEventPayload,
+  SeasonActivityTypeDto,
+} from '../../../../core/Engine/controllers/rewards-controller/types';
+import { PerpsEventType } from './eventConstants';
+import {
+  getEventDetails,
+  resolveEventDetails,
+  formatAssetAmount,
+  hasValidAsset,
+  getPerpsEventDirection,
+  formatSwapDetails,
+} from './eventDetailsUtils';
+
+// Mock i18n strings
+jest.mock('../../../../../locales/i18n', () => ({
+  strings: jest.fn((key: string, params?: Record<string, string>) => {
+    const t: Record<string, string> = {
+      'rewards.events.to': 'to',
+      'rewards.events.type.swap': 'Swap',
+      'rewards.events.type.card_spend': 'Card spend',
+      'rewards.events.type.referral_action': 'Referral action',
+      'rewards.events.type.sign_up_bonus': 'Sign up bonus',
+      'rewards.events.type.loyalty_bonus': 'Loyalty bonus',
+      'rewards.events.type.one_time_bonus': 'One-time bonus',
+      'rewards.events.type.open_position': 'Opened position',
+      'rewards.events.type.close_position': 'Closed position',
+      'rewards.events.type.take_profit': 'Take profit',
+      'rewards.events.type.stop_loss': 'Stop loss',
+      'rewards.events.type.predict': 'Prediction',
+      'rewards.events.type.musd_deposit': 'mUSD deposit',
+      'rewards.events.musd_deposit_for': 'For {{date}}',
+      'rewards.events.type.apply_referral_bonus': 'Referral code bonus',
+      'rewards.events.type.uncategorized_event': 'Uncategorized event',
+      'perps.market.long': 'Long',
+      'perps.market.short': 'Short',
+    };
+    const template = t[key] || key;
+    if (params && template.includes('{{date}}')) {
+      return template.replace('{{date}}', params.date || '');
+    }
+    return template;
+  }),
+  default: {
+    locale: 'en-US',
+  },
+}));
+
+// Mock formatUtils
+jest.mock('./formatUtils', () => {
+  const { IconName: IconEnum } = jest.requireActual(
+    '@metamask/design-system-react-native',
+  );
+  return {
+    formatNumber: jest.fn((value: number) => value.toString()),
+    formatRewardsMusdDepositPayloadDate: jest.fn(
+      (isoDate: string | undefined) => {
+        if (
+          !isoDate ||
+          typeof isoDate !== 'string' ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(isoDate)
+        ) {
+          return null;
+        }
+        const date = new Date(`${isoDate}T00:00:00Z`);
+        return new Intl.DateTimeFormat('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          timeZone: 'UTC',
+        }).format(date);
+      },
+    ),
+    resolveTemplate: jest.fn(
+      (template: string, values: Record<string, string>) =>
+        template.replace(/\$\{(\w+)\}/g, (match, placeholder) => {
+          const value = values[placeholder as keyof typeof values];
+          return value !== undefined ? String(value) : match;
+        }),
+    ),
+    getIconName: jest.fn((name: string) => {
+      const map: Record<string, (typeof IconEnum)[keyof typeof IconEnum]> = {
+        Star: IconEnum.Star,
+        ArrowDown: IconEnum.ArrowDown,
+        ArrowUp: IconEnum.ArrowUp,
+        ArrowRight: IconEnum.ArrowRight,
+        Lock: IconEnum.Lock,
+        Gift: IconEnum.Gift,
+        Edit: IconEnum.Edit,
+        ThumbUp: IconEnum.ThumbUp,
+        Speedometer: IconEnum.Speedometer,
+        Coin: IconEnum.Coin,
+        Card: IconEnum.Card,
+        Candlestick: IconEnum.Candlestick,
+        SwapVertical: IconEnum.SwapVertical,
+        UserCircleAdd: IconEnum.UserCircleAdd,
+      };
+      return map[name] ?? IconEnum.Star;
+    }),
+  };
+});
+
+/**
+ * Helper to create a SeasonActivityTypeDto for a known event type.
+ * Maps each type to the title and icon that the server would provide.
+ */
+const makeActivityType = (
+  type: string,
+  title: string,
+  icon: string,
+): SeasonActivityTypeDto =>
+  ({
+    id: `activity-${type.toLowerCase()}`,
+    type,
+    title,
+    icon,
+  }) as SeasonActivityTypeDto;
+
+/**
+ * Pre-built activity types for known event types, matching the old hardcoded values.
+ */
+const KNOWN_ACTIVITY_TYPES: SeasonActivityTypeDto[] = [
+  makeActivityType('SWAP', 'Swap', 'SwapVertical'),
+  makeActivityType('PERPS', 'Perps', 'Candlestick'),
+  makeActivityType('CARD', 'Card spend', 'Card'),
+  makeActivityType('REFERRAL', 'Referral action', 'UserCircleAdd'),
+  makeActivityType(
+    'APPLY_REFERRAL_BONUS',
+    'Referral code bonus',
+    'UserCircleAdd',
+  ),
+  makeActivityType('SIGN_UP_BONUS', 'Sign up bonus', 'Edit'),
+  makeActivityType('LOYALTY_BONUS', 'Loyalty bonus', 'ThumbUp'),
+  makeActivityType('ONE_TIME_BONUS', 'One-time bonus', 'Gift'),
+  makeActivityType('PREDICT', 'Prediction', 'Speedometer'),
+  makeActivityType('MUSD_DEPOSIT', 'mUSD deposit', 'Coin'),
+  makeActivityType('BONUS_CODE', 'Bonus code', 'Gift'),
+];
+
+describe('eventDetailsUtils', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('formatAssetAmount', () => {
+    it('formats asset amount with proper decimals', () => {
+      // Given an amount and decimals
+      const amount = '1000000000000000000'; // 1 ETH with 18 decimals
+      const decimals = 18;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should return the formatted amount
+      expect(result).toBe('1');
+    });
+
+    it('formats asset amount with decimal places', () => {
+      // Given an amount with decimal places
+      const amount = '1500000000000000000'; // 1.5 ETH with 18 decimals
+      const decimals = 18;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should return the formatted amount with decimals
+      expect(result).toBe('1.5');
+    });
+
+    it('formats asset amount with many decimal places and rounds to 5', () => {
+      // Given an amount with many decimal places
+      const amount = '1234560000000000000'; // 1.23456 ETH with 18 decimals
+      const decimals = 18;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should round to 5 decimal places
+      expect(result).toBe('1.23456');
+    });
+
+    it('formats asset amount with 6 decimals', () => {
+      // Given an amount with 6 decimals (like USDC)
+      const amount = '1000000'; // 1 USDC with 6 decimals
+      const decimals = 6;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should return the formatted amount
+      expect(result).toBe('1');
+    });
+
+    it('formats zero amount', () => {
+      // Given a zero amount
+      const amount = '0';
+      const decimals = 18;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should return zero
+      expect(result).toBe('0');
+    });
+
+    it('formats 1 million with compact notation', () => {
+      // Given 1 million (1,000,000) with 18 decimals
+      const amount = '1000000000000000000000000';
+      const decimals = 18;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should return compact notation
+      expect(result).toBe('1M');
+    });
+
+    it('formats 10 million with compact notation', () => {
+      // Given 10 million (10,000,000) with 18 decimals
+      const amount = '10000000000000000000000000';
+      const decimals = 18;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should return compact notation
+      expect(result).toBe('10M');
+    });
+
+    it('formats 1.5 million with compact notation and decimals', () => {
+      // Given 1.5 million (1,500,000) with 18 decimals
+      const amount = '1500000000000000000000000';
+      const decimals = 18;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should return compact notation with decimals
+      expect(result).toBe('1.5M');
+    });
+
+    it('formats 1 billion with compact notation', () => {
+      // Given 1 billion (1,000,000,000) with 18 decimals
+      const amount = '1000000000000000000000000000';
+      const decimals = 18;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should return compact notation
+      expect(result).toBe('1B');
+    });
+
+    it('formats amounts below 1 million without compact notation', () => {
+      // Given 999,999 with 18 decimals (below 1M threshold)
+      const amount = '999999000000000000000000';
+      const decimals = 18;
+
+      // When formatting the asset amount
+      const result = formatAssetAmount(amount, decimals);
+
+      // Then it should return standard notation with thousand separators
+      expect(result).toBe('999,999');
+    });
+  });
+
+  describe('hasValidAsset', () => {
+    it('returns true for valid asset with all properties', () => {
+      // Given a valid asset
+      const asset = {
+        amount: '1000000000000000000',
+        decimals: 18,
+        symbol: 'ETH',
+        type: 'eip155:1/slip44:60',
+      };
+
+      // When checking if asset is valid
+      const result = hasValidAsset(asset);
+
+      // Then it should return true
+      expect(result).toBe(true);
+    });
+
+    it('returns false for undefined asset', () => {
+      // Given an undefined asset
+      const asset = undefined;
+
+      // When checking if asset is valid
+      const result = hasValidAsset(asset);
+
+      // Then it should return false
+      expect(result).toBe(false);
+    });
+
+    it('returns false for asset with undefined amount', () => {
+      // Given an asset with undefined amount
+      const asset = {
+        amount: undefined,
+        decimals: 18,
+        symbol: 'ETH',
+        type: 'eip155:1/slip44:60',
+      };
+
+      // When checking if asset is valid
+      // @ts-expect-error - We are testing the function with undefined amount
+      const result = hasValidAsset(asset);
+
+      // Then it should return false
+      expect(result).toBe(false);
+    });
+
+    it('returns false for asset with undefined decimals', () => {
+      // Given an asset with undefined decimals
+      const asset = {
+        amount: '1000000000000000000',
+        decimals: undefined,
+        symbol: 'ETH',
+        type: 'eip155:1/slip44:60',
+      };
+
+      // When checking if asset is valid
+      // @ts-expect-error - We are testing the function with undefined decimals
+      const result = hasValidAsset(asset);
+
+      // Then it should return false
+      expect(result).toBe(false);
+    });
+
+    it('returns false for asset with undefined symbol', () => {
+      // Given an asset with undefined symbol
+      const asset = {
+        amount: '1000000000000000000',
+        decimals: 18,
+        symbol: undefined,
+        type: 'eip155:1/slip44:60',
+      };
+
+      // When checking if asset is valid
+      const result = hasValidAsset(asset);
+
+      // Then it should return false
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('getPerpsEventDirection', () => {
+    it('returns "Long" for LONG direction', () => {
+      // Given a LONG direction
+      const direction = 'LONG';
+
+      // When getting the direction text
+      const result = getPerpsEventDirection(direction);
+
+      // Then it should return "Long"
+      expect(result).toBe('Long');
+    });
+
+    it('returns "Short" for SHORT direction', () => {
+      // Given a SHORT direction
+      const direction = 'SHORT';
+
+      // When getting the direction text
+      const result = getPerpsEventDirection(direction);
+
+      // Then it should return "Short"
+      expect(result).toBe('Short');
+    });
+
+    it('returns undefined for unknown direction', () => {
+      // Given an unknown direction
+      const direction = 'UNKNOWN';
+
+      // When getting the direction text
+      const result = getPerpsEventDirection(direction);
+
+      // Then it should return undefined
+      expect(result).toBeUndefined();
+    });
+
+    it('returns undefined for empty direction', () => {
+      // Given an empty direction
+      const direction = '';
+
+      // When getting the direction text
+      const result = getPerpsEventDirection(direction);
+
+      // Then it should return undefined
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('formatSwapDetails', () => {
+    const createMockSwapPayload = (
+      overrides: Partial<SwapEventPayload> = {},
+    ) => ({
+      srcAsset: {
+        amount: '1000000000000000000', // 1 ETH with 18 decimals
+        decimals: 18,
+        symbol: 'ETH',
+        type: 'eip155:1/slip44:60',
+      },
+      destAsset: {
+        amount: '1000000', // 1 USDC with 6 decimals
+        decimals: 6,
+        symbol: 'USDC',
+        type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      },
+      ...overrides,
+    });
+
+    it('formats swap details with source asset only', () => {
+      // Given a swap payload with valid source asset
+      const payload = createMockSwapPayload();
+
+      // When formatting swap details without destination amount
+      const result = formatSwapDetails(payload, false);
+
+      // Then it should return formatted source asset with destination symbol
+      expect(result).toBe('1 ETH to USDC');
+    });
+
+    it('formats swap details with both source and destination amounts', () => {
+      // Given a swap payload with valid source and destination assets
+      const payload = createMockSwapPayload();
+
+      // When formatting swap details with destination amount
+      const result = formatSwapDetails(payload, true);
+
+      // Then it should return formatted both assets
+      expect(result).toBe('1 ETH to 1 USDC');
+    });
+
+    it('formats swap details with source asset only when destAsset is undefined', () => {
+      // Given a swap payload with undefined destination asset
+      const payload = createMockSwapPayload({
+        destAsset: undefined,
+      });
+
+      // When formatting swap details
+      const result = formatSwapDetails(payload, false);
+
+      // Then it should return only source asset
+      expect(result).toBe('1 ETH');
+    });
+
+    it('formats swap details with source asset only when destAsset has no symbol', () => {
+      // Given a swap payload with destination asset missing symbol
+      const payload = createMockSwapPayload({
+        destAsset: {
+          amount: '1000000',
+          decimals: 6,
+          symbol: undefined,
+          type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        },
+      });
+
+      // When formatting swap details
+      const result = formatSwapDetails(payload, false);
+
+      // Then it should return only source asset
+      expect(result).toBe('1 ETH');
+    });
+
+    it('returns undefined when source asset is invalid', () => {
+      // Given a swap payload with invalid source asset
+      const payload = createMockSwapPayload({
+        srcAsset: {
+          // @ts-expect-error - We are testing the function with undefined amount
+          amount: undefined,
+          decimals: 18,
+          symbol: 'ETH',
+          type: 'eip155:1/slip44:60',
+        },
+      });
+
+      // When formatting swap details
+      const result = formatSwapDetails(payload, false);
+
+      // Then it should return undefined
+      expect(result).toBeUndefined();
+    });
+
+    it('returns undefined when source asset is missing', () => {
+      // Given a swap payload with missing source asset
+      const payload = createMockSwapPayload({
+        srcAsset: undefined,
+      });
+
+      // When formatting swap details
+      const result = formatSwapDetails(payload, false);
+
+      // Then it should return undefined
+      expect(result).toBeUndefined();
+    });
+
+    it('formats swap details without destination amount when destAsset is invalid', () => {
+      // Given a swap payload with invalid destination asset
+      const payload = createMockSwapPayload({
+        destAsset: {
+          // @ts-expect-error - We are testing the function with undefined amount
+          amount: undefined,
+          decimals: 6,
+          symbol: 'USDC',
+          type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        },
+      });
+
+      // When formatting swap details with destination amount
+      const result = formatSwapDetails(payload, true);
+
+      // Then it should return only source asset with destination symbol
+      expect(result).toBe('1 ETH to USDC');
+    });
+
+    it('formats swap details without destination amount when destAsset is missing', () => {
+      // Given a swap payload with missing destination asset
+      const payload = createMockSwapPayload({
+        destAsset: undefined,
+      });
+
+      // When formatting swap details with destination amount
+      const result = formatSwapDetails(payload, true);
+
+      // Then it should return only source asset
+      expect(result).toBe('1 ETH');
+    });
+
+    it('formats swap details with decimal amounts', () => {
+      // Given a swap payload with decimal amounts
+      const payload = createMockSwapPayload({
+        srcAsset: {
+          amount: '1500000000000000000', // 1.5 ETH with 18 decimals
+          decimals: 18,
+          symbol: 'ETH',
+          type: 'eip155:1/slip44:60',
+        },
+        destAsset: {
+          amount: '2500000', // 2.5 USDC with 6 decimals
+          decimals: 6,
+          symbol: 'USDC',
+          type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        },
+      });
+
+      // When formatting swap details with destination amount
+      const result = formatSwapDetails(payload, true);
+
+      // Then it should return formatted decimal amounts
+      expect(result).toBe('1.5 ETH to 2.5 USDC');
+    });
+
+    it('formats swap details with large amounts using compact notation', () => {
+      // Given a swap payload with large amounts
+      const payload = createMockSwapPayload({
+        srcAsset: {
+          amount: '1000000000000000000000000', // 1,000,000 ETH with 18 decimals
+          decimals: 18,
+          symbol: 'ETH',
+          type: 'eip155:1/slip44:60',
+        },
+        destAsset: {
+          amount: '1000000000000', // 1,000,000 USDC with 6 decimals
+          decimals: 6,
+          symbol: 'USDC',
+          type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        },
+      });
+
+      // When formatting swap details with destination amount
+      const result = formatSwapDetails(payload, true);
+
+      // Then it should return formatted large amounts with compact notation
+      expect(result).toBe('1M ETH to 1M USDC');
+    });
+
+    it('formats swap details with zero amounts', () => {
+      // Given a swap payload with zero amounts
+      const payload = createMockSwapPayload({
+        srcAsset: {
+          amount: '0',
+          decimals: 18,
+          symbol: 'ETH',
+          type: 'eip155:1/slip44:60',
+        },
+        destAsset: {
+          amount: '0',
+          decimals: 6,
+          symbol: 'USDC',
+          type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        },
+      });
+
+      // When formatting swap details with destination amount
+      const result = formatSwapDetails(payload, true);
+
+      // Then it should return formatted zero amounts
+      expect(result).toBe('0 ETH to 0 USDC');
+    });
+  });
+
+  describe('getEventDetails', () => {
+    const createMockEvent = (
+      type: PointsEventDto['type'],
+      payload: PointsEventDto['payload'] = null,
+    ): PointsEventDto => {
+      const baseEvent = {
+        id: 'test-id',
+        timestamp: new Date('2024-01-15T14:30:00Z'),
+        value: 100,
+        bonus: null,
+        accountAddress: TEST_ADDRESS,
+        updatedAt: new Date('2024-01-15T14:30:00Z'),
+      };
+
+      switch (type) {
+        case 'SWAP':
+          return {
+            ...baseEvent,
+            type: 'SWAP' as const,
+            payload: payload as (PointsEventDto & { type: 'SWAP' })['payload'],
+          };
+        case 'PERPS':
+          return {
+            ...baseEvent,
+            type: 'PERPS' as const,
+            payload: payload as (PointsEventDto & { type: 'PERPS' })['payload'],
+          };
+        case 'CARD':
+          return {
+            ...baseEvent,
+            type: 'CARD' as const,
+            payload: payload as (PointsEventDto & { type: 'CARD' })['payload'],
+          };
+        case 'PREDICT':
+          return {
+            ...baseEvent,
+            type: 'PREDICT' as const,
+            payload: null,
+          };
+        case 'BONUS_CODE':
+          return {
+            ...baseEvent,
+            type: 'BONUS_CODE' as const,
+            payload: payload as (PointsEventDto & {
+              type: 'BONUS_CODE';
+            })['payload'],
+          };
+        case 'MUSD_DEPOSIT':
+          return {
+            ...baseEvent,
+            type: 'MUSD_DEPOSIT' as const,
+            payload: payload as (PointsEventDto & {
+              type: 'MUSD_DEPOSIT';
+            })['payload'],
+          };
+        default:
+          return {
+            ...baseEvent,
+            type: type as PointsEventEarnType,
+            payload: null,
+          };
+      }
+    };
+
+    describe('SWAP events', () => {
+      it('returns correct details for SWAP event', () => {
+        // Given a SWAP event
+        const event = createMockEvent('SWAP', {
+          srcAsset: {
+            symbol: 'ETH',
+            amount: '420000000000',
+            decimals: 9,
+            type: 'eip155:1/slip44:60',
+          },
+          destAsset: {
+            symbol: 'USDC',
+            amount: '1000000',
+            decimals: 6,
+            type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+          },
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return swap details
+        expect(result).toEqual({
+          title: 'Swap',
+          details: '420 ETH to USDC',
+          icon: IconName.SwapVertical,
+        });
+      });
+    });
+
+    describe('PERPS events', () => {
+      it('returns correct details for perps OPEN_POSITION long event', () => {
+        // Given a PERPS OPEN_POSITION event
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.OPEN_POSITION,
+          direction: 'LONG',
+          asset: {
+            symbol: 'ETH',
+            amount: '1000000000000000000', // 1 ETH with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return perps details
+        expect(result).toEqual({
+          title: 'Opened position',
+          details: 'Long 1 ETH',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('returns correct details for perps OPEN_POSITION short event', () => {
+        // Given a PERPS OPEN_POSITION SHORT event
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.OPEN_POSITION,
+          direction: 'SHORT',
+          asset: {
+            symbol: 'BTC',
+            amount: '500000000000000000', // 0.5 BTC with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:0',
+          },
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return perps details
+        expect(result).toEqual({
+          title: 'Opened position',
+          details: 'Short 0.5 BTC',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('returns correct details for perps CLOSE_POSITION event with zero amount', () => {
+        // Given a PERPS CLOSE_POSITION event
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.CLOSE_POSITION,
+          asset: {
+            symbol: 'ETH',
+            amount: '0',
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+          pnl: '0',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return perps details
+        expect(result).toEqual({
+          title: 'Closed position',
+          details: '0 ETH',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('returns correct details for PERPS TAKE_PROFIT event', () => {
+        // Given a PERPS TAKE_PROFIT event
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.TAKE_PROFIT,
+          asset: {
+            symbol: 'BTC',
+            amount: '250000000000000000', // 0.25 BTC with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:0',
+          },
+          pnl: '100',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return perps details
+        expect(result).toEqual({
+          title: 'Take profit',
+          details: '0.25 BTC',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('returns correct details for PERPS STOP_LOSS event', () => {
+        // Given a PERPS STOP_LOSS event
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.STOP_LOSS,
+          asset: {
+            symbol: 'ETH',
+            amount: '500000000000000000', // 0.5 ETH with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+          pnl: '100',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return perps details
+        expect(result).toEqual({
+          title: 'Stop loss',
+          details: '0.5 ETH',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('returns correct details for PERPS STOP_LOSS event with low amount', () => {
+        // Given a PERPS STOP_LOSS event
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.STOP_LOSS,
+          asset: {
+            symbol: 'ETH',
+            amount: '4006000000000000', // 0.5 ETH with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+          pnl: '100',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return perps details
+        expect(result).toEqual({
+          title: 'Stop loss',
+          details: '0.00401 ETH',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('returns undefined details for PERPS event with invalid payload', () => {
+        // Given a PERPS event with invalid payload
+        const event = createMockEvent('PERPS', {
+          type: 'INVALID_TYPE' as PerpsEventType,
+          asset: {
+            symbol: 'ETH',
+            amount: '1000000000000000000',
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return undefined details
+        expect(result).toEqual({
+          title: 'Uncategorized event',
+          details: undefined,
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('returns undefined details for PERPS event with undefined asset decimals', () => {
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.OPEN_POSITION,
+          direction: 'LONG',
+          asset: {
+            symbol: 'ETH',
+            amount: '1000000000000000000',
+            decimals: undefined as unknown as number,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Opened position',
+          details: undefined,
+          icon: IconName.Candlestick,
+        });
+      });
+    });
+
+    describe('CARD events', () => {
+      it('returns correct details for CARD event with whole number amount', () => {
+        // Given a CARD event with amount
+        const event = createMockEvent('CARD', {
+          asset: {
+            amount: '43000000',
+            type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+            decimals: 6,
+            name: 'USD Coin',
+            symbol: 'USDC',
+          },
+          txHash: '0x123...',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return card spend details
+        expect(result).toEqual({
+          title: 'Card spend',
+          details: '43 USDC',
+          icon: IconName.Card,
+        });
+      });
+
+      it('returns correct details for CARD event with decimal amount', () => {
+        // Given a CARD event with decimal amount
+        const event = createMockEvent('CARD', {
+          asset: {
+            amount: '43250000',
+            type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+            decimals: 6,
+            name: 'USD Coin',
+            symbol: 'USDC',
+          },
+          txHash: '0xabc123def456789012345678901234567890abcd',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return card spend details with decimals
+        expect(result).toEqual({
+          title: 'Card spend',
+          details: '43.25 USDC',
+          icon: IconName.Card,
+        });
+      });
+
+      it('returns undefined details for CARD event without payload', () => {
+        // Given a CARD event without payload
+        const event = createMockEvent('CARD', null);
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return card spend title with undefined details
+        expect(result).toEqual({
+          title: 'Card spend',
+          details: undefined,
+          icon: IconName.Card,
+        });
+      });
+    });
+
+    describe('REFERRAL events', () => {
+      it('returns correct details for REFERRAL event', () => {
+        const event = createMockEvent('REFERRAL');
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Referral action',
+          details: undefined,
+          icon: IconName.UserCircleAdd,
+        });
+      });
+    });
+
+    describe('APPLY_REFERRAL_BONUS events', () => {
+      it('returns correct details for APPLY_REFERRAL_BONUS event', () => {
+        // Given an APPLY_REFERRAL_BONUS event
+        const event = createMockEvent('APPLY_REFERRAL_BONUS');
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return apply referral bonus details
+        expect(result).toEqual({
+          title: 'Referral code bonus',
+          details: undefined,
+          icon: IconName.UserCircleAdd,
+        });
+      });
+
+      it('returns correct details for APPLY_REFERRAL_BONUS event without account name', () => {
+        // Given an APPLY_REFERRAL_BONUS event without account name
+        const event = createMockEvent('APPLY_REFERRAL_BONUS');
+
+        // When getting event details without account name
+        const result = getEventDetails(event, KNOWN_ACTIVITY_TYPES, undefined);
+
+        // Then it should return apply referral bonus details with undefined details
+        expect(result).toEqual({
+          title: 'Referral code bonus',
+          details: undefined,
+          icon: IconName.UserCircleAdd,
+        });
+      });
+    });
+
+    describe('SIGN_UP_BONUS events', () => {
+      it('returns correct details for SIGN_UP_BONUS event', () => {
+        const event = createMockEvent('SIGN_UP_BONUS');
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Sign up bonus',
+          details: TEST_ADDRESS,
+          icon: IconName.Edit,
+        });
+      });
+
+      it('returns empty details when account name is not provided', () => {
+        const event = createMockEvent('SIGN_UP_BONUS');
+
+        const result = getEventDetails(event, KNOWN_ACTIVITY_TYPES, undefined);
+
+        expect(result).toEqual({
+          title: 'Sign up bonus',
+          details: undefined,
+          icon: IconName.Edit,
+        });
+      });
+    });
+
+    describe('LOYALTY_BONUS events', () => {
+      it('returns correct details for LOYALTY_BONUS event', () => {
+        const event = createMockEvent('LOYALTY_BONUS');
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Loyalty bonus',
+          details: TEST_ADDRESS,
+          icon: IconName.ThumbUp,
+        });
+      });
+    });
+
+    describe('ONE_TIME_BONUS events', () => {
+      it('returns correct details for ONE_TIME_BONUS event', () => {
+        const event = createMockEvent('ONE_TIME_BONUS');
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'One-time bonus',
+          details: undefined,
+          icon: IconName.Gift,
+        });
+      });
+    });
+
+    describe('PREDICT events', () => {
+      it('returns correct details for PREDICT event', () => {
+        const event = createMockEvent('PREDICT');
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Prediction',
+          details: undefined,
+          icon: IconName.Speedometer,
+        });
+      });
+    });
+
+    describe('BONUS_CODE events', () => {
+      it('returns correct details for BONUS_CODE event with code in payload', () => {
+        const event = createMockEvent('BONUS_CODE', { code: 'BNS123' });
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Bonus code',
+          details: 'BNS123',
+          icon: IconName.Gift,
+        });
+      });
+
+      it('returns undefined details for BONUS_CODE event with null payload', () => {
+        const event = createMockEvent('BONUS_CODE', null);
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Bonus code',
+          details: undefined,
+          icon: IconName.Gift,
+        });
+      });
+    });
+
+    describe('MUSD_DEPOSIT events', () => {
+      it('returns correct details for MUSD_DEPOSIT event with date', () => {
+        // Given a MUSD_DEPOSIT event with a date
+        const event = createMockEvent('MUSD_DEPOSIT', {
+          date: '2025-01-15',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return mUSD deposit details with formatted date
+        expect(result).toEqual({
+          title: 'mUSD deposit',
+          details: 'For Jan 15, 2025',
+          icon: IconName.Coin,
+        });
+      });
+
+      it('returns correct details for MUSD_DEPOSIT event with different date format', () => {
+        // Given a MUSD_DEPOSIT event with a different date
+        const event = createMockEvent('MUSD_DEPOSIT', {
+          date: '2025-11-11',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return mUSD deposit details with formatted date
+        expect(result).toEqual({
+          title: 'mUSD deposit',
+          details: 'For Nov 11, 2025',
+          icon: IconName.Coin,
+        });
+      });
+
+      it('returns undefined details for MUSD_DEPOSIT event without payload', () => {
+        // Given a MUSD_DEPOSIT event without payload
+        const event = createMockEvent('MUSD_DEPOSIT', null);
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return mUSD deposit title with undefined details
+        expect(result).toEqual({
+          title: 'mUSD deposit',
+          details: undefined,
+          icon: IconName.Coin,
+        });
+      });
+
+      it('returns undefined details for MUSD_DEPOSIT event with payload but no date', () => {
+        // Given a MUSD_DEPOSIT event with payload but no date
+        const event = createMockEvent('MUSD_DEPOSIT', {
+          // @ts-expect-error - We are testing the function with undefined date
+          date: undefined,
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return mUSD deposit title with undefined details
+        expect(result).toEqual({
+          title: 'mUSD deposit',
+          details: undefined,
+          icon: IconName.Coin,
+        });
+      });
+
+      it('returns undefined details for MUSD_DEPOSIT event with date that is not a string', () => {
+        // Given a MUSD_DEPOSIT event with date that is not a string
+        const event = createMockEvent('MUSD_DEPOSIT', {
+          // @ts-expect-error - We are testing the function with non-string date
+          date: 20250115,
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return mUSD deposit title with undefined details
+        expect(result).toEqual({
+          title: 'mUSD deposit',
+          details: undefined,
+          icon: IconName.Coin,
+        });
+      });
+
+      it('returns undefined details for MUSD_DEPOSIT event with date that does not match YYYY-MM-DD format', () => {
+        // Given a MUSD_DEPOSIT event with date in wrong format
+        const event = createMockEvent('MUSD_DEPOSIT', {
+          date: '2025-1-15', // Missing leading zero in month
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return mUSD deposit title with undefined details
+        expect(result).toEqual({
+          title: 'mUSD deposit',
+          details: undefined,
+          icon: IconName.Coin,
+        });
+      });
+
+      it('returns undefined details for MUSD_DEPOSIT event with date in ISO format with time', () => {
+        // Given a MUSD_DEPOSIT event with date in ISO format with time
+        const event = createMockEvent('MUSD_DEPOSIT', {
+          date: '2025-01-15T00:00:00Z', // ISO format with time
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return mUSD deposit title with undefined details
+        expect(result).toEqual({
+          title: 'mUSD deposit',
+          details: undefined,
+          icon: IconName.Coin,
+        });
+      });
+
+      it('returns undefined details for MUSD_DEPOSIT event with invalid date string', () => {
+        // Given a MUSD_DEPOSIT event with invalid date string
+        const event = createMockEvent('MUSD_DEPOSIT', {
+          date: 'invalid-date',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return mUSD deposit title with undefined details
+        expect(result).toEqual({
+          title: 'mUSD deposit',
+          details: undefined,
+          icon: IconName.Coin,
+        });
+      });
+
+      it('returns undefined details for MUSD_DEPOSIT event with empty date string', () => {
+        // Given a MUSD_DEPOSIT event with empty date string
+        const event = createMockEvent('MUSD_DEPOSIT', {
+          date: '',
+        });
+
+        // When getting event details
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        // Then it should return mUSD deposit title with undefined details
+        expect(result).toEqual({
+          title: 'mUSD deposit',
+          details: undefined,
+          icon: IconName.Coin,
+        });
+      });
+    });
+
+    describe('unknown event types', () => {
+      it('returns uncategorized event details for unknown type', () => {
+        const event = createMockEvent('UNKNOWN_TYPE' as PointsEventDto['type']);
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Uncategorized event',
+          details: undefined,
+          icon: IconName.Star,
+        });
+      });
+    });
+
+    describe('edge cases', () => {
+      it('handles PERPS event with zero amount', () => {
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.OPEN_POSITION,
+          direction: 'LONG',
+          asset: {
+            symbol: 'ETH',
+            amount: '0',
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Opened position',
+          details: 'Long 0 ETH',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('handles PERPS event with very large amount using compact notation', () => {
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.OPEN_POSITION,
+          direction: 'LONG',
+          asset: {
+            symbol: 'ETH',
+            amount: '1000000000000000000000000', // 1,000,000 ETH with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Opened position',
+          details: 'Long 1M ETH',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('handles PERPS event with decimal result (1.5 should display as 1.5, not 1.50)', () => {
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.OPEN_POSITION,
+          direction: 'LONG',
+          asset: {
+            symbol: 'ETH',
+            amount: '1500000000000000000', // 1.5 ETH with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Opened position',
+          details: 'Long 1.5 ETH',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('formats PERPS event amounts to at most 5 decimal places (0.012345 should display as 0.01235)', () => {
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.OPEN_POSITION,
+          direction: 'LONG',
+          asset: {
+            symbol: 'ETH',
+            amount: '12345600000000000', // 0.0123456 ETH with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Opened position',
+          details: 'Long 0.01235 ETH',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('formats whole numbers without decimal places (50 should display as 50, not 50.00)', () => {
+        const event = createMockEvent('PERPS', {
+          type: PerpsEventType.OPEN_POSITION,
+          direction: 'LONG',
+          asset: {
+            symbol: 'ETH',
+            amount: '50000000000000000000', // 50 ETH with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Opened position',
+          details: 'Long 50 ETH',
+          icon: IconName.Candlestick,
+        });
+      });
+
+      it('formats SWAP event amounts to at most 5 decimal places', () => {
+        const event = createMockEvent('SWAP', {
+          srcAsset: {
+            symbol: 'ETH',
+            amount: '1234560000000000000', // 1.23456 ETH with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+          destAsset: {
+            symbol: 'USDC',
+            amount: '2000000000', // 2000 USDC with 6 decimals
+            decimals: 6,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Swap',
+          details: '1.23456 ETH to USDC',
+          icon: IconName.SwapVertical,
+        });
+      });
+
+      it('formats SWAP event with whole numbers without decimal places (50 should display as 50, not 50.00)', () => {
+        const event = createMockEvent('SWAP', {
+          srcAsset: {
+            symbol: 'ETH',
+            amount: '50000000000000000000', // 50 ETH with 18 decimals
+            decimals: 18,
+            type: 'eip155:1/slip44:60',
+          },
+          destAsset: {
+            symbol: 'USDC',
+            amount: '100000000', // 100 USDC with 6 decimals
+            decimals: 6,
+            type: 'eip155:1/slip44:60',
+          },
+        });
+
+        const result = getEventDetails(
+          event,
+          KNOWN_ACTIVITY_TYPES,
+          TEST_ADDRESS,
+        );
+
+        expect(result).toEqual({
+          title: 'Swap',
+          details: '50 ETH to USDC',
+          icon: IconName.SwapVertical,
+        });
+      });
+    });
+  });
+
+  describe('resolveEventDetails', () => {
+    it('returns swap details for SWAP type with valid payload', () => {
+      const payload = {
+        srcAsset: {
+          symbol: 'ETH',
+          amount: '1000000000000000000',
+          decimals: 18,
+          type: 'eip155:1/slip44:60',
+        },
+        destAsset: {
+          symbol: 'USDC',
+          amount: '1000000',
+          decimals: 6,
+          type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        },
+      };
+
+      const result = resolveEventDetails('SWAP', payload);
+
+      expect(result).toEqual({ details: '1 ETH to USDC' });
+    });
+
+    it('returns undefined details for SWAP type with null payload', () => {
+      const result = resolveEventDetails('SWAP', null);
+
+      expect(result).toEqual({ details: undefined });
+    });
+
+    it('returns title override and details for PERPS type', () => {
+      const payload = {
+        type: PerpsEventType.OPEN_POSITION,
+        direction: 'LONG' as const,
+        asset: {
+          symbol: 'ETH',
+          amount: '1000000000000000000',
+          decimals: 18,
+          type: 'eip155:1/slip44:60',
+        },
+      };
+
+      const result = resolveEventDetails('PERPS', payload);
+
+      expect(result).toEqual({
+        title: 'Opened position',
+        details: 'Long 1 ETH',
+      });
+    });
+
+    it('returns undefined title and details for PERPS with null payload', () => {
+      const result = resolveEventDetails('PERPS', null);
+
+      expect(result).toEqual({ title: undefined, details: undefined });
+    });
+
+    it('returns card details for CARD type', () => {
+      const payload = {
+        asset: {
+          amount: '43000000',
+          decimals: 6,
+          symbol: 'USDC',
+          type: 'eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        },
+        txHash: '0x123',
+      };
+
+      const result = resolveEventDetails('CARD', payload);
+
+      expect(result).toEqual({ details: '43 USDC' });
+    });
+
+    it('returns accountName as details for SIGN_UP_BONUS', () => {
+      const result = resolveEventDetails('SIGN_UP_BONUS', null, 'My Account');
+
+      expect(result).toEqual({ details: 'My Account' });
+    });
+
+    it('returns accountName as details for LOYALTY_BONUS', () => {
+      const result = resolveEventDetails('LOYALTY_BONUS', null, 'My Account');
+
+      expect(result).toEqual({ details: 'My Account' });
+    });
+
+    it('returns undefined details for SIGN_UP_BONUS without accountName', () => {
+      const result = resolveEventDetails('SIGN_UP_BONUS', null);
+
+      expect(result).toEqual({ details: undefined });
+    });
+
+    it('returns formatted date details for MUSD_DEPOSIT', () => {
+      const result = resolveEventDetails('MUSD_DEPOSIT', {
+        date: '2025-01-15',
+      });
+
+      expect(result).toEqual({ details: 'For Jan 15, 2025' });
+    });
+
+    it('returns undefined details for MUSD_DEPOSIT with null payload', () => {
+      const result = resolveEventDetails('MUSD_DEPOSIT', null);
+
+      expect(result).toEqual({ details: undefined });
+    });
+
+    it('returns undefined details for REFERRAL', () => {
+      const result = resolveEventDetails('REFERRAL', null);
+
+      expect(result).toEqual({ details: undefined });
+    });
+
+    it('returns undefined details for APPLY_REFERRAL_BONUS', () => {
+      const result = resolveEventDetails('APPLY_REFERRAL_BONUS', null);
+
+      expect(result).toEqual({ details: undefined });
+    });
+
+    it('returns undefined details for ONE_TIME_BONUS', () => {
+      const result = resolveEventDetails('ONE_TIME_BONUS', null);
+
+      expect(result).toEqual({ details: undefined });
+    });
+
+    it('returns undefined details for PREDICT', () => {
+      const result = resolveEventDetails('PREDICT', null);
+
+      expect(result).toEqual({ details: undefined });
+    });
+
+    it('returns code as details for BONUS_CODE with payload', () => {
+      const result = resolveEventDetails('BONUS_CODE', { code: 'XYZ789' });
+
+      expect(result).toEqual({ details: 'XYZ789' });
+    });
+
+    it('returns undefined details for BONUS_CODE with null payload', () => {
+      const result = resolveEventDetails('BONUS_CODE', null);
+
+      expect(result).toEqual({ details: undefined });
+    });
+
+    it('returns null for unknown event types', () => {
+      const result = resolveEventDetails('UNKNOWN_TYPE', null);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('Custom activity types', () => {
+    const CUSTOM_TYPE = 'CUSTOM_ACTION' as PointsEventDto['type'];
+
+    const makeCustomActivity = (
+      icon: string,
+      description: string = 'Custom description',
+    ): SeasonActivityTypeDto =>
+      ({
+        id: 'custom-activity',
+        type: CUSTOM_TYPE as unknown as PointsEventEarnType,
+        title: 'Custom Title',
+        description,
+        icon,
+      }) as SeasonActivityTypeDto;
+
+    const makeEvent = (): PointsEventDto => ({
+      id: 'custom-id',
+      timestamp: new Date('2024-02-01T00:00:00Z'),
+      value: 5,
+      bonus: null,
+      accountAddress: TEST_ADDRESS,
+      updatedAt: new Date('2024-02-01T00:00:00Z'),
+      type: CUSTOM_TYPE as PointsEventEarnType,
+      payload: null,
+    });
+
+    it('returns uncategorized for custom type not handled by resolveEventDetails', () => {
+      const activityTypes: SeasonActivityTypeDto[] = [
+        makeCustomActivity('Lock'),
+      ];
+      const event = makeEvent();
+
+      const result = getEventDetails(event, activityTypes, TEST_ADDRESS);
+
+      // Custom types not handled by resolveEventDetails fall through to uncategorized
+      expect(result).toEqual({
+        title: 'Uncategorized event',
+        details: undefined,
+        icon: IconName.Star,
+      });
+    });
+
+    it('returns uncategorized event when no matching activity type is found', () => {
+      const activityTypes: SeasonActivityTypeDto[] = [
+        // Different type that should not match
+        makeActivityType('OTHER_ACTION', 'Other', 'Gift'),
+      ];
+      const event = makeEvent();
+
+      const result = getEventDetails(event, activityTypes, TEST_ADDRESS);
+
+      expect(result).toEqual({
+        title: 'Uncategorized event',
+        details: undefined,
+        icon: IconName.Star,
+      });
+    });
+  });
+});

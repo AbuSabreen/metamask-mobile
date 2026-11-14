@@ -1,0 +1,183 @@
+jest.mock('@metamask/utils', () => ({
+  isHexAddress: jest.fn(),
+}));
+
+jest.mock('@solana/addresses', () => ({
+  isAddress: jest.fn(),
+}));
+
+jest.mock('../../../../util/address', () => ({
+  safeToChecksumAddress: jest.fn(),
+}));
+
+import { isHexAddress } from '@metamask/utils';
+import { isAddress } from '@solana/addresses';
+import { safeToChecksumAddress } from '../../../../util/address';
+import { truncateAddress } from './truncateAddress';
+
+const mockIsHexAddress = isHexAddress as jest.MockedFunction<
+  typeof isHexAddress
+>;
+const mockIsAddress = isAddress as jest.MockedFunction<typeof isAddress>;
+const mockSafeToChecksumAddress = safeToChecksumAddress as jest.MockedFunction<
+  typeof safeToChecksumAddress
+>;
+
+describe('truncateAddress', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockIsAddress.mockReturnValue(false);
+  });
+
+  describe('valid Solana addresses', () => {
+    const solanaAddress = '7EcDhSYGxXyscQzY5BF8zY3j6ftUpF8E5uMEnDZmv7d';
+
+    it('truncates a Solana address with default chars without checksumming', () => {
+      mockIsAddress.mockReturnValue(true);
+
+      const result = truncateAddress(solanaAddress);
+
+      expect(mockIsAddress).toHaveBeenCalledWith(solanaAddress);
+      expect(mockIsHexAddress).not.toHaveBeenCalled();
+      expect(mockSafeToChecksumAddress).not.toHaveBeenCalled();
+      expect(result).toBe('7EcD...mv7d');
+    });
+
+    it('truncates a Solana address with custom character count', () => {
+      mockIsAddress.mockReturnValue(true);
+
+      const result = truncateAddress(solanaAddress, 6);
+
+      expect(result).toBe('7EcDhS...DZmv7d');
+    });
+  });
+
+  describe('valid hex addresses', () => {
+    it('truncates standard Ethereum address with default chars', () => {
+      const address = '0x1234567890abcdef1234567890abcdef12345678';
+      const checksummedAddress = '0x1234567890aBcDeF1234567890AbCdEf12345678';
+      mockIsHexAddress.mockReturnValue(true);
+      mockSafeToChecksumAddress.mockReturnValue(checksummedAddress);
+
+      const result = truncateAddress(address);
+
+      expect(mockIsHexAddress).toHaveBeenCalledWith(address.toLowerCase());
+      expect(mockSafeToChecksumAddress).toHaveBeenCalledWith(address);
+      expect(result).toBe('0x12...5678');
+    });
+
+    it('truncates a checksummed (mixed-case) address by lowercasing for the hex check', () => {
+      const address = '0x32A25d1112d5A1A495A8a1aad011aB2a27A04461';
+      mockIsHexAddress.mockReturnValue(true);
+      mockSafeToChecksumAddress.mockReturnValue(address as `0x${string}`);
+
+      const result = truncateAddress(address);
+
+      expect(mockIsHexAddress).toHaveBeenCalledWith(address.toLowerCase());
+      expect(result).toBe('0x32...4461');
+    });
+
+    it('truncates address with custom character count', () => {
+      const address = '0x1234567890abcdef1234567890abcdef12345678';
+      const checksummedAddress = '0x1234567890aBcDeF1234567890AbCdEf12345678';
+      mockIsHexAddress.mockReturnValue(true);
+      mockSafeToChecksumAddress.mockReturnValue(checksummedAddress);
+
+      const result = truncateAddress(address, 6);
+
+      expect(result).toBe('0x1234...345678');
+    });
+
+    it('truncates short hex address', () => {
+      const address = '0x1234';
+      mockIsHexAddress.mockReturnValue(true);
+      mockSafeToChecksumAddress.mockReturnValue(address);
+
+      const result = truncateAddress(address);
+
+      expect(result).toBe('0x12...1234');
+    });
+
+    it('truncates very short hex address', () => {
+      const address = '0x12';
+      mockIsHexAddress.mockReturnValue(true);
+      mockSafeToChecksumAddress.mockReturnValue(address);
+
+      const result = truncateAddress(address);
+
+      expect(result).toBe('0x12...0x12');
+    });
+
+    it('preserves checksummed address format', () => {
+      const address = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd';
+      const checksummedAddress = '0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd';
+      mockIsHexAddress.mockReturnValue(true);
+      mockSafeToChecksumAddress.mockReturnValue(checksummedAddress);
+
+      const result = truncateAddress(address);
+
+      expect(result).toBe('0xAb...AbCd');
+    });
+  });
+
+  describe('non-hex inputs (display labels)', () => {
+    it('returns a non-hex string verbatim (so labels like "Money account" are not mangled)', () => {
+      const label = 'Money account';
+      mockIsAddress.mockReturnValue(false);
+      mockIsHexAddress.mockReturnValue(false);
+
+      const result = truncateAddress(label);
+
+      expect(mockIsAddress).toHaveBeenCalledWith(label);
+      expect(mockIsHexAddress).toHaveBeenCalledWith(label.toLowerCase());
+      expect(mockSafeToChecksumAddress).not.toHaveBeenCalled();
+      expect(result).toBe(label);
+    });
+
+    it('returns an alphanumeric string without 0x prefix unchanged', () => {
+      const value = '1234567890abcdef1234567890abcdef12345678';
+      mockIsAddress.mockReturnValue(false);
+      mockIsHexAddress.mockReturnValue(false);
+
+      const result = truncateAddress(value);
+
+      expect(result).toBe(value);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('returns undefined when address is undefined', () => {
+      const result = truncateAddress(undefined);
+
+      expect(result).toBeUndefined();
+    });
+
+    it('returns undefined when address is empty string', () => {
+      const result = truncateAddress('');
+
+      expect(result).toBeUndefined();
+    });
+
+    it('returns undefined when checksummed address is undefined', () => {
+      const address = '0x1234567890abcdef';
+      mockIsHexAddress.mockReturnValue(true);
+      mockSafeToChecksumAddress.mockReturnValue(
+        undefined as unknown as `0x${string}`,
+      );
+
+      const result = truncateAddress(address);
+
+      expect(result).toBeUndefined();
+    });
+
+    it('returns a single non-hex character unchanged', () => {
+      const value = 'x';
+      mockIsAddress.mockReturnValue(false);
+      mockIsHexAddress.mockReturnValue(false);
+
+      const result = truncateAddress(value);
+
+      expect(result).toBe('x');
+    });
+  });
+});

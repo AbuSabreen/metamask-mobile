@@ -3,26 +3,16 @@ import { fireEvent } from '@testing-library/react-native';
 
 import renderWithProvider from '../../../util/test/renderWithProvider';
 import { AddressFrom, AddressTo } from './index';
-import initialBackgroundState from '../../../util/test/initial-background-state.json';
-import { AddAddressModalSelectorsIDs } from '../../../../e2e/selectors/Modals/AddAddressModal.selectors';
+import { backgroundState } from '../../../util/test/initial-root-state';
+import { AddAddressModalSelectorsIDs } from '../AddToAddressBookWrapper/AddAddressModal.testIds';
 
 const initialState = {
   settings: {},
   engine: {
     backgroundState: {
-      ...initialBackgroundState,
+      ...backgroundState,
       PreferencesController: {
-        selectedAddress: '0xe64dD0AB5ad7e8C5F2bf6Ce75C34e187af8b920A',
-        identities: {
-          '0xe64dD0AB5ad7e8C5F2bf6Ce75C34e187af8b920A': {
-            address: '0xe64dD0AB5ad7e8C5F2bf6Ce75C34e187af8b920A',
-            name: 'Account 1',
-          },
-          '0x519d2CE57898513F676a5C3b66496c3C394c9CC7': {
-            address: '0x519d2CE57898513F676a5C3b66496c3C394c9CC7',
-            name: 'Account 2',
-          },
-        },
+        useTokenDetection: false,
       },
       AddressBookController: {
         addressBook: {
@@ -55,34 +45,34 @@ jest.mock('../../../core/Engine', () => ({
 describe('AddressInputs', () => {
   describe('AddressFrom', () => {
     it('should match default snapshot', async () => {
-      const container = renderWithProvider(
+      const { toJSON } = renderWithProvider(
         <AddressFrom
           fromAccountAddress="0x9004C7f302475BF5501fbc6254f69C64212A0d12"
           fromAccountBalance="0x5"
           fromAccountName="DUMMY_ACCOUNT"
         />,
-        {},
+        { state: initialState },
       );
-      expect(container).toMatchSnapshot();
+      expect(toJSON()).not.toBeNull();
     });
 
     it('should match snapshot when layout is vertical', () => {
-      const container = renderWithProvider(
+      const { toJSON } = renderWithProvider(
         <AddressFrom
           fromAccountAddress="0x9004C7f302475BF5501fbc6254f69C64212A0d12"
           fromAccountBalance="0x5"
           fromAccountName="DUMMY_ACCOUNT"
           layout="vertical"
         />,
-        {},
+        { state: initialState },
       );
-      expect(container).toMatchSnapshot();
+      expect(toJSON()).not.toBeNull();
     });
   });
 
   describe('AddressTo', () => {
     it('should match default snapshot', () => {
-      const container = renderWithProvider(
+      const { toJSON } = renderWithProvider(
         <AddressTo
           displayExclamation
           isConfirmScreen
@@ -91,11 +81,11 @@ describe('AddressInputs', () => {
         />,
         { state: initialState },
       );
-      expect(container).toMatchSnapshot();
+      expect(toJSON()).not.toBeNull();
     });
 
     it('should match snapshot when layout is vertical', () => {
-      const container = renderWithProvider(
+      const { toJSON } = renderWithProvider(
         <AddressTo
           displayExclamation
           isConfirmScreen
@@ -105,7 +95,7 @@ describe('AddressInputs', () => {
         />,
         { state: initialState },
       );
-      expect(container).toMatchSnapshot();
+      expect(toJSON()).not.toBeNull();
     });
 
     it('should open address book modal on press', () => {

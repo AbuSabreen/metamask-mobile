@@ -1,25 +1,49 @@
 /* eslint-disable react/prop-types */
-
-import React from 'react';
-import Text, {
-  TextVariant,
-} from '../../../component-library/components/Texts/Text';
-import { NameProperties, NameType } from './Name.types';
-import { TextProps, View } from 'react-native';
+import React, { useState } from 'react';
+import { Pressable, TextProps, View, ViewStyle } from 'react-native';
+import { AvatarSize } from '../../../component-library/components/Avatars/Avatar';
+import Badge, {
+  BadgeVariant,
+} from '../../../component-library/components/Badges/Badge';
+import Icon, {
+  IconSize,
+} from '../../../component-library/components/Icons/Icon';
+import { useStyles } from '../../../component-library/hooks';
+import images from '../../../images/image-icons';
+import { renderShortAddress } from '../../../util/address';
 import useDisplayName, {
   DisplayNameVariant,
 } from '../../hooks/DisplayName/useDisplayName';
-import { useStyles } from '../../../component-library/hooks';
-import styleSheet from './Name.styles';
+import { TrustSignalIcon } from '../../Views/confirmations/utils/trust-signals';
 import Identicon from '../Identicon';
-import Icon, {
-  IconName,
-} from '../../../component-library/components/Icons/Icon';
-import { toChecksumAddress } from 'ethereumjs-util';
+import styleSheet from './Name.styles';
+import { NameProperties, NameType } from './Name.types';
+import { TooltipModal } from '../../Views/confirmations/components/UI/Tooltip';
+import {
+  Text,
+  TextVariant,
+  TextColor,
+} from '@metamask/design-system-react-native';
+
+const TrustIcon: React.FC<{ icon: TrustSignalIcon | null }> = ({ icon }) => {
+  if (!icon) {
+    return null;
+  }
+
+  return (
+    <Icon
+      name={icon.name}
+      color={icon.color}
+      size={IconSize.Sm}
+      testID="trust-signal-icon"
+    />
+  );
+};
 
 const NameLabel: React.FC<{
   displayNameVariant: DisplayNameVariant;
   ellipsizeMode: TextProps['ellipsizeMode'];
+  children: React.ReactNode;
 }> = ({ displayNameVariant, ellipsizeMode, children }) => {
   const { styles } = useStyles(styleSheet, { displayNameVariant });
   return (
@@ -27,46 +51,149 @@ const NameLabel: React.FC<{
       style={styles.label}
       ellipsizeMode={ellipsizeMode}
       numberOfLines={1}
-      variant={TextVariant.BodyMD}
+      variant={TextVariant.BodyMd}
     >
       {children}
     </Text>
   );
 };
 
-const UnknownEthereumAddress: React.FC<{ address: string }> = ({ address }) => {
+const UnknownEthereumAddress: React.FC<{
+  address: string;
+  style?: ViewStyle;
+  iconSize: AvatarSize;
+  icon?: TrustSignalIcon | null | undefined;
+  iconOverride?: React.ReactNode;
+}> = ({ address, style, iconSize, icon = null, iconOverride }) => {
   const displayNameVariant = DisplayNameVariant.Unknown;
   const { styles } = useStyles(styleSheet, { displayNameVariant });
+
   return (
-    <View style={styles.base}>
-      <Icon name={IconName.Question} />
+    <View style={[styles.base, style]}>
+      {/* If an icon override is provided, use it. Otherwise, use the icon if it is available. Otherwise, use the Identicon. */}
+      {iconOverride !== undefined ? (
+        iconOverride
+      ) : icon ? (
+        <TrustIcon icon={icon} />
+      ) : (
+        <Identicon
+          avatarSize={iconSize}
+          address={address}
+          diameter={16}
+          customStyle={styles.image}
+        />
+      )}
       <NameLabel displayNameVariant={displayNameVariant} ellipsizeMode="middle">
-        {toChecksumAddress(address)}
+        {renderShortAddress(address, 5)}
       </NameLabel>
     </View>
   );
 };
 
-const Name: React.FC<NameProperties> = ({ type, value }) => {
+const Name: React.FC<NameProperties> = ({
+  preferContractSymbol,
+  style,
+  type,
+  value,
+  variation,
+  maxCharLength = 21,
+  iconOverride,
+}) => {
+  const [isTooltipVisible, setIsTooltipVisible] = useState(false);
   if (type !== NameType.EthereumAddress) {
     throw new Error('Unsupported NameType: ' + type);
   }
-  const displayName = useDisplayName(type, value);
+
+  const { image, name, variant, isFirstPartyContractName, subtitle, icon } =
+    useDisplayName({
+      preferContractSymbol,
+      type,
+      value,
+      variation,
+    });
+  const iconSize = subtitle ? AvatarSize.Md : AvatarSize.Sm;
+
   const { styles } = useStyles(styleSheet, {
-    displayNameVariant: displayName.variant,
+    displayNameVariant: variant,
   });
 
-  if (displayName.variant === DisplayNameVariant.Unknown) {
-    return <UnknownEthereumAddress address={value} />;
+  if (variant === DisplayNameVariant.Unknown) {
+    return (
+      <UnknownEthereumAddress
+        iconSize={iconSize}
+        address={value}
+        style={style}
+        icon={icon}
+        iconOverride={iconOverride}
+      />
+    );
   }
 
+  const MIDDLE_SECTION_ELLIPSIS = '...';
+  const truncatedName =
+    name && name.length > maxCharLength
+      ? `${name.slice(
+          0,
+          (maxCharLength - MIDDLE_SECTION_ELLIPSIS.length) / 2,
+        )}${MIDDLE_SECTION_ELLIPSIS}${name.slice(
+          -(maxCharLength - MIDDLE_SECTION_ELLIPSIS.length) / 2,
+        )}`
+      : name;
+
   return (
-    <View style={styles.base}>
-      <Identicon address={value} diameter={16} />
-      <NameLabel displayNameVariant={displayName.variant} ellipsizeMode="tail">
-        {displayName.name}
-      </NameLabel>
-    </View>
+    <>
+      <Pressable
+        testID={`name-${value}`}
+        onPress={() => setIsTooltipVisible(true)}
+      >
+        <View style={[styles.base, style]}>
+          {/* If an icon override is provided, wrap it so its touch does not
+            propagate to the parent Pressable (avoids opening the tooltip
+            when the user taps an InlineAlert icon). */}
+          {iconOverride !== undefined ? (
+            <View onStartShouldSetResponder={() => true}>{iconOverride}</View>
+          ) : icon ? (
+            <TrustIcon icon={icon} />
+          ) : isFirstPartyContractName ? (
+            <Badge
+              size={AvatarSize.Xs}
+              imageSource={images.FOX_LOGO}
+              variant={BadgeVariant.Network}
+              isScaled={false}
+            />
+          ) : (
+            <Identicon
+              avatarSize={iconSize}
+              address={value}
+              imageUri={image}
+              customStyle={styles.image}
+            />
+          )}
+          <View style={styles.labelContainer}>
+            <NameLabel displayNameVariant={variant} ellipsizeMode="tail">
+              {truncatedName}
+            </NameLabel>
+            {subtitle && (
+              <Text
+                numberOfLines={1}
+                color={TextColor.TextAlternative}
+                variant={TextVariant.BodySm}
+              >
+                {subtitle}
+              </Text>
+            )}
+          </View>
+        </View>
+      </Pressable>
+      {isTooltipVisible && (
+        <TooltipModal
+          open={isTooltipVisible}
+          setOpen={setIsTooltipVisible}
+          content={value}
+          title={name}
+        />
+      )}
+    </>
   );
 };
 

@@ -1,0 +1,708 @@
+import { renderHook, waitFor } from '@testing-library/react-native';
+import { useSelector } from 'react-redux';
+import { useABTest } from './useABTest';
+import { useAnalytics } from '../components/hooks/useAnalytics/useAnalytics';
+import { MetaMetricsEvents } from '../core/Analytics';
+import {
+  selectRemoteFeatureFlags,
+  selectFeatureFlagThresholdGroups,
+} from '../selectors/featureFlagController';
+import { getDetectedGeolocation } from '../reducers/fiatOrders';
+
+// Mock react-redux
+jest.mock('react-redux', () => ({
+  useSelector: jest.fn(),
+}));
+
+// Mock the selector module
+jest.mock('../selectors/featureFlagController', () => ({
+  selectRemoteFeatureFlags: jest.fn(
+    (state: { featureFlags?: unknown }) => state?.featureFlags,
+  ),
+  selectFeatureFlagThresholdGroups: jest.fn(),
+}));
+
+jest.mock('../reducers/fiatOrders', () => ({
+  getDetectedGeolocation: jest.fn(() => undefined),
+}));
+
+jest.mock('../components/hooks/useAnalytics/useAnalytics', () => ({
+  useAnalytics: jest.fn(),
+}));
+
+const mockUseSelector = useSelector as jest.MockedFunction<typeof useSelector>;
+const mockUseAnalytics = useAnalytics as jest.MockedFunction<
+  typeof useAnalytics
+>;
+const mockTrackEvent = jest.fn();
+type MockEvent = string | { category: string } | { name: string };
+
+// Per-test selector values. `useSelector` is routed by selector identity so the
+// remote-feature-flags, threshold-groups, and geolocation selectors each return
+// their own value instead of a single shared blanket value.
+let mockFeatureFlags: unknown = {};
+let mockThresholdGroups: Record<string, string> = {};
+const setMockFeatureFlags = (value: unknown) => {
+  mockFeatureFlags = value;
+};
+
+describe('useABTest', () => {
+  // Test variants configuration
+  const buttonColorVariants = {
+    control: { long: 'green', short: 'red' },
+    monochrome: { long: 'white', short: 'white' },
+  };
+
+  const quoteLayoutVariants = {
+    control: { showFees: false, layout: 'compact' },
+    expanded: { showFees: true, layout: 'expanded' },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFeatureFlags = {};
+    mockThresholdGroups = {};
+    mockUseSelector.mockImplementation((selector: unknown) => {
+      if (selector === selectFeatureFlagThresholdGroups) {
+        return mockThresholdGroups;
+      }
+      if (selector === getDetectedGeolocation) {
+        return undefined;
+      }
+      return mockFeatureFlags;
+    });
+    mockUseAnalytics.mockReturnValue({
+      trackEvent: mockTrackEvent,
+      createEventBuilder: (event: MockEvent) => ({
+        addProperties: (properties: Record<string, unknown>) => ({
+          build: () => ({
+            name:
+              typeof event === 'string'
+                ? event
+                : 'category' in event
+                  ? event.category
+                  : event.name,
+            properties,
+            sensitiveProperties: {},
+          }),
+        }),
+      }),
+    } as unknown as ReturnType<typeof useAnalytics>);
+  });
+
+  afterEach(() => {
+    jest.resetAllMocks();
+  });
+
+  describe('with object format { name } from controller', () => {
+    it('returns correct variant data when flag is object with name property', () => {
+      setMockFeatureFlags({
+        buttonColorTest: { name: 'control' },
+      });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(true);
+    });
+
+    it('returns correct variant data for treatment variant in object format', () => {
+      setMockFeatureFlags({
+        buttonColorTest: { name: 'monochrome' },
+      });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'white', short: 'white' });
+      expect(result.current.variantName).toBe('monochrome');
+      expect(result.current.isActive).toBe(true);
+    });
+
+    it('handles object format with optional value property', () => {
+      setMockFeatureFlags({
+        swapsQuoteLayout: { name: 'expanded', value: undefined },
+      });
+
+      const { result } = renderHook(() =>
+        useABTest('swapsQuoteLayout', quoteLayoutVariants),
+      );
+
+      expect(result.current.isActive).toBe(true);
+      expect(result.current.variant).toEqual({
+        showFees: true,
+        layout: 'expanded',
+      });
+    });
+
+    it('falls back to control when object name does not match any variant', () => {
+      setMockFeatureFlags({
+        buttonColorTest: { name: 'invalid_variant' },
+      });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+  });
+
+  describe('with legacy string format (backward compatibility)', () => {
+    it('returns correct variant data when flag is a string', () => {
+      setMockFeatureFlags({ buttonColorTest: 'control' });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(true);
+    });
+
+    it('returns correct variant data when flag matches treatment variant', () => {
+      setMockFeatureFlags({ buttonColorTest: 'monochrome' });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'white', short: 'white' });
+      expect(result.current.variantName).toBe('monochrome');
+      expect(result.current.isActive).toBe(true);
+    });
+
+    it('sets isActive to true when flag value matches a valid variant', () => {
+      setMockFeatureFlags({ swapsQuoteLayout: 'expanded' });
+
+      const { result } = renderHook(() =>
+        useABTest('swapsQuoteLayout', quoteLayoutVariants),
+      );
+
+      expect(result.current.isActive).toBe(true);
+      expect(result.current.variant).toEqual({
+        showFees: true,
+        layout: 'expanded',
+      });
+    });
+  });
+
+  describe('with null or undefined flag value', () => {
+    it('falls back to control when flag is null', () => {
+      setMockFeatureFlags({ buttonColorTest: null });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+
+    it('falls back to control when flag is undefined', () => {
+      setMockFeatureFlags({ buttonColorTest: undefined });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+
+    it('falls back to control when flag key does not exist', () => {
+      setMockFeatureFlags({});
+
+      const { result } = renderHook(() =>
+        useABTest('nonExistentFlag', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+
+    it('sets isActive to false when flag value is not set', () => {
+      setMockFeatureFlags({});
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.isActive).toBe(false);
+    });
+  });
+
+  describe('with invalid flag value not matching any variant', () => {
+    it('falls back to control when flag value is invalid', () => {
+      setMockFeatureFlags({
+        buttonColorTest: 'invalid_variant_name',
+      });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+    });
+
+    it('sets isActive to false when flag value does not match any variant', () => {
+      setMockFeatureFlags({ buttonColorTest: 'unknown_variant' });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.isActive).toBe(false);
+    });
+
+    it('falls back to control when flag value is empty string', () => {
+      setMockFeatureFlags({ buttonColorTest: '' });
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+  });
+
+  describe('with complex variant data objects', () => {
+    it('works with deeply nested variant data', () => {
+      const complexVariants = {
+        control: {
+          ui: { button: { color: 'blue', size: 'medium' } },
+          behavior: { autoSubmit: false },
+        },
+        treatment: {
+          ui: { button: { color: 'green', size: 'large' } },
+          behavior: { autoSubmit: true },
+        },
+      };
+
+      setMockFeatureFlags({ complexTest: 'treatment' });
+
+      const { result } = renderHook(() =>
+        useABTest('complexTest', complexVariants),
+      );
+
+      expect(result.current.variant).toEqual({
+        ui: { button: { color: 'green', size: 'large' } },
+        behavior: { autoSubmit: true },
+      });
+      expect(result.current.variantName).toBe('treatment');
+      expect(result.current.isActive).toBe(true);
+    });
+
+    it('works with array data in variants', () => {
+      const arrayVariants = {
+        control: { items: ['a', 'b'], count: 2 },
+        expanded: { items: ['a', 'b', 'c', 'd'], count: 4 },
+      };
+
+      setMockFeatureFlags({ arrayTest: 'expanded' });
+
+      const { result } = renderHook(() =>
+        useABTest('arrayTest', arrayVariants),
+      );
+
+      expect(result.current.variant).toEqual({
+        items: ['a', 'b', 'c', 'd'],
+        count: 4,
+      });
+    });
+  });
+
+  describe('with multiple feature flags', () => {
+    it('reads correct flag from multiple flags in state', () => {
+      setMockFeatureFlags({
+        buttonColorTest: 'control',
+        swapsQuoteLayout: 'expanded',
+        anotherFlag: 'value',
+      });
+
+      const buttonResult = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      const quoteResult = renderHook(() =>
+        useABTest('swapsQuoteLayout', quoteLayoutVariants),
+      );
+
+      expect(buttonResult.result.current.variantName).toBe('control');
+      expect(buttonResult.result.current.isActive).toBe(true);
+
+      expect(quoteResult.result.current.variantName).toBe('expanded');
+      expect(quoteResult.result.current.isActive).toBe(true);
+    });
+  });
+
+  describe('with three or more variants', () => {
+    it('correctly handles tests with three variants', () => {
+      const threeVariants = {
+        control: { layout: 'default' },
+        treatment_a: { layout: 'compact' },
+        treatment_b: { layout: 'expanded' },
+      };
+
+      setMockFeatureFlags({ multiVariantTest: 'treatment_b' });
+
+      const { result } = renderHook(() =>
+        useABTest('multiVariantTest', threeVariants),
+      );
+
+      expect(result.current.variant).toEqual({ layout: 'expanded' });
+      expect(result.current.variantName).toBe('treatment_b');
+      expect(result.current.isActive).toBe(true);
+    });
+
+    it('falls back to control for multi-variant test when flag not set', () => {
+      const threeVariants = {
+        control: { layout: 'default' },
+        treatment_a: { layout: 'compact' },
+        treatment_b: { layout: 'expanded' },
+      };
+
+      setMockFeatureFlags({});
+
+      const { result } = renderHook(() =>
+        useABTest('multiVariantTest', threeVariants),
+      );
+
+      expect(result.current.variant).toEqual({ layout: 'default' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('handles flags state being null', () => {
+      setMockFeatureFlags(null);
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+
+    it('handles flags state being undefined', () => {
+      setMockFeatureFlags(undefined);
+
+      const { result } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variant).toEqual({ long: 'green', short: 'red' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+
+    it('works with control-only variant', () => {
+      const controlOnly = {
+        control: { value: 'default' },
+      };
+
+      setMockFeatureFlags({});
+
+      const { result } = renderHook(() =>
+        useABTest('controlOnlyTest', controlOnly),
+      );
+
+      expect(result.current.variant).toEqual({ value: 'default' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+
+    it('returns consistent variantName as string', () => {
+      setMockFeatureFlags({ numericKeyTest: 'treatment' });
+
+      const variants = {
+        control: { id: 0 },
+        treatment: { id: 1 },
+      };
+
+      const { result } = renderHook(() =>
+        useABTest('numericKeyTest', variants),
+      );
+
+      expect(typeof result.current.variantName).toBe('string');
+      expect(result.current.variantName).toBe('treatment');
+    });
+
+    it('uses control as fallback even when not first key', () => {
+      // Define treatment first, control second
+      const variantsWithTreatmentFirst = {
+        treatment: { color: 'blue' },
+        control: { color: 'green' },
+      };
+
+      setMockFeatureFlags({});
+
+      const { result } = renderHook(() =>
+        useABTest('testFlag', variantsWithTreatmentFirst),
+      );
+
+      // Should use 'control' as fallback, not 'treatment'
+      expect(result.current.variant).toEqual({ color: 'green' });
+      expect(result.current.variantName).toBe('control');
+      expect(result.current.isActive).toBe(false);
+    });
+  });
+
+  describe('type safety', () => {
+    it('returns correctly typed variant data', () => {
+      interface ButtonColors {
+        long: string;
+        short: string;
+      }
+
+      const typedVariants: { control: ButtonColors; monochrome: ButtonColors } =
+        {
+          control: { long: 'green', short: 'red' },
+          monochrome: { long: 'white', short: 'white' },
+        };
+
+      setMockFeatureFlags({ typedTest: 'control' });
+
+      const { result } = renderHook(() =>
+        useABTest('typedTest', typedVariants),
+      );
+
+      // TypeScript should infer variant as ButtonColors
+      const variant = result.current.variant as ButtonColors;
+      expect(variant.long).toBe('green');
+      expect(variant.short).toBe('red');
+    });
+  });
+
+  describe('hook stability', () => {
+    it('returns stable results when flag value does not change', () => {
+      setMockFeatureFlags({ buttonColorTest: 'control' });
+
+      const { result, rerender } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      const firstResult = result.current;
+      rerender(undefined);
+      const secondResult = result.current;
+
+      expect(firstResult.variantName).toBe(secondResult.variantName);
+      expect(firstResult.isActive).toBe(secondResult.isActive);
+    });
+
+    it('updates when flag value changes', () => {
+      setMockFeatureFlags({ buttonColorTest: 'control' });
+
+      const { result, rerender } = renderHook(() =>
+        useABTest('buttonColorTest', buttonColorVariants),
+      );
+
+      expect(result.current.variantName).toBe('control');
+
+      // Simulate flag value change
+      setMockFeatureFlags({ buttonColorTest: 'monochrome' });
+      rerender(undefined);
+
+      expect(result.current.variantName).toBe('monochrome');
+    });
+  });
+
+  describe('experiment exposure tracking', () => {
+    const experimentFlagKey = 'testExperimentFlag';
+    const experimentVariants = {
+      control: { buttons: [25, 50, 75, 'MAX'] },
+      treatment: { buttons: [50, 75, 90, 'MAX'] },
+    };
+
+    it('emits Experiment Viewed with required fields for treatment', async () => {
+      const flagKey = `${experimentFlagKey}Treatment`;
+      setMockFeatureFlags({
+        [flagKey]: { name: 'treatment' },
+      });
+
+      renderHook(() => useABTest(flagKey, experimentVariants));
+
+      await waitFor(() => expect(mockTrackEvent).toHaveBeenCalledTimes(1));
+      expect(mockTrackEvent.mock.calls[0][0]).toMatchObject({
+        name: MetaMetricsEvents.EXPERIMENT_VIEWED.category,
+        properties: {
+          experiment_id: flagKey,
+          variation_id: 'treatment',
+        },
+      });
+    });
+
+    it('emits Experiment Viewed with required fields for control', async () => {
+      const flagKey = `${experimentFlagKey}Control`;
+      setMockFeatureFlags({
+        [flagKey]: { name: 'control' },
+      });
+
+      renderHook(() => useABTest(flagKey, experimentVariants));
+
+      await waitFor(() => expect(mockTrackEvent).toHaveBeenCalledTimes(1));
+      expect(mockTrackEvent.mock.calls[0][0]).toMatchObject({
+        properties: {
+          experiment_id: flagKey,
+          variation_id: 'control',
+        },
+      });
+    });
+
+    it('does not emit Experiment Viewed when assignment is inactive', () => {
+      const flagKey = `${experimentFlagKey}Inactive`;
+      setMockFeatureFlags({
+        [flagKey]: { name: 'unknown_variant' },
+      });
+
+      renderHook(() => useABTest(flagKey, experimentVariants));
+
+      expect(mockTrackEvent).not.toHaveBeenCalled();
+    });
+
+    it('does not emit Experiment Viewed when trackExposure is false', () => {
+      const flagKey = `${experimentFlagKey}NoExposure`;
+      setMockFeatureFlags({
+        [flagKey]: { name: 'treatment' },
+      });
+
+      const { result } = renderHook(() =>
+        useABTest(flagKey, experimentVariants, { trackExposure: false }),
+      );
+
+      expect(result.current.variantName).toBe('treatment');
+      expect(result.current.isActive).toBe(true);
+      expect(mockTrackEvent).not.toHaveBeenCalled();
+    });
+
+    it('emits once per experiment/variation assignment across multiple mounts', async () => {
+      const flagKey = `${experimentFlagKey}MultiMount`;
+      setMockFeatureFlags({
+        [flagKey]: { name: 'control' },
+      });
+
+      renderHook(() => useABTest(flagKey, experimentVariants));
+      renderHook(() => useABTest(flagKey, experimentVariants));
+
+      await waitFor(() => expect(mockTrackEvent).toHaveBeenCalledTimes(1));
+    });
+
+    it('emits separate exposure events when variation changes', async () => {
+      const flagKey = `${experimentFlagKey}VariationChange`;
+      let flags = { [flagKey]: { name: 'control' } };
+      mockUseSelector.mockImplementation((selector: unknown) =>
+        selector === selectRemoteFeatureFlags ? flags : undefined,
+      );
+
+      const { rerender } = renderHook(() =>
+        useABTest(flagKey, experimentVariants),
+      );
+
+      await waitFor(() => expect(mockTrackEvent).toHaveBeenCalledTimes(1));
+
+      flags = { [flagKey]: { name: 'treatment' } };
+      rerender(undefined);
+
+      await waitFor(() => expect(mockTrackEvent).toHaveBeenCalledTimes(2));
+      expect(mockTrackEvent.mock.calls[1][0]).toMatchObject({
+        properties: {
+          experiment_id: flagKey,
+          variation_id: 'treatment',
+        },
+      });
+    });
+
+    it('evicts the oldest assignment when exposure cache reaches capacity', async () => {
+      const evictionVariants = {
+        control: { buttons: [25] },
+      };
+      const flagKeys = Array.from(
+        { length: 501 },
+        (_, index) => `${experimentFlagKey}Eviction${index}`,
+      );
+
+      flagKeys.forEach((flagKey) => {
+        setMockFeatureFlags({
+          [flagKey]: { name: 'control' },
+        });
+        renderHook(() => useABTest(flagKey, evictionVariants));
+      });
+
+      await waitFor(() => expect(mockTrackEvent).toHaveBeenCalledTimes(501), {
+        timeout: 4000,
+      });
+
+      setMockFeatureFlags({
+        [flagKeys[0]]: { name: 'control' },
+      });
+      renderHook(() => useABTest(flagKeys[0], evictionVariants));
+
+      await waitFor(() => expect(mockTrackEvent).toHaveBeenCalledTimes(502), {
+        timeout: 4000,
+      });
+    });
+
+    it('includes country_code in exposure event when geolocation is available', async () => {
+      const flagKey = `${experimentFlagKey}CountryCode`;
+      const flags = { [flagKey]: { name: 'treatment' } };
+
+      mockUseSelector.mockImplementation((selector: unknown) => {
+        if (selector === selectRemoteFeatureFlags) {
+          return flags;
+        }
+        if (selector === getDetectedGeolocation) {
+          return 'JP';
+        }
+        return undefined;
+      });
+
+      renderHook(() => useABTest(flagKey, experimentVariants));
+
+      await waitFor(() => expect(mockTrackEvent).toHaveBeenCalledTimes(1));
+      expect(mockTrackEvent.mock.calls[0][0]).toMatchObject({
+        properties: {
+          experiment_id: flagKey,
+          variation_id: 'treatment',
+          country_code: 'JP',
+        },
+      });
+    });
+
+    it('omits country_code from exposure event when geolocation is undefined', async () => {
+      const flagKey = `${experimentFlagKey}NoCountry`;
+      const flags = { [flagKey]: { name: 'control' } };
+
+      mockUseSelector.mockImplementation((selector: unknown) => {
+        if (selector === selectRemoteFeatureFlags) {
+          return flags;
+        }
+        if (selector === getDetectedGeolocation) {
+          return undefined;
+        }
+        return undefined;
+      });
+
+      renderHook(() => useABTest(flagKey, experimentVariants));
+
+      await waitFor(() => expect(mockTrackEvent).toHaveBeenCalledTimes(1));
+      const props = mockTrackEvent.mock.calls[0][0].properties;
+      expect(props).not.toHaveProperty('country_code');
+    });
+  });
+});

@@ -8,9 +8,11 @@ const withFaviconAwareness =
       url: string;
     }>,
   ) =>
+  // TODO: Replace "any" with type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (props: any) => {
     const { url } = props;
-    const favicon = useFavicon(url);
+    const { faviconURI: favicon } = useFavicon(url);
 
     let faviconSource;
     if (

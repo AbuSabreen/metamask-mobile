@@ -1,0 +1,1237 @@
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { Pressable, View, BackHandler } from 'react-native';
+import { useSelector } from 'react-redux';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../../core/NavigationService/types';
+import {
+  AvatarToken,
+  AvatarTokenSize,
+  BottomSheetDialog,
+  Box,
+  Button,
+  ButtonSize,
+  ButtonVariant,
+  IconName,
+  SelectButton,
+  SelectButtonSize,
+  SelectButtonVariant,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+
+import { useRampSDK } from '../../sdk';
+import usePaymentMethods from '../../hooks/usePaymentMethods';
+import useRegions from '../../hooks/useRegions';
+import useAnalytics from '../../../hooks/useAnalytics';
+import useFiatCurrencies from '../../hooks/useFiatCurrencies';
+import useCryptoCurrencies from '../../hooks/useCryptoCurrencies';
+import useOffRampNonEvmEnabled from '../../hooks/useOffRampNonEvmEnabled';
+import useLimits from '../../hooks/useLimits';
+import useBalance from '../../hooks/useBalance';
+import useAddressBalance from '../../../../../hooks/useAddressBalance/useAddressBalance';
+import { Asset } from '../../../../../hooks/useAddressBalance/useAddressBalance.types';
+
+import ScreenLayout from '../../components/ScreenLayout';
+import Row from '../../components/Row';
+import AssetSelectorButton from '../../components/AssetSelectorButton';
+import PaymentMethodSelector from '../../components/PaymentMethodSelector';
+import AmountInput from '../../components/AmountInput';
+import Keypad, { Keys } from '../../../../../Base/Keypad';
+import useCurrency from '../../../../../Base/Keypad/useCurrency';
+import QuickAmounts from '../../components/QuickAmounts';
+import AccountSelector from '../../components/AccountSelector';
+
+import PaymentMethodIcon from '../../components/PaymentMethodIcon';
+import ErrorViewWithReporting from '../../components/ErrorViewWithReporting';
+import SkeletonText from '../../components/SkeletonText';
+import ErrorView from '../../components/ErrorView';
+import BadgeWrapper, {
+  BadgePosition,
+} from '../../../../../../component-library/components/Badges/BadgeWrapper';
+import BadgeNetwork from '../../../../../../component-library/components/Badges/Badge/variants/BadgeNetwork';
+
+import { NATIVE_ADDRESS } from '../../../../../../constants/on-ramp';
+import { NavbarSelectorsIDs } from '../../../../Navbar/Navbar.testIds';
+import { strings } from '../../../../../../../locales/i18n';
+import {
+  createNavigationDetails,
+  useParams,
+  navigateWithDetails,
+} from '../../../../../../util/navigation/navUtils';
+import Routes from '../../../../../../constants/navigation/Routes';
+import {
+  formatAmount,
+  getCaipChainIdFromCryptoCurrency,
+  getHexChainIdFromCryptoCurrency,
+} from '../../utils';
+import { createQuotesNavDetails } from '../Quotes/Quotes';
+import { createTokenSelectModalNavigationDetails } from '../../components/TokenSelectModal/TokenSelectModal';
+import { createFiatSelectorModalNavigationDetails } from '../../components/FiatSelectorModal';
+import { createIncompatibleAccountTokenModalNavigationDetails } from '../../components/IncompatibleAccountTokenModal';
+import { createRegionSelectorModalNavigationDetails } from '../../components/RegionSelectorModal';
+import { createPaymentMethodSelectorModalNavigationDetails } from '../../components/PaymentMethodSelectorModal';
+import { QuickAmount, RampIntent, ScreenLocation } from '../../types';
+import { useStyles } from '../../../../../../component-library/hooks';
+import HeaderStandardGlass from '../../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectGlassHeadersEnabled } from '../../../../../../selectors/featureFlagController/glassHeaders';
+
+import {
+  selectTicker,
+  selectNetworkConfigurationsByCaipChainId,
+} from '../../../../../../selectors/networkController';
+import { getNetworkImageSource } from '../../../../../../util/networks';
+
+import styleSheet from './BuildQuote.styles';
+import {
+  toTokenMinimalUnit,
+  fromTokenMinimalUnitString,
+} from '../../../../../../util/number/bigint';
+import useGasPriceEstimation from '../../hooks/useGasPriceEstimation';
+import useIntentAmount from '../../hooks/useIntentAmount';
+import useERC20GasLimitEstimation from '../../hooks/useERC20GasLimitEstimation';
+
+import { BuildQuoteSelectors } from './BuildQuote.testIds';
+
+import {
+  isNonEvmAddress,
+  isNonEvmChainId,
+} from '../../../../../../core/Multichain/utils';
+import { trace, endTrace, TraceName } from '../../../../../../util/trace';
+
+import { CHAIN_IDS } from '@metamask/transaction-controller';
+import { createUnsupportedRegionModalNavigationDetails } from '../../components/UnsupportedRegionModal';
+import { regex } from '../../../../../../util/regex';
+import { createBuySettingsModalNavigationDetails } from '../Modals/Settings/SettingsModal';
+import { formatAmountWithLocaleSeparators } from '../../../../Bridge/utils/formatAmountWithLocaleSeparators';
+
+export interface BuildQuoteParams extends RampIntent {
+  showBack?: boolean;
+}
+
+export const createBuildQuoteNavDetails =
+  createNavigationDetails<BuildQuoteParams>(Routes.RAMP.BUILD_QUOTE);
+
+const BuildQuote = () => {
+  const navigation = useNavigation<AppNavigationProp>();
+  const params = useParams<BuildQuoteParams>();
+  const { showBack } = params;
+  const shouldShowBack = showBack !== false;
+
+  // Memoize the intent object to prevent unnecessary re-renders
+  const intent = useMemo(() => {
+    const { showBack: _, ...intentParams } = params;
+    return intentParams;
+  }, [params]);
+
+  const { styles, theme } = useStyles(styleSheet, {});
+  const { colors, themeAppearance } = theme;
+  const trackEvent = useAnalytics();
+  const [amountFocused, setAmountFocused] = useState(false);
+  const [isKeypadOpen, setIsKeypadOpen] = useState(false);
+  const [amount, setAmount] = useState('0');
+  const [amountNumber, setAmountNumber] = useState(0);
+  const [amountBNMinimalUnit, setAmountBNMinimalUnit] = useState<bigint>();
+  const [error, setError] = useState<string | null>(null);
+  const [isKeyboardFreshlyOpened, setIsKeyboardFreshlyOpened] = useState(false);
+  const [intentHandled, setIntentHandled] = useState(false);
+  const nativeSymbol = useSelector(selectTicker);
+  const networkConfigurationsByCaipChainId = useSelector(
+    selectNetworkConfigurationsByCaipChainId,
+  );
+  const isGlassHeader = useSelector(selectGlassHeadersEnabled) === true;
+
+  /**
+   * Grab the current state of the SDK via the context.
+   */
+  const {
+    selectedPaymentMethodId,
+    selectedRegion,
+    selectedAsset,
+    selectedFiatCurrencyId,
+    selectedAddress,
+    selectedNetworkName,
+    sdkError,
+    rampType,
+    isBuy,
+    isSell,
+    setIntent,
+  } = useRampSDK();
+
+  // Non-EVM off-ramp gate: when enabled, allow selecting a non-EVM (e.g. Solana)
+  // account for sell. Buy already supports non-EVM accounts.
+  const isOffRampNonEvmEnabled = useOffRampNonEvmEnabled();
+
+  // EVM gas estimates are in wei and must never be applied to non-EVM balances.
+  const isNonEvmAsset = Boolean(
+    selectedAsset?.network?.chainId &&
+      isNonEvmChainId(selectedAsset.network.chainId),
+  );
+
+  useEffect(() => {
+    if (intent && !intentHandled && Object.keys(intent || {}).length > 0) {
+      setIntent(intent);
+      setIntentHandled(true);
+    }
+  }, [intent, setIntent, intentHandled]);
+
+  const screenLocation: ScreenLocation = isBuy
+    ? 'Amount to Buy Screen'
+    : 'Amount to Sell Screen';
+
+  const {
+    data: regions,
+    isFetching: isFetchingRegions,
+    error: errorRegions,
+    query: queryGetRegions,
+  } = useRegions();
+
+  const {
+    data: paymentMethods,
+    error: errorPaymentMethods,
+    isFetching: isFetchingPaymentMethods,
+    query: queryGetPaymentMethods,
+    currentPaymentMethod,
+  } = usePaymentMethods();
+
+  const paymentMethodIcons = useMemo(() => {
+    if (!paymentMethods) {
+      return [];
+    }
+
+    return [
+      ...new Set(
+        paymentMethods.reduce((acc, payment) => {
+          const icons = payment.logo[themeAppearance] || [];
+          return [...acc, ...icons];
+        }, [] as string[]),
+      ),
+    ];
+  }, [paymentMethods, themeAppearance]);
+
+  const {
+    queryDefaultFiatCurrency,
+    fiatCurrencies,
+    queryGetFiatCurrencies,
+    errorFiatCurrency,
+    isFetchingFiatCurrency,
+    currentFiatCurrency,
+  } = useFiatCurrencies();
+  const { decimalSeparator } = useCurrency(
+    currentFiatCurrency?.symbol,
+    currentFiatCurrency?.decimals,
+  );
+
+  const {
+    cryptoCurrencies,
+    errorCryptoCurrencies,
+    isFetchingCryptoCurrencies,
+    queryGetCryptoCurrencies,
+  } = useCryptoCurrencies();
+
+  const {
+    limits,
+    isFetching: isFetchingLimits,
+    isAmountBelowMinimum,
+    isAmountAboveMaximum,
+    isAmountValid,
+  } = useLimits();
+
+  useIntentAmount(
+    setAmount,
+    setAmountNumber,
+    setAmountBNMinimalUnit,
+    currentFiatCurrency,
+  );
+
+  const resetAmountInput = useCallback(() => {
+    setAmount('0');
+    setAmountNumber(0);
+    setAmountBNMinimalUnit(undefined);
+    setAmountFocused(false);
+    setIsKeypadOpen(false);
+    setIsKeyboardFreshlyOpened(false);
+  }, []);
+
+  useEffect(() => {
+    resetAmountInput();
+  }, [resetAmountInput, selectedRegion]);
+
+  const selectedAssetKey = useMemo(() => {
+    const id = selectedAsset?.id;
+    const chainId = selectedAsset?.network?.chainId;
+    const address = selectedAsset?.address;
+
+    if (!id && !chainId && !address) {
+      return undefined;
+    }
+
+    return `${id ?? ''}:${chainId ?? ''}:${address ?? ''}`;
+  }, [
+    selectedAsset?.id,
+    selectedAsset?.network?.chainId,
+    selectedAsset?.address,
+  ]);
+
+  const previousSelectedAssetKey = useRef<string | undefined>(selectedAssetKey);
+
+  useEffect(() => {
+    if (
+      isSell &&
+      selectedAssetKey &&
+      previousSelectedAssetKey.current &&
+      previousSelectedAssetKey.current !== selectedAssetKey
+    ) {
+      resetAmountInput();
+    }
+
+    if (selectedAssetKey) {
+      previousSelectedAssetKey.current = selectedAssetKey;
+    }
+  }, [isSell, resetAmountInput, selectedAssetKey]);
+
+  const shouldShowUnsupportedModal = useMemo(
+    () =>
+      regions &&
+      selectedRegion &&
+      (selectedRegion.unsupported ||
+        (isBuy && !selectedRegion.support?.buy) ||
+        (isSell && !selectedRegion.support?.sell)),
+    [regions, selectedRegion, isBuy, isSell],
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      if (shouldShowUnsupportedModal && selectedRegion) {
+        // Use requestAnimationFrame to ensure navigation happens after render
+        requestAnimationFrame(() => {
+          navigateWithDetails(
+            navigation,
+            createUnsupportedRegionModalNavigationDetails({
+              regions: regions ?? [],
+              region: selectedRegion,
+            }),
+          );
+        });
+      }
+    }, [shouldShowUnsupportedModal, navigation, regions, selectedRegion]),
+  );
+
+  const gasLimitEstimation = useERC20GasLimitEstimation({
+    tokenAddress: selectedAsset?.address,
+    fromAddress: selectedAddress,
+    chainId: selectedAsset?.network?.chainId || CHAIN_IDS.MAINNET,
+    amount,
+    decimals: selectedAsset?.decimals ?? 18, // Default ERC20 decimals
+    isNativeToken: selectedAsset?.address === NATIVE_ADDRESS,
+  });
+
+  const gasPriceEstimation = useGasPriceEstimation({
+    // 0 is set when buying since there's no transaction involved
+    gasLimit: isBuy ? 0 : gasLimitEstimation,
+    estimateRange: 'high',
+  });
+
+  const assetForBalance = useMemo(
+    () =>
+      selectedAsset && selectedAsset.address !== NATIVE_ADDRESS
+        ? {
+            address: selectedAsset.address,
+            symbol: selectedAsset.symbol,
+            decimals: selectedAsset.decimals,
+          }
+        : {
+            isETH: true,
+          },
+    [selectedAsset],
+  );
+
+  const addressForBalance = useMemo(
+    () =>
+      selectedAddress && isNonEvmAddress(selectedAddress)
+        ? undefined
+        : selectedAddress,
+    [selectedAddress],
+  );
+
+  const hexChainIdForBalance = useMemo(() => {
+    if (!addressForBalance) {
+      return;
+    }
+    return getHexChainIdFromCryptoCurrency(selectedAsset);
+  }, [selectedAsset, addressForBalance]);
+
+  const { addressBalance } = useAddressBalance(
+    assetForBalance as Asset,
+    addressForBalance ?? undefined,
+    true,
+    hexChainIdForBalance,
+  );
+
+  const { balanceFiat, balanceBN, balance } = useBalance(
+    selectedAsset && selectedAddress && selectedAsset.network
+      ? {
+          chainId: selectedAsset.network.chainId,
+          assetId: selectedAsset.assetId,
+          address: selectedAsset.address,
+          decimals: selectedAsset.decimals,
+        }
+      : undefined,
+  );
+
+  const { balanceBN: nativeTokenBalanceBN } = useBalance(
+    isBuy || !selectedAsset || selectedAsset.address === NATIVE_ADDRESS
+      ? undefined
+      : {
+          address: NATIVE_ADDRESS,
+          decimals: 18,
+        },
+  );
+
+  let maxSellAmount: bigint | null = null;
+  if (selectedAsset && isNonEvmAsset) {
+    maxSellAmount = balanceBN ?? null;
+  } else if (selectedAsset && selectedAsset.address === NATIVE_ADDRESS) {
+    // Use nullish checks — bigint 0n is falsy, unlike BN instances.
+    maxSellAmount =
+      balanceBN != null && gasPriceEstimation
+        ? balanceBN - gasPriceEstimation.estimatedGasFee
+        : null;
+  } else if (
+    selectedAsset &&
+    selectedAsset.address !== NATIVE_ADDRESS &&
+    balanceBN != null
+  ) {
+    maxSellAmount = balanceBN;
+  }
+
+  const amountIsBelowMinimum = useMemo(
+    () => isAmountBelowMinimum(amountNumber),
+    [amountNumber, isAmountBelowMinimum],
+  );
+
+  const amountIsAboveMaximum = useMemo(
+    () => isAmountAboveMaximum(amountNumber),
+    [amountNumber, isAmountAboveMaximum],
+  );
+
+  const amountIsValid = useMemo(
+    () => isAmountValid(amountNumber),
+    [amountNumber, isAmountValid],
+  );
+
+  const amountIsOverGas = useMemo(() => {
+    // maxSellAmount of 0n is a real ceiling (e.g. native balance equals gas);
+    // only skip when it was never computed.
+    if (isBuy || maxSellAmount === null) {
+      return false;
+    }
+    return Boolean(
+      amountBNMinimalUnit !== undefined && amountBNMinimalUnit > maxSellAmount,
+    );
+  }, [amountBNMinimalUnit, isBuy, maxSellAmount]);
+
+  const hasInsufficientBalance = useMemo(() => {
+    if (amountBNMinimalUnit === undefined || amountBNMinimalUnit === 0n) {
+      return false;
+    }
+    if (balanceBN == null) {
+      return true;
+    }
+    return balanceBN < amountBNMinimalUnit;
+  }, [balanceBN, amountBNMinimalUnit]);
+
+  const hasInsufficientNativeBalanceForGas = useMemo(() => {
+    if (
+      isBuy ||
+      isNonEvmAsset ||
+      (selectedAsset && selectedAsset.address === NATIVE_ADDRESS)
+    ) {
+      return false;
+    }
+
+    // 0n native balance must still be compared against gas — do not use
+    // truthiness (BN objects were always truthy; 0n is not).
+    if (nativeTokenBalanceBN == null || !gasPriceEstimation) {
+      return false;
+    }
+
+    return nativeTokenBalanceBN < gasPriceEstimation.estimatedGasFee;
+  }, [
+    gasPriceEstimation,
+    isBuy,
+    isNonEvmAsset,
+    nativeTokenBalanceBN,
+    selectedAsset,
+  ]);
+
+  const displayBalance = useMemo(() => {
+    if (!selectedAddress) {
+      return null;
+    }
+
+    const isNonEvm = isNonEvmAddress(selectedAddress);
+    const balanceValue = isNonEvm ? balance : addressBalance;
+
+    return balanceValue ?? null;
+  }, [selectedAddress, balance, addressBalance]);
+
+  const caipChainId = getCaipChainIdFromCryptoCurrency(selectedAsset);
+
+  const networkName = caipChainId
+    ? networkConfigurationsByCaipChainId[caipChainId]?.name
+    : undefined;
+  const networkImageSource = caipChainId
+    ? getNetworkImageSource({ chainId: caipChainId })
+    : undefined;
+
+  const isFetching =
+    isFetchingRegions ||
+    isFetchingFiatCurrency ||
+    isFetchingCryptoCurrencies ||
+    isFetchingPaymentMethods ||
+    isFetchingLimits;
+
+  const handleCancelPress = useCallback(() => {
+    if (!selectedAsset?.network?.chainId) {
+      return;
+    }
+
+    if (isBuy) {
+      trackEvent('ONRAMP_CANCELED', {
+        location: screenLocation,
+        chain_id_destination: selectedAsset.network.chainId,
+      });
+    } else {
+      trackEvent('OFFRAMP_CANCELED', {
+        location: screenLocation,
+        chain_id_source: selectedAsset.network.chainId,
+      });
+    }
+  }, [screenLocation, isBuy, selectedAsset?.network?.chainId, trackEvent]);
+
+  const handleConfigurationPress = useCallback(() => {
+    navigateWithDetails(navigation, createBuySettingsModalNavigationDetails());
+  }, [navigation]);
+
+  const handleBackPress = useCallback(() => {
+    handleCancelPress();
+    // @ts-expect-error navigation prop mismatch
+    navigation.pop();
+  }, [handleCancelPress, navigation]);
+
+  /**
+   * Back handler to dismiss keypad
+   */
+  useEffect(() => {
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      () => {
+        if (amountFocused || isKeypadOpen) {
+          setAmountFocused(false);
+          setIsKeypadOpen(false);
+          setIsKeyboardFreshlyOpened(false);
+          return true;
+        }
+      },
+    );
+
+    return () => backHandler.remove();
+  }, [amountFocused, isKeypadOpen]);
+
+  const handleKeypadClose = useCallback(() => {
+    setAmountFocused(false);
+    setIsKeypadOpen(false);
+    setIsKeyboardFreshlyOpened(false);
+  }, []);
+
+  const handleKeypadDone = useCallback(() => {
+    handleKeypadClose();
+  }, [handleKeypadClose]);
+  const onAmountInputPress = useCallback(() => {
+    setAmountFocused(true);
+    setIsKeypadOpen(true);
+    setIsKeyboardFreshlyOpened(true);
+  }, []);
+
+  const handleKeypadChange = useCallback(
+    ({
+      value,
+      valueAsNumber,
+      pressedKey,
+    }: {
+      value: string;
+      valueAsNumber: number;
+      pressedKey: Keys;
+    }) => {
+      let newValue = `${value}`;
+      let newValueAsNumber = valueAsNumber;
+
+      if (isKeyboardFreshlyOpened && regex.hasOneDigit.test(pressedKey)) {
+        newValue = pressedKey;
+        newValueAsNumber = Number(pressedKey);
+      }
+
+      setAmount(newValue);
+      setAmountNumber(newValueAsNumber);
+
+      if (isSell) {
+        setAmountBNMinimalUnit(
+          toTokenMinimalUnit(newValue, selectedAsset?.decimals ?? 0),
+        );
+      }
+
+      setIsKeyboardFreshlyOpened(false);
+    },
+    [isSell, selectedAsset?.decimals, isKeyboardFreshlyOpened],
+  );
+
+  const handleQuickAmountPress = useCallback(
+    ({ value }: QuickAmount) => {
+      if (isBuy) {
+        setAmount(`${value}`);
+        setAmountNumber(value);
+      } else {
+        const percentage = value * 100;
+        const amountPercentage =
+          balanceBN !== null && balanceBN !== undefined
+            ? (balanceBN * BigInt(percentage)) / 100n
+            : undefined;
+
+        if (amountPercentage === undefined) {
+          return;
+        }
+
+        let amountToSet = amountPercentage;
+
+        if (
+          selectedAsset?.address === NATIVE_ADDRESS &&
+          maxSellAmount !== null &&
+          maxSellAmount < amountPercentage
+        ) {
+          amountToSet = maxSellAmount;
+        }
+
+        const newAmountString = fromTokenMinimalUnitString(
+          amountToSet.toString(10),
+          selectedAsset?.decimals ?? 18,
+        );
+        setAmountBNMinimalUnit(amountToSet);
+        setAmount(newAmountString);
+        setAmountNumber(Number(newAmountString));
+      }
+    },
+    [
+      balanceBN,
+      isBuy,
+      maxSellAmount,
+      selectedAsset?.address,
+      selectedAsset?.decimals,
+    ],
+  );
+
+  /**
+   * * Region handlers
+   */
+
+  const handleChangeRegion = useCallback(() => {
+    handleKeypadClose();
+    if (regions && regions.length > 0) {
+      navigateWithDetails(
+        navigation,
+        createRegionSelectorModalNavigationDetails({
+          regions,
+        }),
+      );
+    }
+  }, [handleKeypadClose, navigation, regions]);
+
+  /**
+   * * CryptoCurrency handlers
+   */
+
+  const handleAssetSelectorPress = useCallback(() => {
+    handleKeypadClose();
+    navigateWithDetails(
+      navigation,
+      createTokenSelectModalNavigationDetails({
+        tokens: cryptoCurrencies ?? [],
+      }),
+    );
+  }, [handleKeypadClose, navigation, cryptoCurrencies]);
+
+  /**
+   * * FiatCurrency handlers
+   */
+
+  const handleFiatSelectorPress = useCallback(() => {
+    handleKeypadClose();
+    navigateWithDetails(
+      navigation,
+      createFiatSelectorModalNavigationDetails({
+        currencies: fiatCurrencies ?? [],
+      }),
+    );
+  }, [handleKeypadClose, navigation, fiatCurrencies]);
+
+  /**
+   * * PaymentMethod handlers
+   */
+
+  const handleShowPaymentMethodsModal = useCallback(() => {
+    handleKeypadClose();
+    navigateWithDetails(
+      navigation,
+      createPaymentMethodSelectorModalNavigationDetails({
+        paymentMethods,
+        location: screenLocation,
+      }),
+    );
+  }, [handleKeypadClose, navigation, paymentMethods, screenLocation]);
+
+  /**
+   * * Get Quote handlers
+   */
+  const handleGetQuotePress = useCallback(() => {
+    if (!selectedAddress) {
+      navigateWithDetails(
+        navigation,
+        createIncompatibleAccountTokenModalNavigationDetails(),
+      );
+      return;
+    }
+
+    if (selectedAsset && currentFiatCurrency) {
+      navigateWithDetails(
+        navigation,
+        createQuotesNavDetails({
+          amount: isBuy ? amountNumber : amount,
+          asset: selectedAsset,
+          fiatCurrency: currentFiatCurrency,
+        }),
+      );
+
+      const analyticsPayload = {
+        payment_method_id: selectedPaymentMethodId as string,
+        amount: amountNumber,
+        location: screenLocation,
+      };
+
+      trace({
+        name: TraceName.RampQuoteLoading,
+        tags: {
+          rampType,
+        },
+      });
+      if (isBuy) {
+        trackEvent('ONRAMP_QUOTES_REQUESTED', {
+          ...analyticsPayload,
+          currency_source: currentFiatCurrency.symbol,
+          currency_destination: selectedAsset.symbol,
+          currency_destination_symbol: selectedAsset.symbol,
+          currency_destination_network: selectedAsset.network?.shortName,
+          chain_id_destination: selectedAsset.network?.chainId,
+        });
+      } else {
+        trackEvent('OFFRAMP_QUOTES_REQUESTED', {
+          ...analyticsPayload,
+          currency_destination: currentFiatCurrency.symbol,
+          currency_source: selectedAsset.symbol,
+          currency_source_symbol: selectedAsset.symbol,
+          currency_source_network: selectedAsset.network?.shortName,
+          chain_id_source: selectedAsset.network?.chainId,
+        });
+      }
+    }
+  }, [
+    rampType,
+    selectedAddress,
+    screenLocation,
+    amount,
+    amountNumber,
+    currentFiatCurrency,
+    isBuy,
+    navigation,
+    selectedAsset,
+    selectedPaymentMethodId,
+    trackEvent,
+  ]);
+
+  const retryMethod = useCallback(() => {
+    if (!error) {
+      return null;
+    }
+
+    if (errorCryptoCurrencies) {
+      return queryGetCryptoCurrencies();
+    } else if (errorPaymentMethods) {
+      return queryGetPaymentMethods();
+    } else if (errorFiatCurrency) {
+      queryDefaultFiatCurrency();
+      return queryGetFiatCurrencies();
+    } else if (errorRegions) {
+      return queryGetRegions();
+    }
+  }, [
+    error,
+    errorRegions,
+    errorFiatCurrency,
+    errorPaymentMethods,
+    errorCryptoCurrencies,
+    queryDefaultFiatCurrency,
+    queryGetRegions,
+    queryGetCryptoCurrencies,
+    queryGetFiatCurrencies,
+    queryGetPaymentMethods,
+  ]);
+
+  useEffect(() => {
+    setError(
+      (errorCryptoCurrencies ||
+        errorPaymentMethods ||
+        errorFiatCurrency ||
+        errorRegions) ??
+        null,
+    );
+  }, [
+    errorRegions,
+    errorFiatCurrency,
+    errorPaymentMethods,
+    errorCryptoCurrencies,
+  ]);
+
+  const [shouldEndTrace, setShouldEndTrace] = useState(true);
+  useEffect(() => {
+    if (
+      shouldEndTrace &&
+      !sdkError &&
+      !error &&
+      !isFetching &&
+      cryptoCurrencies &&
+      cryptoCurrencies.length > 0
+    ) {
+      endTrace({
+        name: TraceName.LoadRampExperience,
+      });
+      setShouldEndTrace(false);
+    }
+  }, [cryptoCurrencies, error, isFetching, rampType, sdkError, shouldEndTrace]);
+
+  if (sdkError) {
+    return (
+      <ScreenLayout>
+        <ScreenLayout.Body>
+          <ErrorViewWithReporting error={sdkError} location={screenLocation} />
+        </ScreenLayout.Body>
+      </ScreenLayout>
+    );
+  }
+
+  if (error) {
+    return (
+      <ScreenLayout>
+        <ScreenLayout.Body>
+          <ErrorView
+            description={error}
+            ctaOnPress={retryMethod}
+            location={screenLocation}
+          />
+        </ScreenLayout.Body>
+      </ScreenLayout>
+    );
+  }
+
+  if (!isFetching && cryptoCurrencies && cryptoCurrencies.length === 0) {
+    return (
+      <ScreenLayout>
+        <ScreenLayout.Body>
+          <ErrorView
+            icon="info"
+            title={strings('fiat_on_ramp_aggregator.no_tokens_available_title')}
+            description={strings(
+              isBuy
+                ? 'fiat_on_ramp_aggregator.no_tokens_available'
+                : 'fiat_on_ramp_aggregator.no_sell_tokens_available',
+              {
+                network:
+                  selectedNetworkName ||
+                  strings('fiat_on_ramp_aggregator.this_network'),
+                region: selectedRegion?.name,
+              },
+            )}
+            ctaLabel={strings(
+              isBuy
+                ? 'fiat_on_ramp_aggregator.change_payment_method'
+                : 'fiat_on_ramp_aggregator.change_cash_destination',
+            )}
+            ctaOnPress={handleShowPaymentMethodsModal}
+            location={screenLocation}
+          />
+        </ScreenLayout.Body>
+      </ScreenLayout>
+    );
+  }
+
+  // If the current view is for Sell the amount (crypto) is displayed as is
+  let displayAmount = `${amount} ${selectedAsset?.symbol ?? ''}`;
+
+  // Buy amounts use localized grouping when displayed.
+  if (isBuy) {
+    displayAmount =
+      isBuy && amountFocused
+        ? formatAmountWithLocaleSeparators(amount, decimalSeparator)
+        : // If the amount is not focused it will be fully formatted
+          formatAmount(amountNumber);
+  }
+
+  let quickAmounts: QuickAmount[] = [];
+
+  if (isBuy) {
+    quickAmounts =
+      limits?.quickAmounts?.map((quickAmount) => ({
+        value: quickAmount,
+        label: currentFiatCurrency?.denomSymbol + quickAmount.toString(),
+      })) ?? [];
+  } else if (
+    balanceBN != null &&
+    balanceBN !== 0n &&
+    maxSellAmount !== null &&
+    maxSellAmount > 0n
+  ) {
+    quickAmounts = [
+      { value: 0.25, label: '25%' },
+      { value: 0.5, label: '50%' },
+      { value: 0.75, label: '75%' },
+      {
+        value: 1,
+        label: strings('fiat_on_ramp_aggregator.max'),
+        isNative: selectedAsset?.address === NATIVE_ADDRESS,
+      },
+    ];
+  }
+
+  return (
+    <ScreenLayout>
+      <ScreenLayout.Body>
+        <HeaderStandardGlass
+          isGlass={isGlassHeader}
+          isFloating={false}
+          title={
+            isBuy
+              ? strings('fiat_on_ramp_aggregator.amount_to_buy')
+              : strings('fiat_on_ramp_aggregator.amount_to_sell')
+          }
+          onBack={shouldShowBack ? handleBackPress : undefined}
+          backButtonProps={
+            shouldShowBack
+              ? { testID: 'deposit-back-navbar-button' }
+              : undefined
+          }
+          endButtonIconProps={
+            isBuy
+              ? [
+                  {
+                    iconName: IconName.Setting,
+                    onPress: handleConfigurationPress,
+                    testID: NavbarSelectorsIDs.DEPOSIT_CONFIGURATION_BUTTON,
+                  },
+                ]
+              : undefined
+          }
+          includesTopInset
+        />
+        <Pressable
+          onPress={handleKeypadDone}
+          style={styles.viewContainer}
+          accessible={false}
+        >
+          <ScreenLayout.Content>
+            <Row style={styles.selectors}>
+              <AccountSelector isEvmOnly={isSell && !isOffRampNonEvmEnabled} />
+              <View style={styles.spacer} />
+              {isFetchingRegions ? (
+                <SkeletonText thick />
+              ) : (
+                <SelectButton
+                  variant={SelectButtonVariant.Primary}
+                  size={SelectButtonSize.Sm}
+                  placeholder={strings(
+                    'fiat_on_ramp_aggregator.region.select_region',
+                  )}
+                  value={selectedRegion?.emoji}
+                  onPress={handleChangeRegion}
+                  testID={BuildQuoteSelectors.REGION_DROPDOWN}
+                  accessibilityRole="button"
+                />
+              )}
+              {isSell ? (
+                <>
+                  <View style={styles.spacer} />
+                  {isFetchingRegions ||
+                  isFetchingFiatCurrency ||
+                  !selectedFiatCurrencyId ? (
+                    <SkeletonText thick />
+                  ) : (
+                    <SelectButton
+                      variant={SelectButtonVariant.Primary}
+                      size={SelectButtonSize.Sm}
+                      placeholder={strings(
+                        'fiat_on_ramp_aggregator.select_region_currency',
+                      )}
+                      value={currentFiatCurrency?.symbol}
+                      onPress={handleFiatSelectorPress}
+                      accessibilityRole="button"
+                    />
+                  )}
+                </>
+              ) : null}
+            </Row>
+            <AssetSelectorButton
+              loading={
+                isFetchingRegions ||
+                isFetchingFiatCurrency ||
+                isFetchingCryptoCurrencies ||
+                !selectedAsset?.id
+              }
+              label={
+                isBuy
+                  ? strings('fiat_on_ramp_aggregator.want_to_buy')
+                  : strings('fiat_on_ramp_aggregator.want_to_sell')
+              }
+              icon={
+                <BadgeWrapper
+                  badgePosition={BadgePosition.BottomRight}
+                  badgeElement={
+                    networkName && networkImageSource ? (
+                      <BadgeNetwork
+                        name={networkName}
+                        imageSource={networkImageSource}
+                      />
+                    ) : null
+                  }
+                >
+                  <AvatarToken
+                    name={selectedAsset?.symbol}
+                    src={{ uri: selectedAsset?.logo }}
+                    size={AvatarTokenSize.Lg}
+                    key={selectedAsset?.logo}
+                  />
+                </BadgeWrapper>
+              }
+              assetSymbol={selectedAsset?.symbol ?? ''}
+              assetName={selectedAsset?.name ?? ''}
+              onPress={handleAssetSelectorPress}
+            />
+            <Row>
+              {isFetchingRegions ||
+              isFetchingFiatCurrency ||
+              isFetchingCryptoCurrencies ||
+              !selectedAsset?.id ? (
+                <SkeletonText thin medium />
+              ) : (
+                <Text
+                  variant={TextVariant.BodySm}
+                  color={TextColor.TextAlternative}
+                >
+                  {displayBalance !== null && (
+                    <>
+                      {strings('fiat_on_ramp_aggregator.current_balance')}:{' '}
+                      {displayBalance}
+                      {balanceFiat ? ` ≈ ${balanceFiat}` : null}
+                    </>
+                  )}
+                </Text>
+              )}
+            </Row>
+
+            <AmountInput
+              highlighted={amountFocused}
+              label={strings('fiat_on_ramp_aggregator.amount')}
+              currencySymbol={
+                isBuy ? currentFiatCurrency?.denomSymbol : undefined
+              }
+              amount={displayAmount}
+              highlightedError={
+                amountNumber > 0 && (!amountIsValid || amountIsOverGas)
+              }
+              currencyCode={isBuy ? currentFiatCurrency?.symbol : undefined}
+              tokenSymbol={isSell ? selectedAsset?.symbol : undefined}
+              onPress={onAmountInputPress}
+              loading={
+                isFetchingRegions ||
+                isFetchingFiatCurrency ||
+                !selectedFiatCurrencyId
+              }
+              onCurrencyPress={isBuy ? handleFiatSelectorPress : undefined}
+            />
+            {amountNumber > 0 &&
+              amountIsValid &&
+              !hasInsufficientBalance &&
+              amountIsOverGas && (
+                <Row>
+                  <Text
+                    variant={TextVariant.BodySm}
+                    color={TextColor.ErrorDefault}
+                  >
+                    {strings('fiat_on_ramp_aggregator.enter_lower_gas_fees')}
+                  </Text>
+                </Row>
+              )}
+            {hasInsufficientBalance && (
+              <Row>
+                <Text
+                  variant={TextVariant.BodySm}
+                  color={TextColor.ErrorDefault}
+                  testID={BuildQuoteSelectors.INSUFFICIENT_BALANCE_ERROR}
+                >
+                  {strings('fiat_on_ramp_aggregator.insufficient_balance')}
+                </Text>
+              </Row>
+            )}
+            {!hasInsufficientBalance && hasInsufficientNativeBalanceForGas && (
+              <Row>
+                <Text
+                  variant={TextVariant.BodySm}
+                  color={TextColor.ErrorDefault}
+                >
+                  {strings(
+                    'fiat_on_ramp_aggregator.insufficient_native_balance',
+                    { currency: nativeSymbol },
+                  )}
+                </Text>
+              </Row>
+            )}
+            {!hasInsufficientBalance && amountIsBelowMinimum && limits && (
+              <Row>
+                <Text
+                  variant={TextVariant.BodySm}
+                  color={TextColor.ErrorDefault}
+                  testID={BuildQuoteSelectors.MIN_LIMIT_ERROR}
+                >
+                  {isBuy ? (
+                    <>
+                      {strings('fiat_on_ramp_aggregator.minimum')}{' '}
+                      {currentFiatCurrency?.denomSymbol}
+                      {formatAmount(limits.minAmount)}
+                    </>
+                  ) : (
+                    strings('fiat_on_ramp_aggregator.enter_larger_amount')
+                  )}
+                </Text>
+              </Row>
+            )}
+            {!hasInsufficientBalance && amountIsAboveMaximum && limits && (
+              <Row>
+                <Text
+                  variant={TextVariant.BodySm}
+                  color={TextColor.ErrorDefault}
+                  testID={BuildQuoteSelectors.MAX_LIMIT_ERROR}
+                >
+                  {isBuy ? (
+                    <>
+                      {strings('fiat_on_ramp_aggregator.maximum')}{' '}
+                      {currentFiatCurrency?.denomSymbol}
+                      {formatAmount(limits.maxAmount)}
+                    </>
+                  ) : (
+                    strings('fiat_on_ramp_aggregator.enter_smaller_amount')
+                  )}
+                </Text>
+              </Row>
+            )}
+            <Row>
+              <PaymentMethodSelector
+                loading={
+                  isFetchingRegions ||
+                  isFetchingFiatCurrency ||
+                  isFetchingCryptoCurrencies ||
+                  isFetchingPaymentMethods ||
+                  !selectedPaymentMethodId
+                }
+                label={
+                  isBuy
+                    ? strings('fiat_on_ramp_aggregator.update_payment_method')
+                    : strings('fiat_on_ramp_aggregator.send_cash_to')
+                }
+                icon={
+                  <PaymentMethodIcon
+                    paymentMethodIcons={currentPaymentMethod?.icons}
+                    paymentMethodType={currentPaymentMethod?.paymentType}
+                    size={20}
+                    color={colors.icon.default}
+                  />
+                }
+                name={currentPaymentMethod?.name}
+                onPress={handleShowPaymentMethodsModal}
+                paymentMethodIcons={paymentMethodIcons}
+              />
+            </Row>
+          </ScreenLayout.Content>
+        </Pressable>
+      </ScreenLayout.Body>
+      <ScreenLayout.Footer>
+        <ScreenLayout.Content>
+          <Row style={styles.cta}>
+            <Button
+              variant={ButtonVariant.Primary}
+              size={ButtonSize.Lg}
+              onPress={handleGetQuotePress}
+              isFullWidth
+              isDisabled={amountNumber <= 0 || isFetching}
+            >
+              {strings('fiat_on_ramp_aggregator.get_quotes')}
+            </Button>
+          </Row>
+        </ScreenLayout.Content>
+      </ScreenLayout.Footer>
+
+      {isKeypadOpen ? (
+        <BottomSheetDialog
+          testID={BuildQuoteSelectors.AMOUNT_KEYPAD_BOTTOM_SHEET}
+          isInteractable={false}
+          onClose={handleKeypadClose}
+        >
+          <Box twClassName="content-end px-4 gap-4 pt-4">
+            {amount && amount !== '0' ? (
+              <Button
+                variant={ButtonVariant.Primary}
+                size={ButtonSize.Lg}
+                onPress={handleKeypadDone}
+                isFullWidth
+                testID={BuildQuoteSelectors.AMOUNT_KEYPAD_CONFIRM_BUTTON}
+              >
+                {strings('fiat_on_ramp_aggregator.done')}
+              </Button>
+            ) : (
+              <QuickAmounts
+                isBuy={isBuy}
+                onAmountPress={handleQuickAmountPress}
+                amounts={quickAmounts}
+              />
+            )}
+            <Keypad
+              value={amount}
+              onChange={handleKeypadChange}
+              currency={
+                isBuy
+                  ? currentFiatCurrency?.symbol
+                  : `${selectedAsset?.symbol}-crypto`
+              }
+              decimals={
+                isBuy ? currentFiatCurrency?.decimals : selectedAsset?.decimals
+              }
+            />
+          </Box>
+        </BottomSheetDialog>
+      ) : null}
+    </ScreenLayout>
+  );
+};
+
+export default BuildQuote;

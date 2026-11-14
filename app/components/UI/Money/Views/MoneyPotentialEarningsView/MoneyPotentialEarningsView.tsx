@@ -1,0 +1,331 @@
+import React, { useCallback, useMemo } from 'react';
+import { FlashList } from '@shopify/flash-list';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
+import type { AppNavigationProp } from '../../../../../core/NavigationService/types';
+import { useSelector } from 'react-redux';
+import { BigNumber } from 'bignumber.js';
+import {
+  Box,
+  Button,
+  ButtonIconSize,
+  ButtonSize,
+  ButtonVariant,
+  FontWeight,
+  IconName,
+  SensitiveText,
+  SensitiveTextLength,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { strings } from '../../../../../../locales/i18n';
+import { useStyles } from '../../../../../component-library/hooks';
+import { useMoneyDepositTokens } from '../../hooks/useMoneyDepositTokens';
+import useMoneyVaultApy from '../../hooks/useMoneyVaultApy';
+import { useProjectedEarnings } from '../../hooks/useProjectedEarnings';
+import { moneyFormatFiat } from '../../utils/moneyFormatFiat';
+import { selectPrivacyMode } from '../../../../../selectors/preferencesController';
+import Logger from '../../../../../util/Logger';
+import Routes from '../../../../../constants/navigation/Routes';
+import { Hex } from '@metamask/utils';
+import PotentialEarningsTokenRow from '../../components/MoneyPotentialEarnings/PotentialEarningsTokenRow';
+import { isPositiveNumber } from '../../utils/number';
+import styleSheet from './MoneyPotentialEarningsView.styles';
+import { MoneyPotentialEarningsViewTestIds } from './MoneyPotentialEarningsView.testIds';
+import { useMoneyDepositNavigation } from '../../hooks/useMoneyDepositNavigation';
+import { useMoneyAnalytics } from '../../hooks/useMoneyAnalytics';
+import useMountEffect from '../../hooks/useMountEffect';
+import type { MoneyDepositAsset } from '../../selectors/depositTokens';
+import {
+  COMPONENT_NAMES,
+  MONEY_BUTTON_TYPES,
+  MONEY_TOOLTIP_NAMES,
+  MONEY_TOOLTIP_TYPES,
+  SCREEN_NAMES,
+} from '../../constants/moneyEvents';
+import { MoneyNavigationParamList } from '../../types/navigation';
+import ButtonIconGlass from '../../../../../component-library/components-temp/ButtonIconGlass';
+import HeaderStandardGlass from '../../../../../component-library/components-temp/HeaderStandardGlass';
+import { selectMoneyBrandRefreshEnabled } from '../../../../../selectors/featureFlagController/moneyBrandRefresh';
+
+const MoneyPotentialEarningsView = () => {
+  const isGlassHeader = useSelector(selectMoneyBrandRefreshEnabled) === true;
+  const navigation = useNavigation<AppNavigationProp>();
+  const insets = useSafeAreaInsets();
+  const { styles } = useStyles(styleSheet, {});
+  const privacyMode = useSelector(selectPrivacyMode);
+  const { params } =
+    useRoute<RouteProp<MoneyNavigationParamList, 'MoneyPotentialEarnings'>>();
+
+  const { tokens: depositTokens, isNoFeeToken } = useMoneyDepositTokens({
+    overrideToUsd: params?.overrideToUsd ?? false,
+  });
+
+  const { navigateToMoneyDeposit } = useMoneyDepositNavigation();
+  const { apyDecimal } = useMoneyVaultApy();
+  const apyDecimalForProjection = apyDecimal ?? 0;
+
+  const { eligibleTokens, totalAssetsFiat, projectedAmount, currency } =
+    useProjectedEarnings(depositTokens, apyDecimal);
+
+  const {
+    trackScreenViewed,
+    trackTokenButtonClicked,
+    trackTokenSurfaceClicked,
+    trackTooltipClicked,
+  } = useMoneyAnalytics({
+    screen_name: SCREEN_NAMES.MONEY_POTENTIAL_EARNINGS,
+  });
+
+  useMountEffect(trackScreenViewed);
+
+  const handleBackPress = useCallback(() => {
+    navigation.goBack();
+  }, [navigation]);
+
+  const handleInfoPress = useCallback(() => {
+    trackTooltipClicked({
+      tooltip_name: MONEY_TOOLTIP_NAMES.EARN_ON_YOUR_CRYPTO,
+      tooltip_type: MONEY_TOOLTIP_TYPES.INFO,
+      component_name: COMPONENT_NAMES.MONEY_POTENTIAL_EARNINGS_VIEW_HEADER,
+    });
+    navigation.navigate(Routes.MONEY.MODALS.ROOT, {
+      screen: Routes.MONEY.MODALS.EARN_CRYPTO_INFO_SHEET,
+    });
+  }, [navigation, trackTooltipClicked]);
+
+  const handleConvertPress = useCallback(async () => {
+    const tokenIndex = 0;
+    const defaultToken = eligibleTokens[tokenIndex];
+
+    if (!defaultToken) {
+      return;
+    }
+
+    try {
+      await navigateToMoneyDeposit({
+        preferredPaymentToken: {
+          address: defaultToken.address as Hex,
+          chainId: defaultToken.chainId as Hex,
+        },
+        track: ({ button_intent, redirect_target }) => {
+          trackTokenButtonClicked({
+            button_type: MONEY_BUTTON_TYPES.TEXT,
+            button_intent,
+            label_key: 'money.potential_earnings.convert_cta',
+            redirect_target,
+            component_name: COMPONENT_NAMES.MONEY_CONVERT_CRYPTO_BUTTON,
+            token_symbol: defaultToken.symbol,
+            token_position_in_list: tokenIndex + 1,
+            token_chain_id: defaultToken.chainId ?? '',
+            tokens_in_list: eligibleTokens.length,
+            token_has_balance: new BigNumber(defaultToken.balance).gt(0),
+          });
+        },
+      });
+    } catch (error) {
+      Logger.error(error as Error, {
+        message:
+          '[MoneyPotentialEarningsView] Failed to initiate deposit from CTA',
+      });
+    }
+  }, [eligibleTokens, navigateToMoneyDeposit, trackTokenButtonClicked]);
+
+  const handleTokenButtonPress = useCallback(
+    (token: MoneyDepositAsset, tokenIndex: number) => async () => {
+      try {
+        await navigateToMoneyDeposit({
+          preferredPaymentToken: {
+            address: token.address as Hex,
+            chainId: token.chainId as Hex,
+          },
+          track: ({ button_intent, redirect_target }) => {
+            trackTokenButtonClicked({
+              button_type: MONEY_BUTTON_TYPES.TEXT,
+              button_intent,
+              component_name:
+                COMPONENT_NAMES.MONEY_POTENTIAL_EARNINGS_TOKEN_ROW,
+              label_key: 'money.potential_earnings.add',
+              redirect_target,
+              token_symbol: token.symbol,
+              token_position_in_list: tokenIndex + 1,
+              token_chain_id: token.chainId ?? '',
+              tokens_in_list: eligibleTokens.length,
+              token_has_balance: new BigNumber(token.balance).gt(0),
+            });
+          },
+        });
+      } catch (error) {
+        Logger.error(error as Error, {
+          message: '[MoneyPotentialEarningsView] Failed to initiate deposit',
+        });
+      }
+    },
+    [eligibleTokens.length, navigateToMoneyDeposit, trackTokenButtonClicked],
+  );
+
+  const handleTokenCardPress = useCallback(
+    (token: MoneyDepositAsset, tokenIndex: number) => async () => {
+      try {
+        await navigateToMoneyDeposit({
+          preferredPaymentToken: {
+            address: token.address as Hex,
+            chainId: token.chainId as Hex,
+          },
+          track: ({ redirect_target }) => {
+            trackTokenSurfaceClicked({
+              component_name:
+                COMPONENT_NAMES.MONEY_POTENTIAL_EARNINGS_TOKEN_ROW,
+              redirect_target,
+              token_symbol: token.symbol,
+              token_position_in_list: tokenIndex + 1,
+              token_chain_id: token.chainId ?? '',
+              tokens_in_list: eligibleTokens.length,
+              token_has_balance: new BigNumber(token.balance).gt(0),
+            });
+          },
+        });
+      } catch (error) {
+        Logger.error(error as Error, {
+          message: '[MoneyPotentialEarningsView] Failed to initiate deposit',
+        });
+      }
+    },
+    [eligibleTokens.length, navigateToMoneyDeposit, trackTokenSurfaceClicked],
+  );
+
+  const listHeader = useMemo(
+    () => (
+      <Box twClassName="px-4 pt-3 pb-3 gap-1">
+        <Text variant={TextVariant.HeadingLg}>
+          {strings('money.potential_earnings.title')}
+        </Text>
+
+        {isPositiveNumber(projectedAmount) &&
+        isPositiveNumber(totalAssetsFiat) ? (
+          <Text
+            variant={TextVariant.BodyMd}
+            fontWeight={FontWeight.Regular}
+            color={TextColor.TextAlternative}
+            testID={MoneyPotentialEarningsViewTestIds.DESCRIPTION}
+          >
+            {`${strings(
+              'money.potential_earnings.description_with_amounts_prefix',
+            )} `}
+            <SensitiveText
+              variant={TextVariant.BodyMd}
+              fontWeight={FontWeight.Regular}
+              color={TextColor.TextAlternative}
+              isHidden={privacyMode}
+              length={SensitiveTextLength.Medium}
+              testID={MoneyPotentialEarningsViewTestIds.TOTAL}
+            >
+              {moneyFormatFiat(new BigNumber(totalAssetsFiat), currency)}
+            </SensitiveText>
+            {` ${strings(
+              'money.potential_earnings.description_with_amounts_middle',
+            )} `}
+            <SensitiveText
+              variant={TextVariant.BodyMd}
+              fontWeight={FontWeight.Medium}
+              color={TextColor.SuccessDefault}
+              isHidden={privacyMode}
+              length={SensitiveTextLength.Short}
+              testID={MoneyPotentialEarningsViewTestIds.PROJECTED}
+            >
+              {`+${moneyFormatFiat(new BigNumber(projectedAmount), currency)}`}
+            </SensitiveText>
+            {` ${strings(
+              'money.potential_earnings.description_with_amounts_suffix',
+            )}`}
+          </Text>
+        ) : (
+          <Text
+            variant={TextVariant.BodyMd}
+            fontWeight={FontWeight.Regular}
+            color={TextColor.TextAlternative}
+            testID={MoneyPotentialEarningsViewTestIds.DESCRIPTION}
+          >
+            {strings('money.potential_earnings.description')}
+          </Text>
+        )}
+      </Box>
+    ),
+    [projectedAmount, totalAssetsFiat, currency, privacyMode],
+  );
+
+  const renderTokenRow = useCallback(
+    ({ item, index }: { item: MoneyDepositAsset; index: number }) => (
+      <PotentialEarningsTokenRow
+        token={item}
+        hasSubsidizedFee={isNoFeeToken(item)}
+        apyDecimal={apyDecimalForProjection}
+        onCardPress={handleTokenCardPress(item, index)}
+        onButtonPress={handleTokenButtonPress(item, index)}
+        testID={MoneyPotentialEarningsViewTestIds.TOKEN_ROW(index)}
+        privacyMode={privacyMode}
+      />
+    ),
+    [
+      isNoFeeToken,
+      apyDecimalForProjection,
+      handleTokenCardPress,
+      handleTokenButtonPress,
+      privacyMode,
+    ],
+  );
+
+  return (
+    <Box
+      style={[styles.safeArea, { paddingTop: insets.top }]}
+      testID={MoneyPotentialEarningsViewTestIds.CONTAINER}
+    >
+      <HeaderStandardGlass
+        isGlass={isGlassHeader}
+        isFloating={false}
+        onBack={handleBackPress}
+        backButtonProps={{
+          testID: MoneyPotentialEarningsViewTestIds.BACK_BUTTON,
+        }}
+        endAccessory={
+          <ButtonIconGlass
+            isCapsule={isGlassHeader}
+            iconName={IconName.Info}
+            size={ButtonIconSize.Md}
+            onPress={handleInfoPress}
+            accessibilityLabel={strings('money.earn_crypto_info_sheet.title')}
+            testID={MoneyPotentialEarningsViewTestIds.INFO_BUTTON}
+          />
+        }
+      />
+      <Box twClassName="flex-1">
+        <FlashList
+          testID={MoneyPotentialEarningsViewTestIds.SCROLL_VIEW}
+          data={eligibleTokens}
+          renderItem={renderTokenRow}
+          keyExtractor={(token) => `${token.address}-${token.chainId}`}
+          ListHeaderComponent={listHeader}
+          showsVerticalScrollIndicator={false}
+        />
+      </Box>
+      <Box
+        twClassName="px-4 pt-3"
+        style={{ paddingBottom: insets.bottom + 12 }}
+      >
+        <Button
+          variant={ButtonVariant.Primary}
+          size={ButtonSize.Lg}
+          isFullWidth
+          onPress={handleConvertPress}
+          isDisabled={eligibleTokens.length === 0}
+          testID={MoneyPotentialEarningsViewTestIds.CTA_BUTTON}
+        >
+          {strings('money.potential_earnings.convert_cta')}
+        </Button>
+      </Box>
+    </Box>
+  );
+};
+
+export default MoneyPotentialEarningsView;

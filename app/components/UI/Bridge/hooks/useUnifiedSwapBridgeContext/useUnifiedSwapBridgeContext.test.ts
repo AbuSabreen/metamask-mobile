@@ -1,0 +1,315 @@
+import '../../_mocks_/initialState';
+import { FeatureId } from '@metamask/bridge-controller';
+import { createBridgeTestState } from '../../testUtils';
+import { useUnifiedSwapBridgeContext } from '.';
+import { renderHookWithProvider } from '../../../../../util/test/renderWithProvider';
+import initialRootState from '../../../../../util/test/initial-root-state';
+
+// Mock dependencies
+jest.mock('../../../../../selectors/smartTransactionsController', () => ({
+  selectShouldUseSmartTransaction: jest.fn(),
+}));
+
+jest.mock('../../../../../core/redux/slices/bridge', () => ({
+  selectSourceToken: jest.fn(),
+  selectDestToken: jest.fn(),
+  selectSourceAmount: jest.fn(),
+  selectIsSlippageUserOverride: jest.fn(),
+}));
+
+jest.mock('../../../../../selectors/currencyRateController', () => ({
+  selectCurrencyRates: jest.fn(),
+}));
+
+jest.mock('../../../../../selectors/tokenRatesController', () => ({
+  selectTokenMarketData: jest.fn(),
+}));
+
+jest.mock('../../../../../selectors/networkController', () => ({
+  ...jest.requireActual('../../../../../selectors/networkController'),
+  selectNetworkConfigurations: jest.fn(),
+}));
+
+jest.mock('../../../../../selectors/multichain', () => ({
+  selectMultichainAssetsRates: jest.fn(),
+}));
+
+describe('useUnifiedSwapBridgeContext', () => {
+  const mockSelectShouldUseSmartTransaction = jest.requireMock(
+    '../../../../../selectors/smartTransactionsController',
+  ).selectShouldUseSmartTransaction;
+
+  const mockSelectSourceToken = jest.requireMock(
+    '../../../../../core/redux/slices/bridge',
+  ).selectSourceToken;
+
+  const mockSelectDestToken = jest.requireMock(
+    '../../../../../core/redux/slices/bridge',
+  ).selectDestToken;
+
+  const mockSelectSourceAmount = jest.requireMock(
+    '../../../../../core/redux/slices/bridge',
+  ).selectSourceAmount;
+
+  const mockSelectIsSlippageUserOverride = jest.requireMock(
+    '../../../../../core/redux/slices/bridge',
+  ).selectIsSlippageUserOverride;
+
+  const mockSelectCurrencyRates = jest.requireMock(
+    '../../../../../selectors/currencyRateController',
+  ).selectCurrencyRates;
+
+  const mockSelectTokenMarketData = jest.requireMock(
+    '../../../../../selectors/tokenRatesController',
+  ).selectTokenMarketData;
+
+  const mockSelectNetworkConfigurations = jest.requireMock(
+    '../../../../../selectors/networkController',
+  ).selectNetworkConfigurations;
+
+  const mockSelectMultichainAssetsRates = jest.requireMock(
+    '../../../../../selectors/multichain',
+  ).selectMultichainAssetsRates;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Set default mock values
+    mockSelectSourceAmount.mockReturnValue(undefined);
+    mockSelectIsSlippageUserOverride.mockReturnValue(false);
+    mockSelectCurrencyRates.mockReturnValue({});
+    mockSelectTokenMarketData.mockReturnValue({});
+    mockSelectNetworkConfigurations.mockReturnValue({});
+    mockSelectMultichainAssetsRates.mockReturnValue({});
+  });
+
+  it('returns correct context with smart transactions enabled and tokens', () => {
+    mockSelectShouldUseSmartTransaction.mockReturnValue(true);
+    mockSelectSourceToken.mockReturnValue({ symbol: 'ETH' });
+    mockSelectDestToken.mockReturnValue({ symbol: 'USDC' });
+
+    const { result } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      {
+        state: initialRootState,
+      },
+    );
+
+    expect(result.current).toEqual({
+      stx_enabled: true,
+      token_symbol_source: 'ETH',
+      token_symbol_destination: 'USDC',
+      token_security_type_destination: null,
+      security_warnings: [],
+      warnings: [],
+      usd_amount_source: 0,
+      custom_slippage: false,
+      feature_id: FeatureId.UNIFIED_SWAP_BRIDGE,
+    });
+  });
+
+  it('includes the explicit slippage override state in the context', () => {
+    mockSelectIsSlippageUserOverride.mockReturnValue(true);
+
+    const { result } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      { state: initialRootState },
+    );
+
+    expect(result.current.custom_slippage).toBe(true);
+  });
+
+  it('defaults custom_slippage to false when the selector has no value', () => {
+    mockSelectIsSlippageUserOverride.mockReturnValueOnce(undefined);
+
+    const { result } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      { state: initialRootState },
+    );
+
+    expect(result.current.custom_slippage).toBe(false);
+  });
+
+  it('collects security_warnings from destination token features', () => {
+    mockSelectShouldUseSmartTransaction.mockReturnValue(false);
+    mockSelectSourceToken.mockReturnValue({ symbol: 'ETH' });
+    mockSelectDestToken.mockReturnValue({
+      symbol: 'SHADY',
+      securityData: {
+        type: 'Warning',
+        metadata: {
+          features: [
+            {
+              featureId: 'HONEYPOT',
+              type: 'Warning',
+              description: 'Honeypot risk detected',
+            },
+            {
+              featureId: 'CONCENTRATED_SUPPLY',
+              type: 'Warning',
+              description: 'Concentrated supply risk',
+            },
+          ],
+        },
+      },
+    });
+
+    const { result } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      { state: initialRootState },
+    );
+
+    expect(result.current.security_warnings).toEqual([
+      'Honeypot risk detected',
+      'Concentrated supply risk',
+    ]);
+    expect(result.current.token_security_type_destination).toBe('Warning');
+  });
+
+  it('returns empty security_warnings when source token has warnings but destination does not', () => {
+    mockSelectShouldUseSmartTransaction.mockReturnValue(false);
+    mockSelectSourceToken.mockReturnValue({
+      symbol: 'SCAM',
+      securityData: {
+        type: 'Malicious',
+        metadata: {
+          features: [
+            { featureId: 'F1', type: 'Warning', description: 'Source warning' },
+          ],
+        },
+      },
+    });
+    mockSelectDestToken.mockReturnValue({ symbol: 'USDC' });
+
+    const { result } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      { state: initialRootState },
+    );
+
+    expect(result.current.security_warnings).toEqual([]);
+    expect(result.current.token_security_type_destination).toBeNull();
+  });
+
+  it('returns empty security_warnings when destination token has no securityData', () => {
+    mockSelectShouldUseSmartTransaction.mockReturnValue(false);
+    mockSelectSourceToken.mockReturnValue({ symbol: 'ETH' });
+    mockSelectDestToken.mockReturnValue({ symbol: 'USDC' });
+
+    const { result } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      { state: initialRootState },
+    );
+
+    expect(result.current.security_warnings).toEqual([]);
+    expect(result.current.token_security_type_destination).toBeNull();
+  });
+
+  it('returns empty token symbols when tokens are undefined', () => {
+    mockSelectShouldUseSmartTransaction.mockReturnValue(false);
+    mockSelectSourceToken.mockReturnValue(undefined);
+    mockSelectDestToken.mockReturnValue(undefined);
+
+    const testState = createBridgeTestState({
+      bridgeReducerOverrides: {
+        sourceToken: undefined,
+        destToken: undefined,
+      },
+    });
+
+    const { result } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      {
+        state: testState,
+      },
+    );
+
+    expect(result.current).toEqual({
+      stx_enabled: false,
+      token_symbol_source: '',
+      token_symbol_destination: '',
+      token_security_type_destination: null,
+      security_warnings: [],
+      warnings: [],
+      usd_amount_source: 0,
+      custom_slippage: false,
+      feature_id: FeatureId.UNIFIED_SWAP_BRIDGE,
+    });
+  });
+
+  it('memoizes the result when dependencies do not change', () => {
+    mockSelectShouldUseSmartTransaction.mockReturnValue(true);
+    mockSelectSourceToken.mockReturnValue({ symbol: 'ETH' });
+    mockSelectDestToken.mockReturnValue({ symbol: 'USDC' });
+
+    const { result, rerender } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      {
+        state: initialRootState,
+      },
+    );
+
+    const firstResult = result.current;
+    rerender({ state: initialRootState });
+    const secondResult = result.current;
+
+    expect(firstResult).toBe(secondResult);
+  });
+
+  it('calculates usd_amount_source when currency rates and token data are available', () => {
+    const mockToken = {
+      symbol: 'ETH',
+      address: '0x0000000000000000000000000000000000000000',
+      chainId: '0x1',
+    };
+
+    mockSelectShouldUseSmartTransaction.mockReturnValue(true);
+    mockSelectSourceToken.mockReturnValue(mockToken);
+    mockSelectDestToken.mockReturnValue({ symbol: 'USDC' });
+    mockSelectSourceAmount.mockReturnValue('1');
+    mockSelectCurrencyRates.mockReturnValue({
+      ETH: { conversionRate: 2000, usdConversionRate: 2000 },
+    });
+    mockSelectTokenMarketData.mockReturnValue({
+      '0x1': {
+        '0x0000000000000000000000000000000000000000': { price: 1 },
+      },
+    });
+    mockSelectNetworkConfigurations.mockReturnValue({
+      '0x1': { nativeCurrency: 'ETH' },
+    });
+
+    const { result } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      {
+        state: initialRootState,
+      },
+    );
+
+    expect(result.current.usd_amount_source).toBeDefined();
+    // 1 ETH, price=1 (native), conversionRate=2000, usdConversionRate=2000
+    // tokenFiatValue = 1 * 2000 * 1 = 2000, usdAmount = 2000 * (2000/2000) = 2000
+    expect(result.current.usd_amount_source).toBe(2000);
+  });
+
+  it('returns 0 usd_amount_source when usd conversion rate is missing', () => {
+    const mockToken = {
+      symbol: 'ETH',
+      address: '0x0000000000000000000000000000000000000000',
+      chainId: '0x1',
+    };
+
+    mockSelectShouldUseSmartTransaction.mockReturnValue(true);
+    mockSelectSourceToken.mockReturnValue(mockToken);
+    mockSelectDestToken.mockReturnValue({ symbol: 'USDC' });
+    mockSelectSourceAmount.mockReturnValue('1');
+    mockSelectCurrencyRates.mockReturnValue({});
+
+    const { result } = renderHookWithProvider(
+      () => useUnifiedSwapBridgeContext(),
+      {
+        state: initialRootState,
+      },
+    );
+
+    expect(result.current.usd_amount_source).toBe(0);
+  });
+});

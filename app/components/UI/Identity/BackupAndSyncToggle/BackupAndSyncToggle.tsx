@@ -1,0 +1,193 @@
+import React, { useCallback, useEffect } from 'react';
+
+import { View, Switch, Linking, InteractionManager } from 'react-native';
+import type { AppNavigationProp } from '../../../../core/NavigationService/types';
+
+import {
+  FontWeight,
+  Text,
+  TextVariant,
+  TextColor,
+} from '@metamask/design-system-react-native';
+import { useTheme } from '../../../../util/theme';
+import styles from './BackupAndSyncToggle.styles';
+import AppConstants from '../../../../core/AppConstants';
+import { useBackupAndSync } from '../../../../util/identity/hooks/useBackupAndSync';
+import { RootState } from '../../../../reducers';
+import { useSelector } from 'react-redux';
+import {
+  selectIsBackupAndSyncEnabled,
+  selectIsBackupAndSyncUpdateLoading,
+} from '../../../../selectors/identity';
+import SwitchLoadingModal from '../../Notification/SwitchLoadingModal';
+import { BACKUPANDSYNC_FEATURES } from '@metamask/profile-sync-controller/user-storage';
+import { MetaMetricsEvents } from '../../../../core/Analytics';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+import { selectIsMetamaskNotificationsEnabled } from '../../../../selectors/notifications';
+import Routes from '../../../../constants/navigation/Routes';
+import { useNavigation } from '@react-navigation/native';
+import { strings } from '../../../../../locales/i18n';
+import { BACKUP_AND_SYNC_TOGGLE_TEST_IDS } from './BackupAndSyncToggle.testIds';
+
+interface Props {
+  trackBackupAndSyncToggleEventOverride?: (newValue: boolean) => void;
+}
+
+export interface ConfirmTurnOnBackupAndSyncModalNavigateParams {
+  enableBackupAndSync: () => Promise<void>;
+  trackEnableBackupAndSyncEvent: () => void;
+}
+
+const BackupAndSyncToggle = ({
+  trackBackupAndSyncToggleEventOverride,
+}: Readonly<Props>) => {
+  const theme = useTheme();
+  const navigation = useNavigation<AppNavigationProp>();
+  const { trackEvent, createEventBuilder } = useAnalytics();
+
+  const { colors } = theme;
+
+  const { setIsBackupAndSyncFeatureEnabled, error } = useBackupAndSync();
+
+  const isBackupAndSyncEnabled = useSelector(selectIsBackupAndSyncEnabled);
+  const isBackupAndSyncUpdateLoading = useSelector(
+    selectIsBackupAndSyncUpdateLoading,
+  );
+  const isBasicFunctionalityEnabled = useSelector((state: RootState) =>
+    Boolean(state?.settings?.basicFunctionalityEnabled),
+  );
+  const isMetamaskNotificationsEnabled = useSelector(
+    selectIsMetamaskNotificationsEnabled,
+  );
+
+  useEffect(() => {
+    const reactToBasicFunctionalityBeingDisabled = async () => {
+      if (!isBasicFunctionalityEnabled && isBackupAndSyncEnabled) {
+        InteractionManager.runAfterInteractions(async () => {
+          await setIsBackupAndSyncFeatureEnabled(
+            BACKUPANDSYNC_FEATURES.main,
+            false,
+          );
+        });
+      }
+    };
+    reactToBasicFunctionalityBeingDisabled();
+  }, [
+    isBasicFunctionalityEnabled,
+    setIsBackupAndSyncFeatureEnabled,
+    isBackupAndSyncEnabled,
+  ]);
+
+  const trackBackupAndSyncToggleEvent = useCallback(
+    (newValue: boolean) => {
+      if (trackBackupAndSyncToggleEventOverride) {
+        trackBackupAndSyncToggleEventOverride(newValue);
+        return;
+      }
+
+      trackEvent(
+        createEventBuilder(MetaMetricsEvents.SETTINGS_UPDATED)
+          .addProperties({
+            settings_group: 'backup_and_sync',
+            settings_type: 'main',
+            old_value: !newValue,
+            new_value: newValue,
+            was_notifications_on: isMetamaskNotificationsEnabled,
+          })
+          .build(),
+      );
+    },
+    [
+      isMetamaskNotificationsEnabled,
+      trackEvent,
+      createEventBuilder,
+      trackBackupAndSyncToggleEventOverride,
+    ],
+  );
+
+  const handleLink = () => {
+    Linking.openURL(AppConstants.URLS.PROFILE_SYNC);
+  };
+
+  const handleBackupAndSyncToggleSetValue = async () => {
+    if (isBackupAndSyncEnabled) {
+      trackBackupAndSyncToggleEvent(false);
+
+      InteractionManager.runAfterInteractions(async () => {
+        await setIsBackupAndSyncFeatureEnabled(
+          BACKUPANDSYNC_FEATURES.main,
+          false,
+        );
+      });
+    } else {
+      trackBackupAndSyncToggleEvent(true);
+
+      if (!isBasicFunctionalityEnabled) {
+        navigation.navigate(Routes.MODAL.ROOT_MODAL_FLOW, {
+          screen: Routes.SHEET.CONFIRM_TURN_ON_BACKUP_AND_SYNC,
+          params: {
+            enableBackupAndSync: async () => {
+              await setIsBackupAndSyncFeatureEnabled(
+                BACKUPANDSYNC_FEATURES.main,
+                true,
+              );
+            },
+            trackEnableBackupAndSyncEvent: () =>
+              trackBackupAndSyncToggleEvent(true),
+          },
+        });
+      } else {
+        InteractionManager.runAfterInteractions(async () => {
+          await setIsBackupAndSyncFeatureEnabled(
+            BACKUPANDSYNC_FEATURES.main,
+            true,
+          );
+        });
+      }
+    }
+  };
+
+  return (
+    <View style={styles.setting}>
+      <View style={styles.heading}>
+        <Text variant={TextVariant.HeadingSm}>
+          {strings('backupAndSync.title')}
+        </Text>
+        <Switch
+          value={!!isBackupAndSyncEnabled}
+          onValueChange={handleBackupAndSyncToggleSetValue}
+          trackColor={{
+            true: colors.primary.default,
+            false: colors.border.muted,
+          }}
+          thumbColor={theme.brandColors.white}
+          ios_backgroundColor={colors.border.muted}
+          testID={BACKUP_AND_SYNC_TOGGLE_TEST_IDS.TOGGLE}
+        />
+      </View>
+      <Text
+        variant={TextVariant.BodySm}
+        fontWeight={FontWeight.Medium}
+        color={TextColor.TextAlternative}
+      >
+        {strings('backupAndSync.enable.description')}
+        <Text
+          variant={TextVariant.BodySm}
+          fontWeight={FontWeight.Medium}
+          color={TextColor.InfoDefault}
+          onPress={handleLink}
+        >
+          {strings('backupAndSync.privacyLink')}
+        </Text>
+      </Text>
+
+      <SwitchLoadingModal
+        loading={isBackupAndSyncUpdateLoading}
+        loadingText=""
+        error={error || undefined}
+      />
+    </View>
+  );
+};
+
+export default BackupAndSyncToggle;

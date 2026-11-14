@@ -1,0 +1,241 @@
+import React, { useCallback, useMemo } from 'react';
+import { TouchableOpacity, View } from 'react-native';
+import { useSelector } from 'react-redux';
+import type { CaipChainId } from '@metamask/utils';
+import Engine from '../../../../../core/Engine';
+import createStyles from './AccountGroupBalance.styles';
+import { selectPrivacyMode } from '../../../../../selectors/preferencesController';
+import {
+  selectBalanceChangeBySelectedAccountGroup,
+  selectAccountGroupBalanceForEmptyState,
+  selectUnifiedBalanceBySelectedAccountGroup,
+} from '../../../../../selectors/assets/balances';
+import {
+  selectShouldShowWalletHomeOnboardingSteps,
+  selectWalletHomeOnboardingSkipInitialBalanceWait,
+  selectWalletHomeOnboardingSteps,
+} from '../../../../../selectors/onboarding';
+import { selectCurrentCurrency } from '../../../../../selectors/currencyRateController';
+import { useWalletHomeOnboardingFundStepBalanceGate } from '../../../WalletHomeOnboardingSteps/useWalletHomeOnboardingFundStepBalanceGate';
+import { selectEvmChainId } from '../../../../../selectors/networkController';
+import { useNetworkEnablement } from '../../../../hooks/useNetworkEnablement/useNetworkEnablement';
+import { TEST_NETWORK_IDS } from '../../../../../constants/network';
+import {
+  FontFamily,
+  SensitiveText,
+  SensitiveTextLength,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+import { WalletViewSelectorsIDs } from '../../../../Views/Wallet/WalletView.testIds';
+import { AnimatedBalanceText } from '../../../../../component-library/components-temp/AnimatedNumericText';
+import { Skeleton } from '../../../../../component-library/components-temp/Skeleton';
+import { useFormatters } from '../../../../hooks/useFormatters';
+import usePrevious from '../../../../hooks/usePrevious';
+import AccountGroupBalanceChange from '../../components/BalanceChange/AccountGroupBalanceChange';
+import BalanceEmptyState from '../../../BalanceEmptyState';
+import WalletHomeOnboardingSteps from '../../../WalletHomeOnboardingSteps';
+import { useRampNavigation } from '../../../Ramp/hooks/useRampNavigation';
+import { useWalletHomeOnboardingChecklistFundPress } from '../../../WalletHomeOnboardingSteps/useWalletHomeOnboardingChecklistFundPress';
+import { useAccountGroupBalanceFetchState } from './useAccountGroupBalanceFetchState';
+import { useWalletHomeOnboardingBalanceRefreshEffect } from './useWalletHomeOnboardingBalanceRefreshEffect';
+
+export interface AccountGroupBalanceProps {
+  /**
+   * When set, the last post-onboarding step awaits this handler after the checklist fade.
+   */
+  onCoordinatedFlowExit?: () => Promise<void>;
+  /**
+   * While true, pauses checklist Rive during the coordinated Wallet exit (reduces jank).
+   */
+  suspendRiveForCurtain?: boolean;
+  /** Trade checklist step: Primary invokes this (e.g. open Swaps) before advancing. */
+  onTradePrimaryPress?: () => void;
+  /** Notifications checklist step: Primary invokes this (e.g. open settings) before advancing. */
+  onNotificationsPrimaryPress?: () => void;
+}
+
+const AccountGroupBalance = ({
+  onCoordinatedFlowExit,
+  suspendRiveForCurtain = false,
+  onTradePrimaryPress,
+  onNotificationsPrimaryPress,
+}: AccountGroupBalanceProps) => {
+  const { PreferencesController } = Engine.context;
+  const styles = createStyles();
+  const { formatCurrency } = useFormatters();
+  const shouldShowWalletHomeOnboardingSteps = useSelector(
+    selectShouldShowWalletHomeOnboardingSteps,
+  );
+  const walletHomeOnboardingSkipInitialBalanceWait = useSelector(
+    selectWalletHomeOnboardingSkipInitialBalanceWait,
+  );
+  const walletHomeOnboardingStepsState = useSelector(
+    selectWalletHomeOnboardingSteps,
+  );
+  const walletHomeOnboardingStepIndex =
+    walletHomeOnboardingStepsState.stepIndex ?? 0;
+  const { goToBuy } = useRampNavigation();
+  const onFundPrimaryPressWithChecklistAnalytics =
+    useWalletHomeOnboardingChecklistFundPress(goToBuy);
+  const { popularNetworks } = useNetworkEnablement();
+
+  // Collapse to a value (string) first, since primitives compare by value in a deps
+  // array — this is what actually stabilizes identity, unlike the array itself, which
+  // is a new reference every render. Rebuilding the array from that string (rather
+  // than from `popularNetworks`) means this memo's only real dependency is the string,
+  // so selector identity doesn't change every render (avoids max depth / infinite loop).
+  const popularChainIdsKey = useMemo(
+    () => (popularNetworks ?? []).join(','),
+    [popularNetworks],
+  );
+  const chainIdsForBalance = useMemo<CaipChainId[]>(
+    () =>
+      popularChainIdsKey
+        ? (popularChainIdsKey.split(',') as CaipChainId[])
+        : [],
+    [popularChainIdsKey],
+  );
+
+  const groupBalanceSelector = useMemo(
+    () => selectUnifiedBalanceBySelectedAccountGroup(chainIdsForBalance),
+    [chainIdsForBalance],
+  );
+  const balanceChange1dSelector = useMemo(
+    () => selectBalanceChangeBySelectedAccountGroup('1d', chainIdsForBalance),
+    [chainIdsForBalance],
+  );
+  const privacyMode = useSelector(selectPrivacyMode);
+  const previousPrivacyMode = usePrevious(privacyMode);
+  const groupBalance = useSelector(groupBalanceSelector) as {
+    groupId: string;
+    totalBalanceInUserCurrency: number;
+    userCurrency: string;
+    walletId: string;
+  } | null;
+  const accountGroupBalance = useSelector(
+    selectAccountGroupBalanceForEmptyState,
+  );
+  const balanceChange1d = useSelector(balanceChange1dSelector);
+  const selectedChainId = useSelector(selectEvmChainId);
+  const currentCurrency = useSelector(selectCurrentCurrency);
+
+  const hasBalanceFetched = useAccountGroupBalanceFetchState();
+
+  const togglePrivacy = useCallback(
+    (value: boolean) => {
+      PreferencesController.setPrivacyMode(value);
+    },
+    [PreferencesController],
+  );
+
+  const totalBalance = groupBalance?.totalBalanceInUserCurrency ?? 0;
+  const userCurrency = groupBalance?.userCurrency || currentCurrency;
+  const displayBalance = formatCurrency(totalBalance, userCurrency);
+  const zeroBalance = formatCurrency(0, userCurrency);
+  const skipBalanceAnimation = Boolean(previousPrivacyMode) && !privacyMode;
+
+  const isLoading = !groupBalance || !hasBalanceFetched;
+  const awaitBalanceForPostOnboardingSteps =
+    isLoading && !walletHomeOnboardingSkipInitialBalanceWait;
+
+  // Check if account group balance (across all mainnet networks) is zero for empty state
+  const hasZeroAccountGroupBalance =
+    accountGroupBalance != null &&
+    accountGroupBalance.totalBalanceInUserCurrency === 0;
+
+  // Check if current network is a testnet
+  const isCurrentNetworkTestnet = TEST_NETWORK_IDS.includes(selectedChainId);
+
+  // Show empty state on accounts with an aggregated mainnet balance of zero
+  const shouldShowEmptyState =
+    hasZeroAccountGroupBalance && !isCurrentNetworkTestnet;
+
+  const inWalletHomePostOnboardingFlow = shouldShowWalletHomeOnboardingSteps;
+
+  const isWalletHomeOnboardingFundStep =
+    inWalletHomePostOnboardingFlow && walletHomeOnboardingStepIndex === 0;
+
+  /** While the flow is active, always use the checklist surface — never the balance row (avoids a flash before loading/empty state is known). */
+  const showWalletHomeOnboardingStepsTile = inWalletHomePostOnboardingFlow;
+
+  const canAdvanceFundStepAfterBalance =
+    useWalletHomeOnboardingFundStepBalanceGate({
+      enabled: isWalletHomeOnboardingFundStep,
+      accountGroupBalance,
+      groupId: groupBalance?.groupId ?? null,
+    });
+
+  useWalletHomeOnboardingBalanceRefreshEffect({
+    enabled:
+      isWalletHomeOnboardingFundStep &&
+      walletHomeOnboardingSkipInitialBalanceWait,
+  });
+
+  const renderBalanceOrEmpty = () =>
+    !isLoading && shouldShowEmptyState ? (
+      <BalanceEmptyState
+        testID={WalletViewSelectorsIDs.BALANCE_EMPTY_STATE_CONTAINER}
+      />
+    ) : (
+      <TouchableOpacity
+        onPress={() => togglePrivacy(!privacyMode)}
+        testID="balance-container"
+        style={styles.balanceContainer}
+      >
+        {privacyMode ? (
+          <SensitiveText
+            fontFamily={FontFamily.Hero}
+            isHidden
+            length={SensitiveTextLength.Long}
+            testID={WalletViewSelectorsIDs.TOTAL_BALANCE_TEXT}
+            variant={TextVariant.AmountDisplayLg}
+          >
+            {displayBalance}
+          </SensitiveText>
+        ) : (
+          <AnimatedBalanceText
+            accessible={false}
+            key={groupBalance?.groupId ?? 'loading'}
+            isLoading={isLoading}
+            loadingValue={zeroBalance}
+            testID={WalletViewSelectorsIDs.TOTAL_BALANCE_TEXT}
+            value={displayBalance}
+            animated={!skipBalanceAnimation}
+          />
+        )}
+
+        {balanceChange1d && (
+          <Skeleton hideChildren={isLoading}>
+            <AccountGroupBalanceChange
+              amountChangeInUserCurrency={
+                balanceChange1d.amountChangeInUserCurrency
+              }
+              percentChange={balanceChange1d.percentChange}
+              userCurrency={balanceChange1d.userCurrency}
+            />
+          </Skeleton>
+        )}
+      </TouchableOpacity>
+    );
+
+  return (
+    <View style={styles.accountGroupBalance}>
+      {showWalletHomeOnboardingStepsTile ? (
+        <WalletHomeOnboardingSteps
+          isAwaitingBalance={awaitBalanceForPostOnboardingSteps}
+          onCoordinatedFlowExit={onCoordinatedFlowExit}
+          suspendRiveForCurtain={suspendRiveForCurtain}
+          onFundPrimaryPress={onFundPrimaryPressWithChecklistAnalytics}
+          canAdvanceFundStepAfterBalance={canAdvanceFundStepAfterBalance}
+          onTradePrimaryPress={onTradePrimaryPress}
+          onNotificationsPrimaryPress={onNotificationsPrimaryPress}
+          testID={WalletViewSelectorsIDs.BALANCE_EMPTY_STATE_CONTAINER}
+        />
+      ) : (
+        renderBalanceOrEmpty()
+      )}
+    </View>
+  );
+};
+
+export default AccountGroupBalance;

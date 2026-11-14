@@ -1,0 +1,82 @@
+// Third party dependencies
+import React, { useCallback } from 'react';
+import { View, Switch } from 'react-native';
+import { useSelector } from 'react-redux';
+
+// External dependencies
+import { useStyles } from '../../../../component-library/hooks';
+import Engine from '../../../../core/Engine';
+import { selectUseTokenDetection } from '../../../../selectors/preferencesController';
+import { useTheme } from '../../../../util/theme';
+import { strings } from '../../../../../locales/i18n';
+import {
+  FontWeight,
+  Text,
+  TextColor,
+  TextVariant,
+} from '@metamask/design-system-react-native';
+
+// Internal dependencies
+import styleSheet from './index.styles';
+import { TOKEN_DETECTION_TOGGLE } from './index.constants';
+import { UserProfileProperty } from '../../../../util/metrics/UserSettingsAnalyticsMetaData/UserProfileAnalyticsMetaData.types';
+import { useAnalytics } from '../../../hooks/useAnalytics/useAnalytics';
+
+const AutoDetectTokensSettings = () => {
+  const theme = useTheme();
+  const { colors } = theme;
+  const { styles } = useStyles(styleSheet, {});
+  const { identify } = useAnalytics();
+
+  const isTokenDetectionEnabled = useSelector(selectUseTokenDetection);
+
+  const toggleTokenDetection = useCallback(
+    (value: boolean) => {
+      Engine.context.PreferencesController.setUseTokenDetection(value);
+      identify({
+        [UserProfileProperty.TOKEN_DETECTION]: value
+          ? UserProfileProperty.ON
+          : UserProfileProperty.OFF,
+      });
+    },
+    [identify],
+  );
+
+  return (
+    <View style={styles.setting}>
+      <View style={styles.titleContainer}>
+        <Text
+          variant={TextVariant.BodyMd}
+          fontWeight={FontWeight.Medium}
+          style={styles.title}
+        >
+          {strings('app_settings.token_detection_title')}
+        </Text>
+        <View style={styles.toggle}>
+          <Switch
+            testID={TOKEN_DETECTION_TOGGLE}
+            value={isTokenDetectionEnabled}
+            onValueChange={toggleTokenDetection}
+            trackColor={{
+              true: colors.primary.default,
+              false: colors.border.muted,
+            }}
+            thumbColor={theme.brandColors.white}
+            ios_backgroundColor={colors.border.muted}
+            style={styles.switch}
+          />
+        </View>
+      </View>
+      <Text
+        variant={TextVariant.BodySm}
+        fontWeight={FontWeight.Medium}
+        color={TextColor.TextAlternative}
+        style={styles.desc}
+      >
+        {strings('app_settings.token_detection_description')}
+      </Text>
+    </View>
+  );
+};
+
+export default AutoDetectTokensSettings;

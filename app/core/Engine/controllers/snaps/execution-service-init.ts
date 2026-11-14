@@ -1,0 +1,72 @@
+import {
+  ExecutionService,
+  ExecutionServiceMessenger,
+} from '@metamask/snaps-controllers';
+// eslint-disable-next-line import-x/no-nodejs-modules
+import { Duplex } from 'stream';
+import { MessengerClientInitFunction } from '../../types';
+import { WebViewExecutionService } from '@metamask/snaps-controllers/react-native';
+import { createWebView, removeWebView } from '../../../../lib/snaps';
+import Logger from '../../../../util/Logger';
+import { SnapBridge } from '../../../Snaps';
+import getRpcMethodMiddleware from '../../../RPCMethods/RPCMethodMiddleware';
+import { SnapId } from '@metamask/snaps-sdk';
+
+/**
+ * Initialize the Snaps execution service.
+ *
+ * @param request - The request object.
+ * @param request.controllerMessenger - The messenger to use for the service.
+ * @returns The initialized controller.
+ */
+export const executionServiceInit: MessengerClientInitFunction<
+  ExecutionService,
+  ExecutionServiceMessenger
+> = ({ controllerMessenger }) => {
+  /**
+   * Set up the EIP-1193 provider for the given Snap.
+   *
+   * @param snapId - The ID of the Snap.
+   * @param connectionStream - The stream to connect to the Snap.
+   */
+  const setupSnapProvider = (snapId: string, connectionStream: Duplex) => {
+    Logger.log(
+      '[ENGINE LOG] Engine+setupSnapProvider: Setup stream for Snap',
+      snapId,
+    );
+
+    // TODO:
+    // Develop a simpler getRpcMethodMiddleware object for SnapBridge.
+    // Consider developing an abstract class to derived custom implementations
+    // for each use case.
+    const bridge = new SnapBridge({
+      snapId: snapId as SnapId,
+      connectionStream,
+      getRPCMethodMiddleware: ({ hostname, getProviderState }) =>
+        getRpcMethodMiddleware({
+          hostname,
+          getProviderState,
+          navigation: null,
+          title: { current: 'Snap' },
+          icon: { current: undefined },
+          tabId: false,
+          isWalletConnect: false,
+          isMMSDK: false,
+          url: { current: '' },
+          analytics: {},
+        }),
+    });
+
+    bridge.setupProviderConnection();
+  };
+
+  return {
+    controller: new WebViewExecutionService({
+      messenger: controllerMessenger,
+      // @ts-expect-error The stream type doesn't match because of a version mismatch.
+      setupSnapProvider,
+      createWebView,
+      removeWebView,
+    }),
+  };
+};

@@ -15,7 +15,6 @@ import { strings } from '../../../../locales/i18n';
 import { hasZeroWidthPoints } from '../../../util/confusables';
 import { useTheme } from '../../../util/theme';
 import AddToAddressBookWrapper from '../AddToAddressBookWrapper/AddToAddressBookWrapper';
-import { SendViewSelectorsIDs } from '../../../../e2e/selectors/SendView.selectors';
 import Text, {
   TextVariant,
 } from '../../../component-library/components/Texts/Text';
@@ -178,11 +177,7 @@ const createStyles = (colors, layout = 'horizontal') => {
   });
 };
 
-const AddressName = ({
-  toAddressName,
-  confusableCollection = [],
-  accountLabel,
-}) => {
+const AddressName = ({ toAddressName, confusableCollection = [] }) => {
   const { colors } = useTheme();
   const styles = createStyles(colors);
   if (confusableCollection.length) {
@@ -214,14 +209,6 @@ const AddressName = ({
       <Text style={styles.textAddress} numberOfLines={1}>
         {toAddressName}
       </Text>
-      {accountLabel && (
-        <Text
-          variant={TextVariant.BodySMBold}
-          style={styles.accountNameLabelText}
-        >
-          {strings(accountLabel)}
-        </Text>
-      )}
     </View>
   );
 };
@@ -229,7 +216,6 @@ const AddressName = ({
 AddressName.propTypes = {
   toAddressName: PropTypes.string,
   confusableCollection: PropTypes.array,
-  accountLabel: PropTypes.string,
 };
 
 export const AddressTo = (props) => {
@@ -252,7 +238,6 @@ export const AddressTo = (props) => {
     isFromAddressBook = false,
     layout = 'horizontal',
   } = props;
-  const accountLabel = getLabelTextByAddress(toSelectedAddress);
   const { colors, themeAppearance } = useTheme();
   const styles = createStyles(colors, layout);
 
@@ -292,7 +277,6 @@ export const AddressTo = (props) => {
                     <AddressName
                       toAddressName={toAddressName}
                       confusableCollection={confusableCollection}
-                      accountLabel={accountLabel}
                     />
                   )}
                   <View style={styles.addressWrapper}>
@@ -354,7 +338,6 @@ export const AddressTo = (props) => {
               onBlur={onInputBlur}
               onSubmitEditing={onSubmit}
               value={toSelectedAddress}
-              testID={SendViewSelectorsIDs.ADDRESS_INPUT}
               keyboardAppearance={themeAppearance}
             />
           </View>
@@ -370,11 +353,7 @@ export const AddressTo = (props) => {
               />
             </TouchableOpacity>
           ) : (
-            <TouchableOpacity
-              onPress={onClear}
-              style={styles.iconWrapper}
-              testID={SendViewSelectorsIDs.ADDRESS_REMOVE_BUTTON}
-            >
+            <TouchableOpacity onPress={onClear} style={styles.iconWrapper}>
               <AntIcon
                 name="close"
                 size={20}
@@ -414,7 +393,6 @@ export const AddressTo = (props) => {
                     <AddressName
                       toAddressName={toAddressName}
                       confusableCollection={confusableCollection}
-                      accountLabel={accountLabel}
                     />
 
                     <View style={styles.addressWrapper}>
@@ -459,14 +437,15 @@ export const AddressTo = (props) => {
                   onBlur={onInputBlur}
                   onSubmitEditing={onSubmit}
                   value={toAddressName}
-                  testID={SendViewSelectorsIDs.ADDRESS_INPUT}
                   keyboardAppearance={themeAppearance}
                 />
               ) : (
                 <AddToAddressBookWrapper address={toSelectedAddress}>
                   <View style={styles.toAddressTextWrapper}>
                     <Text style={styles.textInput} numberOfLines={1}>
-                      {renderSlightlyLongAddress(toSelectedAddress, 4, 9)}
+                      {toSelectedAddress
+                        ? renderSlightlyLongAddress(toSelectedAddress, 4, 9)
+                        : ''}
                     </Text>
                   </View>
                 </AddToAddressBookWrapper>
@@ -483,11 +462,7 @@ export const AddressTo = (props) => {
           </View>
           {!!onClear && (
             <View style={styles.checkCleanWrapper}>
-              <TouchableOpacity
-                onPress={onClear}
-                style={styles.iconWrapper}
-                testID={SendViewSelectorsIDs.ADDRESS_REMOVE_BUTTON}
-              >
+              <TouchableOpacity onPress={onClear} style={styles.iconWrapper}>
                 <AntIcon
                   name="close"
                   size={20}
@@ -580,7 +555,6 @@ export const AddressFrom = (props) => {
     fromAccountAddress,
     layout = 'horizontal',
   } = props;
-  const accountLabel = getLabelTextByAddress(fromAccountAddress);
   const { colors } = useTheme();
   const styles = createStyles(colors, layout);
 
@@ -601,14 +575,6 @@ export const AddressFrom = (props) => {
         <View style={[baseStyles.flexGrow, styles.address]}>
           <View style={styles.accountNameLabel}>
             <Text style={styles.textAddress}>{fromAccountName}</Text>
-            {accountLabel && (
-              <Text
-                variant={TextVariant.BodySMBold}
-                style={styles.accountNameLabelText}
-              >
-                {strings(accountLabel)}
-              </Text>
-            )}
           </View>
           <Text style={styles.textBalance}>{`${strings(
             'transactions.address_from_balance',

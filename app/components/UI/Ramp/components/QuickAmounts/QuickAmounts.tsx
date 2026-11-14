@@ -1,0 +1,61 @@
+import React from 'react';
+import { View } from 'react-native';
+
+import {
+  Button,
+  ButtonVariant,
+  ButtonSize,
+} from '@metamask/design-system-react-native';
+import { useStyles } from '../../../../hooks/useStyles';
+
+import styleSheet from './QuickAmounts.styles';
+import { QUICK_AMOUNTS_TEST_IDS } from './QuickAmounts.testIds';
+import { useFormatters } from '../../../../hooks/useFormatters';
+
+const DEFAULT_AMOUNTS = [50, 100, 200, 400];
+
+export interface QuickAmountsProps {
+  /** Array of preset amounts to display */
+  amounts?: number[];
+  /** Currency code for formatting (e.g., 'USD', 'EUR') */
+  currency?: string;
+  /** Callback when an amount is pressed */
+  onAmountPress: (amount: number) => void;
+  /** Test ID prefix for testing */
+  testID?: string;
+}
+
+const QuickAmounts: React.FC<QuickAmountsProps> = ({
+  amounts = DEFAULT_AMOUNTS,
+  currency = 'USD',
+  onAmountPress,
+  testID = QUICK_AMOUNTS_TEST_IDS.CONTAINER,
+}) => {
+  const { styles } = useStyles(styleSheet, {});
+  const { formatCurrency } = useFormatters();
+
+  return (
+    <View style={styles.container} testID={testID}>
+      {amounts.map((amount) => (
+        <View key={amount} style={styles.buttonWrapper}>
+          <Button
+            variant={ButtonVariant.Secondary}
+            size={ButtonSize.Lg}
+            onPress={() => onAmountPress(amount)}
+            testID={`${testID}-button-${amount}`}
+            isFullWidth
+            twClassName="px-0 rounded-xl"
+            textProps={{
+              adjustsFontSizeToFit: true,
+              numberOfLines: 1,
+            }}
+          >
+            {formatCurrency(amount, currency, { maximumFractionDigits: 0 })}
+          </Button>
+        </View>
+      ))}
+    </View>
+  );
+};
+
+export default QuickAmounts;

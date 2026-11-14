@@ -1,0 +1,440 @@
+import { useDispatch, useSelector } from 'react-redux';
+import {
+  selectBridgeControllerState,
+  selectSourceToken,
+  selectDestToken,
+  selectSourceAmount,
+  selectSlippage,
+  selectBridgeQuotes,
+  selectIsSubmittingTx,
+  selectBridgeFeatureFlags,
+  selectIsSolanaSwap,
+  selectIsSolanaToNonSolana,
+  selectSelectedQuoteRequestId,
+  setSelectedQuoteRequestId,
+  selectQuoteStreamComplete,
+} from '../../../../../core/redux/slices/bridge';
+import {
+  RequestStatus,
+  isNonEvmChainId,
+  formatChainIdToCaip,
+  formatAddressToCaipReference,
+} from '@metamask/bridge-controller';
+import { areAddressesEqual } from '../../../../../util/address';
+import { useCallback, useMemo, useEffect, useState, useRef } from 'react';
+import { fromTokenMinimalUnitString } from '../../../../../util/number/bigint';
+import {
+  isQuoteExpired,
+  getQuoteRefreshRate,
+  shouldRefreshQuote,
+} from '../../utils/quoteUtils';
+import I18n from '../../../../../../locales/i18n';
+import useIsInsufficientBalance from '../useInsufficientBalance';
+import { BigNumber as EthersBigNumber } from 'ethers';
+import useValidateBridgeTx from '../../../../../util/bridge/hooks/useValidateBridgeTx';
+import { getIntlNumberFormatter } from '../../../../../util/intl';
+import { useFormattedNetworkFee } from '../useFormattedNetworkFee';
+import AppConstants from '../../../../../core/AppConstants';
+import {
+  exceedsPriceImpactErrorThreshold,
+  parsePriceImpact,
+} from '../../utils/getPriceImpactViewData';
+import { usePriceImpactFiat } from '../usePriceImpactFiat';
+import { parseCaipAssetType } from '@metamask/utils';
+
+/**
+ * Hook for getting bridge quote data without request logic
+ * @deprecated Use useSwapQuotes for new features. Avoid adding new functionality to this hook.
+ */
+export const useBridgeQuoteData = ({
+  latestSourceAtomicBalance,
+  isActive = true,
+}: {
+  latestSourceAtomicBalance?: EthersBigNumber;
+  isActive?: boolean;
+} = {}) => {
+  const dispatch = useDispatch();
+  const bridgeControllerState = useSelector(selectBridgeControllerState);
+  const sourceToken = useSelector(selectSourceToken);
+  const destToken = useSelector(selectDestToken);
+  const sourceAmount = useSelector(selectSourceAmount);
+  const slippage = useSelector(selectSlippage);
+  const isSubmittingTx = useSelector(selectIsSubmittingTx);
+  const locale = I18n.locale;
+  const quotes = useSelector(selectBridgeQuotes);
+  const bridgeFeatureFlags = useSelector(selectBridgeFeatureFlags);
+  const isSolanaSwap = useSelector(selectIsSolanaSwap);
+  const isSolanaToNonSolana = useSelector(selectIsSolanaToNonSolana);
+  const selectedQuoteRequestId = useSelector(selectSelectedQuoteRequestId);
+  const quoteStreamComplete = useSelector(selectQuoteStreamComplete);
+  const { validateBridgeTx } = useValidateBridgeTx();
+
+  const [blockaidError, setBlockaidError] = useState<string | null>(null);
+  // Ref to track the current validation ID to prevent race conditions
+  const currentValidationIdRef = useRef<number>(0);
+  const lastValidatedQuoteRef = useRef<{
+    requestId: string;
+    validateBridgeTx: typeof validateBridgeTx;
+  } | null>(null);
+
+  const {
+    quoteFetchError,
+    quotesLoadingStatus,
+    quotesLastFetched,
+    quotesRefreshCount,
+  } = bridgeControllerState;
+
+  const refreshRate = getQuoteRefreshRate(bridgeFeatureFlags, sourceToken);
+  const maxRefreshCount = bridgeFeatureFlags?.maxRefreshCount ?? 5; // Default to 5 refresh attempts
+  const insufficientBal = useIsInsufficientBalance({
+    amount: sourceAmount,
+    token: sourceToken,
+    latestAtomicBalance: latestSourceAtomicBalance,
+  });
+
+  const willRefresh = shouldRefreshQuote(
+    insufficientBal ?? false,
+    quotesRefreshCount,
+    maxRefreshCount,
+    isSubmittingTx,
+  );
+
+  const isExpired = isQuoteExpired(willRefresh, refreshRate, quotesLastFetched);
+
+  const bestQuote = quotes?.recommendedQuote;
+  const allQuotes = useMemo(
+    () => quotes?.sortedQuotes ?? [],
+    [quotes?.sortedQuotes],
+  );
+
+  // Determine the active quote:
+  // 1. If user manually selected a quote, use that
+  // 2. Otherwise, use the best quote
+  // 3. If expired and not refreshing, use undefined
+  const manuallySelectedQuote = selectedQuoteRequestId
+    ? allQuotes.find(
+        (quote) => quote.quote.requestId === selectedQuoteRequestId,
+      )
+    : undefined;
+
+  const rawActiveQuote =
+    isExpired && !willRefresh && !isSubmittingTx
+      ? undefined
+      : (manuallySelectedQuote ?? bestQuote);
+
+  // When quotes are expired but the user hasn't yet triggered a new fetch,
+  // keep showing the last quotes that are still present in Redux. They are NOT
+  // cleared from the store on expiry — only BridgeController.resetState()
+  // (called on "Get new quote") removes them. Reading from Redux directly means
+  // every consumer of this hook (BridgeView, QuoteSelectorView, …) sees the
+  // same cached data without needing per-instance refs.
+  const isShowingCachedQuote =
+    isExpired &&
+    !willRefresh &&
+    !isSubmittingTx &&
+    quotesLoadingStatus !== RequestStatus.LOADING &&
+    !!(manuallySelectedQuote ?? bestQuote);
+
+  const activeQuote = isShowingCachedQuote
+    ? (manuallySelectedQuote ?? bestQuote)
+    : rawActiveQuote;
+
+  const priceImpactFiat = usePriceImpactFiat(activeQuote);
+
+  // Validate that the quote's source asset matches the selected source token
+  // This prevents showing stale quote data when user changes source token on the same chain
+  const isQuoteSourceTokenMatch = useMemo(() => {
+    if (!activeQuote || !sourceToken) return false;
+
+    const {
+      src: { asset: srcAsset },
+    } = activeQuote.quote;
+
+    const srcChainId = activeQuote.chainId;
+
+    const quoteSourceAddress = isNonEvmChainId(sourceToken.chainId)
+      ? srcAsset.assetId
+      : formatAddressToCaipReference(srcAsset.assetId);
+
+    const selectedSourceAddress = sourceToken.address;
+    return (
+      srcChainId === formatChainIdToCaip(sourceToken.chainId) &&
+      areAddressesEqual(quoteSourceAddress, selectedSourceAddress)
+    );
+  }, [activeQuote, sourceToken]);
+
+  // Helper to validate that a quote's destination asset matches the selected destination token
+  // This prevents showing stale quote data (with wrong decimals) when user changes destination token
+  const isQuoteDestTokenMatchForQuote = useCallback(
+    (quote: (typeof allQuotes)[number] | undefined | null): boolean => {
+      if (!quote || !destToken) return false;
+
+      const {
+        dest: { asset: destAsset },
+      } = quote.quote;
+      const destChainId = parseCaipAssetType(destAsset.assetId).chainId;
+
+      // For non-EVM chains (e.g., Solana), destAsset.address is in raw format (e.g., "EPj...")
+      // or zero address for native tokens, while destToken.address uses CAIP format
+      // (e.g., "solana:.../token:EPj...").
+      // Use destAsset.assetId (CAIP format) for comparison.
+      // For EVM chains, use the original address comparison.
+      const quoteDestAddress = isNonEvmChainId(destToken.chainId)
+        ? destAsset.assetId
+        : formatAddressToCaipReference(destAsset.assetId);
+
+      const selectedDestAddress = destToken.address;
+      return (
+        destChainId === formatChainIdToCaip(destToken.chainId) &&
+        areAddressesEqual(quoteDestAddress, selectedDestAddress)
+      );
+    },
+    [destToken],
+  );
+
+  const isQuoteDestTokenMatch = isQuoteDestTokenMatchForQuote(activeQuote);
+
+  // Filter all quotes to only include valid ones (not expired and matching dest token).
+  // When showing cached data the expiry guard is bypassed so the Redux quotes
+  // that are still in the store remain visible until the user requests new ones.
+  const validQuotes = useMemo(
+    () =>
+      isExpired && !willRefresh && !isSubmittingTx && !isShowingCachedQuote
+        ? []
+        : allQuotes.filter((quote) => isQuoteDestTokenMatchForQuote(quote)),
+    [
+      isExpired,
+      willRefresh,
+      isSubmittingTx,
+      isShowingCachedQuote,
+      allQuotes,
+      isQuoteDestTokenMatchForQuote,
+    ],
+  );
+
+  const destTokenAmount =
+    activeQuote && destToken && isQuoteSourceTokenMatch && isQuoteDestTokenMatch
+      ? fromTokenMinimalUnitString(
+          activeQuote.quote.dest.amount,
+          destToken.decimals,
+        )
+      : undefined;
+
+  const quoteRate =
+    Number(sourceAmount) === 0
+      ? undefined
+      : Number(destTokenAmount) / Number(sourceAmount);
+
+  const networkFee = useFormattedNetworkFee(activeQuote);
+
+  const formattedQuoteData = useMemo(() => {
+    if (!activeQuote) return undefined;
+
+    const { quote, estimatedProcessingTimeInSeconds } = activeQuote;
+
+    const priceImpact = quote.priceData?.priceImpact?.amount;
+    let priceImpactPercentage;
+
+    if (priceImpact) {
+      priceImpactPercentage = `${(Number(priceImpact) * 100).toFixed(2)}%`;
+    }
+
+    // Formats quote rate to show an appropriate number of decimal places
+    // For numbers greater than 1, we show 2 decimal places. Example: 1.23456 -> 1.23
+    // For numbers less than 1, we show 3 significant digits. Example: 0.00012345 -> 0.000123
+    const quoteRateFormatter = getIntlNumberFormatter(locale, {
+      ...(quoteRate && quoteRate > 1
+        ? { minimumFractionDigits: 1, maximumFractionDigits: 2 }
+        : { minimumSignificantDigits: 2, maximumSignificantDigits: 3 }),
+    });
+    const formattedQuoteRate = quoteRateFormatter.format(quoteRate ?? 0);
+    const rate = quoteRate
+      ? `1 ${sourceToken?.symbol} = ${formattedQuoteRate} ${destToken?.symbol}`
+      : '--';
+
+    return {
+      networkFee,
+      estimatedTime:
+        estimatedProcessingTimeInSeconds >= 60
+          ? `${Math.ceil(estimatedProcessingTimeInSeconds / 60)} min`
+          : `${
+              estimatedProcessingTimeInSeconds >= 1
+                ? `${estimatedProcessingTimeInSeconds} seconds`
+                : '< 1 second'
+            }`,
+      rate,
+      priceImpact: priceImpactPercentage,
+      priceImpactFiat,
+      slippage: slippage ? `${slippage}%` : 'Auto',
+    };
+  }, [
+    activeQuote,
+    quoteRate,
+    sourceToken?.symbol,
+    destToken?.symbol,
+    slippage,
+    locale,
+    networkFee,
+    priceImpactFiat,
+  ]);
+
+  const isLoading = quotesLoadingStatus === RequestStatus.LOADING;
+
+  const isNoQuotesAvailable = quoteStreamComplete?.hasQuotes === false;
+
+  // Show "Get new quote" only when an expired quote needs refresh.
+  const needsNewQuote =
+    isExpired && !isSubmittingTx && (!isLoading || !activeQuote);
+
+  const shouldShowPriceImpactWarning = Boolean(
+    activeQuote?.quote.priceData?.priceImpact?.amount !== undefined &&
+      bridgeFeatureFlags?.priceImpactThreshold &&
+      parsePriceImpact(activeQuote?.quote.priceData?.priceImpact?.amount) >=
+        (bridgeFeatureFlags.priceImpactThreshold.warning ??
+          AppConstants.BRIDGE.PRICE_IMPACT_WARNING_THRESHOLD),
+  );
+  const shouldShowPriceImpactError = Boolean(
+    exceedsPriceImpactErrorThreshold(
+      parsePriceImpact(activeQuote?.quote.priceData?.priceImpact?.amount),
+      bridgeFeatureFlags?.priceImpactThreshold?.error,
+    ),
+  );
+
+  const abortController = useRef<AbortController | null>(new AbortController());
+  useEffect(
+    () => () => {
+      abortController.current?.abort();
+      abortController.current = null;
+    },
+    [],
+  );
+
+  const validateQuote = useCallback(async () => {
+    if (
+      !activeQuote ||
+      (!isSolanaSwap && !isSolanaToNonSolana) ||
+      // Skip validation for gas-included quotes on Solana
+      activeQuote?.quote?.gasIncluded === true
+    ) {
+      lastValidatedQuoteRef.current = null;
+      setBlockaidError(null);
+      return;
+    }
+
+    const activeQuoteRequestId = activeQuote.quote.requestId;
+    const hasValidatedCurrentQuote =
+      lastValidatedQuoteRef.current?.requestId === activeQuoteRequestId &&
+      lastValidatedQuoteRef.current?.validateBridgeTx === validateBridgeTx;
+
+    if (hasValidatedCurrentQuote) {
+      return;
+    }
+
+    lastValidatedQuoteRef.current = {
+      requestId: activeQuoteRequestId,
+      validateBridgeTx,
+    };
+
+    // Increment validation ID for this request
+    const validationId = ++currentValidationIdRef.current;
+    // Cancel any ongoing request
+    abortController.current?.abort();
+    abortController.current = new AbortController();
+
+    try {
+      const validationResult = await validateBridgeTx({
+        quoteResponse: activeQuote,
+        signal: abortController.current?.signal,
+      });
+
+      // Check if this is still the current validation after async operation
+      if (validationId !== currentValidationIdRef.current) {
+        // This validation is outdated, ignore the result
+        return;
+      }
+
+      if (validationResult.status === 'ERROR') {
+        const isValidationError = !!validationResult.result.validation.reason;
+        const { error_details } = validationResult;
+        const fallbackErrorMessage = isValidationError
+          ? validationResult.result.validation.reason
+          : validationResult.error;
+        const error = error_details?.message
+          ? `The ${error_details.message}.`
+          : fallbackErrorMessage;
+        setBlockaidError(error);
+      } else {
+        setBlockaidError(null);
+      }
+    } catch (error) {
+      // Check if this is still the current validation after async operation
+      if (validationId !== currentValidationIdRef.current) {
+        // This validation is outdated, ignore the result
+        return;
+      }
+
+      console.error('Swaps Quote Data Validation error:', error);
+      if (
+        lastValidatedQuoteRef.current?.requestId === activeQuoteRequestId &&
+        lastValidatedQuoteRef.current?.validateBridgeTx === validateBridgeTx
+      ) {
+        lastValidatedQuoteRef.current = null;
+      }
+      setBlockaidError(null);
+    }
+  }, [activeQuote, isSolanaSwap, isSolanaToNonSolana, validateBridgeTx]);
+
+  useEffect(() => {
+    if (isActive) {
+      validateQuote();
+    }
+  }, [validateQuote, isActive]);
+
+  useEffect(() => {
+    if (isActive && !manuallySelectedQuote) {
+      dispatch(setSelectedQuoteRequestId(undefined));
+    }
+  }, [isActive, manuallySelectedQuote, dispatch]);
+
+  const isActiveQuoteForCurrentTokenPair =
+    isQuoteSourceTokenMatch && isQuoteDestTokenMatch;
+
+  return useMemo(
+    () => ({
+      bestQuote,
+      quoteFetchError,
+      activeQuote,
+      quotesLoadingStatus,
+      destTokenAmount,
+      isLoading,
+      formattedQuoteData,
+      isNoQuotesAvailable,
+      willRefresh,
+      isExpired,
+      blockaidError,
+      shouldShowPriceImpactWarning,
+      shouldShowPriceImpactError,
+      validQuotes,
+      needsNewQuote,
+      isActiveQuoteForCurrentTokenPair,
+    }),
+    [
+      bestQuote,
+      quoteFetchError,
+      activeQuote,
+      quotesLoadingStatus,
+      destTokenAmount,
+      isLoading,
+      formattedQuoteData,
+      isNoQuotesAvailable,
+      willRefresh,
+      isExpired,
+      blockaidError,
+      shouldShowPriceImpactWarning,
+      shouldShowPriceImpactError,
+      validQuotes,
+      needsNewQuote,
+      isActiveQuoteForCurrentTokenPair,
+    ],
+  );
+};
